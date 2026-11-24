@@ -257,6 +257,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // follower row that carries a followed_by is the one of the session the tuple reaches.
 func projectionCarries(table, fromKind, alias string) string {
 	session := ""
+	// kept for one release: asks-arms
 	if table == "ask_followers" {
 		session = ` and projected.session_id = ` + alias + `.to_id`
 	}
@@ -455,14 +456,18 @@ var backlinkArms = map[string][]backlinkArm{
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
 	"artifact": {
 		// asks_anchor_artifact, on the same coalesce the join makes; the store states the same
-		// fact as an ask's anchored_to, answered while the ask's row carries its node.
+		// fact as an ask's anchored_to, answered while the ask's row carries its node. It goes
+		// with graph_edges' arm over asks, and the store's reading of an ask's anchored_to then
+		// joins no asks row, as the view's tuple arm does then.
+		// kept for one release: asks-arms
 		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "asks"},
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
-		// asks_artifact_id, and the ask's owned_by in the store.
+		// asks_artifact_id, and the ask's owned_by in the store, which go as an ask's anchored_to does.
+		// kept for one release: asks-arms
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
@@ -517,7 +522,9 @@ var backlinkArms = map[string][]backlinkArm{
 	"session": {
 		// ask_followers_session_id (migration 20261101182419), which exists for this arm; the
 		// store states the same fact as an ask's followed_by, answered while the follower row of
-		// that ask and that session carries the ask's node (projectionCarries' session test).
+		// that ask and that session carries the ask's node (projectionCarries' session test). It
+		// goes as the artifact's arms over asks do.
+		// kept for one release: asks-arms
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
 			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 	},

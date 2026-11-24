@@ -488,6 +488,18 @@ export function typedBlockIdAttribute(id: string): string {
   return `id="${value}"`;
 }
 
+/**
+ * One container marker a block nested in a quote, a list item or a footnote is written after, as
+ * a regular expression's source: a quote marker (`>`), a list marker (`-`, `*`, `+`, or a number
+ * and `.` or `)`, each followed by a space or a tab) or a footnote label (`[^label]:` with a label
+ * that is not blank and holds no line break). The renderer writes the first block of a list item
+ * or of a footnote's definition on the marker's or the label's line, so a reader that finds a
+ * block's opening line skips each marker and the spaces and tabs after it. The web's reader of a
+ * version (`askOpenerSource`) and the CLI's reader of a live text (`withoutContainerMarkers` in
+ * packages/envoy-client) both build their rule from it.
+ */
+export const CONTAINER_MARKER_PATTERN = String.raw`(?:>|[-*+][ \t]|\d+[.)][ \t]|\[\^(?!\s*\])[^\]\n]*\]:)`;
+
 /** Each typed block id and how its opening line writes it (`typedBlockIdAttribute`). */
 export const DISPATCH_TYPED_BLOCK_ID_SPELLINGS: readonly { id: string; written: string }[] = [
   { id: "callout-1", written: "#callout-1" },

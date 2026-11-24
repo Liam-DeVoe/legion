@@ -654,9 +654,9 @@ type questionBlock struct {
 }
 
 // questionBlocks is every question block markdown declares, in document order, the first of each
-// id: each line that, past its containers' quote and list markers, opens a typed block named ask
-// holding an id, outside fenced code. A fenced example of a directive is code to pmdoc, so a
-// `copied_from` it carries names no question of this document.
+// id: each line that, past its containers' quote, list and footnote markers, opens a typed block
+// named ask holding an id, outside fenced code. A fenced example of a directive is code to pmdoc,
+// so a `copied_from` it carries names no question of this document.
 func questionBlocks(markdown string) []questionBlock {
 	blocks := []questionBlock{}
 	seen := map[string]struct{}{}
@@ -753,9 +753,13 @@ func askBlock(line string) (questionBlock, bool) {
 	return block, true
 }
 
-// trimContainerMarkers drops the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`,
-// or a number and `.` or `)`, each followed by a space) a block nested in a quote or a list item
-// is written after.
+// trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
+// a number and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with
+// a label that is not blank), each with the spaces and tabs after it, that a block nested in a
+// quote, a list item or a footnote is written after. The renderer writes the first block of a list
+// item or of a footnote's definition on the marker's or the label's line, so a fence opened there
+// is a fence. These are the markers the CLI and the web skip (CONTAINER_MARKER_PATTERN in
+// packages/contracts).
 func trimContainerMarkers(line string) string {
 	for {
 		line = strings.TrimLeft(line, " \t")
@@ -764,6 +768,12 @@ func trimContainerMarkers(line string) string {
 			line = line[1:]
 		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
 			line = line[2:]
+		case strings.HasPrefix(line, "[^"):
+			label, rest, closed := strings.Cut(line[2:], "]")
+			if !closed || !strings.HasPrefix(rest, ":") || strings.TrimSpace(label) == "" {
+				return line
+			}
+			line = rest[1:]
 		default:
 			digits := 0
 			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {

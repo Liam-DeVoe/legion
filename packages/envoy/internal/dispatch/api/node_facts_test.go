@@ -547,9 +547,12 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 }
 
 // R12: a block Dispatch first saw when it indexed its document, as the owed pass indexes a
-// document written before blocks shipped, has no maker on record: version 3, where it first
-// appears, need not be where it was made. Its last change is that version. A block a later
-// version adds names that version's author as its maker.
+// document written before blocks shipped, has no maker on record: the version its text first
+// appears in need not be where it was made. Its last change is the version its text last changed
+// in (R5's text-change time, refs.textSince), read off the versions no pass indexed: version 2
+// rewrote the first paragraph and version 3 the second, so one pass indexing version 3 dates the
+// first to version 2, by alice, and the second to version 3, by bob. A block a later version adds
+// names that version's author as its maker.
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -558,10 +561,10 @@ func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")
 	spec := issue.PrimaryArtifactID
 	specRef := "dispatch://" + issue.Key + "/spec"
-	editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "First paragraph.", "with": "First paragraph, revised."}})
+	v2 := editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "First paragraph.", "with": "First paragraph, revised."}})
 	v3 := editIssueDocumentAs(t, handler, issue.Key, "spec", "bob", []map[string]any{{"op": "replace", "find": "Second paragraph.", "with": "Second paragraph, revised."}})
-	if v3.Number != 3 {
-		t.Fatalf("the third write is version %d, want 3", v3.Number)
+	if v2.Number != 2 || v3.Number != 3 {
+		t.Fatalf("the second and third writes are versions %d and %d, want 2 and 3", v2.Number, v3.Number)
 	}
 
 	// The state 0121 left every older document in: no block on record, owed an index.
@@ -581,15 +584,23 @@ func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	}
 	requireIndexedAt(t, database, spec, 3)
 
-	v3At := versionOf(t, database, spec, 3).CreatedAt
+	v2At, v3At := versionOf(t, database, spec, 2).CreatedAt, versionOf(t, database, spec, 3).CreatedAt
 	ofSpec := &model.NodeParent{Kind: "artifact", ID: spec, Ref: specRef}
 	ids := blockIDsByText(t, handler, spec)
-	for _, paragraph := range []string{"First paragraph, revised.", "Second paragraph, revised."} {
-		node := readNode(t, handler, specRef+"#b-"+ids[paragraph])
-		if node.ChangedVersion != 3 {
-			t.Fatalf("%q changed_version = %d, want 3", paragraph, node.ChangedVersion)
+	for _, test := range []struct {
+		paragraph string
+		version   int
+		by        string
+		at        *time.Time
+	}{
+		{paragraph: "First paragraph, revised.", version: 2, by: "user:alice", at: &v2At},
+		{paragraph: "Second paragraph, revised.", version: 3, by: "user:bob", at: &v3At},
+	} {
+		node := readNode(t, handler, specRef+"#b-"+ids[test.paragraph])
+		if node.ChangedVersion != test.version {
+			t.Fatalf("%q changed_version = %d, want %d", test.paragraph, node.ChangedVersion, test.version)
 		}
-		requireFacts(t, paragraph, node, nodeFacts{MadeBy: []string{}, ChangedBy: []string{"user:bob"}, ChangedAt: &v3At, Parent: ofSpec, ParentVersion: new(3)})
+		requireFacts(t, test.paragraph, node, nodeFacts{MadeBy: []string{}, ChangedBy: []string{test.by}, ChangedAt: test.at, Parent: ofSpec, ParentVersion: new(test.version)})
 	}
 
 	v4 := editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "Third paragraph."}})

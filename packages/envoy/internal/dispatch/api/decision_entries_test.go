@@ -90,25 +90,6 @@ func shapedLink(t *testing.T, entry decisionEntry, target string) model.Decision
 	return model.DecisionLink{}
 }
 
-// decisionMemberLink is the link to the spec node target of the decision at ref in the read's old
-// decisions member.
-func decisionMemberLink(t *testing.T, read issueDecisions, ref, target string) model.DecisionLink {
-	t.Helper()
-	for _, decision := range read.Decisions {
-		if decision.Ref != ref {
-			continue
-		}
-		for _, link := range decision.Links {
-			if link.To.ID == target {
-				return link
-			}
-		}
-		t.Fatalf("the decisions member's %s answers no link to %s; it answers %s", ref, target, entryJSON(t, decision.Links))
-	}
-	t.Fatalf("the decisions member answers no decision %s; it answers %s", ref, entryJSON(t, read.Decisions))
-	return model.DecisionLink{}
-}
-
 // agentUploadAs uploads content as the issue's document name through the agent's session,
 // carrying body's other members beside name, content and actor. An upload over a document the
 // issue already holds under name names the token of the version it replaces, and a first upload
@@ -460,13 +441,6 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	if link := shapedLink(t, d1, spec.address("r1")); !link.Stale || !link.ChangedSinceTie {
 		t.Errorf("the link %s of %s reads %s after version %d reworded the decision, want stale and changed_since_tie true",
 			spec.address("r1"), entryKey(d1), entryJSON(t, link), ownWords.Number)
-	}
-	// The same links read through the old decisions member read the same two facts.
-	for _, link := range d1.Shaped {
-		if old := decisionMemberLink(t, view, d1.Ref, link.To.ID); old.Stale != link.Stale || old.ChangedSinceTie != link.ChangedSinceTie {
-			t.Errorf("the link %s of %s reads stale %t and changed_since_tie %t in the decisions member and %t and %t in entries, want the same",
-				link.To.ID, d1.Ref, old.Stale, old.ChangedSinceTie, link.Stale, link.ChangedSinceTie)
-		}
 	}
 	// A reading written under it moves its block's row and none of its words: the version its
 	// words last changed in stands.

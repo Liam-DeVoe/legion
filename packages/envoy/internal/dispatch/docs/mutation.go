@@ -593,12 +593,16 @@ func joinedSchemaError(err error, start func() error) error {
 // document's own nor above it, or one outside the document where the attribute points only inside
 // it (pmdoc.CheckBlockPointers). Each target is read as the block index would hold it once the
 // write is indexed, with the writing document's issue and that issue's ancestors
-// (refs.BlockTargets), in the write's transaction. The refusal is pmdoc.ErrBlockPointer, which no
-// schema refusal path (joinedSchemaError) reclassifies. A browser's write (settlement) and the
+// (refs.BlockTargets), in the write's transaction. It refuses too a tie the write introduces to
+// something of another issue than the document's own: a `shaped` value naming a block of another
+// issue, or a `from_ask` naming an ask of another issue (pmdoc.CheckIssueTies), which the editor
+// refuses as well (proof-editor's otherIssueRefusal). The refusal is pmdoc.ErrBlockPointer, which
+// no schema refusal path (joinedSchemaError) reclassifies. A browser's write (settlement) and the
 // reconciliation never come here: what a browser wrote is already stored, so it is never refused,
-// and a pointer of its at a block no document holds stays unresolved.
+// a pointer of its at a block no document holds stays unresolved, and a tie of its to another
+// issue is one the block index states nothing of (refs.DecisionFacts).
 func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
-	return pmdoc.CheckBlockPointers(tree, prior, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
+	if err := pmdoc.CheckBlockPointers(tree, prior, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
 		// The address is resolved here, inside the check's one call, so a write that
 		// introduces no pointer reads nothing for it.
 		address, err := addressOfDocument(ctx, tx, artifactID)
@@ -606,6 +610,17 @@ func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree
 			return pmdoc.BlockWriting{}, nil, err
 		}
 		return refs.BlockTargets(ctx, tx, artifactID, address, offsetBlocks(offsets), targets)
+	}); err != nil {
+		return err
+	}
+	return pmdoc.CheckIssueTies(tree, prior, func() (string, error) {
+		// The document's issue as its address reads it, which answers for a document this
+		// transaction creates as well as for a stored one.
+		address, err := addressOfDocument(ctx, tx, artifactID)
+		if err != nil {
+			return "", err
+		}
+		return address.IssueKey, nil
 	})
 }
 
@@ -2282,45 +2297,43 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 // storableVersionTree is tree, the document artifactID a version write takes without settling it
 // first (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors
 // and captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
-// ask block that has an ask (askBlocksWithAnAsk) and holds the answer's words or selection, or an
-// open state, which no version written then holds (withoutUnkeptAskAttributes), has them taken
-// off, as the document's next settlement takes them off the live tree (askReadableWrite), and
-// keeps the state of an ask that is not open, the answerer and time and a copy's provenance as the
-// live tree holds them, which every write of an ask's state keeps in step with it (keptAskState:
-// KeepAskBlockInStep, WriteIssueAskStates, settlement). Each ask block that has no ask row and is
-// no copy of an ask has every attribute a version can store taken off
-// (withoutStoredAskAttributes), as settlement takes them off it (unindexedAskResolution): it keeps
-// none of the eight (R10), whatever state its live tree gives it, the state="resolved" a closed
-// issue's settlement or the close's sweep wrote while another build served among them. Each
-// container on the way to such a block and each such block is a fresh node, and tree itself is
-// left as it is. It is tree where no ask block holds one, and where another build serves, whose
-// pages read the attributes, which settlement keeps in step with each ask meanwhile. The fleet is
-// read only for a tree holding one, and the rows and copies its blocks have only for a tree
-// holding what a version keeps of an ask (holdsKeptAskAttribute): every other attribute a version
-// can store is one withoutUnkeptAskAttributes takes off whatever ask a block has.
+// ask block that has no ask row and is no copy of an ask has every attribute a version can store
+// taken off (withoutStoredAskAttributes), as settlement takes them off it
+// (unindexedAskResolution): it keeps none of the eight (R10), whatever state its live tree gives
+// it, the state="resolved" a closed issue's settlement or the close's sweep wrote while another
+// build served among them. Each ask block that has an ask (keptAskBlocks) has only what no version
+// written then holds taken off, the answer's words and selection and an open state
+// (withoutUnkeptAskAttributes), as the document's next settlement takes them off the live tree
+// (askReadableWrite), and keeps the state of an ask that is not open, the answerer and time and a
+// copy's provenance as the live tree holds them, which every write of an ask's state keeps in step
+// with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates, settlement). Each container on
+// the way to a block it changes and each such block is a fresh node, and tree itself is left as it
+// is. It is tree where no ask block holds an attribute a version can store, and where another
+// build serves, whose pages read the attributes, which settlement keeps in step with each ask
+// meanwhile. The fleet is read only for a tree holding one (holdsStoredAskAttribute).
 //
-// kept for one release: stored-ask-state
+// The strip is R10's and stays. The roll window's read of the fleet goes with it, and the lighter
+// strip of a block that has an ask goes with the form a version keeps.
 func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
-	kept := false
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		kept = node.Type == "ask" && holdsKeptAskAttribute(node)
-		return !kept
-	})
-	var withAsk map[string]bool
-	if kept {
-		twoBuilds, err := anotherBuildServes(ctx, tx)
-		if err != nil || twoBuilds {
-			return tree, err
-		}
-		if withAsk, err = askBlocksWithAnAsk(ctx, tx, artifactID, tree); err != nil {
-			return tree, err
-		}
+	// kept for one release: roll-window-attributes
+	if !holdsStoredAskAttribute(tree) {
+		return tree, nil
 	}
-	stripped := withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
+	// kept for one release: roll-window-attributes
+	if twoBuilds, err := anotherBuildServes(ctx, tx); err != nil || twoBuilds {
+		return tree, err
+	}
+	// kept for one release: stored-ask-state
+	withAsk, err := keptAskBlocks(ctx, tx, artifactID, tree)
+	if err != nil {
+		return tree, err
+	}
+	return withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		taken := attributesOf(node)
-		strip := withoutUnkeptAskAttributes
-		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); kept && !withAsk[id] {
-			strip = withoutStoredAskAttributes
+		strip := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); withAsk[id] {
+			strip = withoutUnkeptAskAttributes
 		}
 		if !strip(taken) {
 			return node, false
@@ -2328,15 +2341,42 @@ func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree
 		copied := *node
 		copied.Attrs = taken.Attrs
 		return &copied, true
+	}), nil
+}
+
+// holdsStoredAskAttribute reports whether an ask block of tree holds an attribute a version can
+// store (storedAskAttributes): the one tree storableVersionTree reads the fleet for, since it
+// stores every other as it is.
+//
+// kept for one release: roll-window-attributes
+func holdsStoredAskAttribute(tree *pmdoc.Node) bool {
+	held := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		held = node.Type == "ask" && slices.ContainsFunc(storedAskAttributes(), func(name string) bool {
+			_, present := node.Attrs[name]
+			return present
+		})
+		return !held
 	})
-	if stripped == tree || kept {
-		return stripped, nil
+	return held
+}
+
+// keptAskBlocks is askBlocksWithAnAsk for tree where one of its ask blocks holds what a version
+// keeps of an ask (holdsKeptAskAttribute), and nil where none does: such a tree's blocks hold
+// none but the attributes withoutUnkeptAskAttributes takes off whatever ask a block has, so the
+// rows and copies its blocks have are not read for it (storableVersionTree).
+//
+// kept for one release: stored-ask-state
+func keptAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (map[string]bool, error) {
+	kept := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		kept = node.Type == "ask" && holdsKeptAskAttribute(node)
+		return !kept
+	})
+	if !kept {
+		return nil, nil
 	}
-	twoBuilds, err := anotherBuildServes(ctx, tx)
-	if err != nil || twoBuilds {
-		return tree, err
-	}
-	return stripped, nil
+	return askBlocksWithAnAsk(ctx, tx, artifactID, tree)
 }
 
 // captureWrite is captureLiveTextAndAuthors for a transaction with a write of its own to room: the

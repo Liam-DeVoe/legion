@@ -490,9 +490,8 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // retraction, a Keep, two components of one imported snapshot, one under and depending on the
 // other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her snooze
 // of an ask the session ses_asker opened before the window, so that inside the window the snooze
-// is the one write of it a term counts, a copy in the spec of an ask block of a document written
-// before the window, and an answered ask asked before the window whose block, Dropped, the spec's
-// second version took out.
+// is the one write of it a term counts, and a copy in the spec of an ask block of a document
+// written before the window.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -560,12 +559,6 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
 			select $1::uuid, 'copied', (select ref_key from artifacts where id = $1::uuid) || '#copied', 'ask', '',
 			       'Which store does the copy name?', 3, now() from asked`, []any{document}},
-		{"write the answered ask whose block the second version took out", `
-			insert into asks (issue_key, author, question, state, answer, created_at, block_artifact_id, block_id)
-			values ('CORE-1', '{"kind":"user","id":"alice"}', 'Is Dropped kept?', 'answered',
-			        jsonb_build_object('user', 'bob', 'selected', jsonb_build_array(), 'text', 'No.',
-			                           'at', now() - interval '40 days'),
-			        now() - interval '40 days', $1::uuid, 'p-Dropped')`, []any{document}},
 		{"write the components", `
 			with source as (
 				insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -1176,10 +1169,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// decided_by beside its answered_by, and a resolution's value and its retraction.
 		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 7, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
 		"ask_resolved": {tuples: 3, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
-		// The copy of the source document's ask block, the spec's block the settlement flagged, and
-		// the version that took out the answered ask's block; no table dates a moved_to.
+		// The copy of the source document's ask block and the spec's block the settlement flagged.
 		"ask_copy": {tuples: 1, writes: 1}, "ask_invalid": {tuples: 2, writes: 1},
-		"ask_removal": {tuples: 2, writes: 1}, "block_move": {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it

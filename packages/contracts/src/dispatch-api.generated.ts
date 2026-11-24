@@ -191,6 +191,23 @@ export interface paths {
     patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/ask-attributes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: read the attributes each ask block of a document holds in this process's live tree. */
+    get: operations["getApiV1ArtifactsByIdTestAskAttributes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
     parameters: {
       query?: never;
@@ -5807,6 +5824,13 @@ export interface components {
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
     };
+    LiveAskAttributes: {
+      blocks: {
+        [key: string]: {
+          [key: string]: unknown;
+        };
+      } | null;
+    };
     LiveWritePauseState: {
       parked: boolean;
     };
@@ -7483,6 +7507,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdTestAskAttributes: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LiveAskAttributes"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15356,6 +15414,7 @@ export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
+export type LiveAskAttributes = components["schemas"]["LiveAskAttributes"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];

@@ -192,18 +192,13 @@ const itemBlockCurrent = `b.position is not null`
 // written over the arm's rows aliased g. It reads the ids once, and then, for each id, every arm
 // of graph_edges that can end at a block of that kind through its own index of targets, keyed by
 // to_kind and to_id (a reply by replies_to_block), each with the view's own rule for a current
-// block (migration 20261105014808): a block's pointer while block_refs lists it, a link an item's
-// block holds while that block is current (itemBlockLinks), and a reply to an ask's part told
-// from one to a comment's block by its prefix. Each edge comes once: a node's block ids are
-// distinct, document_blocks being keyed by document and block and an item's blocks table holding
-// one row for each item and block id.
-//
-// A document block's link is read from its block_refs row whether the row names its node or not,
-// under the rule each kind of row is listed by (blockRefListed), as the out read of a document
-// reads the same rows: a row that names no node is the view's block_refs arm, and one that names
-// its node is the row the view's tuple arm answers that link only while it carries the node
-// (migration 20261109215947), so the row read here is that link whichever arm of the view would
-// answer it, through the one index of targets block_refs has.
+// block (migration 20261105014808): a block's pointer while block_ref_listed lists it, a link an
+// item's block holds while that block is current (itemBlockLinks), and a reply to an ask's part
+// told from one to a comment's block by its prefix. The view's arm over block_refs answers only
+// the rows that name no node (rowNamesNoNode), and its tuple arm the links of the rows that do
+// (keyedTupleArm), so this reads both, each by the row's target, as the view answers them. Each
+// edge comes once: a node's block ids are distinct, document_blocks being keyed by document and
+// block and an item's blocks table holding one row for each item and block id.
 //
 // A block the acting person, whose credential the read binds at seen, may not see holds no edge
 // of the read: its id is tested once against the block kind's predicate (VisibleKind), before
@@ -214,7 +209,7 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 				from refs r where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id`,
 		`select 'block', b.from_node, b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq
 				from block_refs b where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id
-				and ` + blockRefListed("b"),
+				and (b.to_types is null or block_ref_listed(b.to_types, b.to_id)) and ` + rowNamesNoNode(`b.node_kind`),
 	}
 	for _, item := range itemKinds {
 		arms = append(arms, `select '`+item.BlockKind()+`', r.from_node, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
@@ -227,6 +222,7 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 			arms = append(arms, blockRepliesArm(item))
 		}
 	}
+	arms = append(arms, keyedTupleArm(blockKind))
 	return `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
 			from ` + ids + ` k (node_id)
 			cross join lateral (
@@ -235,6 +231,31 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 				`) + `
 			) g (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
 			where ` + VisibleKind(blockKind, "k.node_id", seen) + ` and ` + source
+}
+
+// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
+// node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
+// that name none. Such a row is the projection of the tuple of the node it names (node_kind and
+// node_address), a block's link or an answered ask's shaped, and while the row stands the view
+// answers the edge from that node, as the tuple states it: while the newest tuple of its relation
+// asserts (graphstore.CurrentTupleRead, the reading currentTuple makes), while the node is not
+// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_ref_listed
+// lists its target among the targets its attribute declares now. Its time and its sequence are
+// that tuple's, as the view answers them. The source's visibility is the read's filter of a
+// source, as for every other arm.
+func keyedTupleArm(blockKind string) string {
+	return `select b.node_kind, b.node_address, b.kind, b.to_kind, b.to_id, newest.at, newest.legacy_source_seq
+				from block_refs b
+				cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`,
+		`t.at, t.legacy_source_seq, t.asserted`,
+		`t.from_kind = b.node_kind and t.from_id = b.node_address and t.kind = b.kind
+					and t.to_kind = b.to_kind and t.to_id = b.to_id and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+				) newest
+				where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id and b.node_kind is not null and newest.asserted
+				and (b.kind = 'mentions' or block_ref_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
+				and exists (select 1 from graph_nodes live
+					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed

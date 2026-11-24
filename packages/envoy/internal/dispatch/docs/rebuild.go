@@ -204,6 +204,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	var closedStates *issueAskStateWrites
 	if !open {
 		// kept for one release: roll-window-attributes
+		// kept for one release: stored-ask-state
 		twoBuilds, err := anotherBuildServes(ctx, tx)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err

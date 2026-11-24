@@ -10689,7 +10689,7 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toBe(
-      "# Spec\n\nApproval: approved v2 by sjawhar, changed since (now v4) - request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v2"
+      "# Spec\n\nApproval: approved v2 by sjawhar, changed since (now v4) - the human's own answer to a decision block carries the approval when that answer is the whole change since v2; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v2"
     );
   });
 
@@ -11338,7 +11338,7 @@ describe("executeDispatchTool", () => {
   // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
   // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
-  test("prints the ask block's check under the Applied line and the markdown it wrote under that", async () => {
+  test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -11389,7 +11389,7 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toBe(
       "Applied 1 ops (version 3)\n" +
-        "Ask block ask-block-1:\n" +
+        "Decision block ask-block-1:\n" +
         "Related-item check searched and found nothing.\n" +
         "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed\n" +
         "Document token: sha256:after-edit"
@@ -17123,12 +17123,14 @@ describe("executeDispatchTool", () => {
     expect(requested).toContain(`/api/v1/issues/DSP-42/messages/${message}`);
   });
 
-  // The Decisions tab reads the issue's decision nodes, so its page names the issue's Decisions
-  // page, whatever its fragment, as the SPA and the server read the same page.
-  test("maps the SPA's decisions page to the issue's Decisions reference", () => {
+  // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
+  // whatever its fragment, as the SPA and the server read the same page.
+  test("maps the SPA's decisions page to the issue's decisions.md", () => {
     const server = "http://dispatch.test";
     for (const page of ["/issues/DSP-42/decisions", "/issues/DSP-42/decisions#b-ship-it"]) {
-      expect(dispatchRefFromUrl(`${server}${page}`, server)).toBe("dispatch://DSP-42/decisions");
+      expect(dispatchRefFromUrl(`${server}${page}`, server)).toBe(
+        "dispatch://DSP-42/artifact/decisions-md"
+      );
     }
   });
 
