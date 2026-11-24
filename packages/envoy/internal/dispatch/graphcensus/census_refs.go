@@ -221,6 +221,9 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+			return err
+		}
 		written = int64(len(tuples))
 		return nil
 	}); err != nil {

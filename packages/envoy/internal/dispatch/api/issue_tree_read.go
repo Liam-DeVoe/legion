@@ -40,6 +40,11 @@ import (
 // larger tree answers a cursor at the next node of the walk.
 const issueTreePageSize = 12000
 
+// issueTreeCommentPageSize is the most comments the read with no view answers, the newest of
+// them, and each comments_before page the next older (R8): 99 of 100 issues hold fewer, so they
+// read every comment in one answer.
+const issueTreeCommentPageSize = 200
+
 // issueTreeViews are the views the tree read answers, each the query of that name.
 var issueTreeViews = []string{graphstore.QuerySpec, graphstore.QueryVerification, graphstore.QueryPlan, graphstore.QueryDecisions}
 
@@ -51,7 +56,8 @@ const (
 )
 
 // issueTreeQuery is GET /api/v1/issues/{key}/tree's query: the view, the version of the view's
-// query node to read it at, and the cursor of a page past the first.
+// query node to read it at, the cursor of a page past the first, and the position of a page of the
+// comments past the first.
 type issueTreeQuery struct {
 	// View is the query whose nodes the read answers: spec, verification, plan or decisions;
 	// absent for the whole tree.
@@ -63,6 +69,10 @@ type issueTreeQuery struct {
 	V int `query:"v"`
 	// Cursor is where a page past the first starts: the cursor the page before it answered.
 	Cursor string `query:"cursor"`
+	// CommentsBefore is `<made_at>,<id>`, the comments_before a read with no view answered: the
+	// read answers the 200 comments older than that position, with the nodes under them, and no
+	// other node. It is refused beside view or cursor, and where no older comment follows it.
+	CommentsBefore string `query:"comments_before"`
 }
 
 // getIssueTree is GET /api/v1/issues/{key}/tree.
@@ -91,28 +101,50 @@ func (s *server) getIssueTree(w http.ResponseWriter, r *http.Request) {
 		version = number
 	}
 	key := r.PathValue("key")
+	var before *refs.CommentPosition
+	if query.Has("comments_before") {
+		if query.Has("view") || query.Has("cursor") {
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("comments_before, %s, pages the comments of the read with no view: give it with no view and no cursor",
+				refs.CommentPositionShape))
+			return
+		}
+		position, ok := refs.ParseCommentPosition(query.Get("comments_before"))
+		if !ok {
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, commentsBeforeRefusal(key))
+			return
+		}
+		before = &position
+	}
 	if err := s.requireIssueExists(r.Context(), key); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer, err := s.readIssueTree(r.Context(), who, key, view, version, query.Get("cursor"), trees)
+	answer, err := s.readIssueTree(r.Context(), who, key, view, version, query.Get("cursor"), before, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	trees.resolve()
-	WriteJSON(w, http.StatusOK, answer)
+	writeIssueTreeRead(w, &answer)
+}
+
+// commentsBeforeRefusal is the refusal of a comments_before of another shape, or one that no older
+// comment of the issue key follows.
+func commentsBeforeRefusal(key string) string {
+	return fmt.Sprintf("comments_before must be %s, the made_at (RFC 3339, in UTC, with microseconds) and the id of a comment "+
+		"of %s that older comments follow, as the read with no view answers it", refs.CommentPositionShape, key)
 }
 
 // readIssueTree is the tree read of the issue key for who: the view's query and its context, or
-// the whole tree where view is "", at version of the view's query node or at the head where it is
-// 0, from cursor on. Every read of the store is made in one read-only transaction at repeatable
-// read, with JIT off (refs.TurnJITOff), so the answer is one state of the store; the documents'
-// block lists, which the live rooms answer, are read after it
-// (issueTreeBuilder.documentPositions). trees is the request's reader of the display trees, nil
-// for a caller that asked for none.
-func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view string, version int, cursor string, trees *displayTreeReader) (model.IssueTreeRead, error) {
+// the skeleton of the whole tree where view is "", at version of the view's query node or at the
+// head where it is 0, from cursor on, its comments the page before names where it is set. Every
+// read of the store is made in one read-only transaction at repeatable read, with JIT off
+// (refs.TurnJITOff), so the answer is one state of the store; the documents' block lists, which
+// the live rooms answer, are read after it (issueTreeBuilder.documentPositions,
+// issueTreeBuilder.countDocuments). trees is the request's reader of the display trees, nil for a
+// caller that asked for none.
+func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view string, version int, cursor string, before *refs.CommentPosition, trees *displayTreeReader) (model.IssueTreeRead, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return model.IssueTreeRead{}, fmt.Errorf("open the tree read of %s: %w", key, err)
@@ -121,8 +153,8 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 	if err := refs.TurnJITOff(ctx, tx); err != nil {
 		return model.IssueTreeRead{}, err
 	}
-	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view}
-	if err := builder.build(version); err != nil {
+	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, before: before}
+	if err := builder.build(version, cursor); err != nil {
 		return model.IssueTreeRead{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -131,7 +163,10 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 	if err := builder.documentPositions(s); err != nil {
 		return model.IssueTreeRead{}, err
 	}
-	return builder.answer(cursor, version, trees)
+	if err := builder.countDocuments(s); err != nil {
+		return model.IssueTreeRead{}, err
+	}
+	return builder.answer(version, trees), nil
 }
 
 // treeEntry is what the tree read holds of one node while it builds its answer.
@@ -166,6 +201,10 @@ type issueTreeBuilder struct {
 	view string
 	cut  refs.TreeCut
 	tree docs.IssueTree
+	// heads is the issue's rows of the head projection a head read of a marked issue reads in
+	// place of the walk of the tuples (refs.HeadRows), nil for a read at a version and for an issue
+	// no mark names.
+	heads *refs.HeadTree
 
 	entries map[refs.Target]*treeEntry
 	walked  []refs.Target
@@ -203,6 +242,25 @@ type issueTreeBuilder struct {
 	positions map[refs.Target]int
 	// owed is each document of the issue that owes its block index (queueOwedDocuments).
 	owed []model.OwedDocument
+
+	// page is the nodes of the answer from the read's cursor on, at most issueTreePageSize of its
+	// order and, on the last page, the context after them; next is the node the next page starts
+	// at, where the page is not the last; and inAnswer is every node of the whole answer, which a
+	// tuple's far end may name (window). Only the page's nodes, and the parents they stand under,
+	// read their members (readMembers, documentPositions).
+	page     []refs.Target
+	next     *refs.Target
+	inAnswer map[refs.Target]bool
+
+	// before is the position a comments_before read's page of comments starts after, nil for every
+	// other read; skeleton is what the read with no view walks (readSkeleton), nil for a view;
+	// listed is each document of kind doc the issue read lists, which the read with no view answers
+	// as its document_nodes, each with its count of blocks (countDocuments); and counted is the
+	// count of blocks of each document documentPositions read the blocks of.
+	before   *refs.CommentPosition
+	skeleton *docs.Skeleton
+	listed   []model.IssueTreeDocumentNode
+	counted  map[string]int
 }
 
 // treeAsk is what an ask's row says that its node does not: its question, its state, and the rest
@@ -225,14 +283,42 @@ func (b *issueTreeBuilder) root() refs.Target {
 	return refs.Target{Kind: graphstore.KindIssue, ID: b.key}
 }
 
-// build reads everything of the answer the store holds, in the read's transaction.
-func (b *issueTreeBuilder) build(version int) error {
+// build reads everything of the answer the store holds, in the read's transaction: what places
+// each node of the whole answer and says whether the reader may see it, then the page of the
+// answer from cursor on (window), then the members of the page's nodes alone (readMembers). The
+// read with no view walks the skeleton of the tree (readSkeleton, docs.WalkIssueSkeleton), and a
+// view the whole tree. A read of the head (version 0) of an issue the head projection holds whole
+// (issue_head_marks) reads the issue's rows of it in ranges of its key (refs.HeadRows), the
+// skeleton's alone for the read with no view, and walks them (docs.WalkIssueHead); a read at a
+// version, and a read of an issue no mark names, walks the tuples (docs.WalkIssueTree).
+func (b *issueTreeBuilder) build(version int, cursor string) error {
 	cut, err := issueTreeCut(b.ctx, b.q, b.key, b.view, version)
 	if err != nil {
 		return err
 	}
 	b.cut = cut
-	if b.tree, err = docs.WalkIssueTree(b.ctx, b.q, b.key, cut); err != nil {
+	var skeleton *refs.HeadSkeleton
+	if b.view == "" {
+		documents, err := b.readSkeleton()
+		if err != nil {
+			return err
+		}
+		skeleton = &refs.HeadSkeleton{Documents: documents, Comments: b.skeleton.Comments.IDs}
+	}
+	if version == 0 {
+		if b.heads, _, err = refs.HeadRows(b.ctx, b.q, b.who, b.key, skeleton); err != nil {
+			return err
+		}
+	}
+	switch {
+	case b.skeleton != nil:
+		b.tree, err = docs.WalkIssueSkeleton(b.ctx, b.q, b.key, cut, b.heads, *b.skeleton)
+	case b.heads != nil:
+		b.tree, err = docs.WalkIssueHead(b.ctx, b.q, b.key, cut, b.heads)
+	default:
+		b.tree, err = docs.WalkIssueTree(b.ctx, b.q, b.key, cut)
+	}
+	if err != nil {
 		return err
 	}
 	b.entries = map[refs.Target]*treeEntry{}
@@ -261,7 +347,66 @@ func (b *issueTreeBuilder) build(version int) error {
 	if err := b.readContext(); err != nil {
 		return err
 	}
+	if err := b.window(cursor); err != nil {
+		return err
+	}
 	return b.readMembers()
+}
+
+// issueTreeDocumentsStatement is each artifact of the issue $1, in the order the issue read lists
+// them: its id, its ref_key and its slug; whether the issue read lists it as a document of kind
+// doc (issueArtifactsListed); and whether the skeleton holds its blocks, which it holds for each
+// band but the last (refs.DocumentBandSQL): the spec, the tree's own fragment, the Verification
+// document and the plan.
+var issueTreeDocumentsStatement = `
+	select a.id::text, a.ref_key, a.slug, a.kind = 'doc' and ` + issueArtifactsListed("a") + `,
+	       ` + refs.DocumentBandSQL("a") + ` <> '` + string(refs.RankBandOther) + `'
+	from artifacts a
+	where a.issue_key = $1
+	order by a.created_at, a.id`
+
+// readSkeleton reads what the skeleton of the read with no view holds (docs.Skeleton), and
+// answers the ref_key of each document whose blocks it holds: those documents, and each document
+// the read lists in document_nodes (listed), in one statement (issueTreeDocumentsStatement); and
+// the comment page from the read's position on (refs.ReadCommentPage), where a position that no
+// older comment follows is 400 INVALID_QUERY.
+func (b *issueTreeBuilder) readSkeleton() ([]string, error) {
+	rows, err := b.q.Query(b.ctx, issueTreeDocumentsStatement, b.key)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents of %s: %w", b.key, err)
+	}
+	skeleton := &docs.Skeleton{Documents: map[string]bool{}}
+	var documents []string
+	b.listed = []model.IssueTreeDocumentNode{}
+	for rows.Next() {
+		var id, slug string
+		var refKey *string
+		var listed, held bool
+		if err := rows.Scan(&id, &refKey, &slug, &listed, &held); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read a document of %s: %w", b.key, err)
+		}
+		if held && refKey != nil {
+			documents = append(documents, *refKey)
+			skeleton.Documents[*refKey] = true
+		}
+		if listed {
+			b.listed = append(b.listed, model.IssueTreeDocumentNode{ArtifactID: id, Slug: slug})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the documents of %s: %w", b.key, err)
+	}
+	skeleton.Comments, err = refs.ReadCommentPage(b.ctx, b.q, b.key, b.cut.At, b.before, issueTreeCommentPageSize)
+	if errors.Is(err, refs.ErrCommentPositionPastEnd) {
+		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", commentsBeforeRefusal(b.key))
+	}
+	if err != nil {
+		return nil, err
+	}
+	b.skeleton = skeleton
+	return documents, nil
 }
 
 // issueTreeCut is the cut the tree read reads the store at: the head's where version is 0, and
@@ -323,12 +468,13 @@ func treeIssueOf(target refs.Target) string {
 // readOthers adds the nodes of issues under the issue read that its answer holds: each child
 // issue, placed where its part_of names a node of the issue and under the issue otherwise (R2);
 // each node of another issue whose part_of names a node of the walk, a child's criterion under a
-// comment of the issue among them; each check and plan node of an issue under the issue whose
-// serves names one of the issue's requirements, with the results under each such check, reached
-// through serves (R3, R23), which the spec and the decisions views carry none of; and in the plan
-// view every plan node of the whole tree's ordered read (refs.PlanOrder). Each is read-only,
-// marked with its issue. The children of the walk's nodes are the rows the walk read them in
-// (docs' IssueTree.Children), taken in the walk's order and each parent's in the order read.
+// comment of the issue among them, or a document the skeleton does not open or a block of one
+// (docs' IssueTree.Hidden); each check and plan node of an issue under the issue whose serves
+// names one of the issue's requirements, with the results under each such check, reached through
+// serves (R3, R23), which the spec and the decisions views carry none of; and in the plan view
+// every plan node of the whole tree's ordered read (refs.PlanOrder). Each is read-only, marked
+// with its issue. The children of the walk's nodes are the rows the walk read them in (docs'
+// IssueTree.Children), taken in the walk's order and each parent's in the order read.
 func (b *issueTreeBuilder) readOthers() error {
 	rows, err := b.q.Query(b.ctx, `select key from issues where parent_key = $1 order by key`, b.key)
 	if err != nil {
@@ -343,7 +489,7 @@ func (b *issueTreeBuilder) readOthers() error {
 			b.add(refs.Target{Kind: graphstore.KindIssue, ID: child}, b.root(), child, treeRoleTree)
 		}
 	}
-	for _, parent := range b.walked {
+	for _, parent := range slices.Concat(b.walked, b.tree.Hidden) {
 		for _, child := range b.tree.Children[parent] {
 			if _, walked := b.entries[child.Node]; walked && b.entries[child.Node].walk >= 0 {
 				continue
@@ -533,22 +679,35 @@ func (b *issueTreeBuilder) candidates() []refs.Target {
 // answers it for the reader (refs.ExcerptedNodes), which is the one test of whether the reader may
 // see it, for each target it has not read yet (read). A node of the walk whose row the walk read
 // (docs' TreeNode.Row) takes its row from there, and every other node's is read
-// (refs.TreeNodeRows): the issue's own, its conversation's, the others' and the context's.
+// (refs.TreeNodeRows): the issue's own, its conversation's, the others' and the context's. A node
+// of the walk's conversation takes what its loader answered from the walk (docs' IssueTree's
+// Conversation): the walk loaded it as the empty actor, who sees only what every reader sees, and
+// a loader's answer differs by reader only in which nodes it leaves out, so the reader's loader
+// answers it the same. A head read takes each of these from the node's head row where the issue's
+// rows hold one (refs.HeadRow): its facts, its row, and for a document block what the block loader
+// answers of it for the reader and its document_blocks row; any other kind is still read through
+// its loader.
 func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	if b.facts == nil {
-		b.facts, b.loaded, b.rows, b.blocks = map[refs.Target]refs.TreeFacts{}, map[refs.Target]refs.ExcerptedNode{}, map[refs.Target]refs.TreeNodeRow{}, map[string]refs.BlockRow{}
-		b.read = map[refs.Target]bool{}
+		size := len(targets)
+		b.facts, b.loaded, b.rows, b.blocks = make(map[refs.Target]refs.TreeFacts, size), make(map[refs.Target]refs.ExcerptedNode, size), make(map[refs.Target]refs.TreeNodeRow, size), make(map[string]refs.BlockRow, size)
+		b.read = make(map[refs.Target]bool, size)
 	}
-	var unread []refs.Target
+	var unread, fromStore []refs.Target
 	for _, target := range targets {
-		if !b.read[target] {
-			unread = append(unread, target)
+		if b.read[target] {
+			continue
+		}
+		b.read[target] = true
+		unread = append(unread, target)
+		if _, held := b.headRow(target); !held {
+			fromStore = append(fromStore, target)
 		}
 	}
 	if len(unread) == 0 {
 		return nil
 	}
-	facts, err := refs.TreeFactsOf(b.ctx, b.q, unread, b.cut)
+	facts, err := refs.TreeFactsOf(b.ctx, b.q, fromStore, b.cut)
 	if err != nil {
 		return err
 	}
@@ -557,10 +716,13 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	}
 	var unrowed []refs.Target
 	for _, target := range unread {
-		b.read[target] = true
 		if entry, held := b.entries[target]; held && entry.walk >= 0 && b.tree.Nodes[entry.walk].Row {
 			node := b.tree.Nodes[entry.walk]
 			b.rows[target] = refs.TreeNodeRow{Supertag: node.Supertag, MadeAt: node.MadeAt}
+			continue
+		}
+		if head, held := b.headRow(target); held {
+			b.rows[target] = head.Row()
 			continue
 		}
 		unrowed = append(unrowed, target)
@@ -578,10 +740,32 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	loaderTargets := make([]refs.Target, 0, len(unread))
 	var blocks []string
 	for _, target := range unread {
-		if target.Kind == refs.BlockNodeKind {
+		kind := loaderKind(target)
+		if head, held := b.headRow(target); held {
+			if head.Facts.Values != nil || head.Facts.Relations != nil {
+				b.facts[target] = head.Facts
+			}
+			if kind == refs.BlockNodeKind {
+				node, seen, documented, err := head.BlockNode()
+				if err != nil {
+					return err
+				}
+				if documented {
+					b.blocks[target.ID] = *head.Block
+				}
+				if seen && documented {
+					b.loaded[target] = node
+				}
+				continue
+			}
+		} else if target.Kind == refs.BlockNodeKind {
 			blocks = append(blocks, target.ID)
 		}
-		if kind := loaderKind(target); kind != refs.BlockNodeKind && refs.ResolvesNodeKind(kind) {
+		if node, conversed := b.tree.Conversation[target]; conversed {
+			b.loaded[target] = node
+			continue
+		}
+		if kind != refs.BlockNodeKind && refs.ResolvesNodeKind(kind) {
 			loaderTargets = append(loaderTargets, refs.Target{Kind: kind, ID: target.ID})
 		}
 	}
@@ -594,6 +778,9 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 		return fmt.Errorf("read the blocks of the tree of %s: %w", b.key, err)
 	}
 	for _, target := range unread {
+		if _, held := b.headRow(target); held && loaderKind(target) == refs.BlockNodeKind {
+			continue
+		}
 		node, held := loaded[refs.Target{Kind: loaderKind(target), ID: target.ID}]
 		if loaderKind(target) == refs.BlockNodeKind {
 			node, held = blockNodes[target.ID]
@@ -606,6 +793,16 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	return nil
 }
 
+// headRow is target's head row where the read is a head read of a marked issue whose rows hold
+// one (refs.HeadRows), and false otherwise.
+func (b *issueTreeBuilder) headRow(target refs.Target) (*refs.HeadRow, bool) {
+	if b.heads == nil {
+		return nil, false
+	}
+	head, held := b.heads.Rows[target]
+	return head, held
+}
+
 // loaderKind is the kind the registry resolves the node target names by: a finding of a lens,
 // which the store keys as a block, is a lens_block (graphstore.AddressKind).
 func loaderKind(target refs.Target) string {
@@ -613,8 +810,9 @@ func loaderKind(target refs.Target) string {
 }
 
 // placeOthers gives each node the walk does not take what its facts and its row say: a child
-// issue its placement, where its current part_of names a node of the walk, and every such node its
-// type, its rank and when it was made, where nothing read so far gave them.
+// issue its placement, where its current part_of names a node of the walk or a block of a
+// document the skeleton does not open (hiddenBlock), and every such node its type, its rank and
+// when it was made, where nothing read so far gave them.
 func (b *issueTreeBuilder) placeOthers() error {
 	for _, target := range b.extras {
 		entry := b.entries[target]
@@ -624,7 +822,7 @@ func (b *issueTreeBuilder) placeOthers() error {
 				if relation.Kind != graphstore.TuplePartOf {
 					continue
 				}
-				if parent, walked := b.entries[relation.To]; walked && parent.walk >= 0 {
+				if parent, walked := b.entries[relation.To]; walked && parent.walk >= 0 || b.hiddenBlock(relation.To) {
 					entry.parent = relation.To
 				}
 			}
@@ -665,9 +863,10 @@ func (b *issueTreeBuilder) visible(target refs.Target) bool {
 }
 
 // excluded reports whether the node is one no query of the tree returns (R2, R16): a document,
-// the issue's tree among them, and a document version, which no view draws; and a block of a role
+// the issue's tree among them, and a document version, which no view draws; a block of a role
 // document - the spec, the Verification document, the plan - that is no typed block, its prose,
-// which stays a node of the issue that its document's versions render.
+// which stays a node of the issue that its document's versions render; and in the skeleton of the
+// read with no view, a block of one of the issue's other documents (R8).
 func (b *issueTreeBuilder) excluded(target refs.Target) bool {
 	switch target.Kind {
 	case graphstore.KindArtifact, graphstore.KindVersion:
@@ -680,25 +879,40 @@ func (b *issueTreeBuilder) excluded(target refs.Target) bool {
 		switch row.Band {
 		case refs.RankBandSpec, refs.RankBandVerification, refs.RankBandPlan:
 			return !pmdoc.IsTypedBlock(b.entries[target].typ)
+		case refs.RankBandOther:
+			return b.skeleton != nil && treeIssueOf(target) == b.key
 		}
 	}
 	return false
 }
 
+// hiddenBlock is whether target is a block of a document of the issue that the skeleton of the
+// read with no view does not open, by its address: a block of one of the issue's documents, whose
+// ref_key and `#` begin its address (refs.BlockAddress), other than those the skeleton holds the
+// blocks of (docs.Skeleton's Documents). The read takes no such block, and a node that stands
+// under one stands under the issue (keep), as under any node it leaves out (R8).
+func (b *issueTreeBuilder) hiddenBlock(target refs.Target) bool {
+	document, _, cut := strings.Cut(target.ID, "#")
+	return b.skeleton != nil && cut && target.Kind == refs.BlockNodeKind && strings.HasPrefix(document, b.key+"/") &&
+		!b.skeleton.Documents[document]
+}
+
 // keep decides which candidates the answer holds - each the reader may see and that no query of
 // the tree leaves out - and under which node each stands: its parent where the answer holds it,
-// else the nearest node above it the answer holds, the issue at worst, or for a node whose parent
-// is a node of an issue above, that node. The read answers nothing of a node it leaves out, so the
-// answer is the one it would be if that node did not exist.
+// else the nearest node above it the answer holds, the issue at worst - the issue too for a node
+// under a block of a document the skeleton does not open (hiddenBlock) - or for a node whose
+// parent is a node of an issue above, that node. The read answers nothing of a node it leaves
+// out, so the answer is the one it would be if that node did not exist. A comments_before read
+// then keeps the comments of its page and the nodes under them alone (keepCommentsAlone).
 func (b *issueTreeBuilder) keep() {
-	b.kept = map[refs.Target]bool{}
+	b.kept = make(map[refs.Target]bool, len(b.entries))
 	for target, entry := range b.entries {
 		if entry.role == treeRoleContext {
 			continue
 		}
 		b.kept[target] = target == b.root() || b.visible(target) && !b.excluded(target)
 	}
-	b.effective = map[refs.Target]refs.Target{}
+	b.effective = make(map[refs.Target]refs.Target, len(b.entries))
 	for target, kept := range b.kept {
 		if !kept || target == b.root() {
 			continue
@@ -710,6 +924,9 @@ func (b *issueTreeBuilder) keep() {
 			}
 			above, held := b.entries[parent]
 			if !held {
+				if b.hiddenBlock(parent) {
+					parent = b.root()
+				}
 				break
 			}
 			if above.parent == (refs.Target{}) {
@@ -723,6 +940,33 @@ func (b *issueTreeBuilder) keep() {
 		}
 		b.effective[target] = parent
 	}
+	if b.before != nil {
+		b.keepCommentsAlone()
+	}
+}
+
+// keepCommentsAlone leaves out of a comments_before read every node but the comments of its page
+// (the walk's, docs.WalkIssueSkeleton) and the nodes under them, the issue's own node among those
+// it leaves out (R8). Each node it keeps stands under the node keep found for it, so a comment whose
+// parent it leaves out names that parent (node) and stands at the top of the answer (ordered).
+func (b *issueTreeBuilder) keepCommentsAlone() {
+	for target, kept := range b.kept {
+		if !kept {
+			continue
+		}
+		at := target
+		for steps := 0; at.Kind != graphstore.KindComment && steps <= len(b.entries); steps++ {
+			entry, held := b.entries[at]
+			if !held || at == b.root() {
+				at = refs.Target{}
+				break
+			}
+			at = entry.parent
+		}
+		if at.Kind != graphstore.KindComment {
+			b.kept[target] = false
+		}
+	}
 }
 
 // readContext adds the context nodes the answer carries, and reads what they state and whether the
@@ -734,6 +978,9 @@ func (b *issueTreeBuilder) keep() {
 // (readTies). It reads, once, what the view's query takes and the requirements the verification
 // view carries, which inView answers the view's nodes by.
 func (b *issueTreeBuilder) readContext() error {
+	if b.before != nil {
+		return nil
+	}
 	var wanted []refs.Target
 	for _, target := range b.candidates() {
 		if !b.kept[target] {
@@ -952,20 +1199,23 @@ const servesTupleKind = "serves"
 // requirementBlockType is the typed block a requirement is.
 const requirementBlockType = "requirement"
 
-// readMembers reads, for every node the answer holds, what its own members need from the rows
+// readMembers reads, for every node of the page (window), what its own members need from the rows
 // that hold them: each issue's own members, the texts of the items and their blocks, the asks'
 // questions, states and wording, the results' rows and retractions, and the decisions'
-// members through their one builder (decisionread.Decisions); and, in the batch of the texts, the
-// documents of the issue that owe their block index (queueOwedDocuments).
+// members through their one builder (decisionread.Decisions); the texts, too, of each parent a
+// node of the page stands under that the answer holds, whose first line the node names
+// (parentOf), and what the store and the loaders answer of each such parent the answer does not
+// hold; and, in the batch of the texts, the documents of the issue that owe their block index
+// (queueOwedDocuments). A node of the answer off the page reads none of these, since no member of
+// a node off the page reaches the page.
 func (b *issueTreeBuilder) readMembers() error {
-	answer := b.answered()
 	b.issues = map[string]*model.IssueTreeIssue{}
 	root, err := readIssueTreeIssue(b.ctx, b.q, b.key, &b.tree.ViewOf)
 	if err != nil {
 		return err
 	}
 	b.issues[b.key] = root
-	for _, target := range answer {
+	for _, target := range b.page {
 		if target.Kind != graphstore.KindIssue || target.ID == b.key {
 			continue
 		}
@@ -977,13 +1227,39 @@ func (b *issueTreeBuilder) readMembers() error {
 	}
 	// A parent the answer does not hold - a node of an issue above that a node of the walk's
 	// second part stands under, a node of an issue under the one read whose node the answer does
-	// not hold - is named by what the store and the registry's loader answer of it.
+	// not hold, a parent the skeleton's walk names for a comment (docs' IssueTree.Named) - is named
+	// by what the store and the registry's loader answer of it, and the last also by its own texts;
+	// a parent the answer holds by its own texts, read beside the page's, and so is each node of the
+	// read's tree a comments_before read leaves out that a comment of its page stands under.
 	var outside []refs.Target
-	for _, target := range answer {
-		if parent, standing := b.effective[target]; standing && parent != (refs.Target{}) {
-			if _, held := b.entries[parent]; !held && !slices.Contains(outside, parent) {
+	named := slices.Clone(b.page)
+	isNamed := make(map[refs.Target]bool, len(b.page))
+	for _, target := range b.page {
+		isNamed[target] = true
+	}
+	for _, target := range b.page {
+		parent, standing := b.effective[target]
+		if !standing || parent == (refs.Target{}) {
+			continue
+		}
+		if skeleton, held := b.tree.Named[target]; held && !b.inAnswer[skeleton] {
+			if !slices.Contains(outside, skeleton) {
+				outside = append(outside, skeleton)
+			}
+			if !isNamed[skeleton] {
+				isNamed[skeleton] = true
+				named = append(named, skeleton)
+			}
+		}
+		if _, held := b.entries[parent]; !held {
+			if !slices.Contains(outside, parent) {
 				outside = append(outside, parent)
 			}
+			continue
+		}
+		if (b.inAnswer[parent] || b.before != nil) && !isNamed[parent] {
+			isNamed[parent] = true
+			named = append(named, parent)
 		}
 	}
 	if err := b.readFacts(outside); err != nil {
@@ -994,7 +1270,7 @@ func (b *issueTreeBuilder) readMembers() error {
 	b.results = map[string]treeResult{}
 	var comments, messages, asks, results []string
 	var itemBlocks []refs.Target
-	for _, target := range answer {
+	for _, target := range named {
 		switch target.Kind {
 		case graphstore.KindComment:
 			comments = append(comments, target.ID)
@@ -1087,7 +1363,7 @@ func (b *issueTreeBuilder) readMembers() error {
 			b.texts[target] = text
 		}
 	}
-	return b.readDecisions(answer)
+	return b.readDecisions(b.page)
 }
 
 // readDecisions reads, through the one builder of a decision's members (decisionread.Decisions),
@@ -1254,9 +1530,9 @@ func (b *issueTreeBuilder) compareSiblings(left, right refs.Target) int {
 	case 0:
 		return l.walk - r.walk
 	case 1:
-		return cmp.Or(strings.Compare(l.rank, r.rank), strings.Compare(left.Kind+":"+left.ID, right.Kind+":"+right.ID))
+		return cmp.Or(strings.Compare(l.rank, r.rank), refs.CompareAddresses(left, right))
 	}
-	return cmp.Or(l.madeAt.Compare(r.madeAt), strings.Compare(left.Kind+":"+left.ID, right.Kind+":"+right.ID))
+	return cmp.Or(l.madeAt.Compare(r.madeAt), refs.CompareAddresses(left, right))
 }
 
 // ordered is the answer's nodes but the context in the tree's order: the issue's node, each node
@@ -1264,9 +1540,11 @@ func (b *issueTreeBuilder) compareSiblings(left, right refs.Target) int {
 // to it from under a node the answer leaves out, by its rank and then its id; then each node whose
 // parent is a node the answer does not hold - the walk's second part, under a node of an issue
 // above, and a node reached through serves whose issue's node the answer does not hold - each with
-// its subtree, in the walk's order and then the order the others were read in. A view keeps the
-// nodes it answers in that order, and the plan view orders them by their positions in the one
-// order of the whole tree.
+// its subtree, in the walk's order and then the order the others were read in. A comments_before
+// read holds no issue's node, and stands each comment whose parent it does not hold at the top, by
+// when each was made and then by its address, each with its subtree. A view keeps the nodes it
+// answers in that order, and the plan view orders them by their positions in the one order of the
+// whole tree.
 func (b *issueTreeBuilder) ordered() []refs.Target {
 	direct := map[refs.Target][]refs.Target{}
 	lifted := map[refs.Target][]refs.Target{}
@@ -1277,7 +1555,7 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 		}
 		parent := b.effective[target]
 		switch {
-		case parent != b.root() && !b.kept[parent]:
+		case !b.kept[parent]:
 			outside = append(outside, target)
 		case parent == b.entries[target].parent:
 			direct[parent] = append(direct[parent], target)
@@ -1303,7 +1581,7 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 				}
 				return 1
 			}
-			return cmp.Or(strings.Compare(l.rank, r.rank), strings.Compare(left.Kind+":"+left.ID, right.Kind+":"+right.ID))
+			return cmp.Or(strings.Compare(l.rank, r.rank), refs.CompareAddresses(left, right))
 		})
 	}
 	var order []refs.Target
@@ -1322,7 +1600,13 @@ func (b *issueTreeBuilder) ordered() []refs.Target {
 			take(child)
 		}
 	}
-	take(b.root())
+	if b.kept[b.root()] {
+		take(b.root())
+	} else {
+		slices.SortStableFunc(outside, func(left, right refs.Target) int {
+			return cmp.Or(b.entries[left].madeAt.Compare(b.entries[right].madeAt), refs.CompareAddresses(left, right))
+		})
+	}
 	for _, target := range outside {
 		take(target)
 	}
@@ -1376,14 +1660,16 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 	return context
 }
 
-// documentPositions reads, for each typed block of a role document the answer holds, its position
-// in its document as GET /api/v1/issues/{key}/artifacts/{slug}/blocks lists it, from that read's
-// own call on each document once (docs.Service.Blocks). It runs after the read's transaction has
-// closed, since a document's blocks are its live room's.
+// documentPositions reads, for each typed block of a role document the page holds (window), its
+// position in its document as GET /api/v1/issues/{key}/artifacts/{slug}/blocks lists it, from that
+// read's own call on each document once (docs.Service.Blocks), and keeps how many blocks each such
+// document lists (counted), which countDocuments reads no second time. It runs after the read's
+// transaction has closed, since a document's blocks are its live room's.
 func (b *issueTreeBuilder) documentPositions(s *server) error {
 	b.positions = map[refs.Target]int{}
+	b.counted = map[string]int{}
 	listed := map[string]map[string]int{}
-	for _, target := range b.answered() {
+	for _, target := range b.page {
 		row, documented := b.roleBlock(target)
 		if !documented {
 			continue
@@ -1401,6 +1687,7 @@ func (b *issueTreeBuilder) documentPositions(s *server) error {
 				}
 			}
 			listed[row.Document] = positions
+			b.counted[row.Document] = len(blocks)
 		}
 		if position, held := positions[row.BlockID]; held {
 			b.positions[target] = position
@@ -1426,10 +1713,10 @@ func (b *issueTreeBuilder) roleBlock(target refs.Target) (refs.BlockRow, bool) {
 	return refs.BlockRow{}, false
 }
 
-// answer is the read's answer from cursor on: the page of the tree's order that starts there, the
-// context on the last page, and the tuples whose near end the page holds and whose far end the
-// whole answer does.
-func (b *issueTreeBuilder) answer(cursor string, version int, trees *displayTreeReader) (model.IssueTreeRead, error) {
+// window cuts the page of the answer that starts at cursor (page, next) out of the whole answer's
+// order, and holds every node of that answer (inAnswer). A cursor that names no node of the order
+// is 400 INVALID_QUERY.
+func (b *issueTreeBuilder) window(cursor string) error {
 	order := b.answered()
 	context := order[len(b.order):]
 	walk := order[:len(b.order)]
@@ -1439,11 +1726,26 @@ func (b *issueTreeBuilder) answer(cursor string, version int, trees *displayTree
 		kind, id, named := strings.Cut(string(address), ":")
 		start = slices.Index(walk, refs.Target{Kind: kind, ID: id})
 		if err != nil || !named || start < 0 {
-			return model.IssueTreeRead{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor names no node of the tree of %s: read the first page again", b.key)
+			return errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor names no node of the tree of %s: read the first page again", b.key)
 		}
 	}
 	end := min(start+issueTreePageSize, len(walk))
-	page := slices.Clone(walk[start:end])
+	b.page = slices.Clone(walk[start:end])
+	if end < len(walk) {
+		b.next = &walk[end]
+	} else {
+		b.page = append(b.page, context...)
+	}
+	b.inAnswer = make(map[refs.Target]bool, len(order))
+	for _, target := range order {
+		b.inAnswer[target] = true
+	}
+	return nil
+}
+
+// answer is the read's answer: the page window cut, the context on the last page, and the tuples
+// whose near end the page holds and whose far end the whole answer does.
+func (b *issueTreeBuilder) answer(version int, trees *displayTreeReader) model.IssueTreeRead {
 	issue := b.issues[b.key]
 	read := model.IssueTreeRead{
 		Issue: b.key, View: b.view, Converted: issue.Converted, Tree: issue.Tree, ViewOf: issue.ViewOf, Documents: issue.Documents,
@@ -1452,21 +1754,23 @@ func (b *issueTreeBuilder) answer(cursor string, version int, trees *displayTree
 	if version > 0 {
 		read.Version = &version
 	}
-	if end < len(walk) {
-		next := base64.RawURLEncoding.EncodeToString([]byte(walk[end].Kind + ":" + walk[end].ID))
+	if b.next != nil {
+		next := base64.RawURLEncoding.EncodeToString([]byte(b.next.Kind + ":" + b.next.ID))
 		read.Cursor = &next
-	} else {
-		page = append(page, context...)
 	}
-	all := map[refs.Target]bool{}
-	for _, target := range order {
-		all[target] = true
+	if b.skeleton != nil {
+		read.DocumentNodes = b.listed
+		read.CommentsBefore = json.RawMessage("null")
+		if position := b.skeleton.Comments.Next; position != nil {
+			// A position is digits, letters and `-:.,`, which JSON quotes as Go does.
+			read.CommentsBefore = strconv.AppendQuote(nil, position.String())
+		}
 	}
-	read.Nodes = make([]model.IssueTreeNode, len(page))
-	for index, target := range page {
+	read.Nodes = make([]model.IssueTreeNode, len(b.page))
+	for index, target := range b.page {
 		read.Nodes[index] = b.node(target)
 		for _, relation := range b.facts[target].Relations {
-			if all[relation.To] {
+			if b.inAnswer[relation.To] {
 				read.Tuples = append(read.Tuples, model.IssueTreeTuple{
 					Kind: relation.Kind,
 					From: model.IssueTreeEnd{Kind: target.Kind, ID: target.ID},
@@ -1483,7 +1787,27 @@ func (b *issueTreeBuilder) answer(cursor string, version int, trees *displayTree
 		}
 		trees.text(&node.TextTree, node.Text)
 	}
-	return read, nil
+	return read
+}
+
+// countDocuments counts, for each document the read with no view lists in document_nodes
+// (listed), the blocks GET /api/v1/artifacts/{id}/blocks lists for it, read as that read reads
+// them, off the document's live room (docs' BlockCount), or kept where documentPositions read
+// them (counted). It runs after the read's transaction has closed, as documentPositions does.
+func (b *issueTreeBuilder) countDocuments(s *server) error {
+	for index := range b.listed {
+		document := &b.listed[index]
+		if count, held := b.counted[document.ArtifactID]; held {
+			document.BlockCount = count
+			continue
+		}
+		count, err := s.deps.Docs.BlockCount(b.ctx, document.ArtifactID)
+		if err != nil {
+			return fmt.Errorf("count the blocks of document %s of %s: %w", document.ArtifactID, b.key, err)
+		}
+		document.BlockCount = count
+	}
+	return nil
 }
 
 // node is target as the answer carries it (model.IssueTreeNode).
@@ -1493,7 +1817,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 	loaded := b.loaded[target]
 	node := model.IssueTreeNode{
 		Kind: target.Kind, ID: target.ID, Supertag: entry.typ, Issue: entry.issue, ReadOnly: entry.issue != "",
-		Role: cmp.Or(entry.role, treeRoleTree), Author: []model.Actor{}, Attributes: map[string]string{},
+		Role: cmp.Or(entry.role, treeRoleTree), Author: []model.Actor{}, Attributes: make(map[string]string, len(held.Values)),
 		State: graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	if entry.ranked {
@@ -1524,6 +1848,9 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 	}
 	node.Text = b.text(target)
 	if parent, standing := b.effective[target]; standing && target != b.root() {
+		if skeleton, held := b.tree.Named[target]; held && !b.inAnswer[skeleton] && b.visible(skeleton) {
+			parent = skeleton
+		}
 		node.Parent = b.parentOf(parent)
 	}
 	if b.noConversation(target) {
@@ -1634,7 +1961,9 @@ func treeFirstLine(text string) string {
 // noConversation reports whether target is a node of the issue read that no conversation node -
 // an ask, a comment or a message, or a block of one - stands above in the walk. A conversation
 // node itself, a node of another issue, a node of the walk's second part, the issue's own node and
-// a context node carry no such mark.
+// a context node carry no such mark. A block of a document the skeleton does not open
+// (hiddenBlock) stands under its document, under the issue, so no conversation node stands above
+// a node under one.
 func (b *issueTreeBuilder) noConversation(target refs.Target) bool {
 	entry := b.entries[target]
 	if entry.walk < 0 || entry.above || target == b.root() || isConversationKind(target.Kind) {
@@ -1650,7 +1979,7 @@ func (b *issueTreeBuilder) noConversation(target refs.Target) bool {
 		}
 		above, held := b.entries[at]
 		if !held {
-			return false
+			return b.hiddenBlock(at)
 		}
 		at = above.parent
 	}

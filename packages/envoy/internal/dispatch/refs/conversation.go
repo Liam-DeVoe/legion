@@ -1,9 +1,12 @@
 package refs
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -105,19 +108,45 @@ func IsConversationNode(ctx context.Context, q Queryer, kind, id string, at time
 // in the order they were written (created_at, then kind and id), each followed by its current
 // blocks in their order, every node loaded as nodeRegistry's loaders load it (loadAskNodes,
 // loadCommentNodes, loadMessageNodes and the item block loaders), with the parent its loader
-// names. A node who may not see is left out, as every loader leaves it out, and so are the blocks
-// of an item left out.
-func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time) ([]model.GraphNode, error) {
-	rows, err := q.Query(ctx, `
+// names and the excerpt an edge at it shows, as ExcerptedNodes answers each. A node who may not
+// see is left out, as every loader leaves it out, and so are the blocks of an item left out.
+func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time) ([]ExcerptedNode, error) {
+	return conversationNodes(ctx, q, who, issueKey, at, nil)
+}
+
+// ConversationPageNodes is ConversationNodes with the comments of page alone, which R2's test
+// passed as page was read (ReadCommentPage): the asks and the messages of the issue, and those
+// comments.
+func ConversationPageNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage) ([]ExcerptedNode, error) {
+	return conversationNodes(ctx, q, who, issueKey, at, &page)
+}
+
+// conversationItemsStatement lists an issue's items, comments the expression comments selects.
+func conversationItemsStatement(comments string) string {
+	return `
 		select kind, id from (
 			select 'ask' as kind, id::text as id, created_at from asks where issue_key = $1 and created_at <= $2
 			union all
-			select 'comment', id::text, created_at from comments where issue_key = $1 and created_at <= $2
+			select 'comment', id::text, created_at from comments where ` + comments + ` and issue_key = $1 and created_at <= $2
 			union all
 			select 'message', id::text, created_at from messages where issue_key = $1 and created_at <= $2
 		) items
 		order by created_at, kind, id
-	`, issueKey, at)
+	`
+}
+
+var (
+	conversationItems     = conversationItemsStatement("true")
+	conversationPageItems = conversationItemsStatement("id = any($3::uuid[])")
+)
+
+// conversationNodes is ConversationNodes, its comments those of page where it is set.
+func conversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page *CommentPage) ([]ExcerptedNode, error) {
+	statement, args := conversationItems, []any{issueKey, at}
+	if page != nil {
+		statement, args = conversationPageItems, append(args, page.IDs)
+	}
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list the items of %s: %w", issueKey, err)
 	}
@@ -139,13 +168,20 @@ func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 
 	passing := map[ItemKind]map[string]bool{}
 	for kind, of := range ids {
+		if page != nil && kind == ItemComment {
+			passing[kind] = make(map[string]bool, len(of))
+			for _, id := range of {
+				passing[kind][id] = true
+			}
+			continue
+		}
 		if passing[kind], err = conversationItemIDs(ctx, q, kind, of, at); err != nil {
 			return nil, err
 		}
 	}
 	kept := slices.DeleteFunc(written, func(item edgeRow) bool { return !passing[ItemKind(item.otherKind)][item.otherID] })
 	if len(kept) == 0 {
-		return []model.GraphNode{}, nil
+		return []ExcerptedNode{}, nil
 	}
 	blocks, err := conversationBlocks(ctx, q, kept)
 	if err != nil {
@@ -159,16 +195,16 @@ func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey
 	if err != nil {
 		return nil, err
 	}
-	nodes := make([]model.GraphNode, 0, len(loading))
+	nodes := make([]ExcerptedNode, 0, len(loading))
 	for _, item := range kept {
 		node, found := resolved[[2]string{item.otherKind, item.otherID}]
 		if !found {
 			continue
 		}
-		nodes = append(nodes, node.GraphNode)
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
-				nodes = append(nodes, node.GraphNode)
+				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
 			}
 		}
 	}
@@ -262,10 +298,19 @@ func conversationItemIDs(ctx context.Context, q Queryer, kind ItemKind, ids []st
 // thread is the top of its reply_to chain - the ask its chain reaches, else its head - and a
 // person wrote in that thread by $2 when one of its comments written by then is a person's, or,
 // for an ask's thread, the ask is a person's or a person had answered it by then.
-var commentConversationStatement = `
+var commentConversationStatement = commentConversationSQL(`c.id = any($1::uuid[])`, `t.subject::text`)
+
+// commentPageStatement is R2's test over every comment of the issue $1, as
+// commentConversationStatement holds it: each comment that passes, with when it was written.
+var commentPageStatement = commentConversationSQL(`c.issue_key = $1`, `t.subject::text, c.created_at`)
+
+// commentConversationSQL is R2's test over the comments the condition subjects selects, which
+// answers columns of each comment that passes.
+func commentConversationSQL(subjects, columns string) string {
+	return `
 	with recursive up as (
 		select c.id as subject, c.id, c.reply_to, c.ask_id, 0 as depth
-		from comments c where c.id = any($1::uuid[]) and c.created_at <= $2
+		from comments c where ` + subjects + ` and c.created_at <= $2
 		union all
 		select up.subject, p.id, p.reply_to, p.ask_id, up.depth + 1
 		from up join comments p on p.id = up.reply_to
@@ -297,9 +342,114 @@ var commentConversationStatement = `
 		where (` + personAuthor("a.author") + ` and a.created_at <= $2)
 		   or (a.answer->>'user' is not null and (a.answer->>'at')::timestamptz <= $2)
 	)
-	select t.subject::text
+	select ` + columns + `
 	from top t join comments c on c.id = t.subject
 	where ` + personAuthor("c.author") + ` or coalesce(t.ask_id, t.head) in (select thread from voiced)`
+}
+
+// CommentPosition is a place in the order of an issue's comments, newest first: a comment's
+// made_at and id, which the read with no view answers as `comments_before` and reads back from it
+// (String, ParseCommentPosition). The comments older than it are those written before MadeAt, and
+// those written at MadeAt whose id is lower.
+type CommentPosition struct {
+	MadeAt time.Time
+	ID     string
+}
+
+// commentPositionLayout is a position's made_at: RFC 3339, in UTC, with microseconds, the
+// precision Postgres keeps.
+const commentPositionLayout = "2006-01-02T15:04:05.000000Z"
+
+// CommentPositionShape is how a position is written, for the refusal of one written otherwise.
+const CommentPositionShape = "<made_at>,<id>"
+
+// String is the position written `<made_at>,<id>`.
+func (position CommentPosition) String() string {
+	return position.MadeAt.UTC().Format(commentPositionLayout) + "," + position.ID
+}
+
+// ParseCommentPosition reads a position written as String writes it, and false for any other
+// text: a made_at of another form, or an id that is no canonical uuid.
+func ParseCommentPosition(written string) (CommentPosition, bool) {
+	madeAt, id, cut := strings.Cut(written, ",")
+	if !cut {
+		return CommentPosition{}, false
+	}
+	at, err := time.Parse(commentPositionLayout, madeAt)
+	if err != nil {
+		return CommentPosition{}, false
+	}
+	if canonical, held := canonicalUUID(id); !held || canonical != id {
+		return CommentPosition{}, false
+	}
+	return CommentPosition{MadeAt: at, ID: id}, true
+}
+
+// older is whether the comment written at madeAt with id stands after position, newest first.
+func (position CommentPosition) older(madeAt time.Time, id string) bool {
+	return madeAt.Before(position.MadeAt) || madeAt.Equal(position.MadeAt) && id < position.ID
+}
+
+// CommentPage is one page of an issue's conversation comments, newest first: the ids of its
+// comments; Next, the position of its oldest comment where older ones remain, nil where none does;
+// and Off, every other comment of the conversation, newer or older, by id.
+type CommentPage struct {
+	IDs  []string
+	Next *CommentPosition
+	Off  map[string]bool
+}
+
+// ErrCommentPositionPastEnd is a page asked for past a position that no older comment follows.
+var ErrCommentPositionPastEnd = errors.New("no comment of the issue is older than the position")
+
+// ReadCommentPage is the page of the issue issueKey's comments that R2's test passes at `at` (its
+// conversation), at most size of them, newest first by when each was written and then by id: the
+// newest where before is nil, else those older than before (CommentPosition), and
+// ErrCommentPositionPastEnd where none is.
+func ReadCommentPage(ctx context.Context, q Queryer, issueKey string, at time.Time, before *CommentPosition, size int) (CommentPage, error) {
+	rows, err := q.Query(ctx, commentPageStatement, issueKey, at, IssueDepthCap)
+	if err != nil {
+		return CommentPage{}, fmt.Errorf("read the comments of %s: %w", issueKey, err)
+	}
+	var comments []CommentPosition
+	page := CommentPage{Off: map[string]bool{}}
+	for rows.Next() {
+		var comment CommentPosition
+		if err := rows.Scan(&comment.ID, &comment.MadeAt); err != nil {
+			rows.Close()
+			return CommentPage{}, fmt.Errorf("scan a comment of %s: %w", issueKey, err)
+		}
+		if before == nil || before.older(comment.MadeAt, comment.ID) {
+			comments = append(comments, comment)
+		} else {
+			page.Off[comment.ID] = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return CommentPage{}, fmt.Errorf("read the comments of %s: %w", issueKey, err)
+	}
+	if before != nil && len(comments) == 0 {
+		return CommentPage{}, ErrCommentPositionPastEnd
+	}
+	slices.SortFunc(comments, func(left, right CommentPosition) int {
+		return cmp.Or(right.MadeAt.Compare(left.MadeAt), strings.Compare(right.ID, left.ID))
+	})
+	page.IDs = make([]string, 0, min(size, len(comments)))
+	for index, comment := range comments {
+		switch {
+		case index < size:
+			page.IDs = append(page.IDs, comment.ID)
+		case index == size:
+			oldest := comments[index-1]
+			page.Next = &oldest
+			fallthrough
+		default:
+			page.Off[comment.ID] = true
+		}
+	}
+	return page, nil
+}
 
 // messageConversationStatement is R2's test over the messages $1 names, at $2, its walks bounded
 // at $3 links: each message's thread is the root its in_reply_to chain climbs to (api's

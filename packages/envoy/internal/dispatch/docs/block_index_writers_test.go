@@ -762,6 +762,9 @@ var indexPasses = map[string]string{
 	// before the batch writes its rows.
 	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
 	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
+	// The head rows of the seed's asks and messages, the nodes writeItemNodes wrote for each batch.
+	"cmd/dispatch-seed/write_items.go#writeAsks":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeMessages": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
@@ -947,6 +950,11 @@ var indexPasses = map[string]string{
 	// sentinel beside them (refs.Replacement.ArtifactMentions). It reads no side of a projection to
 	// mend the other: both follow from the text.
 	"refs/rebuild.go#replaceInTx": "the source's text, read under the lock an edit of it takes, and the refs rows its reconcile moved",
+	// The head projection's own writer that writes no store row: the fill of an issue's rows
+	// (graphcensus.FillIssueHeads), which reads the store under the issue's owner lock and head fill
+	// lock and writes the rows the store gives, as every writer's head write does
+	// (graphstore.HeadRowsSQL).
+	"graphcensus/census_head.go#fillIssueHeads": "the store's nodes and tuples of the issue's tree, read under its owner lock and its head fill lock",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -964,6 +972,12 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // second list to keep: QueueSessionRecorded writes a session's node through arms of its own, and a
 // pass that wrote the store through it alone would otherwise be read as no writer at all.
 var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstoretest.WriteFunctions(), "|") + `)\b`)
+
+// headWriterCall matches one call of the head write (graphstore.QueueHeads, WriteHeads,
+// QueueHeadMark), which writes issue_head_nodes or issue_head_marks, the head projection of the
+// store: a pass that calls it is a writer of that projection, which this register names as it
+// names the writers of the store.
+var headWriterCall = regexp.MustCompile(`\bgraphstore\.(QueueHeads|WriteHeads|QueueHeadMark)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the
@@ -992,6 +1006,7 @@ func requireEveryPassReadsItsSource(t *testing.T) {
 		}
 		text := goLineComment.ReplaceAllString(string(body), "")
 		writes := append(projectedWrite.FindAllStringIndex(text, -1), storeWriterCall.FindAllStringIndex(text, -1)...)
+		writes = append(writes, headWriterCall.FindAllStringIndex(text, -1)...)
 		for _, match := range writes {
 			key := passKey(file, enclosingFunction(text, match[0]))
 			sides := projectionSides(functionBody(text, match[0]))

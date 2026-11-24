@@ -1198,6 +1198,7 @@ func (s *server) storeArtifact(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, documentNode, blockCause)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(indexedBlocks), graphstore.HeldHeads(documentNode)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -1730,6 +1731,7 @@ func (s *server) commitArtifactVersionEvent(
 			refs.QueueStamp(b, "artifact", room)
 		}
 		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
 		return nil
 	}); err != nil {
 		return nil, err
@@ -2321,9 +2323,16 @@ func readsAsDocument(artifact model.Artifact) bool {
 // and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' and not ` + refs.DecisionsQuerySQL("artifacts") + `
+		from artifacts where issue_key = $1 and ` + issueArtifactsListed("artifacts") + `
 		order by created_at, id
 	`
+
+// issueArtifactsListed is whether the issue read lists the artifacts row aliased alias among its
+// issue's artifacts (issueArtifactsStatement): the tree read with no view lists the documents of
+// kind doc among them in its document_nodes by the same rule.
+func issueArtifactsListed(alias string) string {
+	return alias + `.retired_at is null and ` + alias + `.kind <> 'tree' and not ` + refs.DecisionsQuerySQL(alias)
+}
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
 	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)

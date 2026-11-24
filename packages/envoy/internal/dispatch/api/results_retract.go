@@ -349,6 +349,7 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		}
 		graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
 			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
+		graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: graphstore.KindResult, ID: retraction.ResultID}})
 		return nil
 	})
 }

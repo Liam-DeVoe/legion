@@ -385,6 +385,7 @@ func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor
 // (graphstore.LatestEvent): nothing is appended between the two.
 func stateRefreshedAnchoredIn(b *store.WriteBatch, tuple graphstore.Tuple) {
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{tuple})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{tuple}))
 }
 
 // loadAnchorRefreshedAsks reads each ask of ids as its refresh event carries it, by id, in one

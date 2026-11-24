@@ -91,6 +91,9 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{relation})); err != nil {
+		return Followed{}, err
+	}
 	return followed, nil
 }
 
@@ -317,6 +320,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
 	return held, nil
 }
 
@@ -383,8 +387,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{followedBy(askID, sessionID, true, who, since, event)}); err != nil {
+		relation := followedBy(askID, sessionID, true, who, since, event)
+		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{relation}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
+		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{relation})); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
@@ -401,8 +409,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{followedBy(askID, sessionID, false, who, at, event)}); err != nil {
+	retraction := followedBy(askID, sessionID, false, who, at, event)
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
+	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction})); err != nil {
+		return false, err
 	}
 	return true, nil
 }

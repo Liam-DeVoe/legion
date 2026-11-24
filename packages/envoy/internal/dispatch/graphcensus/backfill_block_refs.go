@@ -190,6 +190,9 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 		return 0, fmt.Errorf("append the tuples of a block reference batch: %w", err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, `
 		update block_refs r
 		set node_kind = $7, node_address = p.address

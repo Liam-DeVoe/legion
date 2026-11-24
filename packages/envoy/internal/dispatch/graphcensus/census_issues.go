@@ -167,6 +167,9 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			update issue_links l set node_kind = $3, node_address = l.issue_key
 			from unnest($1::text[], $2::text[]) as batch (issue_key, target_key)

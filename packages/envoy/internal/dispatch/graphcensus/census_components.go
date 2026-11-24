@@ -505,6 +505,9 @@ func writeIssueComponentMemberBatch(ctx context.Context, database *store.Store, 
 		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			update issue_component_members m set node_kind = $3, node_address = m.issue_key
 			from unnest($1::text[], $2::text[]) as batch (issue_key, component_id)

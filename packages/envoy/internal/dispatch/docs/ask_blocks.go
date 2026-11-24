@@ -302,6 +302,11 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 			return err
 		}
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		claimed := make([]graphstore.NodeKey, 0, len(claims))
+		for _, claim := range claims {
+			claimed = append(claimed, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
+		}
+		graphstore.QueueHeads(b, claimed)
 		return nil
 	}, nil
 }
@@ -401,6 +406,7 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 			tuples[index].SourceEvent = cause
 		}
 		graphstore.QueueWrite(b, nil, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
 		return nil
 	}, nil
 }

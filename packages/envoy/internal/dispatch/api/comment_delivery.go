@@ -1623,6 +1623,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			if err := graphstore.QueueAuthored(b, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 				return err
 			}
+			graphstore.QueueHeads(b, append(graphstore.HeldHeads(plan.stored.written), graphstore.NodeKey{Kind: graphstore.KindComment, ID: reply.ID}))
 		}
 		if plan.thread.AskID != nil {
 			if _, err := follow.Queue(b, event.ID); err != nil {
@@ -1698,5 +1699,6 @@ func queueAnsweredDelivery(
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,
 	}})
+	graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: answered.itemKind, ID: answered.itemID}})
 	return nil
 }

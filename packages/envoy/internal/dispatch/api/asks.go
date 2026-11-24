@@ -357,6 +357,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(askNode), graphstore.HeldHeads(followed)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -693,6 +694,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// still names ask.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)

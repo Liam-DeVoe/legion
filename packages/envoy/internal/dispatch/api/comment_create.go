@@ -1403,7 +1403,11 @@ func (s *server) queueCommentCreated(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
-		return graphstore.QueueAuthored(b, graphstore.KindComment, comment.ID, comment.Author, comment.CreatedAt, graphstore.LatestEvent)
+		if err := graphstore.QueueAuthored(b, graphstore.KindComment, comment.ID, comment.Author, comment.CreatedAt, graphstore.LatestEvent); err != nil {
+			return err
+		}
+		graphstore.QueueHeads(b, append(graphstore.HeldHeads(stored.written), graphstore.NodeKey{Kind: graphstore.KindComment, ID: comment.ID}))
+		return nil
 	}); err != nil {
 		return nil, err
 	}

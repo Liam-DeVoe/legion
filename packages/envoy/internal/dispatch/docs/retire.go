@@ -167,6 +167,9 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err := graphstore.Caused(ctx, tx, node, event.ID); err != nil {
 		return Retirement{}, fmt.Errorf("state the retired document's node gone: %w", err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(node)); err != nil {
+		return Retirement{}, err
+	}
 	if err := AnnounceDocumentRemoved(ctx, tx, artifactID); err != nil {
 		return Retirement{}, err
 	}

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -137,17 +138,25 @@ func (node TreeNode) target() refs.Target { return refs.Target{Kind: node.Kind, 
 // every row the walk's reads of the subtrees answered (refs.TreeSubtrees), keyed by the parent, in
 // the order those reads answer them: the children of each node the walk took, those it does not
 // enter - an issue's node, a node of another issue - among them, as refs.TreeChildren answers the
-// children of the walk's nodes at the walk's cut. A reader of the walk in the same transaction
-// takes these from here rather than reading them again.
+// children of the walk's nodes at the walk's cut; and each node of the conversation as its loader
+// answered it with its excerpt (refs.ConversationNodes), keyed as the walk keys the node. A reader
+// of the walk in the same transaction takes these from here rather than reading them again. A
+// skeleton walk (WalkIssueSkeleton) also names, for each comment it hangs under the issue because
+// it does not take the comment's parent, that parent (Named); and Hidden is each document it does
+// not enter, and each block of one, that a node it does not leave out stands under, whose rows are
+// in Children, in address order.
 type IssueTree struct {
-	Issue     string
-	Cut       refs.TreeCut
-	Nodes     []TreeNode
-	Memo      int
-	ViewOf    string
-	Ancestors []string
-	Children  map[refs.Target][]refs.TreeChild
-	index     map[refs.Target]int
+	Issue        string
+	Cut          refs.TreeCut
+	Nodes        []TreeNode
+	Memo         int
+	ViewOf       string
+	Ancestors    []string
+	Children     map[refs.Target][]refs.TreeChild
+	Conversation map[refs.Target]refs.ExcerptedNode
+	Named        map[refs.Target]refs.Target
+	Hidden       []refs.Target
+	index        map[refs.Target]int
 }
 
 // WalkIssueTree walks the tree of the issue issueKey at cut, the head's where cut is zero
@@ -188,10 +197,48 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		}
 		cut = head
 	}
+	return walkIssueTree(ctx, q, issueKey, cut, nil, nil)
+}
+
+// WalkIssueHead is WalkIssueTree at the head cut cut, its nodes' children, rows and anchors read
+// from the issue's rows of the head projection, heads (refs.HeadRows), rather than from the tuples:
+// the same two parts, in the same order. A node of the conversation no row holds - one a build that
+// keeps no head rows wrote - is read from the store as the walk reads it. The head read of the tree
+// (api's tree read with no version) walks so; the record of every query, and every read at a
+// version, walks the tuples.
+func WalkIssueHead(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree) (IssueTree, error) {
+	return walkIssueTree(ctx, q, issueKey, cut, heads, nil)
+}
+
+// Skeleton is what the walk of the skeleton of an issue's tree takes, which the tree read with no
+// view answers (R8): every node the walk takes but the blocks of the issue's documents other than
+// Documents, each the ref_key of a document of the issue whose blocks the skeleton holds, and but
+// the comments of the conversation other than those of the comment page, Comments. The walk takes
+// the node of every other document of the issue and enters nothing under it, so it reads no block
+// of it, and it reads the comments of the page alone (refs.ConversationPageNodes).
+type Skeleton struct {
+	Documents map[string]bool
+	Comments  refs.CommentPage
+}
+
+// WalkIssueSkeleton is the walk of the skeleton of the issue issueKey's tree at cut (Skeleton),
+// read from the head rows heads where they are given (WalkIssueHead) and from the tuples where
+// heads is nil. A comment it hangs under the issue because it does not take the comment's parent
+// - a comment of another page of the conversation, or the typed block of another document that
+// the comment's anchor lies in - names that parent in Named. The tree read with no view walks so.
+func WalkIssueSkeleton(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree, skeleton Skeleton) (IssueTree, error) {
+	return walkIssueTree(ctx, q, issueKey, cut, heads, &skeleton)
+}
+
+// walkIssueTree is the walk of the issue issueKey's tree at cut, read from heads where it is set
+// and from the tuples otherwise, the walk of its skeleton where skeleton is set.
+func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut, heads *refs.HeadTree, skeleton *Skeleton) (IssueTree, error) {
 	walk := treeWalk{
 		issue:    refs.Target{Kind: graphstore.KindIssue, ID: issueKey},
 		owner:    issueKey,
 		cut:      cut,
+		heads:    heads,
+		skeleton: skeleton,
 		nodes:    map[refs.Target]TreeNode{},
 		children: map[refs.Target][]refs.Target{},
 		under:    map[refs.Target][]refs.TreeChild{},
@@ -204,6 +251,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	if err := walk.readSubtrees(ctx, q, frontier, false); err != nil {
 		return IssueTree{}, err
 	}
+	lifted := walk.liftHidden()
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return IssueTree{}, fmt.Errorf("read the issues above %s: %w", issueKey, err)
@@ -227,7 +275,8 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		return IssueTree{}, err
 	}
 
-	tree := IssueTree{Issue: issueKey, Cut: cut, Memo: -1, Ancestors: ancestors, Children: walk.under, index: map[refs.Target]int{}}
+	tree := IssueTree{Issue: issueKey, Cut: cut, Memo: -1, Ancestors: ancestors, Children: walk.under, Conversation: walk.excerpts, Named: walk.named,
+		Hidden: walk.hidden, index: map[refs.Target]int{}}
 	// Whether the issue is a view is no fact of the tree: it is read from the issue's record as it
 	// stands (ViewOf), as every reader of it reads it, whatever the cut.
 	if tree.ViewOf, err = ViewOf(ctx, q, issueKey); err != nil {
@@ -238,7 +287,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	if first := walk.ordered(walk.issue); len(first) > 0 && walk.nodes[first[0]].Type == memoType {
 		tree.Memo = 1
 	}
-	for _, root := range roots {
+	for _, root := range slices.Concat(lifted, roots) {
 		walk.take(&tree, root)
 	}
 	return tree, nil
@@ -249,12 +298,19 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 // took, by its address; the part_of children of each node, ranked first, in the order the children
 // read answers them; every row its reads of the subtrees answered, by the parent (IssueTree's
 // Children); the conversation's items and their blocks, in the order the conversation read
-// answers them, the items alone, the blocks of each item, and the parent each item's loader names;
-// and the items that hang under each node.
+// answers them, the items alone, the blocks of each item, the parent each item's loader names and
+// each node as its loader answered it (IssueTree's Conversation); and the items that hang under
+// each node. heads is the issue's rows of the head projection a head walk reads in place of the
+// tuples (WalkIssueHead), nil for a walk of the tuples; skeleton is what a walk of the skeleton
+// takes (WalkIssueSkeleton), nil for the walk of the whole tree; named each parent such a walk
+// names for a comment it hangs under the issue (IssueTree's Named); and hidden each block it does
+// not enter whose children it read (IssueTree's Hidden).
 type treeWalk struct {
 	issue        refs.Target
 	owner        string
 	cut          refs.TreeCut
+	heads        *refs.HeadTree
+	skeleton     *Skeleton
 	nodes        map[refs.Target]TreeNode
 	children     map[refs.Target][]refs.Target
 	under        map[refs.Target][]refs.TreeChild
@@ -262,10 +318,150 @@ type treeWalk struct {
 	items        []refs.Target
 	blocks       map[refs.Target][]refs.Target
 	loaded       map[refs.Target]*model.NodeParent
+	excerpts     map[refs.Target]refs.ExcerptedNode
 	hanging      map[refs.Target][]refs.Target
+	named        map[refs.Target]refs.Target
+	hidden       []refs.Target
 }
 
-// readConversation reads the issue's conversation at the walk's cut (refs.ConversationNodes): each
+// enters is whether the walk enters node, reading what stands under it: every node but, on a walk
+// of the skeleton, a document of the issue whose blocks the skeleton does not hold.
+func (w *treeWalk) enters(node refs.Target) bool {
+	return w.skeleton == nil || node.Kind != graphstore.KindArtifact || w.skeleton.Documents[node.ID] ||
+		!strings.HasPrefix(node.ID, w.owner+"/")
+}
+
+// hiddenBlock is whether node is a block of a document of the issue a walk of the skeleton does not
+// enter: its address begins with that document's ref_key and `#` (refs.BlockAddress).
+func (w *treeWalk) hiddenBlock(node refs.Target) bool {
+	document, _, cut := strings.Cut(node.ID, "#")
+	return node.Kind == refs.BlockNodeKind && cut && !w.enters(refs.Target{Kind: graphstore.KindArtifact, ID: document})
+}
+
+// hiddenParent is whether node is a parent a walk of the skeleton takes nothing under by its
+// levels: a document of the issue it does not enter, which it takes, and a block of one, which it
+// does not (hiddenBlock).
+func (w *treeWalk) hiddenParent(node refs.Target) bool {
+	return w.hiddenBlock(node) || !w.enters(node)
+}
+
+// liftHidden takes, on a walk of the skeleton, each node of the issue that stands under a document
+// the walk does not enter, or under a block of one, and is no block of such a document - a lens on
+// the document or on one of its blocks, with its findings - and everything under it, as the walk
+// takes any node, its parent the node it stands under, which the tree read lifts to the issue
+// (R8). It keeps each such parent that holds a child other than such a block in hidden, in address
+// order, with its children in under, so the tree read finds there a node of another issue placed
+// on one. It reads nothing: the head rows of a skeleton hold every row of a kind other than a
+// block, and the walk of the tuples read every level under the issue already. It answers the
+// nodes it took that such a parent holds, in the order of their parents and then the children
+// read's.
+func (w *treeWalk) liftHidden() []refs.Target {
+	if w.skeleton == nil {
+		return nil
+	}
+	hidden := map[refs.Target][]refs.TreeChild{}
+	if w.heads != nil {
+		hidden = w.heads.Under(w.hiddenParent)
+	} else {
+		for parent, children := range w.under {
+			if w.hiddenParent(parent) {
+				hidden[parent] = children
+			}
+		}
+	}
+	var lifted []refs.Target
+	for _, parent := range slices.SortedFunc(maps.Keys(hidden), refs.CompareAddresses) {
+		holds := false
+		for _, child := range hidden[parent] {
+			if w.hiddenBlock(child.Node) {
+				continue
+			}
+			holds = true
+			if _, seen := w.nodes[child.Node]; seen || !refs.TreeOwns(w.owner, child.Node) {
+				continue
+			}
+			w.nodes[child.Node] = treeNodeOf(child, false)
+			lifted = append(lifted, child.Node)
+		}
+		if holds {
+			w.hidden = append(w.hidden, parent)
+			w.under[parent] = hidden[parent]
+		}
+	}
+	under := w.under
+	if w.heads != nil {
+		under = w.heads.Subtrees(lifted, w.owner)
+		for parent, children := range under {
+			if _, held := w.under[parent]; !held {
+				w.under[parent] = children
+			}
+		}
+	}
+	w.takeLevels(lifted, under, false)
+	return lifted
+}
+
+// subtrees is the children of each node of frontier and of each node under them the walk enters
+// (refs.TreeSubtrees), read from the head rows where the walk reads them.
+func (w *treeWalk) subtrees(ctx context.Context, q Queryer, frontier []refs.Target) (map[refs.Target][]refs.TreeChild, error) {
+	if w.heads != nil {
+		return w.heads.Subtrees(frontier, w.owner), nil
+	}
+	return refs.TreeSubtrees(ctx, q, frontier, w.owner, w.cut)
+}
+
+// nodeRows is the row of each of nodes the store holds (refs.TreeNodeRows): a head walk's from the
+// head row of each node one holds, and from the store for the rest.
+func (w *treeWalk) nodeRows(ctx context.Context, q Queryer, nodes []refs.Target) (map[refs.Target]refs.TreeNodeRow, error) {
+	if w.heads == nil {
+		return refs.TreeNodeRows(ctx, q, nodes)
+	}
+	rows := map[refs.Target]refs.TreeNodeRow{}
+	var unheld []refs.Target
+	for _, node := range nodes {
+		head, held := w.heads.Rows[node]
+		switch {
+		case !held:
+			unheld = append(unheld, node)
+		case head.Stored:
+			rows[node] = head.Row()
+		}
+	}
+	read, err := refs.TreeNodeRows(ctx, q, unheld)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(rows, read)
+	return rows, nil
+}
+
+// facts is what each of nodes states at the walk's cut (refs.TreeFactsOf): a head walk's from the
+// head row of each node one holds, and from the store for the rest.
+func (w *treeWalk) facts(ctx context.Context, q Queryer, nodes []refs.Target) (map[refs.Target]refs.TreeFacts, error) {
+	if w.heads == nil {
+		return refs.TreeFactsOf(ctx, q, nodes, w.cut)
+	}
+	facts := map[refs.Target]refs.TreeFacts{}
+	var unheld []refs.Target
+	for _, node := range nodes {
+		head, held := w.heads.Rows[node]
+		switch {
+		case !held:
+			unheld = append(unheld, node)
+		case head.Facts.Values != nil || head.Facts.Relations != nil:
+			facts[node] = head.Facts
+		}
+	}
+	read, err := refs.TreeFactsOf(ctx, q, unheld, w.cut)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(facts, read)
+	return facts, nil
+}
+
+// readConversation reads the issue's conversation at the walk's cut (refs.ConversationNodes), the
+// comments of the comment page alone on a walk of the skeleton (refs.ConversationPageNodes): each
 // item and each of its blocks as a node of the walk, the blocks of each item in their order, and
 // the parent each item's loader names. Every item, and every block of one, is a node part_of may
 // place a node under, so each starts a subtree of its own.
@@ -274,18 +470,27 @@ type treeWalk struct {
 // reserved for its author (graphstore.AdmitAuthorOnly), so no reader's predicate leaves one out,
 // and the empty actor is the reader.
 func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
-	conversation, err := refs.ConversationNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At)
+	var conversation []refs.ExcerptedNode
+	var err error
+	if w.skeleton != nil {
+		conversation, err = refs.ConversationPageNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments)
+	} else {
+		conversation, err = refs.ConversationNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At)
+	}
 	if err != nil {
 		return fmt.Errorf("read the conversation of %s: %w", w.issue.ID, err)
 	}
 	w.loaded = map[refs.Target]*model.NodeParent{}
-	for _, node := range conversation {
+	w.excerpts = make(map[refs.Target]refs.ExcerptedNode, len(conversation))
+	for _, excerpted := range conversation {
+		node := excerpted.Node
 		if kind, itemID, _, ok := refs.ParseItemBlockNode(node.ID); ok {
 			block := refs.Target{Kind: kind.BlockKind(), ID: node.ID}
 			item := refs.Target{Kind: string(kind), ID: itemID}
 			w.blocks[item] = append(w.blocks[item], block)
 			w.nodes[block] = TreeNode{Kind: block.Kind, ID: block.ID, Parent: item, Type: block.Kind}
 			w.conversation = append(w.conversation, block)
+			w.excerpts[block] = excerpted
 			continue
 		}
 		item := refs.Target{Kind: node.Kind, ID: node.ID}
@@ -295,10 +500,11 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 		}
 		w.nodes[item] = TreeNode{Kind: item.Kind, ID: item.ID, Type: item.Kind, MadeAt: made}
 		w.loaded[item] = node.Parent
+		w.excerpts[item] = excerpted
 		w.conversation = append(w.conversation, item)
 		w.items = append(w.items, item)
 	}
-	rows, err := refs.TreeNodeRows(ctx, q, w.items)
+	rows, err := w.nodeRows(ctx, q, w.items)
 	if err != nil {
 		return err
 	}
@@ -312,16 +518,17 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 
 // readSubtrees takes, level by level, the part_of children of every node of frontier and of each
 // child it takes, at the walk's cut, taking each node once. It passes over a node of another
-// issue, and over an issue's node, and so over everything under either (refs.TreeOwns). Every
-// level is read in one statement (refs.TreeSubtrees), so the walk's reads do not grow with the
-// tree's depth; the levels are then taken here, in the order a read of each level answers them.
-// above marks each node it takes as one of the walk's second part. Every row the read answers is
-// kept under its parent (under), the rows of a parent an earlier read answered aside.
+// issue, and over an issue's node, and so over everything under either (refs.TreeOwns), and it
+// takes a node it does not enter (enters) and nothing under it. Every level is read in one
+// statement (refs.TreeSubtrees), so the walk's reads do not grow with the tree's depth; the levels
+// are then taken here, in the order a read of each level answers them. above marks each node it
+// takes as one of the walk's second part. Every row the read answers is kept under its parent
+// (under), the rows of a parent an earlier read answered aside.
 func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.Target, above bool) error {
 	if len(frontier) == 0 {
 		return nil
 	}
-	under, err := refs.TreeSubtrees(ctx, q, frontier, w.owner, w.cut)
+	under, err := w.subtrees(ctx, q, frontier)
 	if err != nil {
 		return err
 	}
@@ -330,11 +537,25 @@ func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.
 			w.under[parent] = children
 		}
 	}
+	w.takeLevels(frontier, under, above)
+	return nil
+}
+
+// takeLevels takes, level by level, the children under holds of every node of frontier the walk
+// enters and of each child it takes, each node of the issue once, in under's order; above marks
+// each as one of the walk's second part. A walk of the skeleton takes no block of a document it
+// does not enter (hiddenBlock) wherever one stands - a check of an upload stands under the
+// requirement it serves - since the head rows it reads hold none: what stands under such a block
+// it lifts (liftHidden).
+func (w *treeWalk) takeLevels(frontier []refs.Target, under map[refs.Target][]refs.TreeChild, above bool) {
 	for len(frontier) > 0 {
 		next := frontier[:0:0]
 		for _, parent := range frontier {
+			if !w.enters(parent) {
+				continue
+			}
 			for _, child := range under[parent] {
-				if _, seen := w.nodes[child.Node]; seen || !refs.TreeOwns(w.owner, child.Node) {
+				if _, seen := w.nodes[child.Node]; seen || !refs.TreeOwns(w.owner, child.Node) || w.hiddenBlock(child.Node) {
 					continue
 				}
 				w.nodes[child.Node] = treeNodeOf(child, above)
@@ -344,7 +565,6 @@ func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.
 		}
 		frontier = next
 	}
-	return nil
 }
 
 // treeNodeOf is the node child names, as the walk takes it, with the row the children read read
@@ -359,7 +579,11 @@ func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 
 // placeItems hangs each conversation item under its parent (WalkIssueTree): the parent its loader
 // names where that is a node of the conversation, for a comment written on a document the typed
-// block its anchor lies inside, and else the issue.
+// block its anchor lies inside, and else the issue. A walk of the skeleton names the parent of a
+// comment it hangs under the issue that way where the walk of the whole tree hangs it under that
+// parent: a comment of another page of the conversation, or of one of its blocks (offPage), and
+// the typed block of a document the walk does not enter that the comment's anchor lies inside
+// (nameAnchors).
 func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	w.hanging = map[refs.Target][]refs.Target{}
 	var anchored []refs.Target
@@ -368,9 +592,13 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 		if !held {
 			continue
 		}
-		if parent, conversation := w.conversationParent(loaded); conversation {
+		parent, conversation := w.conversationParent(loaded)
+		if conversation {
 			w.hang(item, parent)
 			continue
+		}
+		if w.offPage(parent) {
+			w.name(item, parent)
 		}
 		if item.Kind == graphstore.KindComment && loaded != nil && loaded.Kind == graphstore.KindArtifact {
 			anchored = append(anchored, item)
@@ -381,7 +609,7 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	if len(anchored) == 0 {
 		return nil
 	}
-	facts, err := refs.TreeFactsOf(ctx, q, anchored, w.cut)
+	facts, err := w.facts(ctx, q, anchored)
 	if err != nil {
 		return err
 	}
@@ -402,11 +630,96 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	if err != nil {
 		return err
 	}
+	unentered := map[refs.Target]refs.Target{}
 	for _, comment := range anchored {
-		w.hang(comment, w.anchorParent(addresses[comment], moved))
+		parent := w.anchorParent(addresses[comment], moved)
+		w.hang(comment, parent)
+		document, _, _ := strings.Cut(addresses[comment], "#")
+		if parent == w.issue && addresses[comment] != "" && !w.enters(refs.Target{Kind: graphstore.KindArtifact, ID: document}) {
+			unentered[comment] = refs.Target{Kind: refs.BlockNodeKind, ID: addresses[comment]}
+		}
+	}
+	return w.nameAnchors(ctx, q, unentered)
+}
+
+// offPage is whether parent, a parent a loader names that the walk does not take, is a comment of
+// the conversation on another page than the skeleton's, or a block of one.
+func (w *treeWalk) offPage(parent refs.Target) bool {
+	if w.skeleton == nil {
+		return false
+	}
+	switch parent.Kind {
+	case graphstore.KindComment:
+		return w.skeleton.Comments.Off[parent.ID]
+	case refs.ItemComment.BlockKind():
+		_, item, _, ok := refs.ParseItemBlockNode(parent.ID)
+		return ok && w.skeleton.Comments.Off[item]
+	}
+	return false
+}
+
+// name names parent as the parent of item, which the walk hangs under the issue.
+func (w *treeWalk) name(item, parent refs.Target) {
+	if w.named == nil {
+		w.named = map[refs.Target]refs.Target{}
+	}
+	w.named[item] = parent
+}
+
+// nameAnchors names, for each comment of anchored, which a walk of the skeleton hangs under the
+// issue because its anchor, the block it maps the comment to, lies in a document the walk does not
+// enter, the typed block the walk of the whole tree hangs the comment under: the anchor's own block
+// where it is typed, else its nearest typed ancestor, and none where no block at or above it is
+// typed or one of them is gone. It reads the blocks from the anchors up, one level at a time, each
+// level's facts and rows in a statement each (refs.TreeFactsOf, refs.TreeNodeRows), as the walk of
+// the tuples reads a node's type off its supertag and its text's opening line (refs.TreeNodeType).
+func (w *treeWalk) nameAnchors(ctx context.Context, q Queryer, anchored map[refs.Target]refs.Target) error {
+	for steps := 0; len(anchored) > 0 && steps <= maxAnchorClimb; steps++ {
+		level := make([]refs.Target, 0, len(anchored))
+		for _, block := range anchored {
+			if !slices.Contains(level, block) {
+				level = append(level, block)
+			}
+		}
+		facts, err := refs.TreeFactsOf(ctx, q, level, w.cut)
+		if err != nil {
+			return err
+		}
+		rows, err := refs.TreeNodeRows(ctx, q, level)
+		if err != nil {
+			return err
+		}
+		for comment, block := range anchored {
+			held := facts[block]
+			opening, _, _ := strings.Cut(held.Values[graphstore.AttributeText], "\n")
+			switch {
+			case held.Values[graphstore.AttributeState] == graphstore.StateGone:
+				delete(anchored, comment)
+				continue
+			case pmdoc.IsTypedBlock(refs.TreeNodeType(block.Kind, rows[block].Supertag, opening)):
+				w.name(comment, block)
+				delete(anchored, comment)
+				continue
+			}
+			above := refs.Target{}
+			for _, relation := range held.Relations {
+				if relation.Kind == graphstore.TuplePartOf {
+					above = relation.To
+				}
+			}
+			if above.Kind != refs.BlockNodeKind {
+				delete(anchored, comment)
+				continue
+			}
+			anchored[comment] = above
+		}
 	}
 	return nil
 }
+
+// maxAnchorClimb bounds the levels nameAnchors climbs, past any document's depth, so a cycle of
+// part_of tuples ends it.
+const maxAnchorClimb = 256
 
 // conversationParent is the node a loader's parent names, and whether it is a node of the walk's
 // conversation, which only a node the conversation test passes is: an item, by its kind, or a current block of
@@ -478,7 +791,7 @@ func (w *treeWalk) ordered(parent refs.Target) []refs.Target {
 	}
 	unranked = append(unranked, w.hanging[parent]...)
 	slices.SortStableFunc(unranked, func(a, b refs.Target) int {
-		return cmp.Or(w.nodes[a].MadeAt.Compare(w.nodes[b].MadeAt), strings.Compare(a.Kind+":"+a.ID, b.Kind+":"+b.ID))
+		return cmp.Or(w.nodes[a].MadeAt.Compare(w.nodes[b].MadeAt), refs.CompareAddresses(a, b))
 	})
 	return append(children, unranked...)
 }

@@ -50,12 +50,14 @@ var keepsItsShape = []string{
 
 // createdNew are the tables this child creates: document_rooms and version_renders (R19),
 // issue_trees, which holds each issue's one tree, issue_room_blocks, the projection of an issue
-// room's block's in_document, node_search, the search rows of a node, and issue_views, the
-// per-issue record of how an issue was converted and whether its spec is its own (R23). Each is
-// created new, by a create table of its own that is the first statement of the set to name it,
-// and no statement of the set fills it from a stored row. A table no migration of the set names is
-// no finding.
-var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_views"}
+// room's block's in_document, node_search, the search rows of a node, issue_views, the
+// per-issue record of how an issue was converted and whether its spec is its own (R23), and
+// issue_head_nodes and issue_head_marks, the head projection of each issue's tree and the marks of
+// the issues whose rows the head read reads (R8). Each is created new, by a create table of its own
+// that is the first statement of the set to name it, and no statement of the set fills it from a
+// stored row. A table no migration of the set names is no finding.
+var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_views",
+	"issue_head_nodes", "issue_head_marks"}
 
 // columnAdd is the one statement a table of columnAdds takes from this child: an alter table of it
 // that adds the columns named, each of the type Postgres's parser names (its typeName's names) and
@@ -448,6 +450,12 @@ func readTypeStatements(migration pgmigrate.Migration) (typeMigration bool, find
 		return typeMigration, findings
 	}
 	for _, statement := range statements {
+		// A create trigger writes no row of its table, and runs only on later writes, never on the
+		// rows already there (pgmigrate's catalogOnlyStatements): the head projection's trigger on
+		// graph_tuples and graph_nodes (20261123140000_issue_tree_head) makes no type migration.
+		if statement.node == "CreateTrigStmt" {
+			continue
+		}
 		read := pgmigrate.Statements(statement.text)
 		for _, table := range typeTables {
 			if !slices.ContainsFunc(read, func(s string) bool { return actsOn(s, table) }) {

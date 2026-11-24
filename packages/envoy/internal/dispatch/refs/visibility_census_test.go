@@ -230,6 +230,7 @@ var readsWithoutAViewer = map[string]string{
 		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
+	"ReadCommentPage":    treeWalk + " - the page of the issue's conversation comments a walk of the skeleton takes (WalkIssueSkeleton), and the position of its oldest; no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits may see each comment of the page, and each is answered the same page",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,
@@ -420,6 +421,14 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, _, err := BlockNodesAndRows(ctx, recorder, who, []string{"no-such-node"})
 		return err
 	})
+	record("HeadRows", "HeadRows of CORE-1", func() error {
+		_, _, err := HeadRows(ctx, recorder, who, "CORE-1", nil)
+		return err
+	})
+	record("HeadRows", "HeadRows of the skeleton of CORE-1", func() error {
+		_, _, err := HeadRows(ctx, recorder, who, "CORE-1", &HeadSkeleton{Documents: []string{"CORE-1/spec"}})
+		return err
+	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
 		_, err := TargetNames(ctx, recorder, who, everyKind)
 		return err
@@ -562,6 +571,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now())
 		if err == nil && len(nodes) == 0 {
 			err = fmt.Errorf("the conversation of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
+		}
+		return err
+	})
+	// The page is read off the pool rather than the recorder: it binds no predicate
+	// (readsWithoutAViewer), and the census judges the statements ConversationPageNodes sends.
+	record("ConversationPageNodes", "ConversationPageNodes of "+conversed, func() error {
+		page, err := ReadCommentPage(ctx, database.Pool, conversed, time.Now(), nil, 200)
+		if err != nil {
+			return err
+		}
+		nodes, err := ConversationPageNodes(ctx, recorder, who, conversed, time.Now(), page)
+		if err == nil && len(nodes) == 0 {
+			err = fmt.Errorf("the conversation page of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
 		}
 		return err
 	})

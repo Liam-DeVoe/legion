@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -199,6 +200,11 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 		if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
 			return fmt.Errorf("record what the references stated: %w", err)
 		}
+	}
+	heads := slices.Concat(graphstore.HeadsOf([]graphstore.Node{node}, facts), graphstore.HeldHeads(blockWrite),
+		graphstore.HeadsOf(versionNodes, versionFacts))
+	if err := graphstore.WriteHeads(ctx, tx, heads); err != nil {
+		return fmt.Errorf("write the head rows of the document: %w", err)
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

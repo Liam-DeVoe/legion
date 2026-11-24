@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -21,8 +22,10 @@ import (
 // reader's sign-in - and the read's transaction, its JIT setting, the cut, the walk's conversation,
 // subtrees, issues above and view, the issues under the issue and its children, the nodes' facts,
 // the rows of the nodes the walk read none of, two loaders (the issue's, the document's), the
-// blocks' one read, the issue's tree, the batch of texts and the commit.
-const treeReadStatementBound = 19
+// blocks' one read, the issue's tree, the batch of texts and the commit; and the skeleton's (R8):
+// the issue's documents, its comment page, and after the commit the count of the blocks of each
+// of its two documents, its spec and its upload, off its live room.
+const treeReadStatementBound = 23
 
 // handlerTransport serves each request a client sends through handler, the route table a server
 // mounts (newTestServer), in the test's process: the request passes every route's own middleware -
@@ -46,9 +49,8 @@ func inProcessReadCostServer(handler http.Handler) *readCostServer {
 
 // seedTreeReadCorpus writes the read-cost corpus's tree issue through s, as the read-cost check
 // writes it: the reader and the writer signed in, the writer's project, the issue and its document
-// of readCostTreeBlocks blocks (readCostTreeText); then it runs the block index's reconciliation
-// over deps until no document owes its index, and analyzes the database, so a read plans from the
-// tables' real sizes.
+// of readCostTreeBlocks blocks (readCostTreeText); then it indexes every document
+// (indexOwedDocuments), so a read plans from the tables' real sizes.
 func seedTreeReadCorpus(t *testing.T, s *readCostServer, database *store.Store, deps Deps) *readCostCorpus {
 	t.Helper()
 	for _, person := range []string{readCostReader, readCostWriter} {
@@ -59,6 +61,14 @@ func seedTreeReadCorpus(t *testing.T, s *readCostServer, database *store.Store, 
 	corpus := &readCostCorpus{}
 	corpus.treeIssue = createReadCostIssue(t, s, readCostProject, "The issue whose tree is expanded", "", readCostWriter)
 	corpus.treeDocument = uploadReadCostDocument(t, s, corpus.treeIssue, "tree.md", readCostTreeText(), readCostWriter)
+	indexOwedDocuments(t, database, deps)
+	return corpus
+}
+
+// indexOwedDocuments runs the block index's reconciliation over deps until no document owes its
+// index, and then analyzes the database.
+func indexOwedDocuments(t *testing.T, database *store.Store, deps Deps) {
+	t.Helper()
 	ctx := context.Background()
 	for pass := 0; ; pass++ {
 		var owed int
@@ -76,13 +86,13 @@ func seedTreeReadCorpus(t *testing.T, s *readCostServer, database *store.Store, 
 	if _, err := database.Pool.Exec(ctx, `vacuum (analyze)`); err != nil {
 		t.Fatalf("vacuum (analyze) the corpus: %v", err)
 	}
-	return corpus
 }
 
-// requireTreeReadShape holds the tree issue to the shape the read-cost check holds it to before it
-// measures (requireReadCostNewShape's rows of the tree): the tree read answers readCostTreeBlocks
-// block nodes on one page, and the document's deepest block sits readCostTreeDepth list levels
-// down, as the block-path read answers it.
+// requireTreeReadShape holds the tree issue to its shape before its read is counted: its one
+// document, an upload of readCostTreeBlocks blocks whose deepest block sits readCostTreeDepth list
+// levels down, as the blocks and the block-path reads answer it, which the tree read with no view
+// lists in its document_nodes with that many blocks and answers none of the blocks of (R8's
+// skeleton), on one page.
 func requireTreeReadShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) {
 	t.Helper()
 	shape := &readCostShape{}
@@ -90,7 +100,8 @@ func requireTreeReadShape(t *testing.T, s *readCostServer, corpus *readCostCorpu
 		Nodes []struct {
 			Kind string `json:"kind"`
 		} `json:"nodes"`
-		Cursor *string `json:"cursor"`
+		DocumentNodes []model.IssueTreeDocumentNode `json:"document_nodes"`
+		Cursor        *string                       `json:"cursor"`
 	}
 	s.read(t, "read the tree", "/api/v1/issues/"+corpus.treeIssue+"/tree", &tree)
 	blocks := 0
@@ -102,7 +113,14 @@ func requireTreeReadShape(t *testing.T, s *readCostServer, corpus *readCostCorpu
 	if tree.Cursor != nil {
 		shape.failed = append(shape.failed, "the tree read answered a cursor ("+*tree.Cursor+"): the tree does not fit one page")
 	}
-	shape.hold(t, s.name, "block nodes of the tree read", blocks, readCostTreeBlocks, true)
+	shape.hold(t, s.name, "block nodes of the tree read", blocks, 0, true)
+	listed := -1
+	for _, document := range tree.DocumentNodes {
+		if document.ArtifactID == corpus.treeDocument {
+			listed = document.BlockCount
+		}
+	}
+	shape.hold(t, s.name, "blocks the tree read's document_nodes counts in the tree's document", listed, readCostTreeBlocks, true)
 	var documentBlocks []readCostBlock
 	s.read(t, "read the tree's blocks", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &documentBlocks)
 	shape.hold(t, s.name, "blocks of the tree's document", len(documentBlocks), readCostTreeBlocks, true)
@@ -153,14 +171,15 @@ func countedTreeRead(t *testing.T, handler http.Handler, issue string) *httptest
 	return response
 }
 
-// The tree read of the read-cost corpus's tree issue - one document of 2,000 blocks whose deepest
-// block sits 6 list levels down, held to that shape first - read as its reader with display trees,
-// reads the store set-wise: it sends no statement that reads the children of the walk's nodes
-// again, which the walk has read already (docs' IssueTree.Children), and it sends at most
-// treeReadStatementBound statements, a batch counted once, where the read of each part a node at a
-// time sent 23. A read that put the children read back sends that statement, and fails here naming
-// it. This is the half of the read's cost that a shared machine's clock cannot blur;
-// TestTheTreeReadStaysWithinTwiceTheBlocksRead times it.
+// The tree read of the read-cost corpus's tree issue - whose one document, an upload of 2,000
+// blocks whose deepest block sits 6 list levels down, the read with no view lists in its
+// document_nodes and answers none of the blocks of (R8), held to that shape first - read as its
+// reader with display trees, reads the store set-wise: it sends no statement that reads the
+// children of the walk's nodes again, which the walk has read already (docs' IssueTree.Children),
+// and it sends at most treeReadStatementBound statements, a batch counted once, where the read of
+// each part a node at a time sent 23. A read that put the children read back sends that
+// statement, and fails here naming it. This is the half of the read's cost that a shared
+// machine's clock cannot blur; TestTheTreeReadAnswersTheSkeletonWithinItsBounds times the read.
 func TestTheTreeReadSendsNoRepeatedStatement(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -188,6 +207,7 @@ func TestTheTreeReadSendsNoRepeatedStatement(t *testing.T) {
 				index+1, corpus.treeIssue, treeReadStatementHead(statement))
 		}
 	}
+	t.Logf("the tree read of %s sent %d statements, at most %d", corpus.treeIssue, len(sent), treeReadStatementBound)
 	if len(sent) > treeReadStatementBound {
 		t.Errorf("the tree read of %s sent %d statements, want at most %d", corpus.treeIssue, len(sent), treeReadStatementBound)
 	}

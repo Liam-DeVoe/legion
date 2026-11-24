@@ -744,6 +744,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			}
 			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
+				graphstore.QueueHeads(b, graphstore.HeldHeads(*stated))
 			}
 		}
 		return nil
@@ -1152,7 +1153,10 @@ func (st *settlement) reviseQueries(ctx context.Context, issueKey string) error 
 	if err != nil {
 		return err
 	}
-	return graphstore.Caused(ctx, st.tx, revised, lastVersionEvent(st.published))
+	if err := graphstore.Caused(ctx, st.tx, revised, lastVersionEvent(st.published)); err != nil {
+		return err
+	}
+	return graphstore.WriteHeads(ctx, st.tx, graphstore.HeldHeads(revised))
 }
 
 // lastVersionEvent is the id of the last artifact.version of events, the events a settlement's

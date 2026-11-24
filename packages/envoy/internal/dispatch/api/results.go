@@ -1479,6 +1479,7 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 			return nil
 		}
 		graphstore.QueueWrite(b, nodes, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
 		return nil
 	})
 }
@@ -1495,7 +1496,10 @@ func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey str
 	if err != nil {
 		return err
 	}
-	return graphstore.Caused(ctx, tx, revised, event)
+	if err := graphstore.Caused(ctx, tx, revised, event); err != nil {
+		return err
+	}
+	return graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(revised))
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,

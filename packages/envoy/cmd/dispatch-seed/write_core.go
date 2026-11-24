@@ -173,8 +173,10 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return fmt.Errorf("the issues' nodes: %w", err)
 		}
-		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows))
-		return err
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows)); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -745,7 +746,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent)
 		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
-		return queueIssueRelations(b, relations, actor)
+		if err := queueIssueRelations(b, relations, actor); err != nil {
+			return err
+		}
+		// The issue's first nodes are this write's, and every writer of its tree from here on
+		// keeps its head rows, so they are whole from its birth and the issue is marked so.
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(graphstore.Joined(issueNodes, roomNodes)),
+			graphstore.HeldHeads(specBlocks), relations.heads()))
+		graphstore.QueueHeadMark(b, key)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

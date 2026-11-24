@@ -933,6 +933,7 @@ func (s *server) openApprovalAsk(
 	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		_, err := follow.Queue(b, graphstore.LatestEvent)
 		return err
 	}); err != nil {
@@ -1051,6 +1052,7 @@ func (s *server) renewApprovalAsk(
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return nil, err

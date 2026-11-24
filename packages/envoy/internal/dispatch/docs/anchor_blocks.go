@@ -245,10 +245,12 @@ func (s *Service) pinCommentAnchorBlock(ctx context.Context, tx pgx.Tx, id, bloc
 	if block == nil || !graphstore.AddressFits(*block) {
 		return true, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
-		graphstore.AnchoredIn(id, *block, true, AnchorBlockBackfillActor, time.Now().UTC(), graphstore.NoEvent),
-	}); err != nil {
+	anchored := graphstore.AnchoredIn(id, *block, true, AnchorBlockBackfillActor, time.Now().UTC(), graphstore.NoEvent)
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{anchored}); err != nil {
 		return false, fmt.Errorf("state comment %s's anchored_in: %w", id, err)
+	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{anchored})); err != nil {
+		return false, err
 	}
 	return true, nil
 }

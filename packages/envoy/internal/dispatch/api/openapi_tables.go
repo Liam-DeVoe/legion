@@ -225,6 +225,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// of the wrong shape or type is refused naming its position rather than failing the whole body
 	// as INVALID_JSON; the bytes are the list of entries, and an absent list is refused.
 	{reflect.TypeOf(premortemConvertInput{}), "prevented_by"}: rawField{GoType: []PremortemEntry{}},
+	// The tree read with no view answers comments_before (issueTreeBuilder.answer): absent in a
+	// view, null where no comment older than its page remains, else the position of the page's
+	// oldest comment, which the next read sends back as ?comments_before=.
+	{reflect.TypeOf(model.IssueTreeRead{}), "comments_before"}: rawField{Fragment: map[string]any{
+		"type": "string",
+		"description": "<made_at>,<id> of the oldest comment of the read's page, made_at in " +
+			"RFC 3339, UTC, with microseconds: send it as ?comments_before= for the next 200 older comments",
+	}, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.

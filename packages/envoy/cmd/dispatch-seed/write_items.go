@@ -225,7 +225,10 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"events"}, eventColumns, pgx.CopyFromRows(opened)); err != nil {
 			return fmt.Errorf("ask opening events: %w", err)
 		}
-		return mentions.write(ctx, tx)
+		if err := mentions.write(ctx, tx); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, nil))
 	})
 }
 
@@ -422,7 +425,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
-		return mentions.write(ctx, tx)
+		if err := mentions.write(ctx, tx); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 	})
 }
 
@@ -554,6 +560,9 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}
 		if err := mentions.write(ctx, tx); err != nil {
+			return err
+		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, nil)); err != nil {
 			return err
 		}
 		return r.writeSessionMention(ctx, tx, from, to)

@@ -145,7 +145,10 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		}); err != nil {
 			return fmt.Errorf("state the orphaned node of %s gone: %w", ref, err)
 		}
-		return graphstore.Caused(ctx, tx, uncaused, removal)
+		if err := graphstore.Caused(ctx, tx, uncaused, removal); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(uncaused))
 	})
 }
 
@@ -246,7 +249,7 @@ func StateStaleLensesGone(ctx context.Context, database *store.Store) (int, erro
 			return fmt.Errorf("state the nodes of %d stale lenses gone: %w", len(kept), err)
 		}
 		stated = len(gone)
-		return nil
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(gone, nil))
 	})
 	if err != nil {
 		return 0, err

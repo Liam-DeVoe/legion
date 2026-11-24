@@ -251,6 +251,9 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
 		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(graphstore.Uncaused{Tuples: mentions})); err != nil {
+		return false, err
+	}
 	return true, tx.Commit(ctx)
 }
 

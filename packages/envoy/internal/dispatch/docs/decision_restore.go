@@ -2461,6 +2461,9 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	if err := graphstore.Caused(ctx, r.tx, written.Blocks, event.ID); err != nil {
 		return graphstore.NoEvent, err
 	}
+	if err := graphstore.WriteHeads(ctx, r.tx, graphstore.HeldHeads(written.Blocks)); err != nil {
+		return graphstore.NoEvent, err
+	}
 	eventSink(ctx)(event)
 	return event.ID, nil
 }
@@ -2601,6 +2604,9 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 		}
 		if _, err := r.tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 			return fmt.Errorf("state the moves, the removals and the Keeps of the restore of %s: %w", r.issue, err)
+		}
+		if err := graphstore.WriteHeads(ctx, r.tx, append(graphstore.HeadsOf(nodes, tuples), graphstore.HeadsOfClaims(claims)...)); err != nil {
+			return err
 		}
 	}
 	for _, keep := range keepRows {

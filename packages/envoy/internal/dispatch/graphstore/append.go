@@ -214,6 +214,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		counted(b.QueueBuilt("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
 			select `+tupleWriteColumns+` from (`+stated+`) appended
+			where `+keptHeadRows+`
 			order by major, minor
 			on conflict do nothing
 		`, build), write.appended)
@@ -265,7 +266,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 				   or `+sentinelParam+`::boolean and held.source_event = `+strconv.FormatInt(NoEvent, 10)+`
 				      and written.cause <> `+strconv.FormatInt(NoEvent, 10)+`
 			) moved
-			where graph_nodes.kind = moved.kind and graph_nodes.id = moved.id
+			where graph_nodes.kind = moved.kind and graph_nodes.id = moved.id and `+keptHeadRows+`
 		)
 		insert into graph_tuples (`+tupleWriteColumns+`)
 		select `+tupleWriteColumns+` from (
@@ -273,6 +274,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 			union all
 			select `+tupleWriteColumns+`, major, minor from based
 		) appended
+		where `+keptHeadRows+`
 		order by major, minor
 		on conflict do nothing
 	`, build), write.appended)
@@ -310,6 +312,7 @@ func queueChangedByRun(b *store.WriteBatch, changes []Tuple, run string, appende
 			where not exists (
 				select 1 from changes_held held where held.from_kind = change.from_kind and held.from_id = change.from_id)
 		) appended
+		where `+keptHeadRows+`
 		order by major, minor
 		on conflict do nothing
 	`, func() ([]any, error) {

@@ -327,6 +327,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// still names comment.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(commentNode))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -626,6 +627,7 @@ func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id
 	retraction := graphstore.AnchoredIn(id, *block, false, actor, time.Now().UTC(), graphstore.NoEvent)
 	return ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
 		return nil
 	})
 }

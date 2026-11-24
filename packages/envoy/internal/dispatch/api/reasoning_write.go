@@ -275,7 +275,7 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 		}
 		return nil, err
 	}
-	return written, nil
+	return written, graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 }
 
 // refuseGoneParents is the 409 NODE_GONE of a write of nodes one of whose parents the store holds
@@ -429,7 +429,10 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 	write.pointer.Changes = true
 	switch write.action {
 	case pointerRetarget:
-		return graphstore.Retarget(ctx, tx, write.pointer, write.toKind, write.toID)
+		if err := graphstore.Retarget(ctx, tx, write.pointer, write.toKind, write.toID); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{write.pointer}))
 	case pointerRetract:
 		held, err := holdsPointer(ctx, tx, write.pointer)
 		if err != nil {
@@ -440,7 +443,10 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 		}
 		retraction := write.pointer
 		retraction.Asserted = false
-		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction})
+		if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction}); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
 	case pointerAppend:
 		if write.pointer.Kind != graphstore.TupleHasKind {
 			held, err := holdsPointer(ctx, tx, write.pointer)
@@ -448,7 +454,10 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 				return err
 			}
 		}
-		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{write.pointer})
+		if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{write.pointer}); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{write.pointer}))
 	}
 	return fmt.Errorf("no pointer write %q", write.action)
 }
@@ -545,5 +554,5 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 	if err != nil {
 		return graphstore.Node{}, "", err
 	}
-	return moved[0], previous, nil
+	return moved[0], previous, graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(moved, nil))
 }

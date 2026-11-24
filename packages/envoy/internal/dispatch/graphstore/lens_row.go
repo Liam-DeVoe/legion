@@ -143,7 +143,7 @@ var lensArtifactIDsStatement = `
 		set attributes = case when changed.standing_row is null then held.attributes - '` + AttributeArtifactID + `'
 			else held.attributes || jsonb_build_object('` + AttributeArtifactID + `', changed.standing_row) end
 		from changed
-		where held.kind = '` + KindLens + `' and held.id = changed.lens
+		where held.kind = '` + KindLens + `' and held.id = changed.lens and ` + keptHeadRows + `
 	),
 	appended as (
 		insert into graph_tuples (` + tupleWriteColumns + `)
@@ -151,6 +151,7 @@ var lensArtifactIDsStatement = `
 		       coalesce(changed.standing_row, changed.held_row), changed.at, changed.who, changed.source_event,
 		       null, changed.standing_row is not null
 		from changed
+		where ` + keptHeadRows + `
 		order by changed.lens
 		on conflict do nothing
 	)

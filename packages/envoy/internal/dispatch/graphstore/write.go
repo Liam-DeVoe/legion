@@ -681,6 +681,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 		select kind, id, supertag, visibility, state, attributes, made_at, made_by, `+markSQL(markParam, markMade)+`,
 		       project_key, string_to_array(parties, ' ')
 		from unnest(`+nodeArrays(1)+`) as node(`+nodeColumns+`)
+		where `+keptHeadRows+`
 		order by kind, id
 		on conflict (kind, id) do update set source_event = graph_nodes.source_event
 		where false
@@ -825,7 +826,7 @@ var nodeMove, keptCauseNodeMove = func() (string, string) {
 			parties = coalesce(incoming.parties, graph_nodes.parties),
 			source_event = %s
 		from %s
-		where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
+		where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id and ` + keptHeadRows + `
 		  and (graph_nodes.supertag is distinct from incoming.supertag
 		       or graph_nodes.visibility is distinct from ` + writtenVisibility + `
 		       or graph_nodes.state is distinct from ` + writtenState + `

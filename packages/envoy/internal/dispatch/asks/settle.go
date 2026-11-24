@@ -278,6 +278,7 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
 		graphstore.QueueCaused(b, s.Held, s.change.Event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(s.Held))
 	}
 	b.Queue("write the answer state of ask "+s.askID, `
 		update asks

@@ -468,6 +468,7 @@ func (s *server) createStoredMessage(
 			refs.QueueStamp(b, "message", message.ID)
 		}
 		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(messageNode))
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this

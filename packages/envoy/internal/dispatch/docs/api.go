@@ -26,6 +26,7 @@ type API interface {
 	Text(ctx context.Context, artifactID string) (string, error)
 	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
+	BlockCount(ctx context.Context, artifactID string) (int, error)
 	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)

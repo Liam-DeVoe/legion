@@ -268,6 +268,9 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of asks: %w", err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+		return 0, 0, 0, err
+	}
 	if _, err := tx.Exec(ctx, `
 		update asks set node_kind = $2, node_address = id::text
 		where id = any($1::uuid[]) and node_kind is null
@@ -400,6 +403,9 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of ask followers: %w", err)
+	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+		return 0, 0, 0, err
 	}
 	if _, err := tx.Exec(ctx, `
 		update ask_followers f set node_kind = $3, node_address = p.ask_id

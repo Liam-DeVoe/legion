@@ -244,6 +244,9 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	`, artifacts, blockIDs, addresses, refs.BlockNodeKind); err != nil {
 		return nil, 0, fmt.Errorf("name the nodes of a block batch on their rows: %w", err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+		return nil, 0, err
+	}
 	// In id order and each once, the order lockBlockDocuments took these rows in.
 	owed := slices.Clone(artifacts)
 	slices.Sort(owed)

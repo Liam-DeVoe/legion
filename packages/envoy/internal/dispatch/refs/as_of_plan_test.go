@@ -341,10 +341,16 @@ var asOfTupleInsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b`
 // asOfUpsert is an insert into the tuple table whose conflict clause updates the row it meets.
 var asOfUpsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`)
 
+// asOfCreateTrigger is a create trigger, which writes no row of its table and runs only on later
+// writes, never on the rows already there (pgmigrate's catalogOnlyStatements): the head
+// projection's trigger on graph_tuples (20261123140000_issue_tree_head) writes none of its rows.
+var asOfCreateTrigger = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n\s*)*create\s+(or\s+replace\s+)?(constraint\s+)?trigger\b`)
+
 // requireTypeMigrationsAloneWriteTheTupleTable reads every migration of this child and every type
 // migration (store.TypeMigrations) as pgmigrate.TouchedTables reads them: a statement that writes
 // graph_tuples is an insert of a type migration, with no conflict clause that updates, and no
-// other migration of this child writes graph_tuples at all.
+// other migration of this child writes graph_tuples at all. A create trigger on the table writes
+// none of its rows (asOfCreateTrigger).
 func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 	t.Helper()
 	migrations, err := pgmigrate.Load(os.DirFS("../store"), "migrations")
@@ -364,7 +370,7 @@ func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 		}
 		read++
 		for _, statement := range pgmigrate.Statements(migration.SQL) {
-			if !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
+			if asOfCreateTrigger.MatchString(statement) || !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
 				continue
 			}
 			beside := asOfTupleInsert.ReplaceAllString(statement, "insert into the_type_insert")

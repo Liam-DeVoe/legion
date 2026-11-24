@@ -795,6 +795,9 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
 				return err
 			}
+			if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(made)); err != nil {
+				return err
+			}
 			written.Tuples += appended
 			start = end
 		}
@@ -815,6 +818,9 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 				return fmt.Errorf("state the parents of a batch of issues: %w", err)
 			}
+			if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOfClaims(claims)); err != nil {
+				return err
+			}
 			written.Tuples += parents
 			if _, err := tx.Exec(ctx, `
 				update issues set node_kind = $2, node_address = key
@@ -828,7 +834,10 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				return err
 			}
 			written.Tuples += int64(len(values))
-			return graphstore.Write(ctx, tx, nil, values)
+			if err := graphstore.Write(ctx, tx, nil, values); err != nil {
+				return err
+			}
+			return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, values))
 		}
 		return nil
 	}); err != nil {
@@ -1181,7 +1190,14 @@ func writeScopeBatch(ctx context.Context, database *store.Store, kind string, sc
 		}
 		var err error
 		filled, err = graphstore.FillScopes(ctx, tx, scopes)
-		return err
+		if err != nil {
+			return err
+		}
+		scoped := make([]graphstore.NodeKey, len(scopes))
+		for index, scope := range scopes {
+			scoped[index] = graphstore.NodeKey{Kind: scope.Kind, ID: scope.ID}
+		}
+		return graphstore.WriteHeads(ctx, tx, scoped)
 	}); err != nil {
 		return 0, fmt.Errorf("fill the project of a batch of %s nodes: %w", kind, err)
 	}

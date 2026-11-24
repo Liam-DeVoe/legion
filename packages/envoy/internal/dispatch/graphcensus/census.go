@@ -371,7 +371,7 @@ func backfillPasses(rule int) []backfillPass {
 	return slices.Concat(
 		blockBackfills(rule), commentBackfills, runBackfills, preventionBackfills, actorBackfills, projectBackfills,
 		decisionBackfills, issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
-		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills,
+		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills, headBackfills,
 	)
 }
 
@@ -1366,6 +1366,18 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			if err := afterKind(ctx, held.name); err != nil {
 				return nil, err
 			}
+		}
+	}
+	// The head projection is read last, as one kind of its own over every node kind
+	// (CensusOfHeads), once every projection of the nodes its rows read has been read.
+	heads, err := CensusOfHeads(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	kinds = append(kinds, heads)
+	if afterKind != nil {
+		if err := afterKind(ctx, heads.Kind); err != nil {
+			return nil, err
 		}
 	}
 	return kinds, nil

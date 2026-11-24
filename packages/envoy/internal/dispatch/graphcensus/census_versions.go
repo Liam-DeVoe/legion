@@ -245,6 +245,9 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+			return err
+		}
 		written, stated = int64(len(nodes)), statedOf(nodes)+int64(len(tuples))
 		return nil
 	}); err != nil {
@@ -338,6 +341,7 @@ func (m MissingVersionNodes) Queue(b *store.WriteBatch) {
 		return
 	}
 	graphstore.QueueWrite(b, m.nodes, m.tuples)
+	graphstore.QueueHeads(b, graphstore.HeadsOf(m.nodes, m.tuples))
 }
 
 // owedVersionNodes reads, through q, the artifact_versions rows v the join rows names, bound to

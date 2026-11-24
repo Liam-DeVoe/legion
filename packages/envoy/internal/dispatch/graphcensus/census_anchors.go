@@ -197,6 +197,9 @@ func writeAnchorBatch(ctx context.Context, database *store.Store, batch []anchor
 		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+			return err
+		}
 		levelled, stated = int64(len(comments)), int64(len(tuples))
 		return nil
 	}); err != nil {

@@ -1884,8 +1884,8 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
 // made before it existed (graphstore.Uncaused): the event's append and the append of what that
 // write stated under it, in one batch, the second naming the event's id as the id sequence left it
-// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
-// it paid for the event alone.
+// (graphstore.LatestEvent), and then the head write of the nodes it stated of (graphstore.QueueHeads).
+// A route that writes as it goes pays one round trip for the three, as it paid for the event alone.
 func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
 	var appended model.Event
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -1893,6 +1893,7 @@ func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.
 			return err
 		}
 		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
 		return nil
 	})
 	return appended, err

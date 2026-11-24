@@ -365,6 +365,9 @@ func writeResultBatch(ctx context.Context, database *store.Store, batch []result
 		if err := graphstore.Write(ctx, tx, batchNodes, stated); err != nil {
 			return err
 		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(batchNodes, stated)); err != nil {
+			return err
+		}
 		nodes, tuples = int64(len(batchNodes)), statedOf(batchNodes)+int64(len(stated))
 		return nil
 	}); err != nil {
@@ -471,6 +474,9 @@ func writeResultRetractionBatch(ctx context.Context, database *store.Store, batc
 			return nil
 		}
 		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+			return err
+		}
+		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
 			return err
 		}
 		written = int64(len(tuples))

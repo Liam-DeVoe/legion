@@ -1623,6 +1623,23 @@ func (s *Service) Blocks(ctx context.Context, artifactID string) ([]model.Artifa
 	return blocks, err
 }
 
+// BlockCount is the number of blocks Blocks returns for the document, read as it reads them
+// (readDocument) and not copied: what the tree read with no view answers of a document whose
+// blocks it leaves out.
+func (s *Service) BlockCount(ctx context.Context, artifactID string) (int, error) {
+	read, tree, err := s.readDocument(ctx, artifactID)
+	switch {
+	case err != nil:
+		return 0, err
+	case read != nil:
+		return len(read.blocks), nil
+	case tree == nil:
+		return 0, nil
+	}
+	_, blocks, err := documentBlocks(tree)
+	return len(blocks), err
+}
+
 // TextWithBlocks renders the document the caller sees (readDocument) once and returns its
 // canonical markdown beside the blocks whose byte ranges index into it. The blocks are the
 // caller's own: it may write into them (References).

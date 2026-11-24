@@ -95,6 +95,9 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 	if err := graphstore.Write(ctx, tx, nil, retracted); err != nil {
 		return 0, fmt.Errorf("retract the prevented_by tuples at checks nobody runs: %w", err)
 	}
+	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, retracted)); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit the retraction of the prevented_by tuples at checks nobody runs: %w", err)
 	}

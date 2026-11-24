@@ -1011,6 +1011,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			return err
 		}
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err

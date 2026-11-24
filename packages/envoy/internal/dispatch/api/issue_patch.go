@@ -986,7 +986,11 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// before appended (queueIssueRelations).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
-		return queueIssueRelations(b, relations, actor)
+		if err := queueIssueRelations(b, relations, actor); err != nil {
+			return err
+		}
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(issueNode), relations.heads()))
+		return nil
 	}); err != nil {
 		return issueWriteResult{}, err
 	}

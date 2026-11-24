@@ -1269,6 +1269,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		// What the answer states on the ask's node is appended under that same event, which no
 		// statement between them appends another of (graphstore.LatestEvent).
 		graphstore.QueueCaused(b, settled.Held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(settled.Held))
 		ask.State, ask.Answer, ask.Resolution = answered.State, answered.Answer, answered.Resolution
 		return nil
 	})
