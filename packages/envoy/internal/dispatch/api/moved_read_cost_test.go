@@ -54,7 +54,8 @@ import (
 const movedCostBaseVariable = "STORES_BASE_SHA"
 
 // movedCostScaleVariable scales the corpus: unset or 1 is the check's corpus, 0.1 a tenth. Every
-// count of issues, priorities and tuples scales; an issue keeps its runs and its children.
+// count of issues and of tuples of other kinds scales, and so do production's counts of issues the
+// corpus is held to; the 13 priorities do not, and an issue keeps its runs and its children.
 const movedCostScaleVariable = "MOVED_READ_COST_SCALE"
 
 // movedCostMigrations are the three migrations a release before R32's move holds: the graph store,
@@ -73,7 +74,7 @@ const movedCostMigrationsDir = "packages/envoy/internal/dispatch/store/migration
 const movedCostBound = 2.0
 
 // The projects of the corpus. The steps read and the plans read address the first of the three;
-// the issues that advance priorities stand in a project of their own.
+// the open issues that advance a priority stand in a project of their own.
 var movedCostProjects = []string{"MOVA", "MOVB", "MOVC"}
 
 const (
@@ -89,21 +90,103 @@ var movedCostCorpusPath = filepath.Join("testdata", "moved-read-cost-corpus.sql"
 
 // movedCostEventsShape is production's count of events per issue, read through its API at
 // 2026-11-23T23:20Z from the newest event's seq of 120 issues that advance a priority: the mean,
-// the p50, the p90 and the most. The corpus's SQL draws each issue's count from it. The count check
-// holds the corpus's mean, p50 and p90 within movedCostEventsSlack of production's, and its most at
-// or below production's and above movedCostEventsTail of it.
-var movedCostEventsShape = struct{ mean, p50, p90, most float64 }{51, 16, 118, 937}
+// the p50, the p90, the p99 and the most. The corpus's SQL draws each issue's count from it, its
+// top at 900. The count check holds the corpus's mean and percentiles within movedCostShapeSlack
+// of production's, and its most at or below production's and above movedCostEventsTail of it: a
+// tenth of the issues draws fewer of the top ones, and its most is further below 937.
+var movedCostEventsShape = struct{ mean, p50, p90, p99, most float64 }{51, 16, 118, 425, 937}
 
-const (
-	movedCostEventsSlack = 0.1
-	movedCostEventsTail  = 0.8
-)
+const movedCostEventsTail = 0.8
+
+// movedCostProduction is production's shape, read through its API at 2026-11-23T23:20Z, which the
+// corpus is seeded to in place of the check's present counts (movedCostDeparture). Each figure is
+// at scale 1 and counts issues, or open pairs of an issue and a priority it advances, and scales
+// with the corpus; the priorities and the deepest chain do not. The corpus's SQL lays its issues
+// out from the same figures (its moved_counts).
+var movedCostProduction = struct {
+	issues, members, own, parented float64
+	// The open pairs by status, and how many there are in all.
+	inProgress, todo, backlog, triage, icebox, needsReview, testing, retro, openPairs float64
+	claimed, asks, closedRecently                                                     float64
+	// The issues by status, over every issue: done 35%, backlog 32%, todo 17%, in flight 10%, and
+	// triage and icebox the other 6%.
+	done, backlogAll, todoAll, inFlight, shelved float64
+	unplaced, parked                             float64
+	priorities, deepest                          int
+}{
+	issues: 13298, members: 7677, own: 1600, parented: 0.68 * 13298,
+	inProgress: 972, todo: 826, backlog: 525, triage: 217, icebox: 211, needsReview: 119, testing: 104, retro: 21, openPairs: 2995,
+	claimed: 622, asks: 78, closedRecently: 1461,
+	done: 0.35 * 13298, backlogAll: 0.32 * 13298, todoAll: 0.17 * 13298, inFlight: 0.10 * 13298, shelved: 0.06 * 13298,
+	unplaced: 115, parked: 729, priorities: 13, deepest: 4,
+}
+
+// movedCostShapeSlack is how far a count of production's shape the corpus does not fix may stray
+// from production's figure.
+const movedCostShapeSlack = 0.05
+
+// movedCostDeparture is the line a run prints to say that its corpus holds production's shape and
+// not the check's present counts, which the root's next Verification version replaces.
+const movedCostDeparture = "c-moved-read-cost: this run departs from the check's present counts (50 priorities, 5,000 " +
+	"advances tuples over 2,000 issues and 3,461 finished issues in each project: done 84%, 0 unplaced) and holds " +
+	"production's, read through its API at 2026-11-23T23:20Z: 13,298 issues, 13 live priorities, 7,677 issues that " +
+	"advance one, 1,600 of them by a relation of their own, 68% with a parent, 2,995 open pairs, done 35%, 115 " +
+	"unplaced and 729 parked"
+
+// movedCostShapeQuery reads the corpus's shape as production's figures count it, over every issue
+// the database holds, one row of a name and a count each. The members are read as the priorities
+// read reads them (priorityRelationsQuery, priorityMemberTerms): the newest advances tuple of each
+// pair of an issue and a live priority, where it asserts the pair, and every issue below such an
+// issue. A pair is an issue and a priority it advances, its depth the fewest levels it stands below
+// an issue that states that priority, and an open pair an open issue's.
+var movedCostShapeQuery = `with recursive relations as (
+		select newest.from_id as key, newest.to_id as priority
+		from (select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted
+		      from priority_tuples t
+		      where t.from_kind = 'issue' and t.kind = 'advances' and t.to_kind = 'priority'
+		      order by t.from_id, t.to_id, t.seq desc) newest
+		join priority_nodes live on live.kind = 'priority' and live.id = newest.to_id and live.state = 'live'
+		where newest.asserted
+	), spread as (
+		select key, priority, 0 as depth from relations
+		union all
+		select c.key, s.priority, s.depth + 1 from spread s join issues c on c.parent_key = s.key
+		where s.depth < ` + parentDepthCapSQL + `
+	), pairs as (
+		select m.key, m.depth, i.status, i.closed_at, i.claimed_by,
+		       (select count(*) from asks a where a.issue_key = i.key and a.state = 'open') as asks
+		from (select key, priority, min(depth) as depth from spread group by key, priority) m
+		join issues i on i.key = m.key
+	)
+	select 'issues', count(*) from issues
+	union all select 'issues with a parent', count(*) from issues where parent_key is not null
+	union all select 'live priorities', count(*) from priority_nodes where state = 'live'
+	union all select 'issues that advance a priority', count(distinct key) from pairs
+	union all select 'issues that state advances', count(distinct key) from relations
+	union all select 'levels the deepest member stands below a stated issue', coalesce(max(depth), 0) from pairs
+	union all select 'open pairs in ' || status, count(*) from pairs where closed_at is null group by status
+	union all select 'open pairs', count(*) from pairs where closed_at is null
+	union all select 'claimed open pairs', count(*) from pairs where closed_at is null and claimed_by is not null
+	union all select 'open asks on open pairs', coalesce(sum(asks), 0) from pairs where closed_at is null
+	union all select 'pairs closed in the last ` + priorityClosedWindow + `', count(*) from pairs
+		where closed_at >= now() - interval '` + priorityClosedWindow + `'
+	union all select 'issues done', count(*) from issues where status = 'done'
+	union all select 'issues in backlog', count(*) from issues where status = 'backlog'
+	union all select 'issues in todo', count(*) from issues where status = 'todo'
+	union all select 'issues in flight', count(*) from issues where status in (` + sqlStringList(priorityInFlightStatuses) + `)
+	union all select 'issues in triage or icebox', count(*) from issues where status in ('triage', 'icebox')
+	union all select 'unplaced issues', count(*) from issues i
+		where i.closed_at is null and i.status in (` + sqlStringList(priorityInFlightStatuses) + `)
+		  and not exists (select 1 from pairs p where p.key = i.key)
+	union all select 'parked issues', count(distinct key) from pairs
+		where closed_at is null and status in (` + sqlStringList(priorityParkedStatuses) + `)`
 
 // movedCostEventsQuery reads the events of the issues the corpus writes in the projects $1, their
 // first issues left out: how many there are and over how many issues, each issue's count of them
 // in nearest-rank percentiles, the issues whose events run seq 1 to their last_seq, and, of the
-// issues parked in backlog or icebox, those that hold the issue.updated that moved them there as
-// the parked read finds it (parkedMoveLateral), and those whose move is not their newest event.
+// issues parked in backlog or icebox, how many there are, those that hold the issue.updated that
+// moved them there as the parked read finds it (parkedMoveLateral), and those whose move is not
+// their newest event.
 var movedCostEventsQuery = `with written as (
 		select i.key, i.status, i.last_seq, count(e.id) as events, min(e.seq) as low, max(e.seq) as high,
 		       max(e.seq) filter (where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb
@@ -119,6 +202,7 @@ var movedCostEventsQuery = `with written as (
 	       coalesce(percentile_disc(0.99) within group (order by events), 0),
 	       coalesce(max(events), 0),
 	       count(*) filter (where events = last_seq and low = 1 and high = last_seq),
+	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `)),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved is not null),
 	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq)
 	from written`
@@ -128,35 +212,42 @@ var movedCostEventsQuery = `with written as (
 // movedCostCorpus is the corpus's counts at the run's scale, as the corpus's SQL computes them, and
 // the issues the reads address.
 type movedCostCorpus struct {
-	scale                                                     float64
-	priorities, live, advancedIssues, advances, finished, ran int
-	others                                                    int64
-	// issues is how many issues the corpus writes, the projects' first issues left out, and parked
-	// how many of them stand in backlog: the advances project's issue n where n % 100 < 34.
-	issues, parked int
-	// busy is the issue of 200 runs and 339 other children; advancing is an issue of the advances
-	// project whose parent advances priorities too.
+	scale float64
+	// The workflow side, the check's: the finished issues of the first project, the issues run 30
+	// times in each project, and the tuples of other kinds.
+	finished, ran int
+	others        int64
+	// priorities is how many priorities the corpus writes, every one live; issues how many issues
+	// it writes, the projects' first issues left out; own how many of them state advances, and
+	// advances how many advances tuples it writes: one for each, and an assert and a retraction
+	// before each eighth.
+	priorities, issues, own, advances int
+	// busy is the issue of 200 runs and 339 other children; advancing is a parked issue four levels
+	// below the issue that states the priority it inherits, which states a second priority of its
+	// own.
 	busy, advancing string
 }
 
 func newMovedCostCorpus(t *testing.T, scale float64) *movedCostCorpus {
 	t.Helper()
 	scaled := func(full float64) int { return int(math.Round(full * scale)) }
+	shape := movedCostProduction
 	corpus := &movedCostCorpus{
-		scale: scale, priorities: scaled(50), advancedIssues: scaled(2000), advances: scaled(5000),
-		finished: scaled(3461), ran: scaled(600), others: int64(math.Round(1_000_000 * scale)),
-		busy: movedCostProjects[0] + "-2", advancing: movedCostAdvancesProject + "-3",
+		scale: scale, finished: scaled(3461), ran: scaled(600), others: int64(math.Round(1_000_000 * scale)),
+		priorities: shape.priorities, issues: scaled(shape.issues) - len(movedCostProjects) - 1, own: scaled(shape.own),
+		busy: movedCostProjects[0] + "-2", advancing: movedCostAdvancesProject + "-2",
 	}
-	corpus.live = corpus.priorities - corpus.priorities/25
-	corpus.issues = len(movedCostProjects)*corpus.finished + corpus.advancedIssues
-	for n := 1; n <= corpus.advancedIssues; n++ {
-		if n%100 < 34 {
-			corpus.parked++
-		}
-	}
-	if corpus.priorities < 3 || corpus.advancedIssues < 4 || 5*corpus.ran > corpus.finished {
-		t.Fatalf("%s=%v leaves too small a corpus: %d priorities, %d advanced issues, %d issues run of %d finished",
-			movedCostScaleVariable, scale, corpus.priorities, corpus.advancedIssues, corpus.ran, corpus.finished)
+	corpus.advances = corpus.own + 2*(corpus.own/8)
+	// The issues that state a second priority are the parked pairs past the parked issues; the
+	// first is the advancing read's issue. The issues that advance no priority stand, half in each,
+	// beside the issues run 30 times in the second and third projects, numbered up to 5 x ran.
+	doubled := scaled(shape.backlog) + scaled(shape.icebox) - scaled(shape.parked)
+	members := corpus.finished + 2*(corpus.ran+1) + scaled(shape.inProgress) + scaled(shape.testing) +
+		scaled(shape.needsReview) + scaled(shape.retro) + scaled(shape.todo) + scaled(shape.triage) + scaled(shape.parked)
+	unadvanced := corpus.issues - members
+	if doubled < 1 || 5*corpus.ran > corpus.finished || unadvanced/2 < 4*corpus.ran {
+		t.Fatalf("%s=%v leaves too small a corpus: %d issues that state a second priority, %d issues run of %d finished, "+
+			"%d issues that advance no priority", movedCostScaleVariable, scale, doubled, corpus.ran, corpus.finished, unadvanced)
 	}
 	return corpus
 }
@@ -196,7 +287,9 @@ func seedMovedCostTemplates(t *testing.T, s *readCostServer) {
 }
 
 // seedMovedCostCorpus runs the corpus's SQL over conn with the run's settings, and holds what it
-// wrote to the counts of the check before anything is measured.
+// wrote before anything is measured: the workflow side and the corpus's own writes to the counts
+// they fix, and the issues to production's shape (movedCostProduction), each count printed beside
+// production's figure at the run's scale.
 func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) {
 	t.Helper()
 	ctx := context.Background()
@@ -214,6 +307,7 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		t.Fatalf("write the corpus by SQL (%s): %v", movedCostCorpusPath, err)
 	}
 	t.Logf("c-moved-read-cost: wrote the corpus by SQL at scale %v in %s", corpus.scale, time.Since(started).Round(time.Millisecond))
+	t.Log(movedCostDeparture)
 
 	// corpusCount is one count of the corpus as SQL reads it, held to want within slack.
 	type corpusCount struct {
@@ -235,9 +329,7 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 	}
 	counts := []corpusCount{
 		{"priorities", `select count(*) from priority_nodes`, nil, int64(corpus.priorities), 0},
-		{"live priorities", `select count(*) from priority_nodes where state = 'live'`, nil, int64(corpus.live), 0},
 		{"advances tuples", `select count(*) from priority_tuples where kind = 'advances'`, nil, int64(corpus.advances), 0},
-		{"issues that state advances", `select count(distinct from_id) from priority_tuples where kind = 'advances'`, nil, int64(corpus.advancedIssues), 0},
 		{"runs", `select count(*) from workflow_nodes where kind = 'step'`, nil, int64(projects * (30*corpus.ran + 200)), 0},
 		{"plans", `select count(*) from workflow_nodes where kind = 'plan'`, nil, int64(projects * (corpus.ran + 1)), 0},
 		{"runs part_of " + corpus.busy, `select count(*) from workflow_tuples where from_kind = 'step' and kind = 'part_of' and to_kind = 'issue' and to_id = $1`,
@@ -250,51 +342,55 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		// for each term.
 		{"tuples of other kinds", `select count(*) from graph_tuples where who = $1::jsonb`, []any{movedCostOtherWho}, corpus.others, 30},
 	}
-	for _, project := range movedCostProjects {
+	counts = append(counts, corpusCount{"finished issues of " + movedCostProjects[0],
+		`select count(*) from issues where project_key = $1 and status = 'done' and closed_at is not null`,
+		[]any{movedCostProjects[0]}, int64(corpus.finished), 0})
+	for _, project := range movedCostProjects[1:] {
 		counts = append(counts, corpusCount{"finished issues of " + project,
 			`select count(*) from issues where project_key = $1 and status = 'done' and closed_at is not null`,
-			[]any{project}, int64(corpus.finished), 0})
+			[]any{project}, int64(corpus.ran + 1), 0})
 	}
 	for _, count := range counts {
 		var read int64
 		if err := conn.QueryRow(ctx, count.sql, count.args...).Scan(&read); err != nil {
 			t.Fatalf("count the corpus's %s: %v", count.what, err)
 		}
-		t.Logf("c-moved-read-cost: the corpus holds %d %s (the check at scale %v: %d)", read, count.what, corpus.scale, count.want)
+		t.Logf("c-moved-read-cost: the corpus holds %d %s (the corpus at scale %v writes %d)", read, count.what, corpus.scale, count.want)
 		if read < count.want-count.slack || read > count.want+count.slack {
-			t.Errorf("the corpus holds %d %s, where the check at scale %v states %d", read, count.what, corpus.scale, count.want)
+			t.Errorf("the corpus holds %d %s, where the corpus at scale %v writes %d", read, count.what, corpus.scale, count.want)
 		}
 	}
+	holdMovedCostShape(t, conn, corpus.scale)
 	// The events of the issues the corpus writes, against production's shape.
-	var events, withEvents, p50, p90, p99, most, whole, moved, movedBefore int64
+	var events, withEvents, p50, p90, p99, most, whole, shelved, moved, movedBefore int64
 	var mean float64
 	if err := conn.QueryRow(ctx, movedCostEventsQuery, append(slices.Clone(movedCostProjects), movedCostAdvancesProject)).
-		Scan(&events, &withEvents, &mean, &p50, &p90, &p99, &most, &whole, &moved, &movedBefore); err != nil {
+		Scan(&events, &withEvents, &mean, &p50, &p90, &p99, &most, &whole, &shelved, &moved, &movedBefore); err != nil {
 		t.Fatalf("count the corpus's events: %v", err)
 	}
 	shape := movedCostEventsShape
 	t.Logf("c-moved-read-cost: the corpus holds %d events over %d issues, by issue mean %.1f, p50 %d, p90 %d, p99 %d and max %d "+
-		"(production: mean %.0f, p50 %.0f, p90 %.0f and max %.0f)", events, withEvents, mean, p50, p90, p99, most,
-		shape.mean, shape.p50, shape.p90, shape.most)
-	t.Logf("c-moved-read-cost: %d of the corpus's issues hold events seq 1 to their last_seq (the check at scale %v writes %d issues); "+
-		"%d of the %d in backlog hold the issue.updated that moved them there, %d of them before their newest event",
-		whole, corpus.scale, corpus.issues, moved, corpus.parked, movedBefore)
+		"(production: mean %.0f, p50 %.0f, p90 %.0f, p99 %.0f and max %.0f)", events, withEvents, mean, p50, p90, p99, most,
+		shape.mean, shape.p50, shape.p90, shape.p99, shape.most)
+	t.Logf("c-moved-read-cost: %d of the corpus's issues hold events seq 1 to their last_seq (the corpus at scale %v writes %d issues); "+
+		"%d of the %d in backlog or icebox hold the issue.updated that moved them there, %d of them before their newest event",
+		whole, corpus.scale, corpus.issues, moved, shelved, movedBefore)
 	if withEvents != int64(corpus.issues) || whole != withEvents {
-		t.Errorf("%d of the corpus's %d issues hold events seq 1 to their last_seq, where the check at scale %v writes %d issues, each with its events",
+		t.Errorf("%d of the corpus's %d issues hold events seq 1 to their last_seq, where the corpus at scale %v writes %d issues, each with its events",
 			whole, withEvents, corpus.scale, corpus.issues)
 	}
-	if moved != int64(corpus.parked) || movedBefore == 0 || movedBefore == moved {
-		t.Errorf("%d of the corpus's %d issues in backlog hold the issue.updated that moved them there, %d of them before their newest "+
-			"event, where every one holds it and some but not all before their newest", moved, corpus.parked, movedBefore)
+	if shelved == 0 || moved != shelved || movedBefore == 0 || movedBefore == moved {
+		t.Errorf("%d of the corpus's %d issues in backlog or icebox hold the issue.updated that moved them there, %d of them before "+
+			"their newest event, where every one holds it and some but not all before their newest", moved, shelved, movedBefore)
 	}
 	near := func(read, production float64) bool {
-		return math.Abs(read-production) <= movedCostEventsSlack*production
+		return math.Abs(read-production) <= movedCostShapeSlack*production
 	}
-	if !near(mean, shape.mean) || !near(float64(p50), shape.p50) || !near(float64(p90), shape.p90) ||
+	if !near(mean, shape.mean) || !near(float64(p50), shape.p50) || !near(float64(p90), shape.p90) || !near(float64(p99), shape.p99) ||
 		float64(most) > shape.most || float64(most) <= movedCostEventsTail*shape.most {
-		t.Errorf("the corpus's events by issue, mean %.1f, p50 %d, p90 %d and max %d, are not production's: mean %.0f, p50 %.0f and "+
-			"p90 %.0f within %.0f%%, and max at most %.0f and above %.0f", mean, p50, p90, most,
-			shape.mean, shape.p50, shape.p90, 100*movedCostEventsSlack, shape.most, movedCostEventsTail*shape.most)
+		t.Errorf("the corpus's events by issue, mean %.1f, p50 %d, p90 %d, p99 %d and max %d, are not production's: mean %.0f, p50 %.0f, "+
+			"p90 %.0f and p99 %.0f within %.0f%%, and max at most %.0f and above %.0f", mean, p50, p90, p99, most,
+			shape.mean, shape.p50, shape.p90, shape.p99, 100*movedCostShapeSlack, shape.most, movedCostEventsTail*shape.most)
 	}
 	var issues, workflow, graph int64
 	if err := conn.QueryRow(ctx, `select (select count(*) from issues), (select count(*) from workflow_tuples), (select count(*) from graph_tuples)`).
@@ -305,6 +401,161 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 	if t.Failed() {
 		t.FailNow()
 	}
+}
+
+// holdMovedCostShape holds the corpus to production's shape (movedCostShapeQuery), each count
+// printed beside production's figure at the run's scale: exactly where the corpus fixes the count
+// to that figure, and within movedCostShapeSlack where it cannot. The check's 4,663 finished
+// issues are 35.1% of the issues where production's done are about 35%, and the issues done, in
+// flight and in triage or icebox, the issues that advance a priority and the open pairs in all
+// follow from them.
+func holdMovedCostShape(t *testing.T, conn *pgx.Conn, scale float64) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), movedCostShapeQuery)
+	if err != nil {
+		t.Fatalf("read the corpus's shape: %v", err)
+	}
+	read := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var count int64
+		if err := rows.Scan(&name, &count); err != nil {
+			t.Fatalf("read a count of the corpus's shape: %v", err)
+		}
+		read[name] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the corpus's shape: %v", err)
+	}
+	scaled := func(full float64) int64 { return int64(math.Round(full * scale)) }
+	shape := movedCostProduction
+	counts := []struct {
+		what       string
+		production int64
+		exact      bool
+	}{
+		{"issues", scaled(shape.issues), true},
+		{"issues with a parent", scaled(shape.parented), true},
+		{"live priorities", int64(shape.priorities), true},
+		{"issues that advance a priority", scaled(shape.members), false},
+		{"issues that state advances", scaled(shape.own), true},
+		{"levels the deepest member stands below a stated issue", int64(shape.deepest), true},
+		{"open pairs in in_progress", scaled(shape.inProgress), true},
+		{"open pairs in todo", scaled(shape.todo), true},
+		{"open pairs in backlog", scaled(shape.backlog), true},
+		{"open pairs in triage", scaled(shape.triage), true},
+		{"open pairs in icebox", scaled(shape.icebox), true},
+		{"open pairs in needs_review", scaled(shape.needsReview), true},
+		{"open pairs in testing", scaled(shape.testing), true},
+		{"open pairs in retro", scaled(shape.retro), true},
+		{"open pairs", scaled(shape.openPairs), false},
+		{"claimed open pairs", scaled(shape.claimed), true},
+		{"open asks on open pairs", scaled(shape.asks), true},
+		{"pairs closed in the last " + priorityClosedWindow, scaled(shape.closedRecently), true},
+		{"issues done", scaled(shape.done), false},
+		{"issues in backlog", scaled(shape.backlogAll), true},
+		{"issues in todo", scaled(shape.todoAll), true},
+		{"issues in flight", scaled(shape.inFlight), false},
+		{"issues in triage or icebox", scaled(shape.shelved), false},
+		{"unplaced issues", scaled(shape.unplaced), true},
+		{"parked issues", scaled(shape.parked), true},
+	}
+	for _, count := range counts {
+		held, slack := "exactly", 0.0
+		if !count.exact {
+			held, slack = fmt.Sprintf("within %.0f%%", 100*movedCostShapeSlack), movedCostShapeSlack*float64(count.production)
+		}
+		holds := read[count.what]
+		t.Logf("c-moved-read-cost: the corpus holds %d %s (production at scale %v: %d, held %s)", holds, count.what, scale, count.production, held)
+		if math.Abs(float64(holds-count.production)) > slack {
+			t.Errorf("the corpus holds %d %s, where production at scale %v holds %d, held %s", holds, count.what, scale, count.production, held)
+		}
+	}
+}
+
+// ───── what a server owes ─────────────────────────────────────────────────
+
+// The owed wait: every count is read every readCostOwedPoll, as c-read-cost reads them, printed
+// every movedCostOwedPrint while one stands above zero, and the run fails once one has stayed
+// above zero for movedCostOwedWait. At scale 1 the release before's roll alone reads the corpus's
+// 680,000 events 1,000 a tick, a tick every 2 s, about 23 minutes.
+const (
+	movedCostOwedWait  = 60 * time.Minute
+	movedCostOwedPrint = 30 * time.Second
+)
+
+// movedCostBaseOwed is what the release before records as owed after a boot, read as its own
+// block-index tick reads it (docs' ReconcileBlockIndex at 93625c08). First its roll over the event
+// log: how many event ids its build's row of block_index_event_cursors stands behind the newest
+// event, or every event where it holds no row yet. Each tick reads the events after that row, at
+// most 1,000, marks what they name and moves the row to the last one it read, and while a page is
+// full the next tick follows 2 s later (readEventsAfterCursor), so the row reaches the newest event
+// once the roll has read the corpus's events. Then the object pass that row owes
+// (object_nodes_owed_at), which writes the nodes of the asks the corpus writes; the documents owed
+// a block index as that build lists them, by a null version or by a mark its marking rule lists
+// (owedDocuments, refs.OwedMarkListed), the rule its row records; and the comments, messages and
+// asks owed a block index of their own blocks, and the items owed one with the block grammar or
+// the whole grammar. $1 is its commit, the build_commit its processes write.
+var movedCostBaseOwed = []readCostOwedCount{
+	{"block_index_events_behind", `(select greatest(0, coalesce((select max(id) from events), 0) -
+		coalesce((select event_id from block_index_event_cursors where build_commit = $1), 0)))`},
+	{"object_nodes_owed", `(select count(*) from block_index_event_cursors where build_commit = $1 and object_nodes_owed_at is not null)`},
+	{"document_block_versions_owed", `(select count(*) from document_block_versions b where b.version is null
+		or b.store_owed_at is not null and (b.store_owed_rule <= (select marking_rule from block_index_event_cursors where build_commit = $1)
+		                                    or b.store_version is null or b.store_version < b.version))`},
+	{"comment_block_state_owed", `(select count(*) from comment_block_state where owed_at is not null)`},
+	{"message_block_state_owed", `(select count(*) from message_block_state where owed_at is not null)`},
+	{"ask_block_state_owed", `(select count(*) from ask_block_state where owed_at is not null)`},
+	{"block_grammar_owed", `(select count(*) from block_grammar_owed)`},
+	{"refs_grammar_owed", `(select count(*) from refs_grammar_owed)`},
+}
+
+// waitMovedCostOwed waits until s owes nothing: every count of counts reads 0, $1 of each being s's
+// commit, and s has logged the end of its boot's run of the graph store's backfill
+// (readCostBackfillDone). It reads them every readCostOwedPoll, never on a fixed sleep, prints the
+// first reading and one every movedCostOwedPrint after it while anything is owed, with the
+// database's clock_timestamp(), and then how long the wait took. Past movedCostOwedWait it fails,
+// naming each thing still owed.
+func waitMovedCostOwed(t *testing.T, conn *pgx.Conn, s *readCostServer, counts []readCostOwedCount) {
+	t.Helper()
+	columns := make([]string, len(counts))
+	for index, count := range counts {
+		columns[index] = count.sql
+	}
+	statement := `select clock_timestamp()::text, ` + strings.Join(columns, ", ")
+	started := time.Now()
+	var printed time.Time
+	var at string
+	var owed []string
+	settled := testwait.Holds(movedCostOwedWait, readCostOwedPoll, func() bool {
+		values := make([]int64, len(counts))
+		targets := []any{&at}
+		for index := range values {
+			targets = append(targets, &values[index])
+		}
+		if err := conn.QueryRow(context.Background(), statement, s.commit).Scan(targets...); err != nil {
+			t.Fatalf("c-moved-read-cost: %s: read what it owes: %v", s.name, err)
+		}
+		owed = nil
+		for index, count := range counts {
+			if values[index] != 0 {
+				owed = append(owed, fmt.Sprintf("%s=%d", count.name, values[index]))
+			}
+		}
+		if !strings.Contains(s.process.Output.String(), readCostBackfillDone) {
+			owed = append(owed, "boot_backfill_done=false")
+		}
+		if len(owed) > 0 && time.Since(printed) >= movedCostOwedPrint {
+			printed = time.Now()
+			t.Logf("c-moved-read-cost: %s owes at %s, %s into the wait: %s", s.name, at, time.Since(started).Round(time.Second),
+				strings.Join(owed, " "))
+		}
+		return len(owed) == 0
+	})
+	if !settled {
+		t.Fatalf("c-moved-read-cost: %s still owes after %s: %s", s.name, movedCostOwedWait, strings.Join(owed, ", "))
+	}
+	t.Logf("c-moved-read-cost: %s owes nothing at %s; the wait took %s", s.name, at, time.Since(started).Round(time.Millisecond))
 }
 
 // ───── the seven reads ────────────────────────────────────────────────────
@@ -348,7 +599,7 @@ func movedCostReads(corpus *movedCostCorpus) []movedCostRead {
 	type rows = []json.RawMessage
 	return []movedCostRead{
 		{
-			name: "priorities", path: "/api/v1/priorities", unit: "live priorities", want: corpus.live,
+			name: "priorities", path: "/api/v1/priorities", unit: "live priorities", want: corpus.priorities,
 			count: movedCostCount(func(v struct {
 				Priorities rows `json:"priorities"`
 			}) int {
@@ -801,6 +1052,12 @@ func movedCostParameters(statement movedCostStatement) string {
 // each of its statements through the views, taken through a proxy on a boot of its own, then
 // measures the third side. Each side answers each read alike before it is measured.
 //
+// No reading is taken while a server's own background work runs over the corpus: after each boot,
+// before its first reading or plan, the run waits until that server owes nothing, as it records
+// what it owes (waitMovedCostOwed): the release before's block-index roll over the events the
+// corpus wrote after its cursor, its object pass and its block index (movedCostBaseOwed), this
+// head's backfills (readCostHeadOwed), and each boot's run of the graph store's backfill.
+//
 // Each read on the new side and on the third side is held to twice its old side's p50. Every p90,
 // p95 and p99 is printed and bound at nothing, and so is each read's database time per reading on
 // each side, with the statements behind it, and that of an idle interval after it
@@ -844,6 +1101,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	first.stop(t)
 	seedMovedCostCorpus(t, conn, corpus)
 	base := startReadCostServer(t, client, baseName(""), baseBinary, baseCommit, databaseURL, listener)
+	waitMovedCostOwed(t, conn, base, movedCostBaseOwed)
 	readCostVacuum(t, conn, "old side")
 	counts := holdMovedCostReads(t, base, "old side", reads, nil)
 	old := measureMovedCostSide(t, statements, base, "old side", reads)
@@ -864,23 +1122,21 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	if relkind != "v" {
 		t.Fatalf("after this head's boot priority_nodes is of relkind %q, where the move leaves a view", relkind)
 	}
-	if !testwait.Holds(readCostOwedWait, readCostOwedPoll, func() bool {
-		return strings.Contains(head.process.Output.String(), readCostBackfillDone)
-	}) {
-		t.Fatalf("this head did not log %s within %s:\n%s", readCostBackfillDone, readCostOwedWait, readCostTail(head.process.Output.String()))
-	}
+	waitMovedCostOwed(t, conn, head, readCostHeadOwed)
 	readCostVacuum(t, conn, "new side")
 	holdMovedCostReads(t, head, "new side", reads, counts)
 	now := measureMovedCostSide(t, statements, head, "new side", reads)
 	head.stop(t)
 
 	// ───── third: the release before again, through the views; the plans first ─────
-	readCostVacuum(t, conn, "third side")
 	proxy, throughProxy := startMovedCostProxy(t, databaseURL)
 	planned := startReadCostServer(t, client, baseName(" through the plan proxy"), baseBinary, baseCommit, throughProxy, listener)
+	waitMovedCostOwed(t, conn, planned, movedCostBaseOwed)
+	readCostVacuum(t, conn, "third side")
 	takeMovedCostPlans(t, proxy, planned, reads)
 	printMovedCostPlans(t, conn, proxy, reads)
 	rollback := startReadCostServer(t, client, baseName(" after the rollback"), baseBinary, baseCommit, databaseURL, listener)
+	waitMovedCostOwed(t, conn, rollback, movedCostBaseOwed)
 	holdMovedCostReads(t, rollback, "third side", reads, counts)
 	third := measureMovedCostSide(t, statements, rollback, "third side", reads)
 	rollback.stop(t)
