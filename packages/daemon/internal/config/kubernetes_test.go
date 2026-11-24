@@ -1,6 +1,6 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
+//ci:reads deploy/kubernetes/operator-route/pod.yml operatorRoutePod reads it under ../../../.. (:1803) for the tests of the operator route's placeholders
 
 import (
 	"fmt"

@@ -442,16 +442,16 @@ func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
 	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
 }
 
-// The controller's retry of the same claim runs no launch at once. runDroppedLaunchForRetry takes
+// The controller's retry of the same agent runs no launch at once. runDroppedLaunchForRetry takes
 // the operator's retry alone, the line exemptWake draws: the controller asks its retries of as many
 // agents at once as it decides to, so each keeps the turn the pacing gave it. The retry is refused
-// naming the state the gate found, as a retry of a queued claim is, and the claim launches once, at
-// its turn.
+// naming the state the gate found, as a retry of an agent whose claim is queued is, and the agent
+// launches once, at its turn.
 //
 // The negative control is runDroppedLaunchForRetry matching every RequestAskedRetry, whoever asks
-// it: the controller's retry then launches the claim at once, and this test reads that at the
+// it: the controller's retry then launches the agent at once, and this test reads that at the
 // runtime's starts.
-func TestAControllersRetryOfAClaimWaitingFromQueuedKeepsItsTurn(t *testing.T) {
+func TestAControllersRetryOfAnAgentWaitingFromQueuedKeepsItsTurn(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
 
