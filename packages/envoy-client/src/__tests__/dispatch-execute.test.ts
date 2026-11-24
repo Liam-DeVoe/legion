@@ -10730,7 +10730,7 @@ describe("executeDispatchTool", () => {
   // An edit under a block guard whose replace rewrote a typed block in place under its own id,
   // which the guard did not name, says so, with the block's token to compare with the one the
   // caller read, under the Applied line, and its details carry them for the session's ledger.
-  test("names the typed blocks a guarded edit rewrote in place that its guard did not name", async () => {
+  test("prints a Block guard line naming the typed blocks a guarded edit rewrote in place that its guard did not name", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -10795,11 +10795,12 @@ describe("executeDispatchTool", () => {
 
   // An edit under a block guard that would remove blocks the guard leaves out - the nested list of
   // an item a marker delete selects - is refused 409 PRECONDITION_FAILED, and the refusal carries
-  // them in unguarded_blocks. The command keeps Dispatch's words and every field of the refusal,
-  // and adds a line naming each block with its token and saying where they go, so the caller can
-  // send the edit again without reading the document. A refusal naming no such block reads as
-  // Dispatch wrote it.
-  test("names each block a refused guarded edit would remove, with its token, and where it goes", async () => {
+  // them in unguarded_blocks, each at the token it carries now. The command keeps Dispatch's words
+  // and every field of the refusal, and adds a line naming each block with that token and saying
+  // to compare it with the one the caller's own read listed: where they match, the block goes in
+  // the guard at the token read and the edit is sent again; where they differ, the caller reads the
+  // document again. A refusal naming no such block reads as Dispatch wrote it.
+  test("prints a Block guard line naming each block a refused guarded edit would remove, with the token to compare with the one read", async () => {
     const refusal = (body: Record<string, unknown>) => async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -10841,7 +10842,7 @@ describe("executeDispatchTool", () => {
       edit({
         code: "PRECONDITION_FAILED",
         error:
-          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; name it in the guard at the token the edit read it at, and send the edit again',
+          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; compare the token this refusal gives it with the token your own read listed for it: if they match, name it in the guard at the token you read and send the edit again, and if they differ, another writer changed it since your read, so read the document again before you remove it',
         current,
         mismatches: [],
         unguarded_blocks: one,
@@ -10852,8 +10853,8 @@ describe("executeDispatchTool", () => {
         code: "PRECONDITION_FAILED",
         status: 409,
         message:
-          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; name it in the guard at the token the edit read it at, and send the edit again\n' +
-          "Block guard: this edit would remove a block the guard did not name: nested-1 (token sha256:nested); add it to the guard's precondition.blocks (--precondition-json) at that token and send the edit again.",
+          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; compare the token this refusal gives it with the token your own read listed for it: if they match, name it in the guard at the token you read and send the edit again, and if they differ, another writer changed it since your read, so read the document again before you remove it\n' +
+          "Block guard: this edit would remove a block the guard did not name: nested-1 (token sha256:nested). Compare that token with the one your own read listed for the block: if they match, add it to the guard's precondition.blocks (--precondition-json) at the token you read and send the edit again; if they differ, another writer changed it since your read, so read the document again before you remove it.",
         current,
         mismatches: [],
         unguardedBlocks: one,
@@ -10873,7 +10874,7 @@ describe("executeDispatchTool", () => {
         unguarded_blocks: two,
       })
     ).rejects.toThrow(
-      "refused\nBlock guard: this edit would remove 2 blocks the guard did not name: nested-1 (token sha256:nested), nested-2 (token sha256:deeper); add them to the guard's precondition.blocks (--precondition-json) at those tokens and send the edit again."
+      "refused\nBlock guard: this edit would remove 2 blocks the guard did not name: nested-1 (token sha256:nested), nested-2 (token sha256:deeper). Compare each token with the one your own read listed for that block: if all match, add them to the guard's precondition.blocks (--precondition-json) at the tokens you read and send the edit again; if one differs, another writer changed that block since your read, so read the document again before you remove it."
     );
 
     const stale = await edit({

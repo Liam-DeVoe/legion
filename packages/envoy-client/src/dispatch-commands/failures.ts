@@ -34,10 +34,20 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     );
   }
   if (!(error instanceof DispatchServiceError)) return error;
+  return withMessage(error, `${error.code}: ${error.message}${joined}`);
+}
+
+/**
+ * A refusal Dispatch wrote, with `message` in place of its own. Every other field of the refusal
+ * (`candidates`, `current`, `mismatches`, `unguardedBlocks`) rides along. This is the one place
+ * that copies them, so a field the refusal gains is added here once and every caller that rewords
+ * a refusal keeps it.
+ */
+export function withMessage(error: DispatchServiceError, message: string): DispatchServiceError {
   return new DispatchServiceError(
     error.code,
     error.status,
-    `${error.code}: ${error.message}${joined}`,
+    message,
     error.candidates,
     error.current,
     error.mismatches,

@@ -117,7 +117,8 @@ export interface DispatchServiceErrorShape {
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
   /** On a `409 PRECONDITION_FAILED` of an edit under a block guard, each block the edit would
-   *  remove that the guard does not name, with the token the edit read it at: the guard that
-   *  names them at those tokens takes the edit while none of them has changed. */
+   *  remove that the guard does not name, with the token it carries now: a token to compare with
+   *  the one the caller's own read listed, never one to send. Where they match, the guard that
+   *  names the block at the token read takes the edit; where they differ, the block changed. */
   readonly unguarded_blocks?: EditBlockPrecondition[];
 }

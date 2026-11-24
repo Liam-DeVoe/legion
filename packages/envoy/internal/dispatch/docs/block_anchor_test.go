@@ -119,9 +119,10 @@ func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
 // matched. A guarded removal is refused when it takes a block that neither the guard names nor a
 // named block contains - for a list item a find's marker selects, the nested list after its
 // paragraph, since the listing names no list item, or the one nested item of it the guard leaves
-// out - naming each such block with the token the edit read (ErrPreconditionFailed.Unguarded), so
-// the caller adds it to the guard and sends the edit again (INFRA-341). A list or quote the removal
-// empties of blocks the guard covers is taken: it holds nothing another writer could have changed.
+// out - naming each such block with the token it carries now (ErrPreconditionFailed.Unguarded),
+// for the caller to compare with the token its own read listed (INFRA-341). A list or quote the
+// removal empties of blocks the guard covers is taken: it holds nothing of its own but its
+// attributes, which no listed token covers.
 // So is a delete of an item's whole text whose one nested list takes the item's place, which
 // removes the item's text alone. The typed block a replace's with of blocks rewrites in place
 // under its own id is answered, not refused: the coverage answers it where the guard did not name
