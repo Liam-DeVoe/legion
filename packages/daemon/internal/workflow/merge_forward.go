@@ -81,7 +81,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	asked, named, err := e.implementationAgent(ctx, tx, issue, w, at)
+	// A task with no step of the type implementation has no agent to ask: the record keeps no Agent
+	// then (the zero recipient), and tellAsk asks nobody.
+	asked, _, err := e.implementationAgent(ctx, tx, issue, w, at)
 	if err != nil {
 		return err
 	}
@@ -96,7 +98,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	// The ask and the hold are queued before the record holds the ask: the write of the record opens
 	// a merge forward asked of the owner, which asks the owner again (ownersMergeForwardWritten,
 	// askOwnerAgain) unless an ask at that head is queued already, and this one is.
-	if err := e.tellAsk(ctx, tx, issue, *next, pr.Number, named, true); err != nil {
+	if err := e.tellAsk(ctx, tx, issue, *next, pr.Number); err != nil {
 		return err
 	}
 	if !own {
@@ -115,48 +117,54 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return nil
 }
 
-// tellAsk queues the messages the ask asked (a record.MergeForward of issue's pull request numbered
-// pull) sends: the ask to the claim it reached (asked.Agent), as the role it was made as, built by
-// the one builder of it (record.MergeForward.Ask), where named says a task step does that work;
-// and, where held, away from the implementation step (asked.Own false), the hold to the worker of
-// the step the task stands at (record.MergeForwardWorker). Each claim gets one message
+// tellAsk queues the messages mergeForward's ask asked (a record.MergeForward of issue's pull
+// request numbered pull) sends: the ask, built by the one builder of it (record.MergeForward.Ask),
+// to the claim it reached (asked.Agent, "" where no task step does that work, and then nobody is
+// asked), as the role it was made as; and the hold to the worker of the step the task stands at
+// (mergeForwardHold), away from the implementation step. Each claim gets one message
 // (addressMergeForward): where the agent asked works the step the issue stands at, it gets the ask
-// alone, which covers the hold. mergeForward tells both;
-// the ask again of the owner (askOwnerAgain) tells the ask alone, its hold sent with the first ask,
-// and covers the hold as the first ask did where the owner works the step the task stands at.
-func (e *Engine) tellAsk(ctx context.Context, tx pgx.Tx, issue record.Issue, asked record.MergeForward, pull int, named, held bool) error {
+// alone, which covers the hold. The ask again of the owner (askOwnerAgain) sends the ask alone, its
+// hold sent with the first ask, and builds it itself.
+func (e *Engine) tellAsk(ctx context.Context, tx pgx.Tx, issue record.Issue, asked record.MergeForward, pull int) error {
+	ask := asked.Ask(pull, "")
 	var sends []mergeForwardSend
-	if named {
-		sends = append(sends, mergeForwardSend{step: record.MergeForwardAsk,
-			to: roleRecipient{issue: issue.Key, role: asked.Ask(pull, "").Role, row: issue.Key, claim: asked.Agent}})
+	if asked.Agent != "" {
+		sends = append(sends, mergeForwardSend{step: record.MergeForwardAsk, to: roleRecipient{issue: issue.Key, role: ask.Role, row: issue.Key, claim: asked.Agent}})
 	}
-	if !asked.Own {
-		worker, token, reaches, err := record.MergeForwardWorker(record.MergeForwardHold, issue, record.StandsAt(issue))
-		if err != nil {
-			return err
-		}
-		if reaches {
-			sends = append(sends, mergeForwardSend{step: record.MergeForwardHold, to: roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token}})
-		}
+	hold, held, err := mergeForwardHold(issue, asked)
+	if err != nil {
+		return err
 	}
-	messages, err := e.addressMergeForward(ctx, tx, issue.Project, sends, nil)
+	if held {
+		sends = append(sends, mergeForwardSend{step: record.MergeForwardHold, to: hold})
+	}
+	messages, err := e.addressMergeForward(ctx, tx, issue.Project, ask, sends, nil)
 	if err != nil {
 		return err
 	}
 	for _, message := range messages {
-		if message.Step == record.MergeForwardHold && !held {
-			continue
-		}
-		if message.Step == record.MergeForwardAsk {
-			message = asked.Ask(pull, message.Covers)
-		} else {
-			message.Head, message.Base, message.Phase, message.PullRequest, message.Why = asked.Head, asked.Base, asked.Phase, pull, asked.Why
-		}
 		if err := e.enqueue(ctx, tx, issue.Key, message); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// mergeForwardHold is the recipient of the hold the ask asked sends where issue stands
+// (record.StandsAt): the worker of the step the task stands at, addressed as that step's worker
+// (record.MergeForwardWorker: the owner's claim at a place the owner works, and elsewhere the claim
+// the role's phases row names), and false where no hold goes: at the implementation step
+// (asked.Own), and where the hold does not reach that worker. tellAsk sends it, and askOwnerAgain
+// reads it for the ask's cover.
+func mergeForwardHold(issue record.Issue, asked record.MergeForward) (roleRecipient, bool, error) {
+	if asked.Own {
+		return roleRecipient{}, false, nil
+	}
+	worker, token, reaches, err := record.MergeForwardWorker(record.MergeForwardHold, issue, record.StandsAt(issue))
+	if err != nil || !reaches {
+		return roleRecipient{}, false, err
+	}
+	return roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token}, true, nil
 }
 
 // mergeForwardSend is one message one event of a merge forward sends: its step and the recipient
@@ -167,17 +175,18 @@ type mergeForwardSend struct {
 }
 
 // addressMergeForward addresses the messages one event of a merge forward sends (sends), each as
-// every role message of the daemon is addressed (addressRoles), and gives each claim one message
-// for the event: of two messages whose recipients one claim holds and of which one covers the
-// other (record.MergeForwardCovers), the claim gets the covering one alone, whichever of the two
-// sends names first, and it carries in Covers the step of the one it stands in for, so the agent
-// gets each thing it is asked for, once. A pair no cover joins is sent whole. A message skip
-// refuses for its claim is not sent and is covered by none: the landed, which is never asked of the
-// agent that pushed the merge (mergeForwardLanded). It answers each message with its role, claim,
-// step and Covers, in the order of sends, a covering message in the place of the first of its two,
-// for its sender to fill with the merge forward's heads.
-func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project string, sends []mergeForwardSend,
-	skip func(record.MergeForwardStep, claim.Token) bool) ([]record.MergeForwardMessage, error) {
+// every role message of the daemon is addressed (addressRoles), and completes each from template,
+// the event's message with its heads, base, phase, pull request and why: its role, claim and step
+// are its send's. It gives each claim one message for the event: of two messages whose recipients
+// one claim holds and of which one covers the other (record.MergeForwardCovers), the claim gets the
+// covering one alone, whichever of the two sends names first, and it carries in Covers the step of
+// the one it stands in for, so the agent gets each thing it is asked for, once. A pair no cover
+// joins is sent whole. A message skip refuses for its claim is not sent and is covered by none: the
+// landed, which is never asked of the agent that pushed the merge (mergeForwardLanded). It answers
+// the messages in the order of sends, a covering message in the place of the first of its two, for
+// its sender to queue.
+func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project string, template record.MergeForwardMessage,
+	sends []mergeForwardSend, skip func(record.MergeForwardStep, claim.Token) bool) ([]record.MergeForwardMessage, error) {
 	var messages []record.MergeForwardMessage
 	for _, send := range sends {
 		addressed, err := e.addressRoles(ctx, tx, project, []roleRecipient{send.to}, nil)
@@ -191,7 +200,8 @@ func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project str
 		if skip != nil && skip(send.step, to.token) {
 			continue
 		}
-		message := record.MergeForwardMessage{Role: to.role, Claim: to.token, Step: send.step}
+		message := template
+		message.Role, message.Claim, message.Step, message.Covers = to.role, to.token, send.step, ""
 		i := slices.IndexFunc(messages, func(m record.MergeForwardMessage) bool {
 			return m.Claim == to.token && (record.MergeForwardCovers(m.Step, send.step) || record.MergeForwardCovers(send.step, m.Step))
 		})
@@ -335,13 +345,13 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	pushed := func(step record.MergeForwardStep, to claim.Token) bool {
 		return step == record.MergeForwardLanded && asked.Agent != "" && to == asked.Agent
 	}
-	messages, err := e.addressMergeForward(ctx, tx, issue.Project, sends, pushed)
+	template := record.MergeForwardMessage{Head: asked.Head, Landed: pr.HeadSHA, Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}
+	messages, err := e.addressMergeForward(ctx, tx, issue.Project, template, sends, pushed)
 	if err != nil {
 		return err
 	}
 	review := false
 	for _, message := range messages {
-		message.Head, message.Landed, message.Base, message.Phase, message.PullRequest, message.Why = asked.Head, pr.HeadSHA, asked.Base, at, pr.Number, asked.Why
 		if err := e.enqueue(ctx, tx, issue.Key, message); err != nil {
 			return err
 		}

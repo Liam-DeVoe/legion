@@ -198,8 +198,9 @@ func TestTheAgentAskedToMergeThatWorksTheStepGetsTheAskAndItCoversTheHold(t *tes
 // A covering message stands in for the one it covers whichever of the two its sender addresses
 // first (addressMergeForward): a review addressed after a landed to the same claim replaces that
 // landed, in its place, and carries it in Covers, as a review addressed before the landed does. The
-// callers address the covering message first today, so only this test drives the other order. The
-// control is a landed to another claim, which is sent whole, in the order given, beside the review.
+// callers address the covering message first today, so only this test drives the other order. Each
+// message is the event's template completed with its recipient and step. The control is a landed to
+// another claim, which is sent whole, in the order given, beside the review.
 func TestACoveringMessageStandsInForTheOneItCoversInEitherOrder(t *testing.T) {
 	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	reviewer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer))
@@ -222,14 +223,59 @@ func TestACoveringMessageStandsInForTheOneItCoversInEitherOrder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
+			template := record.MergeForwardMessage{Head: "head-42", Landed: "head-forward", Base: "main", Phase: phase.Accepting, PullRequest: 42}
 			var got []record.MergeForwardMessage
 			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
-				got, err = engine.addressMergeForward(ctx, tx, "LEGION", tc.sends, nil)
+				got, err = engine.addressMergeForward(ctx, tx, "LEGION", template, tc.sends, nil)
 				return err
 			})
 			if !reflect.DeepEqual(sentOf(got), tc.want) {
 				t.Fatalf("the event sent %+v, want %+v", sentOf(got), tc.want)
+			}
+			for _, message := range got {
+				completed := template
+				completed.Role, completed.Claim, completed.Step, completed.Covers = message.Role, message.Claim, message.Step, message.Covers
+				if message != completed {
+					t.Fatalf("the event sent %+v, want the template %+v completed with its recipient and step", message, template)
+				}
+			}
+		})
+	}
+}
+
+// The ask again of the owner (askOwnerAgain) is the record's ask alone, and it covers the hold as
+// the first ask did where the owner is the worker of the step the task stands at: on
+// `implementer:owner reviewer:owner` in reviewing, the owner asked is asked again with the cover of
+// the hold, which no hold message stands beside. It addresses no hold to find that out. The control:
+// on `implementer:owner reviewer`, whose fresh reviewer is that worker, the owner is asked again
+// with no cover, and no hold is sent again either.
+func TestTheAskAgainOfTheOwnerCoversTheHoldWhereTheOwnerWorksTheStep(t *testing.T) {
+	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+	reviewer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer))
+	for _, tc := range []struct {
+		name   string
+		words  []string
+		agents []claim.Token
+		want   []sent
+	}{
+		{name: "the owner implements and reviews", words: []string{"implementer:owner", "reviewer:owner"}, agents: []claim.Token{owner, owner},
+			want: []sent{{step: record.MergeForwardAsk, role: claim.RoleImplementer, claim: owner, covers: record.MergeForwardHold}}},
+		{name: "control: a fresh reviewer", words: []string{"implementer:owner", "reviewer"}, agents: []claim.Token{owner, reviewer},
+			want: []sent{{step: record.MergeForwardAsk, role: claim.RoleImplementer, claim: owner}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := standsAtStep(t, phase.Reviewing, 2, tc.words, tc.agents, owner)
+			engine := returnEngine()
+			onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+				stored, err := engine.store.PullRequest(ctx, tx, issue.Key)
+				if err != nil {
+					return err
+				}
+				return engine.askOwnerAgain(ctx, tx, issue, *stored)
+			})
+			if got := sentOf(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the ask again sent %+v, want %+v", got, tc.want)
 			}
 		})
 	}
