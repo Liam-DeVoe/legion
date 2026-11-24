@@ -39,7 +39,13 @@ import {
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { focusedNodeId } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
-import { holdMarginChunk } from "./shell";
+import {
+  failAssetWhen,
+  holdMarginChunk,
+  MARGIN_CHUNK,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -730,6 +736,57 @@ test("Escape pressed on a range input before the margin's chunk is in calls noth
       marginShell(page),
       "the Escape on a range input closed the drawn Details"
     ).toBeVisible();
+  });
+});
+
+// The margin's chunk can fail to download while the browser is online - a deployment that
+// replaced the build the page loaded - with no recovery reload to follow: the tab's three reloads
+// are spent here, as a tab whose assets kept failing has spent them. The margin comes through
+// `lazyChunk` (`web/src/features/margin/MarginColumn.tsx`), so the failure goes to the margin's
+// own error boundary (`AppShell`, `web/src/app.tsx`), which says so in the margin's place, and the
+// page stays drawn. Details is the margin, so it is never drawn, and the open the reader asked for
+// still waits: the shell's Escape for a waiting Details calls it off, as it does while the chunk
+// is only slow, and the outline row keeps the focus. The row holds the margin's chunk until
+// Shift+M has asked for Details, and then fails it.
+// SLOW(>=2s): a seeded frame, two loads - the first only to spend the tab's reloads in its own
+// storage - and a load waited on until the outline puts the focus on its row.
+test("with the margin's chunk failing online and no reload to follow, the margin says so, and Escape calls off the Details Shift+M asked for while the row keeps the focus", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await gotoIssue(page, `/issues/${key}`);
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const asked = Promise.withResolvers<void>();
+    const failed = await failAssetWhen(page, MARGIN_CHUNK, () => asked.promise);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    const row = await focusedNodeId(page);
+    expect(row, "the load's opening put the focus on no row").not.toBeNull();
+    await page.keyboard.press("Shift+M");
+    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    asked.resolve();
+    await expect(
+      page.getByTestId("error-boundary").filter({ hasText: "Something went wrong in the margin." }),
+      "the margin's place does not say the margin failed"
+    ).toBeVisible();
+    expect(failed(), "the margin's chunk was not asked for and failed").toBeGreaterThan(0);
+    await expect(
+      page.getByTestId("error-boundary"),
+      "a boundary other than the margin's caught the failure"
+    ).toHaveCount(1);
+    await expect(marginShell(page), "the margin drew Details").toHaveCount(0);
+    expect(await focusedNodeId(page), "the failure took the focus off the row").toBe(row);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(await focusedNodeId(page), "the Escape also took the focus off the row").toBe(row);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
   });
 });
 

@@ -242,17 +242,15 @@ export default defineConfig({
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
     // The editor's lazy chunk (`lib-*.js`, 188,972 bytes) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
-    // No modulepreload polyfill: Vite's copy of it is 710 bytes of the entry chunk, and it returns
-    // at once in every browser that has `<link rel=modulepreload>` - Chrome 66+, Safari 17+,
-    // Firefox 115+, which covers every browser the browser suite runs - so those are unchanged
-    // without it. The browsers without it lose little. With the polyfill off, Vite 5.4's preload
-    // helper asks whether the browser has `modulepreload` (`detectScriptRel` in
-    // vite/dist/node/chunks/dep-BK3b2jBa.js) and, where it has not, starts a lazy chunk's
-    // dependencies with `<link rel=preload>` instead; and the built index.html carries no
-    // modulepreload link for the polyfill to act on. So Safari 14-16 and Firefox 85-114 still
-    // start a lazy chunk's dependencies beside it. Only Firefox 78-84, which has neither link,
-    // loads them after the chunk that imports them, which is slower and still runs the app: the
-    // architect's performance trade for the entry's budget (dispatch://INFRA-1109, 2026-11-23).
+    // No modulepreload polyfill. Vite's copy of it is 710 bytes of the entry chunk, and it does
+    // nothing in a browser that has `<link rel=modulepreload>`: Chrome 66+, Safari 17+ and
+    // Firefox 115+. Every browser without that link also lacks `Promise.withResolvers`, which
+    // only Chrome 119+, Safari 17.4+ and Firefox 121+ have, and the app's own code calls it: each
+    // write the page makes (`run` in `features/writes/write-store.ts`) and each upload
+    // (`xhrUpload` in `api/client.ts`). So in those browsers every write fails as the reader
+    // makes it, with the polyfill or without it: they do not run the app, and the polyfill acted
+    // only in browsers the app already excludes. No browser that runs the app changes without it.
+    // Turned off for the entry's budget (dispatch://INFRA-1109, 2026-11-23).
     modulePreload: { polyfill: false },
     emptyOutDir: true,
   },

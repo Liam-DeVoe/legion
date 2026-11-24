@@ -2,7 +2,13 @@ import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { closeRail, openRail } from "./rail";
-import { FRAME_SHELL_CHUNK, fetchedChunk, recordTabReloads, tabReloads } from "./shell";
+import {
+  FRAME_SHELL_CHUNK,
+  fetchedChunk,
+  holdAssetUntilReleased,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
@@ -496,6 +502,55 @@ test("Settings asks for the new issue page's frame before the reader turns it on
   await page.goto("/settings");
   await expect(issuePageCheckbox(page)).not.toBeChecked();
   await fetchedChunk(page, FRAME_SHELL_CHUNK);
+  if (isPhone) await assertPageFits(page);
+});
+
+// On an issue's address the frame changes the shell (`frameOf`, `frame-shell.tsx`), and its chunk
+// can still be on the wire when another tab turns the new page on. This tab then draws the new page
+// in today's shell, and draws the frame around it once the chunk is in (`ChosenShell`,
+// `web/src/app.tsx`). The late frame changes what the reader sees, and nothing else: the shell and
+// the page in it stay mounted, so the text the reader typed into the page meanwhile, and the focus
+// in it, are still there. Two shells for the two states, or the page drawn again in the frame,
+// would take both. Today's page itself goes at the other tab's press, with or without the frame, as
+// the switch says (`IssuePage.tsx`), so the text goes into the new page's title, the issue page's
+// own text field, while the frame is held.
+// SLOW(>=2s): two tabs each load cold, the issue and Settings, and the other tab's switch is
+// pressed while this tab's frame is held on the wire.
+test("another tab turning the new issue page on while this tab's frame is on the wire leaves the text typed into the page, and the focus, as the frame comes @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const issue = await seedIssue();
+  const second = await context.newPage();
+  if (!isPhone) {
+    await page.setViewportSize(desktop);
+    await second.setViewportSize(desktop);
+  }
+  const frameChunk = await holdAssetUntilReleased(page, FRAME_SHELL_CHUNK);
+  await page.goto(`/issues/${issue.key}`);
+  await expectTodaysPage(page);
+  await second.goto("/settings");
+
+  await issuePageCheckbox(second).check();
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  expect(new URL(await frameChunk.url).pathname, "the switch asked for no frame").toMatch(
+    FRAME_SHELL_CHUNK
+  );
+  // The frame marks its `main` as no place for reference cards (`frame-shell.tsx`), at every
+  // width; today's shell does not.
+  const frameMain = page.locator("main[data-no-hover-preview]");
+  await expect(frameMain, "the frame was drawn with its chunk held").toHaveCount(0);
+  await newPageHeading(page).click();
+  const title = page.getByRole("textbox", { exact: true, name: "Issue title" });
+  const unsent = "Ship the release notes, not sent yet";
+  await title.fill(unsent);
+  await expect(title).toBeFocused();
+
+  frameChunk.release();
+  await expect(frameMain, "the frame did not come once its chunk was in").toHaveCount(1);
+  await expect(title, "the frame took the focus from the page's field").toBeFocused();
+  await expect(title, "the frame took the text typed into the page").toHaveValue(unsent);
   if (isPhone) await assertPageFits(page);
 });
 
