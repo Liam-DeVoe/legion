@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -668,22 +669,38 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 
 // A gh REST read that heard GitHub's status line and then hung is no transport failure when the
 // guard's own bound stops it: GitHub answered, so the call is refused as gh's stop, and neither
-// curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute.
+// curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute, and is
+// counted from before gh starts: a loaded machine can spend it before gh has printed the line, and
+// such a read is a gh that heard nothing, which goes on to curl and shows nothing of this. The row
+// reads again until a read in which gh printed the line, which it marks after, before the bound
+// stopped it, within a minute.
 func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	shorten(t, &ghReadBound, time.Second)
-	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
-	ctx := bound(t)
-	var visibility Visibility
-	var err error
-	answered(t, "the visibility read whose gh heard GitHub and then hung", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
-	if err == nil {
-		t.Fatalf("read %q, want the call refused", visibility)
-	}
-	if got := stopBound(t, err); got > 1 {
-		t.Errorf("gh was stopped by a bound of %d s, want the guard's own 1 s", got)
-	}
-	if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
-		t.Errorf("curl ran %d times, GraphQL %d and git %d, want none", curl, graphql, git)
+	within := testwait.Bounded(t, time.Minute, procgroup.StopGrace+procgroup.WaitDelay+time.Second)
+	until := time.Now().Add(within)
+	for reads := 1; ; reads++ {
+		heard := filepath.Join(t.TempDir(), "heard")
+		rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\n: > "+shQuote(heard)+"\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+		ctx := bound(t)
+		var visibility Visibility
+		var err error
+		answered(t, "the visibility read whose gh heard GitHub and then hung", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
+		if _, statErr := os.Stat(heard); statErr != nil {
+			if time.Now().Before(until) {
+				continue
+			}
+			t.Fatalf("no read of %d over %s in which gh printed GitHub's status line before the guard's bound stopped it (read %q, %v)", reads, within, visibility, err)
+		}
+		if err == nil {
+			t.Fatalf("read %d: read %q, want the call refused", reads, visibility)
+		}
+		if got := stopBound(t, err); got > 1 {
+			t.Errorf("read %d: gh was stopped by a bound of %d s, want the guard's own 1 s", reads, got)
+		}
+		if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
+			t.Errorf("read %d: curl ran %d times, GraphQL %d and git %d, want none", reads, curl, graphql, git)
+		}
+		return
 	}
 }
 
