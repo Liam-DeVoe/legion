@@ -18,8 +18,9 @@ import (
 // the bottom one merged, retargets its base; it keeps the approvals when the diff does not change
 // (docs.github.com/en/pull-requests/reference/stacked-pull-requests, "Rebasing a stack"). Once
 // the issue is past its review, that move sends nothing back: the head is recorded, the phase
-// stays, no review round or pass is counted, no role is started or told and the architect is
-// told nothing. The move reaches the daemon as a synchronize whose push may arrive before it,
+// stays, no review round or pass is counted and no role is started; the one word sent is the
+// verdict ask every push past review makes of each review step that has passed. The move reaches
+// the daemon as a synchronize whose push may arrive before it,
 // after it, or never. The daemon then reads GitHub's merge state of the new head, as it does
 // for any moved head, and a clean answer moves nothing either; in merging, the merge GitHub then
 // reports at the rebased head closes the issue.
@@ -72,10 +73,25 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 				if got := phaseRowOf(t, pool, claim.RoleImplementer); got.Pass != 0 {
 					t.Fatalf("after the rebase the implementer's row counts %d passes, want none", got.Pass)
 				}
-				// The rebase and the read queue nothing at all: no message to a role or to the
-				// architect, no worker start, no write to Dispatch.
-				if got := outboxKinds(t, pool); len(got) != 0 {
-					t.Fatalf("after the rebase the outbox holds %v, want nothing", got)
+				// The rebase sends nothing back and starts no worker: what it queues is the one ask
+				// every push past review makes, the verdict at the new head of the agent of each
+				// review step that has passed (askReviewSteps), since legion-verdict stands on one
+				// head only and GitHub's kept approval is no verdict of the daemon's. Nothing else
+				// goes to a role or to the architect, and nothing is written to Dispatch.
+				kinds := outboxKinds(t, pool)
+				asked := mergeForwardMessages(t, pool)
+				if len(asked) == 0 || len(asked) != len(kinds) {
+					t.Fatalf("after the rebase the outbox holds %v, merge-forward messages %v, want only the verdict asks of the review steps", kinds, toldWho(asked))
+				}
+				reviewerAsked := false
+				for _, message := range asked {
+					if message.Step != record.MergeForwardReview || message.Head != "head" || message.Landed != "rebased" {
+						t.Fatalf("after the rebase the daemon queued %+v, want only a verdict ask at the rebased head", message)
+					}
+					reviewerAsked = reviewerAsked || message.Role == claim.RoleReviewer
+				}
+				if !reviewerAsked {
+					t.Fatalf("after the rebase the daemon asked %v, want the reviewer's verdict at the rebased head among them", toldWho(asked))
 				}
 				if at.phase != phase.Merging {
 					return
