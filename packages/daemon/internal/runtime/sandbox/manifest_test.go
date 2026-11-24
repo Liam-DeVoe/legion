@@ -3398,9 +3398,9 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 	}
 }
 
-// uuid is the form a Claude Code session id takes (claudelaunch.NewSessionID), the only word of a
+// sessionUUID is the form a Claude Code session id takes (claudelaunch.NewSessionID), the only word of a
 // Claude launch's agent command that is not fixed.
-var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var sessionUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // A Claude Code role's pod runs Claude Code under `legion claude-bridge`, word for word: the
 // Claude Code this generation's start script installed under the role's state home on the issue's
@@ -3432,7 +3432,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	session := ""
 	if at := slices.Index(argv, "--session-id"); at < 0 || at+1 == len(argv) {
 		t.Fatalf("the agent command %q names no --session-id", argv)
-	} else if session = argv[at+1]; !uuid.MatchString(session) {
+	} else if session = argv[at+1]; !sessionUUID.MatchString(session) {
 		t.Errorf("the session is %q, want a version 4 uuid", session)
 	}
 	claude := func(generation uint64) string {

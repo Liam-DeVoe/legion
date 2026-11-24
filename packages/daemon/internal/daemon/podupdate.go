@@ -1168,7 +1168,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	// Sandbox that is absent or suspended, or whose pod is no longer the locator's, and replaces
 	// nothing there.
 	var ended roundEnd
-	if err := s.runtime.ReplacePod(limited, reading.process, s.recordedDue(issue, pod, recorded, s.replacementDue(issue, round, read.at, &ended))); err != nil {
+	if err := s.runtime.ReplacePod(limited, reading.process, s.recordedDue(recorded, s.replacementDue(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -1209,7 +1209,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 // once the replacement is made, which may have marked the volume for a reset), the line carries
 // keptVolume and the notice says the work is on that volume.
 func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reasons string, ended roundEnd,
-	named []supervise.Claim, read workspaceRead, members []supervise.Claim, recorded []byte) bool {
+	named []supervise.Claim, read workspaceRead, members []supervise.Claim, recorded store.PodReplacement) bool {
 	bounded := ended.bounded()
 	kept := s.roundKeptVolume(issue, members, round)
 	line := []any{"issue", issue, "round", round, "pod", pod, "atTheBound", bounded}
@@ -1232,7 +1232,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if !read.clean() {
 		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
 	}
-	finished := s.finishReplacement(ctx, issue, pod, recorded, reason, "round", round)
+	finished := s.finishReplacement(ctx, recorded, reason, "round", round)
 	s.endPodUpdates(issue, members, round)
 	return finished
 }
@@ -1789,7 +1789,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 	// zero roundEnd, which no bound made, where the runtime returns nil without asking the last
 	// word.
 	var ended roundEnd
-	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(issue, pod, recorded, s.issueReplacementDue(issue, round, read.at, &ended))); err != nil {
+	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(recorded, s.issueReplacementDue(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -2032,7 +2032,7 @@ type launchRound struct {
 type replacedLaunch struct {
 	ended  roundEnd
 	read   workspaceRead
-	record []byte
+	record store.PodReplacement
 }
 
 // launchRecord runs write on the record podUpdateLaunchReplaced keeps of round for the issue, in

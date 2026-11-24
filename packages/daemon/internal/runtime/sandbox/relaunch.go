@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -593,14 +594,14 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 		if replacement == "" || len(s.Spec.VolumeClaimTemplates) == 0 {
 			return nil
 		}
-		return &runtime.TakenPod{Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: previousPod(s, pod),
+		return &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: previousPod(s, pod),
 			Why: "the launch replaces the issue's Sandbox and the volume it keeps (" + string(replacement) + ")",
 			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
 	}
 	if l.keepsVolume() && replacement == "" {
 		return nil
 	}
-	taken := &runtime.TakenPod{Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took}
+	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took}
 	if unread != "" {
 		taken.Err = errors.New(unread)
 		return taken

@@ -359,12 +359,12 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 			append([]any{"issue", taken.Issue, "pod", taken.PodUID, "error", err}, attrs...)...)
 		return
 	}
-	if err := s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, taken.Issue, taken.PodUID, recorded); err != nil {
+	if err := s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, recorded); err != nil {
 		s.log.Error("supervise: write the record of a launch's replacement of the issue's pod again; the record the launch wrote before it stands, if any, and a later sweep finishes it",
 			append([]any{"issue", taken.Issue, "pod", taken.PodUID, "error", err}, attrs...)...)
 		return
 	}
-	s.finishReplacement(ctx, taken.Issue, taken.PodUID, recorded, launchTakenMessage(taken), attrs...)
+	s.finishReplacement(ctx, recorded, launchTakenMessage(taken), attrs...)
 }
 
 // workspaceTakenMessage is the issue's architect's workspace-taken notice for a replacement round
