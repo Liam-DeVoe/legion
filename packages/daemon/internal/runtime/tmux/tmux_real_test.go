@@ -154,13 +154,15 @@ type bootClaim struct {
 }
 
 // fakeDaemon serves POST /legion/v1/claims/register and /ready as the real routes will: the boot
-// token resolves to a claim or the registration is refused.
+// token resolves to a claim or the registration is refused. registeredAt holds, for each
+// registration, how many readies had come before it.
 type fakeDaemon struct {
-	server    *httptest.Server
-	mu        sync.Mutex
-	claims    map[string]bootClaim
-	registers []claim.RegisterRequest
-	readies   []claim.ReadyRequest
+	server       *httptest.Server
+	mu           sync.Mutex
+	claims       map[string]bootClaim
+	registers    []claim.RegisterRequest
+	registeredAt []int
+	readies      []claim.ReadyRequest
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -180,6 +182,7 @@ func newFakeDaemon() *fakeDaemon {
 		}
 		d.mu.Lock()
 		d.registers = append(d.registers, body)
+		d.registeredAt = append(d.registeredAt, len(d.readies))
 		d.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(claim.RegisterResponse{
 			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: "capability",
@@ -208,17 +211,20 @@ func (d *fakeDaemon) resolve(bootToken string) (bootClaim, bool) {
 }
 
 // awaitReady waits for the agent holding bootToken to register and then declare itself ready,
-// returning its registration.
+// returning its registration. Only a ready that came after that registration counts: a resumed
+// agent registers as the session its previous incarnation was, whose ready came before, and a
+// wait that took that ready returned before the resumed agent had written its report or
+// declared itself ready.
 func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRequest {
 	t.Helper()
 	var registration claim.RegisterRequest
 	eventually(t, "the agent to register and declare ready", func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		for _, r := range d.registers {
+		for i, r := range d.registers {
 			if r.BootToken == bootToken {
 				registration = r
-				for _, ready := range d.readies {
+				for _, ready := range d.readies[d.registeredAt[i]:] {
 					if ready.SessionID == r.SessionID {
 						return true
 					}
@@ -757,7 +763,8 @@ func descendant(t *testing.T, root int, name string) int {
 // readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in writes it
 // as it starts, which is after the pane exists and after its agent registered, so the file is
 // waited for rather than read once: on a loaded machine the process is running before its first
-// write lands, and reading in that window is not a failed launch.
+// write lands, and reading in that window is not a failed launch. The stand-in renames the report
+// into place whole, so the file this finds is never one it is still writing.
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
