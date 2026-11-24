@@ -942,14 +942,7 @@ jobs:
       # publishes nothing, and on 4 release-push.sh restart sees to it that a run releases the
       # commit: a later run on main that holds it and has not finished, or a new run it starts on
       # main by workflow_dispatch, which decides the version again from the tags as they are then.
-      # A workflow_dispatch made with this job's GITHUB_TOKEN creates a run, unlike most events
-      # that token causes (docs.github.com, "Triggering a workflow from a workflow"), and on main
-      # that run's release_build and release_publish run as a push run's do; actions: write is
-      # what lets the token make it.
-      # Each loss means another run published a release between this run's release_build and this
-      # job, so a chain of started runs ends once releases stop landing; the bound only ends a
-      # chain a fault keeps alive: a started run gets lost_races + 1, and the one that loses with
-      # lost_races 3 fails instead of starting a fourth, naming the command a person runs.
+      # why: .github/ci-notes/release-envoy-listener.md#the-runs-release_publish-starts
       # A commit this job leaves to another run loses an image and a version number of its own,
       # never its change: this file's header, above `concurrency:`, says why, and is the one copy
       # of that reasoning. The run started here is a workflow_dispatch, a concurrency group of
@@ -1047,6 +1040,18 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
+      # Asks ci-caches.yaml on main to fill the earlier Dispatch builds with the release just
+      # tagged; a refused dispatch warns and the job goes on.
+      # why: .github/ci-notes/release-envoy-listener.md#the-runs-release_publish-starts
+      - name: Fill the cache of the earlier Dispatch builds with this release
+        if: steps.confirm.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds; then
+            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it"
+          fi
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this
       # repository attested, so the check pins the signer as docs/kubernetes.md ("Pin by digest,

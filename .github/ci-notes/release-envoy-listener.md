@@ -106,3 +106,29 @@ created from 2026-11-20T23:00Z to 2026-11-21T08:25Z.
 - `Build agent-secrets binaries`: 172 s at most over its 12 runs (job 136751939257 of run
   44873151474; the other runs released nothing and skipped it). 172 + 1050 = 1222 s -> 21 min,
   under `release_build`'s 56.
+
+## The runs release_publish starts
+
+release_publish starts runs of two workflows by workflow_dispatch. A workflow_dispatch made with
+the job's GITHUB_TOKEN creates a run, unlike most events that token causes (docs.github.com,
+"Triggering a workflow from a workflow"); actions: write is what lets the token make it.
+
+`Confirm the version`, through release-push.sh restart, starts a run of this workflow on main
+when its own run lost its version to another run, and on main that run's release_build and
+release_publish run as a push run's do. Each loss means another run published a release between
+this run's release_build and release_publish, so a chain of started runs ends once releases stop
+landing; the bound only ends a chain a fault keeps alive: a started run gets lost_races + 1, and
+the one that loses with lost_races 3 fails instead of starting a fourth, naming the command a
+person runs.
+
+`Fill the cache of the earlier Dispatch builds with this release`, which main's #5182 added,
+starts a run of `.github/workflows/ci-caches.yaml` on main with `only: dispatch-builds`. The
+release just tagged is the previous build every pull request and merge group from then on
+resolves for ci.yaml's dispatch-two-builds job, and that job only restores it: the fill of this
+push in ci-caches.yaml ran before the tag existed and built the release before. Plain gh, as this
+credentialed job runs no script but release-push.sh (check-release-credentials.sh rule 1). A
+refused dispatch costs builds, not the release, so it warns and the job goes on. The dispatch is
+a write, as release-push.sh restart's `gh workflow run` is, and
+`.github/scripts/check-download-retry.sh` prices neither as a fetch, so the step adds one call of
+seconds and no retried step to release_publish, whose key stands:
+600 + 5400 = 6000 s -> 101 min (#the-jobs-budgets).

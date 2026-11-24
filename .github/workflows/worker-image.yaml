@@ -113,7 +113,9 @@ jobs:
     # `gh api` reads of the jobs and of the queue's tip and the POST of the check run,
     # 3 x (5 x 30 + 150) = 900 s, with two calls of runner-shutdown.sh's check-run read and
     # annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's Budgets note,
-    # "The ci-ok report"). 1800 + 4650 = 6450 s -> 108 min.
+    # "The ci-ok report"). Main's #5317 took out the step that read the TLS probe's checked-in
+    # chains with openssl and the final RUN's TLS probe, neither of which fetched through a retry,
+    # so the build only shortens and neither term moves. 1800 + 4650 = 6450 s -> 108 min.
     timeout-minutes: 108
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
@@ -225,20 +227,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # The image's TLS probe serves the public test sites' own chains, checked in under
-      # packages/daemon/cmd/legion/tls-fixtures (docs/kubernetes.md). Once a leaf there has expired,
-      # every client is held to the public host in its place, so this step warns 30 days before:
-      # a warning on the run, never a failure. The probe prints the same warning inside the build,
-      # where BuildKit prefixes each line of the RUN step, so the runner reads it as a log line and
-      # makes no annotation of it; this step's own output is what annotates.
-      - name: Warn before a served TLS leaf expires
-        id: served-leaves
-        run: |
-          for chain in packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem; do
-            end=$(openssl x509 -in "$chain" -noout -enddate 2>&1) || { echo "::warning file=$chain::openssl could not read its leaf: $end"; continue; }
-            openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null || echo "::warning file=$chain::its leaf is valid until ${end#notAfter=}, within 30 days or past: vendor the chains again (vendor.go in packages/daemon/cmd/legion/tls-fixtures, which docs/kubernetes.md says how to run) and commit what it writes, or from then every client of the TLS probe is held to the public site in its place"
-          done
 
       - name: Build and push
         id: build

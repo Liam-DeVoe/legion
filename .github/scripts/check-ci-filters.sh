@@ -210,9 +210,10 @@
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing
 #      fails, every job just rebuilds from nothing what the fill already built. Two keys that
-#      both read `${{ env.FIRST_ROLLOUT_COMMIT }}` are such a drift when ci-caches.yaml's
-#      dispatch-builds job and ci-job-dispatch-two-builds.yaml set that pin apart, which is why
-#      the references are resolved. A save is matched to a restore by family, the key's text up
+#      both read the same `${{ env.NAME }}` are such a drift when their two documents set NAME
+#      apart, which is why the references are resolved (ci-caches.yaml's dispatch-builds job once
+#      held its own copy of FIRST_ROLLOUT_COMMIT; since main's #5182 it reads
+#      ci-job-dispatch-two-builds.yaml's pin with yq, so the two cannot part). A save is matched to a restore by family, the key's text up
 #      to its first `${{`, which is the Go version the entry is keyed on. A family ci.yaml
 #      restores that ci-caches.yaml does not save is no failure: go-docs is saved by
 #      docs-pages.yaml, from the build job that workflow shares with ci.yaml's docs job.

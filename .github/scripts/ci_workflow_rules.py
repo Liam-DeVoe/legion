@@ -335,9 +335,10 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     `${{ env.NAME }}` in them is read as the value the env of its own step, else of its step's
     job, else of its workflow, sets for NAME, in the save's document and in the restore's (a
     reference none of them sets stays as text), and the paths as the ordered lists of lines they
-    name. Read as text alone, two keys that both say `${{ env.FIRST_ROLLOUT_COMMIT }}` would agree
-    while ci-caches.yaml's dispatch-builds job and ci-job-dispatch-two-builds.yaml set two copies
-    of that pin apart, and every restore would miss. A family ci.yaml restores that this workflow
+    name. Read as text alone, two keys that both say the same `${{ env.NAME }}` would agree while
+    their two documents set NAME apart, and every restore would miss (ci-caches.yaml's
+    dispatch-builds job once held its own copy of FIRST_ROLLOUT_COMMIT; since main's #5182 it
+    reads ci-job-dispatch-two-builds.yaml's pin with yq). A family ci.yaml restores that this workflow
     does not save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a
     family nothing restores being a fill nobody reads.
 

@@ -2,39 +2,37 @@ name: CI caches
 
 # Fills, on every push to main, the Actions caches ci.yaml's jobs restore, so a pull request or a
 # merge group finds them warm: six Go families, the architecture-check and spec-check actions'
-# families, elan, bun and the two builds dispatch-two-builds compares against. go-docs is
-# docs-pages.yaml's.
+# families, elan, bun and the two builds dispatch-two-builds compares against, which a release's
+# dispatch fills again (`only: dispatch-builds`, below). go-docs is docs-pages.yaml's.
 # why: .github/ci-notes/ci-caches.md#what-this-workflow-fills-and-why-it-runs-on-a-push-to-main
 
-# A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
-# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the five
-# families filled on every push hold the build of every package of a module and of the modules it
-# imports, so nearly any change to Go code is theirs, and a push that changes none of it compiles
-# nothing on the restored entry; the other keys hold a Go version, that toolchain file's hash, the
-# hash of packages/envoy/go.sum, the Bun version .bun-version pins, a release's commit beside the
-# hash of the script that builds it or, for go-envoy-infra, the hash of the infra workspace's
-# module files, not a file list, so what the push touched decides nothing for them, and a run
-# whose keys are all there is seconds for them, but for the dispatch-builds job's checkout of the
-# whole history, which its key needs.
+# A push to main, and a dispatch: by hand, or from release-envoy-listener.yaml's release_publish
+# with `only: dispatch-builds` once a release is tagged, which runs the dispatch-builds jobs alone.
+# why: .github/ci-notes/ci-caches.md#when-it-runs-and-one-fill-at-a-time
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      only:
+        description: >-
+          dispatch-builds runs the two Dispatch build jobs alone, as release_publish asks after a
+          release; all runs every job.
+        type: choice
+        options: [all, dispatch-builds]
+        default: all
 
-# One fill at a time per ref, and no cancellation: a cancelled run saves nothing, so cutting the
-# running fill short would leave the caches where the fill before it left them, and the next fill
-# would compile both commits' changes. One at a time also keeps a superseded job's deletes from
-# meeting another fill's save. The default queue holds the newer run until this one ends, and a
-# push after it replaces the one waiting, since the newer commit's fill holds what the waiting
-# one's would.
+# One fill at a time per ref and per `only`, never cancelled.
+# why: .github/ci-notes/ci-caches.md#when-it-runs-and-one-fill-at-a-time
 concurrency:
-  group: ci-caches-${{ github.ref }}
+  group: ci-caches-${{ github.ref }}-${{ inputs.only || 'all' }}
   cancel-in-progress: false
 
-# Reading the tree and the caches is all this workflow does but in two jobs: the cache scope needs
-# no token scope of its own, and nothing here reports a check or writes an artifact. The
-# refill-superseded and envoy-infra-superseded jobs alone take `actions: write`, to delete the
-# entries a fill replaced, and build nothing.
+# Reading the tree and the caches is all this workflow does but in three jobs: the cache scope
+# needs no token scope of its own, and nothing here reports a check or writes an artifact. The
+# refill-superseded, envoy-infra-superseded and dispatch-builds-superseded jobs alone take
+# `actions: write`, to delete the entries a fill replaced or this repository keeps no more, and
+# build nothing.
 permissions:
   contents: read
 
@@ -52,6 +50,7 @@ jobs:
   # the test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry
   # runs them. Each push fills it again from its newest entry (ci-caches.md says why).
   daemon:
+    if: inputs.only != 'dispatch-builds'
     strategy:
       fail-fast: false
       matrix:
@@ -168,6 +167,7 @@ jobs:
   # <os>-<arch> key would start with the go-notices-<os>- prefix of a run of a workflow file older
   # than the architecture in the key, which then restores this arm64 program on x86_64.
   notices:
+    if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04-arm
     # Budget (the Budgets note of .github/ci-budgets.md): 5400 s, the 90 minutes the daemon job
     # carried for this build while it filled this family, and this job carries since main's
@@ -270,6 +270,7 @@ jobs:
   # ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were measured on ubuntu-24.04, and
   # the browser lane's jobs restore them on ubuntu-24.04.
   envoy:
+    if: inputs.only != 'dispatch-builds'
     strategy:
       fail-fast: false
       matrix:
@@ -409,6 +410,7 @@ jobs:
   # architecture as every family's does. A job of its own, so neither this fill nor the envoy
   # job's can stop the other.
   envoy-darwin-vet:
+    if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes main's #5148
     # wrote for it — the vet from nothing is the long case, 803 s on a devbox and 172 s at the
@@ -496,7 +498,7 @@ jobs:
   # minute above a sum that is itself a whole number of minutes.
   refill-superseded:
     needs: [daemon, notices, envoy, envoy-darwin-vet]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
       matrix:
@@ -579,18 +581,11 @@ jobs:
           fi
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
-  # .github/actions/architecture-check, run as ci.yaml's envoy-go-build runs it. The action sets
-  # its own Go up, from packages/envoy/go.mod, and restores and saves the entry itself. It saves
-  # only in a push, schedule or workflow_dispatch run, so on a push to main it fills the entry in
-  # main's scope, where every pull request and merge group of this repository finds it: on a hit
-  # it restores the entry and compiles only the command's own packages that changed since the entry
-  # was saved; on a miss, as after a go.sum change, it builds the command from the newest entry of
-  # that Go version, or cold when there is none, and saves the entry. It also checks main's notes;
-  # the action saves before it checks, so a refused set does not cost the entry. A job of its own
-  # is one of the two placements the action's README.md gives ("The Go toolchain"). The other, in
-  # the envoy job, would run the action first, before that job's setup-go, and a refused note set
-  # on main would then stop the go-envoy fills, so it is a job of its own.
+  # .github/actions/architecture-check, run as ci.yaml's envoy-go-build runs it: the action
+  # restores and saves its entry itself, and checks main's notes.
+  # why: .github/ci-notes/ci-caches.md#the-architecture-check-job
   architecture-check:
+    if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
     # envoy-go-checks of run 43553309875, the job envoy-go-build was then a part of, and this job
@@ -620,6 +615,7 @@ jobs:
   # It is a job of its own, so a refused note set on main cannot stop this fill and a refused spec
   # tree on main cannot stop the note check.
   spec-check:
+    if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with
     # (main's #4172; no run has measured it yet), plus the action's one retried call, its Go
@@ -639,22 +635,12 @@ jobs:
         with:
           allow-empty: 'true'
 
-  # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
-  # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
-  # as ci.yaml's envoy-infra-build and envoy-infra-go do. Unlike the other families, its key also
-  # carries the hash of the files that choose the module versions it builds: that go.work and its
-  # go.work.sum, and the go.mod and go.sum of both modules it binds. An entry keyed on the Go
-  # version alone was refreshed only by a Go bump and went stale as those files moved: restoring
-  # the entry of 2026-11-06, eleven days old, the linux vet (envoy-infra-build's now) took 175,
-  # 229 and 177 s in runs 43990864191, 43996496498 and 44008055050, 83 to 85% of what its darwin
-  # vet took in the same run with nothing cached, because google.golang.org/api, gax-go, the AWS
-  # SDK and nats had moved under it. With the hash, a push to main that changes those files misses
-  # the lookup and fills a fresh entry; a pull request that changes none of them restores one built
-  # from the same module versions, and one that changes them restores the newest entry by prefix
-  # and builds what moved. One leg per runner: envoy-infra-build and envoy-infra-go run on
-  # ubuntu-24.04-arm, and release-envoy-infra.yaml's build, which restores the family too, on
-  # ubuntu-24.04. The superseded job below deletes the entry each leg's fill replaced.
+  # go-envoy-infra, keyed on packages/envoy/infra/go.mod's Go and on the hash of the files that
+  # choose its module versions, built as ci.yaml's envoy-infra-build and envoy-infra-go build it.
+  # One leg per runner; the superseded job below deletes the entry each leg's fill replaced.
+  # why: .github/ci-notes/ci-caches.md#the-envoy-infra-job
   envoy-infra:
+    if: inputs.only != 'dispatch-builds'
     strategy:
       fail-fast: false
       matrix:
@@ -764,31 +750,9 @@ jobs:
             ~/.cache/go-build
           key: ${{ steps.go-envoy-infra.outputs.cache-primary-key }}
 
-  # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one. A
-  # module-file change gives the family a new key, and the entry under the old key, about 1.4 GB,
-  # is then read by no run of this ref: left alone it would hold its space until GitHub drops it
-  # after seven days unread, and over the repository's cache limit GitHub evicts the least recently
-  # used entries, which can be another family's live one. An entry the new one supersedes is one of
-  # this ref whose key is the new key but for its 64-hex module-file hash: the same family, runner
-  # and Go, with older module files, the hashless key of the fill before this one included. An
-  # entry of another runner or another Go is no such entry and stays, so a fill that runs once per
-  # architecture deletes nothing the other leg saved. None is deleted unless the new key is among
-  # this ref's entries, so a save that did not land leaves the old entry in place. A job of its
-  # own, so the token that may delete caches is in no job that builds code. A cache key is text any
-  # build that saves on this ref chose, so the step never splits or prints one raw: the list stays
-  # JSON, jq selects the numeric ids of the superseded entries, and each id is checked to be a
-  # number before `gh cache delete` gets it. A key holding a newline then cannot add a line of its
-  # own, such as `--all`, to that list. One leg per architecture of the fill, each keeping the key
-  # that architecture's leg saved, under the output names the envoy-infra job gives it; a leg whose
-  # architecture filled nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need
-  # nothing of an x64 machine.
-  # Each read and each delete retries through .github/scripts/ci-retry.sh at 30 s an attempt, the
-  # bound this repository gives a `gh` read of the API (dispatch://INFRA-1545, R1): the list is one
-  # ladder, 5 x 30 + 150 = 300 s, and each delete one more. A fill supersedes the one entry the
-  # fill before it saved, so a common run deletes one, and the step's DECLARED_LOOPS entry in
-  # .github/scripts/check-download-retry.sh says so: 300 + 300 = 600 s for the step. A delete
-  # whose first attempt landed and whose answer was lost is refused on its retry as an entry that
-  # is gone, and fails the step by name; the next fill deletes nothing more.
+  # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one,
+  # each read and each delete through the one retry at 30 s an attempt.
+  # why: .github/ci-notes/ci-caches.md#the-envoy-infra-superseded-job
   # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes this job carried,
   # plus its one retried step, 600 s. 300 + 600 = 900 s -> 16 min, the whole minute above a sum
   # that is itself a whole number of minutes.
@@ -854,6 +818,201 @@ jobs:
                 gh cache delete "$id"
             done
 
+  # The two builds ci.yaml's dispatch-two-builds job runs the tree against, the previous release's
+  # and the pinned first-rollout release's, which that job restores and never saves: this job
+  # fills both in main's scope, on each push to main and after each release (the `only` input).
+  # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-job
+  dispatch-builds:
+    # Main alone: a dispatched run on another branch would save the builds in that branch's scope,
+    # which only that branch's runs read.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+    # 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
+    outputs:
+      # The key of each build's entry, which dispatch-builds-superseded keeps.
+      previous: ${{ steps.previous-build.outputs.cache-primary-key }}
+      first-rollout: ${{ steps.first-rollout-build.outputs.cache-primary-key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # dispatch-two-builds' step of this name, so the commit in the key is the one it restores.
+      - name: Resolve the previous build's commit
+        id: previous
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      # The pin, read out of dispatch-two-builds' env, where that job's resolve step also checks
+      # that the release's tag names it.
+      - name: Read the first-rollout build's commit from dispatch-two-builds' pin
+        id: first-rollout
+        run: |
+          commit=$(yq -r '.jobs["dispatch-two-builds"].env.FIRST_ROLLOUT_COMMIT' .github/workflows/ci-job-dispatch-two-builds.yaml)
+          if ! [[ $commit =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::.github/workflows/ci-job-dispatch-two-builds.yaml's dispatch-two-builds job sets FIRST_ROLLOUT_COMMIT to '$commit', not a full commit sha"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - id: previous-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+          lookup-only: true
+
+      - id: first-rollout-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+          lookup-only: true
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-bun
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+
+      - name: Build the previous build
+        if: steps.previous-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+
+      # Under the key the lookup computed, as every hashed key of this workflow is saved.
+      - if: steps.previous-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: ${{ steps.previous-build.outputs.cache-primary-key }}
+
+      - name: Build the first-rollout build
+        if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          FIRST_ROLLOUT_COMMIT: ${{ steps.first-rollout.outputs.commit }}
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+
+      # Under the key the lookup computed, as every hashed key of this workflow is saved.
+      - if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: ${{ steps.first-rollout-build.outputs.cache-primary-key }}
+
+  # The entries of the two Dispatch builds this repository keeps no more, on main and on every
+  # other ref, deleted once dispatch-builds has looked its keys up, three a leg at most, each read
+  # and each delete through the one retry at 30 s an attempt.
+  # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-superseded-job
+  # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes main's #5182 gave
+  # this job, plus its one retried step, 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min,
+  # the whole minute above a sum that is itself a whole number of minutes.
+  dispatch-builds-superseded:
+    needs: dispatch-builds
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [previous, first-rollout]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 26
+    env:
+      JOB_TIMEOUT_MINUTES: 26 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      actions: write
+    steps:
+      # For the helpers of .github/scripts the step sources, alone: this repository is public, so
+      # the checkout needs no scope beyond the one the deletes need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.dispatch-builds.outputs[matrix.build] != ''
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Delete this Dispatch build's entries older than main's, and every other ref's
+        if: needs.dispatch-builds.outputs[matrix.build] != ''
+        # Its own retry arithmetic: the list and the three deletes a run makes at most,
+        # 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that is itself a whole
+        # number of minutes.
+        timeout-minutes: 21
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP: ${{ needs.dispatch-builds.outputs[matrix.build] }}
+          REF: ${{ github.ref }}
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        run: |
+          set -euo pipefail
+          # Each call is a ladder run through gh_wait_reset, which waits out a spent API budget
+          # only when the wait and one more ladder fit within this step's limit and the job's,
+          # and fails by name otherwise.
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
+            echo "::error::the kept key does not have the shape dispatch-builds gives it, so nothing is deleted" >&2
+            exit 1
+          fi
+          # The build, OS and architecture: the key without its script hash and commit.
+          prefix=${KEEP%-*}
+          prefix=${prefix%-*}-
+          # Every ref's entries, newest first by GitHub's creation order; gh pages past 100 up to
+          # the limit, far above what one build holds.
+          entries=$(gh_wait_reset retry_fetch "every ref's entries of $prefix" 30 -- \
+            gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
+          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
+            echo "::warning::main holds no entry under $KEEP, so none is deleted" >&2
+            exit 0
+          fi
+          superseded=$(jq -r --arg keep "$KEEP" --arg ref "$REF" --arg prefix "$prefix" \
+            '(map(.key == $keep and .ref == $ref) | index(true)) as $kept
+             | to_entries[] | .key as $at | .value
+             | select((.key | startswith($prefix)) and (.ref != $ref or $at > $kept)) | .id' <<<"$entries")
+          ids=()
+          [ -z "$superseded" ] || mapfile -t ids <<<"$superseded"
+          # Three at most, newest first: the job's comment says why three.
+          for slot in 1 2 3; do
+            [ "$slot" -le "${#ids[@]}" ] || break
+            id=${ids[$((slot - 1))]}
+            if ! [[ $id =~ ^[0-9]+$ ]]; then
+              echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
+              exit 1
+            fi
+            echo "Deleting entry $id of $prefix, which this repository keeps no more"
+            gh_wait_reset retry_fetch "the deletion of entry $id of $prefix" 30 -- \
+              gh cache delete "$id"
+          done
+          if [ "${#ids[@]}" -gt 3 ]; then
+            echo "::warning::$((${#ids[@]} - 3)) more entries of $prefix this repository keeps no more stay for the next run to delete: a run deletes three at most" >&2
+          fi
+
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the runner's architecture, since elan and the
   # toolchain are binaries of it, and the content of the lean-toolchain the model names, since
@@ -863,6 +1022,7 @@ jobs:
   # miss, which is the whole of what is saved. It runs on ubuntu-24.04-arm, the runner
   # airlock-lean runs on.
   elan:
+    if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci-caches.md#the-elan-jobs-budget
     # 1800 + 1708 = 3508 s -> 59 min.
@@ -923,6 +1083,7 @@ jobs:
   # leg whose key is there restores the entry, finds the pinned Bun in it and saves nothing, so a
   # run that finds both keys costs a checkout and a restore on each leg.
   bun:
+    if: inputs.only != 'dispatch-builds'
     strategy:
       fail-fast: false
       matrix:
@@ -943,106 +1104,3 @@ jobs:
         timeout-minutes: 57
         with:
           save: 'true'
-
-  # The two builds ci.yaml's dispatch-two-builds job runs the tree against, each made by
-  # packages/envoy/scripts/build-dispatch-build.sh from a commit of this repository: the previous
-  # release's, keyed on that release's commit, and the pinned first-rollout release's. That job
-  # restores both and saves neither, since an entry a pull request or a merge group saves lands
-  # in a scope no other run reads (dispatch://INFRA-1545, R4), so this job fills them on a push
-  # to main, as the families above are filled. Each key is the text of that job's restore, which
-  # check-ci-filters.sh holds this job's save to. On ubuntu-24.04, the runner dispatch-two-builds
-  # runs on: the key names the runner's architecture, and each build's server is a binary of it.
-  # The whole history and the tags, as that job checks them out: the script resolves the previous
-  # release from the tags in the history of origin/main, and refuses a commit older than its floor
-  # release, which it reads by its tag.
-  dispatch-builds:
-    runs-on: ubuntu-24.04
-    # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
-    # 900 + 3416 = 4316 s -> 72 min.
-    timeout-minutes: 72
-    env:
-      # The first-rollout build's commit, the pin ci-job-dispatch-two-builds.yaml's env holds
-      # under this name and firstRolloutRelease in
-      # packages/envoy/cmd/dispatch/twobuild_harness_test.go holds too: the key below is that
-      # job's restore key, so the two pins move together.
-      FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Resolve the previous build's commit
-        id: previous
-        run: |
-          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-
-      - id: previous-build
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
-          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
-          lookup-only: true
-
-      - id: first-rollout-build
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
-          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
-          lookup-only: true
-
-      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/envoy/go.mod
-          go-download-base-url: https://go.dev/dl
-          token: ''
-          cache: false
-
-      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
-        uses: ./.github/actions/setup-bun
-        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
-        # 2 x 1708 = 3416 s -> 57 min.
-        timeout-minutes: 57
-
-      - name: Build the previous build
-        if: steps.previous-build.outputs.cache-hit != 'true'
-        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
-        # 1050 + 1050 + 116 = 2216 s -> 37 min.
-        timeout-minutes: 37
-        env:
-          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
-          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
-        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
-
-      # Under the key the lookup computed, as every hashed key of this workflow is saved.
-      - if: steps.previous-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
-          key: ${{ steps.previous-build.outputs.cache-primary-key }}
-
-      - name: Build the first-rollout build
-        if: steps.first-rollout-build.outputs.cache-hit != 'true'
-        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
-        # 1050 + 1050 + 116 = 2216 s -> 37 min.
-        timeout-minutes: 37
-        env:
-          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
-        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
-
-      # Under the key the lookup computed, as every hashed key of this workflow is saved.
-      - if: steps.first-rollout-build.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
-          key: ${{ steps.first-rollout-build.outputs.cache-primary-key }}

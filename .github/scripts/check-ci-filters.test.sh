@@ -2867,9 +2867,9 @@ check "fails" "$(is "$status" 1)"
 check "names the family and both keys" \
   "$(contains "$out" 'job fill saves family go-app under key .*, but job app of .github/workflows/ci.yaml restores it under .*-v2')"
 
-# A key may read a pin from the env: the dispatch-builds job of ci-caches.yaml and
-# ci-job-dispatch-two-builds.yaml both key the first-rollout build on
-# `${{ env.FIRST_ROLLOUT_COMMIT }}`, and each of the two jobs holds its own copy of the commit. The
+# A key may read a pin from the env, as ci-job-dispatch-two-builds.yaml keys the first-rollout
+# build on `${{ env.FIRST_ROLLOUT_COMMIT }}`; this fixture gives a fill and a restore each its own
+# copy of such a pin, the shape ci-caches.yaml's dispatch-builds job had before main's #5182. The
 # rule reads each reference as the value its step's own env, else its job's, else its workflow's,
 # sets, so two keys that say the same text and name two values are a drift.
 #
