@@ -9911,7 +9911,7 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): the Inbox opened three times over two asks and two threads, with the thread read held, refused and answered.
+// SLOW(>=2s): the Inbox and its Dismissed view opened six times over two asks and four threads, with the one read held, refused and answered.
 // INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
 // beside a value is drawn only once the data it counts has answered, never as a 0 that stands for
 // "not read yet" (B2 of dispatch://INFRA-3135/artifact/t23-class-search-md, moved into this pull
@@ -9920,11 +9920,18 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
 // answered 500, the Filter panel's Type list reads "Reply, 0 rows" and "Agent message, 0 rows"
 // while two reply threads wait, because the counts are taken over the rows read so far
 // (Inbox.tsx:2051-2052, `counts.get(value) ?? 0`). With the read answered it reads "Reply, 2 rows",
-// which this row reads too, so it can tell a count from a placeholder. The questions' count comes
-// from the Inbox's own read, which answered, so it stands throughout.
-test("the Inbox's Type list draws no count for the thread kinds while the thread read is out or refused @firefox @webkit", async ({
+// which this row reads too, so it can tell a count from a placeholder.
+// On this branch the Inbox has no thread read of its own: the one read, `GET /api/v1/me/inbox`,
+// answers the reader's own asks and their threads together (`useInboxAsks`, `useInboxThreadRows`),
+// its `inbox` state for the Inbox and its `dismissed` state for the Dismissed view, while the
+// bar stands on the `inbox` state alone. So the row holds and refuses each state of the one read
+// in the view it lists, and no kind may carry a count while that read is out or refused; with it
+// answered the Inbox reads "Question, 2 rows" and "Threads, 2 rows" (this branch's name for the
+// reply threads' kind), and the Dismissed view "Threads, 2 rows".
+test("the Inbox's Type list draws no count for any kind while the one read its rows come from is out or refused, in the Inbox and in its Dismissed view @firefox @webkit", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   await createProject({ key: "CORE", name: "Core" });
   for (let index = 0; index < 2; index++) {
@@ -9939,10 +9946,18 @@ test("the Inbox's Type list draws no count for the thread kinds while the thread
     const issue = await createIssue({ project: "CORE", title });
     await seedCommentThread(issue.key, `${title}: when does it run?`, "It moved to 03:00.");
   }
+  const done = await createIssue({ project: "CORE", title: "Dealt-with threads" });
+  await seedDismissedThreads({ count: 2, issueKey: done.key, prefix: "Dealt with" });
   const main = page.getByTestId("main-content");
   const rows = main.locator("[data-inbox-row]");
-  /** Each option of the Type list, by its accessible name, read once the list holds all five. */
+  const trigger = control(controlRow(main), CONTROL.panelTrigger);
+  /** Each option of the Type list, by its accessible name, read once the list holds all five;
+   *  none where the bar draws no Filter, which then offers no count either. */
   const typeOptions = async (): Promise<string[]> => {
+    // Every caller waited for the list's loading line, its error line, the bar or the rows, and the
+    // Inbox decides whether its bar stands in the commit that draws them, so this read is settled.
+    const bars = await trigger.count();
+    if (bars === 0) return [];
     await openFilterPanel(page, main);
     await page.getByRole("button", { name: "Filter by type" }).click();
     const options = page.getByRole("listbox", { name: "Type options" }).getByRole("option");
@@ -9954,37 +9969,59 @@ test("the Inbox's Type list draws no count for the thread kinds while the thread
     await closeControlPanel(main);
     return names;
   };
-  const threadRead = (url: URL) =>
-    url.pathname === "/api/v1/me/replies" && url.searchParams.get("state") === "inbox";
+  const views = [
+    { address: "/", name: "the Inbox", state: "inbox" },
+    { address: "/?show=dismissed", name: "the Dismissed view", state: "dismissed" },
+  ] as const;
   const wrong: string[] = [];
   try {
-    for (const how of ["held", "refused"] as const) {
-      await page.route(threadRead, async (route) => {
-        // Held: the read is never answered. Refused: the server answers it 500 every time.
-        if (how === "refused") {
-          await route.fulfill({
-            body: '{"error":{"code":"TEST_REFUSED","message":"test refusal"}}',
-            contentType: "application/json",
-            status: 500,
-          });
+    for (const view of views) {
+      const oneRead = (url: URL) =>
+        url.pathname === "/api/v1/me/inbox" && url.searchParams.get("state") === view.state;
+      for (const how of ["held", "refused"] as const) {
+        const where = `${view.name} with the one read's ${view.state} state ${how}`;
+        await page.route(oneRead, async (route) => {
+          // Held: the read is never answered. Refused: the server answers it 500 every time.
+          if (how === "refused") {
+            await route.fulfill({
+              body: '{"error":{"code":"TEST_REFUSED","message":"test refusal"}}',
+              contentType: "application/json",
+              status: 500,
+            });
+          }
+        });
+        await page.goto(view.address);
+        // The list says it is loading, or that it could not load, and lists no row of the read.
+        if (view.state === "inbox") {
+          await expect(
+            how === "held"
+              ? main.getByRole("status", { name: "Loading your inbox" })
+              : main.getByText("Could not load your inbox.")
+          ).toBeVisible({ timeout: 30_000 });
+        } else {
+          await expect(trigger, `${where}: the bar draws no Filter`).toBeVisible();
         }
-      });
-      await page.goto("/");
-      // The two asks are the Inbox's own read, which answered; the threads are not listed yet.
-      await expect(rows).toHaveCount(2);
-      const names = await typeOptions();
-      wrong.push(
-        ...names
-          .filter((name) => /^(Reply|Agent message), \d+ rows?$/u.test(name))
-          .map((name) => `thread read ${how}: the Type list offers "${name}"`)
-      );
-      expect(names, `thread read ${how}: the questions' count`).toContain("Question, 2 rows");
-      await page.unrouteAll({ behavior: "ignoreErrors" });
+        await expect(rows, `${where}: the list draws rows`).toHaveCount(0);
+        const names = await typeOptions();
+        wrong.push(
+          ...names
+            .filter((name) => /, \d+ rows?$/u.test(name))
+            .map((name) => `${where}: the Type list offers "${name}"`)
+        );
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+      }
     }
-    // The control: the same Inbox with its thread read answered counts both reply threads.
+    // The control: the same two views with the one read answered count their rows.
     await page.goto("/");
     await expect(rows).toHaveCount(4);
-    expect(await typeOptions()).toContain("Reply, 2 rows");
+    const inInbox = await typeOptions();
+    expect(inInbox, "the Inbox with the one read answered").toContain("Question, 2 rows");
+    expect(inInbox, "the Inbox with the one read answered").toContain("Threads, 2 rows");
+    await page.goto("/?show=dismissed");
+    await expect(rows).toHaveCount(2);
+    expect(await typeOptions(), "the Dismissed view with the one read answered").toContain(
+      "Threads, 2 rows"
+    );
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });
   }
@@ -10003,25 +10040,45 @@ test("the Inbox's Type list draws no count for the thread kinds while the thread
 // failed. The row above that walks the same panel by Tab, "a chip of the Inbox's row that has the
 // keyboard focus is shown whole", runs in Chromium alone and reads a chip's clip sideways alone
 // (`shownOf`), so a chip cut at the panel's bottom passes it.
-// SLOW(>=2s): twenty-two seeded questions, eleven narrowings, and their panel walked chip by chip.
-test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly inside the panel's visible box while the panel scrolls, at 390 @firefox @webkit", async ({
+// R8 (INFRA-4948) moves that panel at 390: below 640 px of the bar's width the chips leave the
+// bar's line and no `+N more` stands for them. The Filter panel lists every narrowing that is on
+// at its top, above its fields, each with its remove control (`PanelChips`,
+// web/src/components/ControlRow.tsx), in the same frame (`PANEL_FRAME`), and that is where a
+// keyboard reader at 390 takes one off. So the row walks that list: the ten chips these
+// narrowings draw (the switch's Blocked on you draws none) over the panel's five fields, more than
+// its box holds.
+// SLOW(>=2s): twenty-two seeded questions, ten narrowings, and the Filter panel walked chip by chip.
+test("each chip the Tab key reaches in the Inbox's Filter panel stands wholly inside the panel's visible box while the panel scrolls, at 390 @firefox @webkit", async ({
   page,
 }) => {
   await seedLongInbox();
   await page.setViewportSize({ height: 664, width: 390 });
   const row = controlRow(page.getByTestId("main-content"));
-  const more = row.getByRole("button", { name: MORE_FILTERS });
-  // Three priorities, three urgencies, two kinds, the one project, everyone's asks and the
-  // needs-you section, a chip each, over the seventeen questions they keep; the text draws none.
+  const trigger = control(row, CONTROL.panelTrigger);
+  // Three priorities, three urgencies, two kinds, the one project and everyone's asks, a chip
+  // each, over the seventeen questions they keep in the needs-you section; neither the text nor
+  // the switch's choice draws one.
   await page.goto(
     "/?section=needs-you&q=Item&assignee=everyone&priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE"
   );
-  // The eleven chips, the line's and then the ones its `+N more` lists, each named once. Its
-  // Escape leaves the focus on `+N more`, where a reader who reached it by Tab stands.
-  const drawn = await chipsInLineAndPanel(row, 11, "390x664");
-  await more.focus();
+  expect(
+    await chipsLeaveLine(row, "390x664"),
+    "390x664: the Inbox's bar is 640 px wide or wider"
+  ).toBe(true);
+  await expect(
+    trigger,
+    "390x664: the trigger does not count the ten narrowings"
+  ).toHaveAccessibleName("Filter · 10");
+  // Opened from the keyboard, the panel takes the focus onto its first control, its first chip.
+  await trigger.focus();
   await page.keyboard.press("Enter");
-  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  await expect(
+    panel.getByRole("button", { name: REMOVE_CHIP }),
+    "390x664: the Filter panel does not list every narrowing"
+  ).toHaveCount(10);
+  // The count of listed chips was waited for above, so the names read here are the whole list.
+  const listed = await chipNames(panel);
   const standing: {
     name: string;
     above: number;
@@ -10032,13 +10089,13 @@ test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly i
     box: string;
     scrolled: number;
   }[] = [];
-  for (const [index, name] of drawn.panel.entries()) {
+  for (const [index, name] of listed.entries()) {
     const chip = panel.getByRole("button", { exact: true, name });
     // The panel opens with the focus on its first chip, and each Tab moves it to the next.
     if (index > 0) await page.keyboard.press("Tab");
     await expect(
       chip,
-      `390x664: the Tab key did not bring the focus to "${name}" in the panel of +N more`
+      `390x664: the Tab key did not bring the focus to "${name}" in the Filter panel`
     ).toBeFocused();
     // The browser scrolls the panel to the chip as the focus moves onto it, so the boxes read
     // once the chip holds the focus are where they settle: Firefox's stood the same 600 ms later.
@@ -10063,7 +10120,7 @@ test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly i
     });
     standing.push({ name, ...reading });
   }
-  await test.info().attach("the panel of +N more walked by the Tab key at 390x664", {
+  await test.info().attach("the Filter panel's chips walked by the Tab key at 390x664", {
     body: standing
       .map(
         ({ name, chip, box, scrolled }) => `${name}: ${chip}, box ${box}, scrolled ${scrolled} px`
@@ -10074,7 +10131,7 @@ test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly i
   // The row is about chips that start out of sight, so a panel that never scrolled read none.
   expect(
     Math.max(...standing.map(({ scrolled }) => scrolled)),
-    `390x664: the panel of +N more never scrolled while the Tab key walked ${drawn.panel.join(", ")}`
+    `390x664: the Filter panel never scrolled while the Tab key walked ${listed.join(", ")}`
   ).toBeGreaterThan(0);
   // A pixel of rounding either way is no cut.
   const cut = standing.flatMap(({ name, above, below, left, right, chip, box, scrolled }) => {
@@ -10093,9 +10150,9 @@ test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly i
           `390x664: "${name}" holds the focus with ${out.join(" and ")} the panel's visible box (the chip at ${chip}, the box at ${box}, the panel scrolled ${scrolled} px)`,
         ];
   });
-  // R1 and the keyboard's own promise in ControlRow.tsx: every chip the line has no room for is
-  // one the panel lists and the Tab key reaches whole, so a keyboard reader sees which narrowing
-  // Enter takes off.
+  // R1, R8 and the keyboard's own promise in ControlRow.tsx: below 640 px every chip is one the
+  // Filter panel lists at its top and the Tab key reaches whole, so a keyboard reader sees which
+  // narrowing Enter takes off.
   expect(cut, cut.join("; ")).toEqual([]);
 });
 
@@ -10269,8 +10326,14 @@ test("a Move with only closed issues marked keeps no press live: a live update t
 // failure of this pull request's controls (open-items.md, the rescue's removal, 2026-11-23 21:2xZ).
 // WebKit has no scroll anchoring of its own, which Chromium and Firefox apply beside the anchor's,
 // so the row runs in all three engines.
-// SLOW(>=2s): twenty-three seeded rows, and four presses at 390 px waiting out the list's redraw.
-test("taking off the Inbox's only narrowing by its chip or by Clear filters at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all @firefox @webkit", async ({
+// R8 (INFRA-4948) takes both presses out of the bar at 390: below 640 px of the bar's width the
+// chips leave its line, and no Clear filters stands beside Filter; the reader takes a narrowing
+// off at the top of the Filter panel (components/ControlRow.tsx, `PanelChips`), which stays open
+// and hands the focus to its first field once no chip is left (D26). So the row presses the only
+// chip there, with the window scrolled as above, and reads R8's rule where it pressed Clear
+// filters: none is drawn.
+// SLOW(>=2s): twenty-three seeded rows, and two presses at 390 px waiting out the list's redraw.
+test("taking off the Inbox's only narrowing by its chip in the Filter panel at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all, and no Clear filters is drawn there @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -10291,7 +10354,9 @@ test("taking off the Inbox's only narrowing by its chip or by Clear filters at 3
     await seedCommentThread(issue.key, `Unnarrowed ${index}: when does it run?`, "At 03:00.");
   }
   const row = controlRow(page.getByTestId("main-content"));
-  const chip = row.getByRole("button", { name: /^Remove .* filter$/ });
+  const trigger = control(row, CONTROL.panelTrigger);
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  const chip = panel.getByRole("button", { name: REMOVE_CHIP });
   const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
   const rows = page.locator("[data-inbox-row]");
   const threads = page.locator('[data-inbox-row^="reply:"]');
@@ -10334,37 +10399,44 @@ test("taking off the Inbox's only narrowing by its chip or by Clear filters at 3
     });
   const wrong: string[] = [];
   for (const offset of [30, 0]) {
-    for (const [pressed, target] of [
-      ["the only chip", chip],
-      ["Clear filters", clear],
-    ] as const) {
-      const where = `Inbox at 390x664, the window at ${offset} px, Enter on ${pressed}`;
-      await page.goto("/?group=none&type=question");
-      await expect(chip, `${where}: the narrowing to questions draws no one chip`).toHaveCount(1);
-      await expect(rows.nth(12), `${where}: the list is no longer than the window`).toBeAttached();
-      await expect(threads, `${where}: the narrowing lists a thread`).toHaveCount(0);
-      await page.evaluate((top) => window.scrollTo(0, top), offset);
-      // The control is focused where it stands, so the focus itself scrolls nothing.
-      await target.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
-      await expect(target).toBeFocused();
-      // Where the window stands just before the press, read once it has held still after the
-      // scroll above; it is only reported, never branched on.
-      const before = await settledScrollTop(page);
-      await page.keyboard.press("Enter");
-      await expect(chip, `${where}: the narrowing stayed on`).toHaveCount(0);
-      await expect(threads, `${where}: the list did not draw the threads again`).toHaveCount(3);
-      // The commit that drew the threads ran the row's hand-off and the list's anchor in its layout
-      // effects, so the window is read once it has held still after them; it is only reported.
-      await nextFrames(page);
-      const after = await settledScrollTop(page);
-      // One read is the answer: the hand-off and the anchor ran in the commit waited for above,
-      // and the window has settled since, so nothing moves the focus or the page after this.
-      const focus = await focusNow();
-      if (!focus.inSight) {
-        wrong.push(
-          `${where}: the focus is on "${focus.name}" (data-control ${focus.control}), its top at ${focus.top} px in the 664 px window, out of sight; window.scrollY ${before} -> ${after}`
-        );
-      }
+    const where = `Inbox at 390x664, the window at ${offset} px, Enter on the only chip`;
+    await page.goto("/?group=none&type=question");
+    await expect(
+      trigger,
+      `${where}: the trigger does not count one narrowing`
+    ).toHaveAccessibleName("Filter · 1");
+    await expect(rows.nth(12), `${where}: the list is no longer than the window`).toBeAttached();
+    await expect(threads, `${where}: the narrowing lists a thread`).toHaveCount(0);
+    // R8: below 640 px of the bar's width no Clear filters stands beside the trigger.
+    expect(await chipsLeaveLine(row, where), `${where}: the bar is 640 px wide or wider`).toBe(
+      true
+    );
+    await expect(clear, `${where}: Clear filters stands in the narrow bar`).toHaveCount(0);
+    await page.evaluate((top) => window.scrollTo(0, top), offset);
+    // The trigger is focused where it stands, so the focus itself scrolls nothing; Enter opens
+    // the panel with the focus on its first control, the only chip.
+    await trigger.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
+    await page.keyboard.press("Enter");
+    await expect(chip, `${where}: the Filter panel does not list the one narrowing`).toHaveCount(1);
+    await expect(chip, `${where}: the Filter panel opened with the focus elsewhere`).toBeFocused();
+    // Where the window stands just before the press, read once it has held still after the
+    // scroll and the open above; it is only reported, never branched on.
+    const before = await settledScrollTop(page);
+    await page.keyboard.press("Enter");
+    await expect(chip, `${where}: the narrowing stayed on`).toHaveCount(0);
+    await expect(threads, `${where}: the list did not draw the threads again`).toHaveCount(3);
+    // The commit that drew the threads ran the panel's hand-off and the list's anchor in its
+    // layout effects, so the window is read once it has held still after them; it is only
+    // reported.
+    await nextFrames(page);
+    const after = await settledScrollTop(page);
+    // One read is the answer: the hand-off and the anchor ran in the commit waited for above,
+    // and the window has settled since, so nothing moves the focus or the page after this.
+    const focus = await focusNow();
+    if (!focus.inSight) {
+      wrong.push(
+        `${where}: the focus is on "${focus.name}" (data-control ${focus.control}), its top at ${focus.top} px in the 664 px window, out of sight; window.scrollY ${before} -> ${after}`
+      );
     }
   }
   // A keyboard reader who takes the narrowing off is left on a control they cannot see: their next

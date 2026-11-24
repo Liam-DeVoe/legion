@@ -2538,6 +2538,12 @@ function InboxBody({
         (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
       ) &&
       (field === "assignee" || inAssigneeFilter(row, selection, viewer));
+    // A count is drawn only once the read the listed rows come from has answered, never as a 0
+    // that stands for "not read yet": the Dismissed view's threads come from the one read's
+    // `dismissed` state, which the bar does not wait for, so while that read is out or refused
+    // each value is offered with no count. The reader's own list waits for its read before the
+    // bar is drawn at all.
+    const counted = threads.answered;
     // A login equal to either reserved word would be a row that means the filter rather than
     // the person, so neither is offered among the people.
     const reservedLogins: readonly string[] = [UNASSIGNED_FILTER_VALUE, EVERYONE_FILTER_VALUE];
@@ -2577,8 +2583,8 @@ function InboxBody({
               key={field}
               label={DIMENSION_LABELS[field]}
               onChange={(next) => chooseField(field, next)}
-              optionDetail={(value) => `${counts.get(value) ?? 0}`}
-              optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
+              optionDetail={counted ? (value) => `${counts.get(value) ?? 0}` : undefined}
+              optionDetailLabel={counted ? (value) => `${counts.get(value) ?? 0} rows` : undefined}
               optionLabel={(value) => dimensionValueLabel(field, value)}
               options={fieldOptions(field, candidates, viewer, chosen)}
               searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
@@ -2603,10 +2609,17 @@ function InboxBody({
           }}
           open={filterPanel("assignee").open}
           optionDetail={(value) =>
-            `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
+            counted
+              ? `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
+              : value === viewer
+                ? "you"
+                : undefined
           }
-          optionDetailLabel={(value) =>
-            `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
+          optionDetailLabel={
+            counted
+              ? (value) =>
+                  `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
+              : undefined
           }
           optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
           options={assigneeOptions}

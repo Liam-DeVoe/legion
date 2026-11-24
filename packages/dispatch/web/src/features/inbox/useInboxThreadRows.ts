@@ -11,6 +11,10 @@ import { useMotionHold } from "./motion-hold";
 /** The thread side of the Inbox: the rows it lists, the mark a write over that list carries, and
  *  the page behind **Show more** where the list is paged. */
 export interface InboxThreadRows {
+  /** Whether the rows come from an answer of the read they are listed from, so a count taken over
+   *  them counts what that read holds. Always where the list is narrowed to asks, which lists no
+   *  thread. A read that answered once keeps its answer through a later refresh that fails. */
+  readonly answered: boolean;
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */
   readonly asOf: string | undefined;
@@ -69,6 +73,7 @@ export function useInboxThreadRows({
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
   return {
+    answered: asksOnly || adopted !== undefined,
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
     asOf: show === "dismissed" ? pages?.[0]?.as_of : answer?.as_of,

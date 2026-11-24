@@ -9382,6 +9382,61 @@ function renderDismissed(where: "drawer" | "page", address = "/?show=dismissed")
   return { queryClient, unmount: view.unmount };
 }
 
+// INFRA-3135's round-25 rule (the architect's ruling of 2026-11-24 08:07Z), on this branch's one
+// read: a count beside a value is drawn only once the read the listed rows come from has
+// answered, never as a 0 that stands for "not read yet". The Dismissed view lists its threads from
+// the one read's `dismissed` state, which the bar does not wait for: while that read is out, and
+// once it is refused, the Type list offers each kind with no count; once it answers, it counts
+// the threads it lists.
+test("the Dismissed view's Type list draws no count while its read is out or refused, and counts its threads once it answers", async () => {
+  const user = userEvent.setup();
+  const reads = answerDismissedPages(() => []);
+  /** The options of the Type list that carry a count, by name, in each state of the read. */
+  const counted: Record<string, string[]> = {};
+  try {
+    for (const how of ["out", "refused", "answered"] as const) {
+      mocks.getMeInbox.mockImplementation(async (query = {}) => {
+        if (query.state !== "dismissed") return oneReadAnswer([]);
+        if (how === "refused") throw new ApiError(500, { code: "TEST_REFUSED" });
+        if (how === "answered") return oneReadAnswer(dismissedThreads(2));
+        return new Promise<never>(() => {});
+      });
+      const { queryClient, unmount } = renderDismissed("page");
+      try {
+        const read = () => queryClient.getQueryState(meInboxDismissedQuery().queryKey);
+        await waitFor(() => {
+          if (how === "out") expect(read()?.fetchStatus).toBe("fetching");
+          else expect(read()?.status).toBe(how === "refused" ? "error" : "success");
+        });
+        if (how === "answered") await waitFor(() => expect(rowIds()).toHaveLength(2));
+        await screen.findByRole("button", { name: /^Filter( · \d+)?$/ });
+        await openFilterFields(user);
+        await user.click(screen.getByRole("button", { name: "Filter by type" }));
+        const listbox = await screen.findByRole("listbox", { name: "Type options" });
+        counted[how] = within(listbox)
+          .getAllByRole("option")
+          .map((option) => option.getAttribute("aria-label") ?? "")
+          .filter((name) => /, \d+ rows?$/u.test(name));
+      } finally {
+        unmount();
+      }
+    }
+  } finally {
+    reads();
+  }
+  expect(counted).toEqual({
+    answered: [
+      "Question, 0 rows",
+      "Decision, 0 rows",
+      "Approval, 0 rows",
+      "Threads, 2 rows",
+      "Agent message, 0 rows",
+    ],
+    out: [],
+    refused: [],
+  });
+});
+
 describe("the Dismissed window", () => {
   // In the spec's words: a focused row the person scrolls out of the window is no
   // loss. The window takes the row's element away, which is no press of the person's, so nothing
