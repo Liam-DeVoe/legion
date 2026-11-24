@@ -142,7 +142,7 @@ func (e *Engine) askOwnerAgain(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	var covers record.MergeForwardStep
-	if held && hold.claim == asked.Agent {
+	if held && hold.claim == asked.Agent && false {
 		covers = record.MergeForwardHold
 	}
 	e.logOnCommit(ctx, "workflow: a merge forward asked of the owner opens again, and the owner is asked again", "issue", issue.Key,
