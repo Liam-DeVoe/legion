@@ -3514,6 +3514,34 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
 // 251: the held word of a member of a tree whose root stands in backlog or icebox is
 // `tree_in_backlog_or_icebox` (record.HeldTreeInBacklogOrIcebox), and the route table names no
 // child route of a removed operation by its path. The word is a value of
@@ -3538,7 +3566,7 @@ package api
 // rather than 404 `no route`. requests.go's RemovedRoutes names the pattern, removed at 205, and
 // the request gate resolves each recorded route through the server's mux to the pattern that
 // serves it, so the request records of 193, 199 and 202 still pass. No request of a plugin moves,
-// and the request records of 251 are 228's under its own number.
+// and the request records of 251 are 232's under its own number.
 // (This entry took 241 when main declared 220: a reading of every open pull request of
 // cybermonklabs/legion on 2026-11-24 found each number from 221 to 240 declared by at least one.
 // The forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (INFRA-1575's
@@ -3551,8 +3579,9 @@ package api
 // main still at 228 and #5271, which declares 232, in the merge queue ahead of this change: a
 // reading of `const DaemonAPIVersion` at refs/pull/<n>/head for all 483 open pull requests,
 // 2026-11-24T11:34Z-11:36Z, found the highest at 245 (#4960, #5158), and INFRA-3118's tree holds
-// 246 to 250, so this entry moved to 251. From this entry the last number of answers.go's
-// SupportedContracts is `api.treeInBacklogOrIceboxContract`, after `api.intakeGiveUpsContract`.
-// Read the base's own number and every open pull request again at the next merge rather than
-// from this line.)
+// 246 to 250, so this entry moved to 251. The forward merge of 2026-11-24 that brought in
+// 3dbaa2b23a brought main's 232 (#5271, INFRA-4508's entry above); 251 stays above it. From this
+// entry the last number of answers.go's SupportedContracts is `api.treeInBacklogOrIceboxContract`,
+// after main's 232. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
 const DaemonAPIVersion = 251

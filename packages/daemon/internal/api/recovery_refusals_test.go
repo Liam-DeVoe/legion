@@ -126,7 +126,7 @@ func delayedRelaunchCauses() []delayedRelaunchCause {
 func workingUnderADelayedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
 	var delay atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if delay.Load() {
 			return now.Add(time.Hour)
 		}
@@ -244,7 +244,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 func workingUnderADelayedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	var delay atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if delay.Load() {
 			return now.Add(time.Hour)
 		}
@@ -1164,7 +1164,7 @@ func TestARecoveryStepThatMeetsADelayRaisedAfterItsViewNamesTheLaunchInFlight(t 
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
 			var delay atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 				if delay.Load() {
 					return now.Add(time.Hour)
 				}
