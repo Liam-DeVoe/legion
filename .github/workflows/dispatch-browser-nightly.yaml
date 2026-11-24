@@ -9,11 +9,12 @@ name: Dispatch browser nightly
 # as. The full lane's jobs are dispatch-browser.yaml's, whose notes name them and the machines
 # they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
-# full-lane run 45151841335 at e2399655 (2026-11-23) ran them as seven jobs on eight machines,
-# and its attempt 1 cost 2,635 machine-seconds for 1,730 rows, 1.52 s a row, where the default
-# branch's twelve-job lane cost a median of 3,840 s for 1,677 to 1,681 rows, 2.29 s a row, over
-# that day's 43 green merge-queue runs to 13:11:30Z. This run covers a day with no merge group,
-# and is what runs the full lane on main's tip (.github/workflows/dispatch-browser.yaml, which
+# full-lane run 45276500169 at 4935c4af (2026-11-23) ran them as seven jobs on eight machines,
+# and its three attempts cost 2,885, 2,603 and 2,740 machine-seconds for 1,731 rows, 1.50 to
+# 1.67 s a row, where the default branch's twelve-job lane cost a median of 3,830.5 s for 1,677
+# to 1,681 rows, 2.28 s a row, over that day's 68 green merge-queue runs to 19:28:31Z. This run
+# covers a day with no merge group, and is what runs the full lane on main's tip
+# (.github/workflows/dispatch-browser.yaml, which
 # holds every step). The re-record job's own head, below, says what it guards and why it is here
 # rather than in a file of its own.
 #

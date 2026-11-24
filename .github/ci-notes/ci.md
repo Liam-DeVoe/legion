@@ -1464,9 +1464,11 @@ dispatch-browser-pr is the one exception the rule names: at 14.2 minutes it is a
 and it stays on the pull request, since its rows tagged `@pr` are the ones a change to the
 dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane).
 Its 14.2 is main's figure, read off pull-request lanes of four shard legs that each built the
-dashboard themselves; dispatch://INFRA-1109's lane is a binaries job that builds it once and two
-shard legs (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows),
-whose own time this list has not been read again for.
+dashboard themselves. dispatch://INFRA-1109's lane is a binaries job that builds it once and two
+shard legs (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows).
+Read the same way, its two attempt-1 runs took 7.9 and 9.7 minutes (runs 45261083852 and
+45276453365, at that issue's heads e15ee5e4 and 4935c4af), which are too few runs for a 90th
+percentile.
 A job whose numbers cross the line moves class by the same rule.
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
