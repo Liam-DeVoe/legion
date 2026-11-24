@@ -435,12 +435,13 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 		defer close(closing)
 		closed = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 	}()
-	// The close's own settlement of the document waits on the issue's row, which the held
-	// settlement owns.
+	// The close waits for the issue's owner lock, which the held settlement holds: the waiter is
+	// the close's own backend, running owner_lock('exclusive', …), and no other backend of this
+	// database waits on a lock while the close is not sent.
 	awaitLockWaiters(t, database, 1)
 	select {
 	case <-closing:
-		t.Fatalf("the close answered %d while the settlement held the issue's row: body=%s", closed.Code, closed.Body.String())
+		t.Fatalf("the close answered %d while the settlement held the issue's owner lock: body=%s", closed.Code, closed.Body.String())
 	default:
 	}
 	releaseSettlement()
