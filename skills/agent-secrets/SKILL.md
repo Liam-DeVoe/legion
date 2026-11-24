@@ -21,9 +21,10 @@ agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <c
 - **Pass `--reason` wherever a person or the model judge decides:** such a request that carries none is denied whole. A request every name of which is granted at once needs none.
 - **Write `--reason` as one sentence the approver can decide on.** Name in it the issue you work on. Meet the key's `guidance:` in it.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
-  The same command run again (the same names and `--ttl`) uses the live grant or joins the waiting request, and asks nobody again.
-- For a GitHub App secret, `--github-owner <account> --github-token` gives the command that one account's token, the string an `Authorization` header carries. `--github-repo` and `--github-read-only` narrow it further.
-  Without `--github-token` the name holds the JSON object of installations, and GitHub answers it `401`.
+  The same command run again (the same names, `--ttl` and `--target`) uses the live grant or joins the waiting request, and asks nobody again.
+- A GitHub App credential is a profile. `--target ACCOUNT`, or `--target ACCOUNT/REPOSITORY` for each repository of one account, narrows it in a run of that name alone.
+  A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`.
+  A line `the profile NAME left out …` names permissions the token lacks (calls needing them get `403`).
 
 ## The command reads the value, your shell does not
 
@@ -34,6 +35,8 @@ Put the command in single quotes inside `sh -c`. Give `curl` the header on stand
 agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'check that the Slack token works' -- \
   sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
+
+In a pod, `gh` refuses `GH_TOKEN`, so call GitHub with `curl` that way: `agent-secrets GITHUB_READ --target ACCOUNT -- sh -c '…"$GITHUB_READ" | curl -sS -H @- https://api.github.com/…'`.
 
 Read the body, not the exit status alone: Slack and many HTTP APIs answer `200` with `"ok": false`.
 Send the body to `jq` straight from `curl` or through `printf '%s'`, never through `echo`, which can turn a `\n` inside a JSON string into a control character.
@@ -72,7 +75,6 @@ Your transcript keeps everything a command prints.
 A deployment can keep a secret's value back. The name then holds `agent-secrets-placeholder-` and 32 letters and digits. The broker's proxy, which the run's `HTTPS_PROXY` names, puts the real value into the call to the secret's service. A shape check reads only the placeholder.
 
 - Make every call inside the `agent-secrets NAME -- <command>` run. A tool that caches a token across runs, or calls outside the run, stops working.
-- A GitHub narrowing and an airlocked name cannot share a run: ask for the GitHub App secret in a run of its own.
 
 | Proxy answer | Means | Do |
 | --- | --- | --- |
@@ -92,7 +94,7 @@ Request a secret only to use it for the work in front of you: every request is r
 ## Before you say that a service is out of reach
 
 1. **Run the call through `agent-secrets`**, with the secret your instructions name.
-2. **On a GitHub `404` under your session's own token, ask for the GitHub App secret your instructions name**, narrowed with `--github-owner`, `--github-repo`, `--github-read-only` and `--github-token`, and make the call again.
+2. **On a GitHub `404` under your session's own token, ask for the GitHub profile your instructions name**, with `--target` for the call's account or repositories, and call again.
    It is that token's reach, not your access: GitHub answers `404` for a repository a token cannot see.
 3. **Report a service unreachable only with the command you ran and the output you saw.**
 4. **When no instruction names a secret for that service, report that**, with the output of `agent-secrets identity --source` and the instructions you read. Request no name you guessed.
