@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"context"
 	"slices"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -17,8 +20,10 @@ import (
 // with that hold.
 
 // assertWay fails unless the latest fix of LEGION-208's task took way, the issue stands in at, the
-// latest start of role there moves its working copy to moveTo, and the task counts pass returns,
-// pair among them where pair is not "".
+// latest start of role there moves its working copy to moveTo, the task counts pass returns, pair
+// among them where pair is not "", and the commit the next review names is still the one the
+// reviewer's own review read, X (fixAfterReview): the way after a fix moves the branch's head, never
+// the commit the reviewer last read, so the next review reads from X to the new head.
 func (r *fixRig) assertWay(way int, at phase.Phase, role claim.Role, moveTo string, pass int, pair string) {
 	r.t.Helper()
 	if fix := r.latestFix(); fix.Way != way {
@@ -33,6 +38,19 @@ func (r *fixRig) assertWay(way int, at phase.Phase, role claim.Role, moveTo stri
 	if counts.Pass != pass || (pair != "" && counts.BackwardMoves[pair] != 1) {
 		r.t.Fatalf("the task counts %+v, want %d returns, %q among them", counts, pass, pair)
 	}
+	if reviewed := roleRowOf(r.t, r.pool, r.engine, "LEGION-208", claim.RoleReviewer).ReviewedHead; reviewed != fixHead {
+		r.t.Fatalf("the commit the next review names is %q, want %s, the one the reviewer's review read", reviewed, fixHead)
+	}
+}
+
+// reviewedX writes on the reviewer's row that its own review read X, as the review App review of
+// the reviewer's session leaves it (record.PhaseRow.ReviewedHead): the review of a step that
+// started at X, beside the fix.
+func (r *fixRig) reviewedX() {
+	r.t.Helper()
+	row := roleRowOf(r.t, r.pool, r.engine, "LEGION-208", claim.RoleReviewer)
+	row.Issue, row.Role, row.ReviewedHead = "LEGION-208", claim.RoleReviewer, fixHead
+	applyInTx(r.t, r.pool, r.engine, func(ctx context.Context, tx pgx.Tx) error { return r.engine.store.PutPhase(ctx, tx, row) })
 }
 
 // fixAfterReview is LEGION-208 reviewing on `implementer tester reviewer` with fix 1 for k-ci at
@@ -45,6 +63,7 @@ func fixAfterReview(t *testing.T, engine *Engine, trigger TriggerKind, afterEnd 
 	r.fails(fixHead, "k-ci")
 	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
 	if !afterEnd {
+		r.reviewedX()
 		r.move(trigger, "", reviewReport("the review's report"))
 	}
 	r.pushed(end)
@@ -52,6 +71,7 @@ func fixAfterReview(t *testing.T, engine *Engine, trigger TriggerKind, afterEnd 
 		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
 	}
 	if afterEnd {
+		r.reviewedX()
 		r.move(trigger, "", reviewReport("the review's report"))
 	}
 	return r
@@ -70,6 +90,7 @@ func fixAtTheEnd(t *testing.T, engine *Engine) *fixRig {
 	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
 	r.fails(fixHead, "k-ci")
 	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.reviewedX()
 	r.move(TriggerReviewApproved, "", reviewReport("approved"))
 	r.assertEndHold(record.HoldForFix)
 	return r
@@ -230,6 +251,7 @@ func TestRows3And4ForAnImplementerReviewerTask(t *testing.T) {
 			r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer"}, TriggerImplementationReady)
 			r.fails(fixHead, "k-ci")
 			r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+			r.reviewedX()
 			r.move(TriggerReviewRejected, "", reviewReport("the review's report"))
 			r.pushed(end)
 			r.apply("fix-done", fixCompletion(end))
@@ -255,6 +277,7 @@ func TestATesterThatPassedBesideTheFixRunsAgainAfterIt(t *testing.T) {
 	r.move(TriggerTesterPassed, "", record.PhaseRow{})
 	r.pushed(headTwo)
 	r.apply("fix-done", fixCompletion(headTwo))
+	r.reviewedX()
 	r.move(TriggerReviewApproved, "", reviewReport("approved"))
 
 	r.assertWay(2, phase.Testing, claim.RoleTester, headTwo, 1, reviewingTesting)
