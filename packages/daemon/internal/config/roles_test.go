@@ -196,18 +196,18 @@ func TestAReviewRoleActsAsTheReviewApp(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name, block, roleType, app string
+		name, block, rest, roleType, app string
 	}{
-		{"a review role that names no App", "{type: review, prompt_file: critic.md}", "review", RoleAppReview},
-		{"a review role that names the review App", "{type: review, prompt_file: critic.md, github_app: review}", "review", RoleAppReview},
-		{"a design role on the implement App", "{type: design, prompt_file: critic.md, github_app: implement}", "design", RoleAppImplement},
-		{"a planning role on the implement App", "{type: planning, prompt_file: critic.md, github_app: implement}", "planning", RoleAppImplement},
-		{"an implementation role on the implement App", "{type: implementation, prompt_file: critic.md, github_app: implement}", "implementation", RoleAppImplement},
-		{"a testing role on the implement App", "{type: testing, prompt_file: critic.md, github_app: implement}", "testing", RoleAppImplement},
-		{"a role of role_types on the implement App", "{type: security, prompt_file: critic.md, github_app: implement}\nrole_types: [security]", "security", RoleAppImplement},
+		{"a review role that names no App", "{type: review, prompt_file: critic.md}", "", "review", RoleAppReview},
+		{"a review role that names the review App", "{type: review, prompt_file: critic.md, github_app: review}", "", "review", RoleAppReview},
+		{"a design role on the implement App", "{type: design, prompt_file: critic.md, github_app: implement}", "", "design", RoleAppImplement},
+		{"a planning role on the implement App", "{type: planning, prompt_file: critic.md, github_app: implement}", "", "planning", RoleAppImplement},
+		{"an implementation role on the implement App", "{type: implementation, prompt_file: critic.md, github_app: implement}", "", "implementation", RoleAppImplement},
+		{"a testing role on the implement App", "{type: testing, prompt_file: critic.md, github_app: implement}", "", "testing", RoleAppImplement},
+		{"a role of role_types on the implement App", "{type: security, prompt_file: critic.md, github_app: implement}", "role_types: [security]\n", "security", RoleAppImplement},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := Load(rolesFile(t, "roles: {critic: "+tc.block+"}\n", "critic.md"), noEnv)
+			cfg, err := Load(rolesFile(t, "roles: {critic: "+tc.block+"}\n"+tc.rest, "critic.md"), noEnv)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
