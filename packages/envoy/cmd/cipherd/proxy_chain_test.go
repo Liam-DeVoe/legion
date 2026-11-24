@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -148,6 +149,21 @@ func TestMainRefusesAProxyChainItCannotStartOn(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEveryProxyBlocksHostIsBound: the hosts every intermediate must permit exactly are those of
+// every proxy block, a dpop block's included (its host is a private destination the proxy signs a
+// leaf for too), each once, in the profiles file's order.
+func TestEveryProxyBlocksHostIsBound(t *testing.T) {
+	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.com", "*.deel.com"}},
+		{Name: "WORKER_TOKEN", Hosts: []string{"dispatch.internal.example"}, Kind: proxyrules.KindDPoP},
+		{Name: "OTHER_KEY", Hosts: []string{"api.deel.com"}},
+	}}
+	want := []string{"api.deel.com", "*.deel.com", "dispatch.internal.example"}
+	if got := boundHosts(rules); !slices.Equal(got, want) {
+		t.Errorf("boundHosts = %v; want %v", got, want)
 	}
 }
 

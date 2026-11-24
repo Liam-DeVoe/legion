@@ -41,7 +41,8 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>]` reads a profiles file with the
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...']`
+reads a profiles file with the
 broker's own code and exits non-zero, naming the profile and the field or the parse position, when
 the broker would not serve that file;
 on a file it would serve it prints every field of each profile the file adds and removes against
@@ -50,6 +51,12 @@ requesters and `maxGrant`, its GitHub accounts, repositories, permissions and va
 scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right for its profile.
+A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
+the boot's rules for it: one exact host, a non-empty `allow` list none of whose entries is every path
+(`""` or `/`), the `Authorization` header alone, and no block of another kind on that host.
+Its host must also be one private destination's, which only the broker's own
+`BROKER_PROXY_PRIVATE_UPSTREAM` names: `--private-upstream '<host>=<url> ...'` checks that too, and
+without the flag each such profile gets one line saying its tie to the destination was not checked.
 `profiles check` reads no configuration, opens no database and binds nothing.
 The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 
@@ -163,4 +170,4 @@ reference pages from the code's doc comments at the docs build, not in `go test`
 
 Cipher's proxy signs each bound host's leaf with a pod's own intermediate; "The proxy's chain" in
 `concepts.md` says which names its constraints bind, and in which clients.
-A copied intermediate key can sign, for up to 7 days, a certificate that curl, Python and Node accept for any name through a wildcard or single-word common name, and that Bun accepts for any name through its common name when it also has a non-DNS alternative name. git on GnuTLS rejects it. Only the 7-day life limits this.
+A copied intermediate key can sign, for up to 7 days, a certificate with no DNS alternative name that curl, Python and Node accept for a name outside the allowed ones when its common name is one label, such as `localhost`, or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`. They refuse a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`, so for them the key reaches names of one label, and names of three or more labels through a wildcard, but no name of two labels. Bun accepts any name through the common name when the certificate also has a URI, email or registered-ID alternative name. git on GnuTLS rejects every form. Only the 7-day life limits this.
