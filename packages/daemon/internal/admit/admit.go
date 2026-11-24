@@ -1590,7 +1590,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
 // person's approval a gate of its holds of a version its document has since moved past: the new
 // generation's architect registers each step again on a cleared gate, and its start task
-// (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
+// (workflow.Engine.UnclaimedKeptTask) tells it to request approval of the latest version. One
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
 // task names the document the person reviewed rather than the spec of every deployment. The

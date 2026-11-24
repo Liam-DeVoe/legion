@@ -1922,7 +1922,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	var catchUp int64
 	inTx(t, st, func(tx pgx.Tx) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
-		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
+		must(t, records.KeepDecision(ctx, tx, KeptDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
@@ -1969,7 +1969,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	var claimedBy int64
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, tx.QueryRow(ctx, "select count(*) from outbox where id = $1 and lease_until > $2", catchUp, now).Scan(&left))
-		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from parked_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
+		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from kept_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
 	})
 	if left != 1 || claimedBy != catchUp {
 		t.Fatalf("after the drop the leased catch-up %d is in the outbox %d times and %s is claimed by row %d; want the row kept under its "+
@@ -1997,7 +1997,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	var catchUp int64
 	inTx(t, st, func(tx pgx.Tx) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
-		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
+		must(t, records.KeepDecision(ctx, tx, KeptDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
@@ -2054,7 +2054,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	var claimedBy int64
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, tx.QueryRow(ctx, "select count(*) from outbox where id = $1", catchUp).Scan(&left))
-		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from parked_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
+		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from kept_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
 	})
 	if left != 0 || claimedBy != 0 {
 		t.Fatalf("after both committed the catch-up %d is in the outbox %d times and %s is claimed by row %d; want the finished row gone "+
@@ -2080,7 +2080,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	var catchUp int64
 	inTx(t, st, func(tx pgx.Tx) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
-		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
+		must(t, records.KeepDecision(ctx, tx, KeptDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
@@ -2142,7 +2142,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	var claimedBy int64
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, tx.QueryRow(ctx, "select count(*) from outbox where id in ($1, $2)", catchUp, copyID).Scan(&left))
-		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from parked_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
+		must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from kept_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimedBy))
 	})
 	if left != 0 || claimedBy != 0 {
 		t.Fatalf("after the drop %d of the catch-up and its copy are in the outbox and %s is claimed by row %d; want both gone and the "+
@@ -2677,7 +2677,7 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 // does not. A read names them all, newest first and ties by reference, and leaves them; the forget
 // of what a delivered start named deletes exactly those, so a decision kept on a named reference
 // since stays for the next start to name.
-func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t *testing.T) {
+func TestAKeptDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -2686,7 +2686,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-210")))
 	})
-	for _, decision := range []ParkedDecision{
+	for _, decision := range []KeptDecision{
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:alice", At: t0},
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: t0},
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second)},
@@ -2694,16 +2694,16 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:carol", At: t0.Add(-time.Second)},
 	} {
 		inTx(t, st, func(tx pgx.Tx) {
-			must(t, records.AddParkedDecision(ctx, tx, decision))
+			must(t, records.KeepDecision(ctx, tx, decision))
 		})
 	}
-	var named []ParkedDecision
+	var named []KeptDecision
 	inTx(t, st, func(tx pgx.Tx) {
 		var err error
-		named, err = records.ParkedDecisions(ctx, tx, "LEGION-210")
+		named, err = records.KeptDecisionsOf(ctx, tx, "LEGION-210")
 		must(t, err)
 	})
-	want := []ParkedDecision{
+	want := []KeptDecision{
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second)},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 	}
@@ -2717,7 +2717,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		}
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		again, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		again, err := records.KeptDecisionsOf(ctx, tx, "LEGION-210")
 		must(t, err)
 		if len(again) != len(want) {
 			t.Fatalf("a second read = %#v, want the rows still kept: only a delivery forgets them", again)
@@ -2725,13 +2725,13 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	})
 	// A person decides again on a reference the start named, before that start is delivered.
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-210", Ref: spec,
+		must(t, records.KeepDecision(ctx, tx, KeptDecision{Issue: "LEGION-210", Ref: spec,
 			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(time.Hour)}))
 		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-210", KeptDecisions{Decisions: []DecisionMark{
 			{Ref: spec, At: t0.Add(2 * time.Second)}, {Ref: ask, At: t0.Add(time.Second)}}}, 0))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		left, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		left, err := records.KeptDecisionsOf(ctx, tx, "LEGION-210")
 		must(t, err)
 		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
 			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)

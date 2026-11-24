@@ -261,7 +261,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // has the review named by the task that resumes it, and the mark keeps a redelivery after that
 // resume from telling it again. reviewer is the person who asked the changes, named on the notice:
 // the decision a parked tree's undelivered notice carries goes to the controller (the outbox's
-// parkDecision), which needs to know who made it.
+// relaySpecDecision), which needs to know who made it.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -758,9 +758,10 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // when a later version's text is that version's, Dispatch's bookkeeping of an earlier approval and
 // not a new act of theirs.
 //
-// The controller's parked-root walk (skill://legion-controller/references/parked-decisions.md,
-// "The walk", step 3) repeats this decision in prose to skip the approvals it queues: a change to
-// what queues changes that step too.
+// The controller's walk of roots out of the workflow
+// (skill://legion-controller/references/kept-decisions.md, "The walk", step 3) repeats this
+// decision in prose to skip the approvals it queues: a change to what queues changes that step
+// too.
 //
 // dispatchArtifact ties its skip of the root's own gate to this decision rather than to the tree
 // being live: a lingering root that is not parked — closed as done, or still in triage — queues
@@ -936,7 +937,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
 		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
-		// decision then goes to the controller instead (the outbox's parkDecision).
+		// decision then goes to the controller instead (the outbox's relaySpecDecision).
 		reviewer := fact.Actor.Name()
 		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step)}
 		switch {

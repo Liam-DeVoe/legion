@@ -576,12 +576,12 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 // warnKeptDecisionsOfAClosedTree names every decision a person made while nobody in this tree
 // could hear it that the tree's close leaves behind: every row whose issue stands in this tree
 // now, in whatever state — kept for a start or a catch-up to name, claimed by one, or held by the
-// unconfirmed task queued on an architect's claim (Store.ParkedDecisions, whose reading is by the
+// unconfirmed task queued on an architect's claim (Store.KeptDecisionsOf, whose reading is by the
 // issue each row was decided on). The tree closes for good here, so no start task and no catch-up
 // of it names them to an architect again, and each is one Warn line of its own, written once the
 // close has committed (warnOnCommit), so a row run again after a failed commit writes nothing
 // twice. The controller was told each when it was kept — that is what a person's decision on a
-// tree nobody in it hears reaches (record.RelayParkedDecision's notice) — so the line says where
+// tree nobody in it hears reaches (record.RelayKeptDecision's notice) — so the line says where
 // the decision stands rather than that it is lost.
 //
 // A decision this same close hands to a child is no such decision: one made on a member the close
@@ -596,7 +596,7 @@ func (e *Engine) warnKeptDecisionsOfAClosedTree(ctx context.Context, tx pgx.Tx, 
 	for _, child := range handed {
 		goesWithAChild[child.Key] = true
 	}
-	kept, err := e.store.ParkedDecisions(ctx, tx, root.Key)
+	kept, err := e.store.KeptDecisionsOf(ctx, tx, root.Key)
 	if err != nil {
 		return err
 	}
@@ -609,7 +609,7 @@ func (e *Engine) warnKeptDecisionsOfAClosedTree(ctx context.Context, tx pgx.Tx, 
 // keptDecisionStands names, for the close's line, where a decision the closing tree still owes
 // stands now: held by the unconfirmed task queued on an architect's claim, claimed by a start or
 // a catch-up that has not settled it, or kept for the next one to name.
-func keptDecisionStands(decision record.ParkedDecision) string {
+func keptDecisionStands(decision record.KeptDecision) string {
 	switch {
 	case decision.HeldBy.Claim != "":
 		return "held by its architect's unconfirmed task"
@@ -629,6 +629,6 @@ func (e *Engine) keptDecisionOfAClosedTree(ctx context.Context, root, ref, issue
 			"ref", ref, "root", root, "issue", issue, "where", where)
 		return
 	}
-	e.warnOnCommit(ctx, "workflow: the tree closed while it still owed a person's decision to an architect; the controller already has its parked-decision notice",
+	e.warnOnCommit(ctx, "workflow: the tree closed while it still owed a person's decision to an architect; the controller already has its kept-decision notice",
 		"ref", ref, "root", root, "issue", issue, "where", where)
 }

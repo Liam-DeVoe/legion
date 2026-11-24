@@ -136,8 +136,8 @@ const RoleTopicPrefix = "notifications.role."
 // triage handed to Legion (admission), a root that keeps its admission slot while its architect
 // waits on a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of
 // the workflow because no tree of it runs and nothing would ever start it (`unslotted`, admit's
-// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
-// outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
+// releaseUnslotted), a person's decision on a tree Legion is not running (`kept-decision`, the
+// outbox's relaySpecDecision and workflow's relayKeptDecision), an issue whose pod an update round
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
 // tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each

@@ -38,7 +38,10 @@ var processDSN string
 // test's own default; the guard keeps all three, so a developer may set any of them by hand. It
 // keeps the news record's model test's four the same way (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold):
 // LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
-// LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It
+// LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It keeps
+// LEGION_KEPT_DECISIONS_BASE_LEGION too, the `legion` binary of the release before that the kept
+// decisions' migration test boots on the database its way back left
+// (TestKeptDecisionsTheReleaseBeforeLeftAreToldOnceAfterTheRenameAndComeBackOnTheWayBack). It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
 // (testpg.Main), removes the directory the tests' Envoy binaries were built into
 // (testbuild.Main), and removes the NATS container the package's tests share (testnats.Main).
@@ -72,7 +75,8 @@ func TestMain(m *testing.M) {
 		os.Exit(testnats.Main(m))
 	}
 	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS",
-		"LEGION_NEWS_MODEL_SEED", "LEGION_NEWS_MODEL_RUNS", "LEGION_NEWS_MODEL_STEPS", "LEGION_NEWS_MODEL_TRACE")
+		"LEGION_NEWS_MODEL_SEED", "LEGION_NEWS_MODEL_RUNS", "LEGION_NEWS_MODEL_STEPS", "LEGION_NEWS_MODEL_TRACE",
+		keptDecisionsBaseLegion)
 	processDSN = os.Getenv("LEGION_TEST_PG_DSN")
 	executable, err := os.Executable()
 	if err == nil {

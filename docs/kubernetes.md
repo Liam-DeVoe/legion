@@ -2996,6 +2996,61 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that renames the kept decisions
+
+The daemon keeps a person's decision on a tree that does not run until an architect of that tree hears it.
+This release gives that store and its stored values the words of what they are.
+Its migration `20261124002047_kept_decisions` gives the table the name `kept_decisions`, with its index, its primary key, its two foreign keys and, on PostgreSQL 18 and later, its NOT NULL constraints.
+The migration also moves three stored values to their new words.
+The kind of each queued controller notice that relays such a decision becomes `kept-decision`.
+The processed-event source that keeps one decision to one notice takes the same value.
+The held reason of each queued tick for a member of a tree whose root is in backlog or icebox becomes `tree_in_backlog_or_icebox`.
+
+**A rollback needs the way back of the migration's header.**
+The earlier release reads and writes the table under its old name, so each of its reads of the table fails after the rename.
+It decodes an outbox payload strictly (`record.DecodeOutboxPayload`) and refuses a controller notice of a kind it does not know, so it fails a notice of the new kind at every attempt.
+It reads the processed-event source under the old value, so it would relay a spec decision that this release relayed again when the undelivered notice that carries it runs.
+Run it with every daemon of the database stopped, before the earlier image is pinned:
+
+```sql
+begin;
+update outbox set payload = jsonb_set(payload, '{held}', (
+    select jsonb_agg(case when held->>'reason' = 'tree_in_backlog_or_icebox'
+      then jsonb_set(held, '{reason}', '"tree_parked"') else held end order by place)
+    from jsonb_array_elements(payload->'held') with ordinality as listed(held, place)))
+  where kind = 'controller_notice' and payload @? '$.held[*] ? (@.reason == "tree_in_backlog_or_icebox")';
+update processed_events set source = 'parked-decision' where source = 'kept-decision';
+update outbox set payload = jsonb_set(payload, '{kind}', '"parked-decision"')
+  where kind = 'controller_notice' and payload->>'kind' = 'kept-decision';
+do $$
+declare
+  named record;
+begin
+  for named in select conname from pg_constraint
+    where conrelid = 'kept_decisions'::regclass and contype = 'n' and conname like 'kept\_decisions\_%'
+  loop
+    execute format('alter table kept_decisions rename constraint %I to %I',
+      named.conname, 'parked_decisions_' || substr(named.conname, length('kept_decisions_') + 1));
+  end loop;
+end $$;
+alter table kept_decisions rename constraint kept_decisions_claimed_by_fkey to parked_decisions_claimed_by_fkey;
+alter table kept_decisions rename constraint kept_decisions_issue_fkey to parked_decisions_issue_fkey;
+alter table kept_decisions rename constraint kept_decisions_pkey to parked_decisions_pkey;
+alter index kept_decisions_issue rename to parked_decisions_issue;
+alter table kept_decisions rename to parked_decisions;
+delete from schema_version where version = 20261124002047;
+commit;
+```
+
+The same block is the last paragraph of the migration's header, which `migrations.WayBack` returns.
+It costs nothing that the earlier release reads: each row, each notice and each mark stays, under the names that release gave them.
+A notice that this release published under the new kind stays published, and the controller already has it.
+The block also deletes the migration's version row, so the next start of this release runs the migration again and the names move once more.
+
+**No daemon of one release runs on the database while the other release's names stand.**
+A daemon of the earlier release fails each claim's confirmation once the table has its new name, and a daemon of this release fails each read of it after the way back.
+So every daemon of the database stops before a daemon of the other release starts on it, on the way up and on the way back.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3474,9 +3529,10 @@ The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
 cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729) and cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
 That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, and 20261120055717 on one that #4598's release or a later one migrated, #4581's, #4573's and #3995's among them: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
-`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261121170714.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261124002047.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
+A rollback of a store that the release that renames the kept decisions migrated runs the way back in the header of `20261124002047_kept_decisions.up.sql` first too, which deletes that version's row ([Rolling back the release that renames the kept decisions](#rolling-back-the-release-that-renames-the-kept-decisions)).
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3561,6 +3617,7 @@ The migrations recorded above this one are these.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
+20261124002047_kept_decisions renames the table of kept decisions, its index and its constraints, rewrites the controller notice kind, the processed-event source and the held reason of a tree in backlog or icebox that it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first ([Rolling back the release that renames the kept decisions](#rolling-back-the-release-that-renames-the-kept-decisions)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

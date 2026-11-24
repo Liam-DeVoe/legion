@@ -260,7 +260,7 @@ func TestLingerHandsOver(t *testing.T) {
 		want := []string{
 			`level=INFO msg="workflow: the tree closed owing a person's decision; it goes to the architect of the child this close handed to Legion" ` +
 				`ref=` + handsOverMergeReadyRef + ` root=` + handsOverRoot + ` issue=` + handsOverMergeReady + ` where="kept for its issue's tree"`,
-			`level=WARN msg="workflow: the tree closed while it still owed a person's decision to an architect; the controller already has its parked-decision notice" ` +
+			`level=WARN msg="workflow: the tree closed while it still owed a person's decision to an architect; the controller already has its kept-decision notice" ` +
 				`ref=` + handsOverWorkingRef + ` root=` + handsOverRoot + ` issue=` + handsOverWorking + ` where="kept for its issue's tree"`,
 		}
 		if got := closeDecisionLines(t, logged); !slices.Equal(got, want) {
@@ -397,18 +397,18 @@ func handsOverFixture(t *testing.T) (*pgxpool.Pool, *bytes.Buffer, func(id strin
 			Number: member.number, Branch: "legion/" + member.key, HeadSHA: "head-" + member.key, Failing: []string{}})
 	}
 	// One decision on each member a close can hand over, the newer on the merge-ready one, so the
-	// close's lines come in a fixed order (record.Store.ParkedDecisions is newest first).
+	// close's lines come in a fixed order (record.Store.KeptDecisionsOf is newest first).
 	seedHandsOverDecision(t, pool, handsOverMergeReady, handsOverMergeReadyRef, now)
 	seedHandsOverDecision(t, pool, handsOverWorking, handsOverWorkingRef, now.Add(-time.Minute))
 	return pool, logged, applyFacts(t, pool, engine)
 }
 
 // seedHandsOverDecision keeps one person's decision made on an ask of issue, as
-// record.RelayParkedDecision keeps one nobody in the issue's tree could hear.
+// record.RelayKeptDecision keeps one nobody in the issue's tree could hear.
 func seedHandsOverDecision(t *testing.T, pool *pgxpool.Pool, issue, ref string, at time.Time) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().AddParkedDecision(context.Background(), tx, record.ParkedDecision{Issue: issue, Ref: ref,
+		return record.NewStore().KeepDecision(context.Background(), tx, record.KeptDecision{Issue: issue, Ref: ref,
 			Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	})
 }

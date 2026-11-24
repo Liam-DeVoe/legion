@@ -443,24 +443,24 @@ const (
 	AnsweredByDecline Answer = "declined"
 )
 
-// ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
-// relayed to the controller (a parked-decision notice) or kept for a root that waits for its slot
-// (RelayParkedDecision). It is kept under the issue it was decided on, never under a root, so the
+// KeptDecision is a person's decision on a tree nobody in it could hear, which the daemon
+// relayed to the controller (a kept-decision notice) or kept for a root that waits for its slot
+// (RelayKeptDecision). It is kept under the issue it was decided on, never under a root, so the
 // tree it is owed to is read from the record whenever a start or a catch-up names it: an issue
 // that changes trees takes its decisions with it with nothing to move. It stands until the one
 // start task or catch-up that claimed it (ClaimedBy, the outbox row whose payload names it:
-// workflow.Engine.ParkedDecisionTask names only rows nothing counting claims or holds) has told
+// workflow.Engine.UnclaimedKeptTask names only rows nothing counting claims or holds) has told
 // an architect of its issue's tree, and is deleted then — by that catch-up's publish
 // (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
 // a release never leaves it kept with nobody to name it again.
-type ParkedDecision struct {
+type KeptDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
 	// architect of the tree this issue stands in now owes the person the answer, whatever tree it
 	// stood in when the decision was made. It is empty for no row the daemon writes, since every
-	// path that keeps one knows where it was made (RelayParkedDecision).
+	// path that keeps one knows where it was made (RelayKeptDecision).
 	Issue    string
 	Ref      string
 	Decision DecisionKind
@@ -1997,22 +1997,22 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
-	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
+	// KeepDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
 	// person has since followed with an approval of the same spec is not what the start names.
-	AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error
-	// ParkedDecisions is every decision owed to tree — every row whose issue stands in tree now,
+	KeepDecision(ctx context.Context, tx pgx.Tx, decision KeptDecision) error
+	// KeptDecisionsOf is every decision owed to tree — every row whose issue stands in tree now,
 	// in any state — newest first, ties by ref. It is what the close of a tree reads: the tree
 	// ends owing each of them (workflow's warnKeptDecisionsOfAClosedTree).
-	ParkedDecisions(ctx context.Context, tx pgx.Tx, tree string) ([]ParkedDecision, error)
+	KeptDecisionsOf(ctx context.Context, tx pgx.Tx, tree string) ([]KeptDecision, error)
 	// UnclaimedKept is what a start or catch-up of tree may name: every row whose issue stands in
 	// tree now and that no counting claim or hold holds — a claim counts only while the claiming
 	// outbox row's issue stands in the same tree, and a hold only while the holding claim's tree
 	// is that tree — newest first, ties by ref, and tree's own readmitted approval on the same
 	// rule, the zero KeptApproval when there is none to name
-	// (workflow.Engine.ParkedDecisionTask).
-	UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([]ParkedDecision, KeptApproval, error)
+	// (workflow.Engine.UnclaimedKeptTask).
+	UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([]KeptDecision, KeptApproval, error)
 	// ClaimKeptDecisions claims for outbox row what kept names of what tree is owed and nothing
 	// counting claims or holds yet, in the transaction that enqueues row: from then on no other
 	// start or catch-up of that tree names it until that row settles what it named. A published
@@ -2025,7 +2025,7 @@ type Store interface {
 	// MoveKeptClaims moves every claim of outbox row from to row to: the re-hold's copy of a catch-up
 	// carries the claims of the row it copies, which then finishes.
 	MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error
-	// ReleaseKeptClaims unclaims every parked decision and readmitted approval outbox row holds,
+	// ReleaseKeptClaims unclaims every kept decision and readmitted approval outbox row holds,
 	// and reports the tree each released row is owed to now, by key: the hand-over's first step,
 	// since the row told no architect what it named, and what says which trees' architects the
 	// hand-over must write a fresh catch-up to (workflow.HandOverKept).
@@ -2105,7 +2105,7 @@ type Store interface {
 	// OwesEntryWork), in one statement, and in none for no stall.
 	ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error)
 	// ForgetKeptDecisions tells what outbox row's published catch-up named of what tree is owed
-	// (KeptDecisions), of the rows row claims or nothing claims: every parked decision still
+	// (KeptDecisions), of the rows row claims or nothing claims: every kept decision still
 	// standing at the reference and time it named — a newer decision on the same reference, kept
 	// since and unclaimed, survives — and the readmitted approval still standing at the pair of
 	// versions it named. One whose issue has left tree since the row was composed is told nothing:

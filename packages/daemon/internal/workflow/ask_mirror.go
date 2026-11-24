@@ -232,7 +232,7 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 
 // dispatchAskClosed applies the close to the ask's mirror row and the root's wait (closeAsk), and
 // relays a person's answer or resolution of a question on a tree Legion is not running to the
-// controller (relayParkedDecision): nobody inside such a tree hears it. An approval ask's answer
+// controller (relayKeptDecision): nobody inside such a tree hears it. An approval ask's answer
 // arrives again as the document's review, which the gate relays, so it is not relayed as an ask.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {
@@ -242,7 +242,7 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 	if fact.State == "answered" {
 		decision = record.DecisionAskAnswered
 	}
-	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
+	return intake.Result{}, e.relayKeptDecision(ctx, tx, fact.Key, fact.Ask, record.KeptDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
 		Decision: decision, Actor: fact.Actor.Name(), At: e.now()})
 }
 
@@ -307,7 +307,7 @@ func (e *Engine) closer(ctx context.Context, tx pgx.Tx, root record.Issue, actor
 
 // dispatchAskReply applies the reply to the ask's mirror row and the root's wait (replyToAsk), and,
 // on a tree Legion is not running, relays a person's reply that leaves the turn with the agent, or
-// one under a closed ask, to the controller (relayParkedDecision): nobody inside such a tree hears
+// one under a closed ask, to the controller (relayKeptDecision): nobody inside such a tree hears
 // it. A reply that leaves the turn with the human asks the person again, so it is no decision of
 // theirs.
 func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskReply) (intake.Result, error) {
@@ -318,7 +318,7 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 	if fact.Comment != "" {
 		ref = itemRef(fact.Key, "comment", fact.Comment)
 	}
-	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: ref, Decision: record.DecisionAskReply,
+	return intake.Result{}, e.relayKeptDecision(ctx, tx, fact.Key, fact.Ask, record.KeptDecision{Ref: ref, Decision: record.DecisionAskReply,
 		Actor: fact.Actor.Name(), At: e.now()})
 }
 

@@ -83,7 +83,7 @@ const (
 type keptTelling struct {
 	ref string
 	// prompt is whether a start task's prompt carried it. A start task names no generation
-	// (workflow.ParkedDecisionTask writes none) and the claim it reaches is the root's one
+	// (workflow.UnclaimedKeptTask writes none) and the claim it reaches is the root's one
 	// architect session, which holds its task across the tree's re-admissions, so what it is held
 	// to is that the root has an architect to hear it (hears) rather than the generation named.
 	prompt bool
@@ -790,8 +790,8 @@ type keptRun struct {
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
 // once, whatever order the machinery runs in and whatever runs beside it. The test drives random
-// interleavings of the real parts — record.RelayParkedDecision for the keeping,
-// workflow.Engine.ParkedDecisionTask and EnqueueNaming for the naming, the outbox runner for the
+// interleavings of the real parts — record.RelayKeptDecision for the keeping,
+// workflow.Engine.UnclaimedKeptTask and EnqueueNaming for the naming, the outbox runner for the
 // delivery and the forget, the supervisor's machines for the architects, admit.Admission for the
 // hand-over of a child into a tree of its own, and intake.ApplyFact for the ready — over a real
 // PostgreSQL, and holds each run to the invariant after every step:
@@ -877,13 +877,13 @@ type keptRun struct {
 // how often each of these fired (keptCounts).
 //
 // Three the machinery has are left out. A newer decision on a reference already kept replaces its
-// row (Store.AddParkedDecision), so that reference is told twice by design and "told once per
+// row (Store.KeepDecision), so that reference is told twice by design and "told once per
 // reference" stops meaning anything; every decision here is made on a reference of its own. The
-// outbox's own parkDecision, which keeps the decision a spec-decision notice could not deliver,
-// reaches the same record.RelayParkedDecision this test calls directly, and adds only the notice
-// routing its own tests cover. The notice the executor cannot route (errNoticeUnroutable) needs a
-// record with no such issue, no tree or no recorded root, which the rest of the run reads as a
-// broken record rather than as a state the root can be in.
+// outbox's own relaySpecDecision, which keeps the decision a spec-decision notice could not
+// deliver, reaches the same record.RelayKeptDecision this test calls directly, and adds only the
+// notice routing its own tests cover. The notice the executor cannot route (errNoticeUnroutable)
+// needs a record with no such issue, no tree or no recorded root, which the rest of the run reads
+// as a broken record rather than as a state the root can be in.
 func TestKeptDecisionsReachTheCurrentArchitectOnce(t *testing.T) {
 	t.Parallel()
 	steps := keptPropertyEnv(t, "LEGION_KEPT_PROPERTY_STEPS", keptPropertySteps)
@@ -1315,7 +1315,7 @@ func (r *keptRun) treesOfTrackedIssues() map[string]string {
 // (pending_task_deliveries.kept_decisions). A decision in neither place was told and forgotten,
 // and nothing names it again.
 func (r *keptRun) owedRefs() map[string]bool {
-	rows, err := r.pool.Query(r.ctx, `select ref from parked_decisions
+	rows, err := r.pool.Query(r.ctx, `select ref from kept_decisions
 		union
 		select named.ref from pending_task_deliveries pending,
 			lateral jsonb_to_recordset(coalesce(pending.kept_decisions->'decisions', '[]'::jsonb)) as named(ref text)
@@ -1362,12 +1362,12 @@ func (r *keptRun) rootKeys() []string {
 }
 
 // decide is a person deciding on an ask of the root while nobody in its tree hears it, kept by the
-// one rule both paths that find such a decision follow (record.RelayParkedDecision).
+// one rule both paths that find such a decision follow (record.RelayKeptDecision).
 func (r *keptRun) decide() { r.decideOn(keptRoot) }
 
 // decideChild is a person deciding on an ask of the root's child while the root lingers: the
 // workflow puts the decision to the same rule under the tree's root as the record holds it
-// (workflow's relayParkedDecision reads the root of the ask's tree), so it is kept under the root,
+// (workflow's relayKeptDecision reads the root of the ask's tree), so it is kept under the root,
 // and it is owed to the architect of whatever tree the child stands in when it is told.
 func (r *keptRun) decideChild() { r.decideOn(keptChild) }
 
@@ -1382,8 +1382,8 @@ func (r *keptRun) decideGrandchild() { r.decideOn(keptGrandchild) }
 func (r *keptRun) decideQueued() { r.decideOn(keptQueued) }
 
 // decideOn keeps one person's decision made on an ask of issue, under the root of that issue's
-// tree as the record holds it now, which is the record RelayParkedDecision judges (workflow's
-// relayParkedDecision reads the same root). The debt starts in that tree and moves with the issue
+// tree as the record holds it now, which is the record RelayKeptDecision judges (workflow's
+// relayKeptDecision reads the same root). The debt starts in that tree and moves with the issue
 // (noteMoves).
 func (r *keptRun) decideOn(issue string) {
 	r.decided++
@@ -1404,8 +1404,8 @@ func (r *keptRun) decideOn(issue string) {
 			}
 		}
 		tree = root.Key
-		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *root, true,
-			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, "", nil)
+		outcome, err = record.RelayKeptDecision(r.ctx, tx, r.records, issue, *root, true,
+			record.KeptDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, "", nil)
 		return err
 	}); err != nil {
 		r.fatalf("keep the decision %s: %v", ref, err)
@@ -1429,8 +1429,8 @@ func keptOutcome(outcome record.RelayOutcome) string {
 		return "no-person"
 	case record.RelayNoPersonWaiting:
 		return "no-person-waiting"
-	case record.RelayNotParked:
-		return "not-parked"
+	case record.RelayBackInWorkflow:
+		return "back-in-workflow"
 	default:
 		return "none"
 	}
@@ -1608,7 +1608,7 @@ func (r *keptRun) enqueueStartRow() error {
 	var kept *record.KeptDecisions
 	now := time.Now()
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root.issue)
+		task, named, err := r.engine.UnclaimedKeptTask(r.ctx, tx, r.root.issue)
 		if err != nil {
 			return err
 		}
@@ -3073,7 +3073,7 @@ func (r *keptRun) heldForItsTree(tree *keptTree) int {
 		return 0
 	}
 	var held int
-	if err := r.pool.QueryRow(r.ctx, `select count(*) from parked_decisions kept
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from kept_decisions kept
 		join issues owner on owner.key = kept.issue
 		join claims holder on holder.token = kept.held_by_claim and holder.tree = owner.tree
 		where kept.held_by_claim = $1 and kept.held_by_delivery = $2`,
@@ -3348,7 +3348,7 @@ func (r *keptRun) held() {
 // left to tell, so a row standing here is a decision nobody will be told.
 func (r *keptRun) keptAnywhere() []string {
 	rows, err := r.pool.Query(r.ctx, `select kept.ref, coalesce(owner.tree, ''), kept.issue, coalesce(kept.claimed_by, 0)
-		from parked_decisions kept left join issues owner on owner.key = kept.issue order by kept.ref`)
+		from kept_decisions kept left join issues owner on owner.key = kept.issue order by kept.ref`)
 	if err != nil {
 		r.fatalf("read the decisions still kept: %v", err)
 	}
@@ -3393,7 +3393,7 @@ func keptElsewhere(elsewhere []string) string {
 
 // keptRefs names each kept decision and the row that claims it, which the tests of one hand-over
 // or one publish report what a root still keeps with.
-func keptRefs(decisions []record.ParkedDecision) string {
+func keptRefs(decisions []record.KeptDecision) string {
 	refs := make([]string, 0, len(decisions))
 	for _, decision := range decisions {
 		refs = append(refs, fmt.Sprintf("%s claimed-by=%d", decision.Ref, decision.ClaimedBy))

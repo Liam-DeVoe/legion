@@ -1787,7 +1787,7 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
 // launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision).
+// will not hold its role again) goes to the controller instead (relaySpecDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
@@ -1930,7 +1930,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
-		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
+		if err := r.relaySpecDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",
@@ -2621,7 +2621,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
 		// claim's write of the delivery takes those rows from this start row and holds them
 		// under that claim and delivery id, and the write recording the turn's confirmation
-		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
+		// tells them (the claim store's putDelivery, migration 20261101163106). So does the
 		// fact that a reviewer's task ends with the daemon's two sentences of its review round
 		// (record.SuperviseRequest.RoundNamed, or the round newsForStart names on a reviewer's start
 		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads

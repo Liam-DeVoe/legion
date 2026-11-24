@@ -121,7 +121,7 @@ func TestAFirstAdmissionRaisesItsArchitectEntryAndCarriesItOnTheStart(t *testing
 func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	// The row the generation before left: the architect was handed its first entry then. The
 	// claim token is written rather than minted, because LEGION-ROOT is no issue key.
 	inTx(t, pool, func(tx pgx.Tx) {

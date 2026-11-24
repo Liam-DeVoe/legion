@@ -200,7 +200,7 @@ describe("the texts the verdict counts are the daemon's own", () => {
     const prefix = "outbox notice finished undelivered: its architect";
     expect(outbox).toContain(`"${prefix}`);
     expect(jq).toContain(JSON.stringify(prefix));
-    const parked = readFileSync(join(daemon, "parked_decision.go"), "utf8");
+    const parked = readFileSync(join(daemon, "kept_decision.go"), "utf8");
     const notRelayedLines = [notRelayed, notParked, treeHears, noRecord];
     for (const text of [sentText, handledText, keptText, ...notRelayedLines]) {
       expect(parked).toContain(JSON.stringify(text));

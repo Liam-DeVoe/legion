@@ -117,7 +117,8 @@ import (
 // at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
 // The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
 // default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
-// above every migration named here, and touches no outbox_kind_check.
+// above every migration named here but the kept decisions' names (20261124002047), and touches no
+// outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -147,6 +148,11 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
 // every row it finds. So the design news stays the last word of that check.
+// The kept decisions' names (20261124002047) stand above every other version of this list and are
+// applied last: the migration renames the table of kept decisions, its index and its constraints,
+// and rewrites the controller notice kind, the processed-event source and a queued tick's held
+// reason it finds in their new words (migration_20261124002047_test.go). It touches no
+// outbox_kind_check either.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -158,7 +164,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
-	20261123165139,
+	20261123165139, 20261124002047,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -176,10 +182,10 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and the
-// plan of an experiment's draw (20261123165139). That is why the loop below holds the list
-// rather than counting it, so that a version added above any of them is named here rather than
-// read as main's.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the plan
+// of an experiment's draw (20261123165139) and the kept decisions' names (20261124002047). That is
+// why the loop below holds the list rather than counting it, so that a version added above any of
+// them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

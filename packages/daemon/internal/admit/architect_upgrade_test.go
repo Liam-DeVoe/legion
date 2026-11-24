@@ -312,7 +312,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	admission := newAdmission(t, 1, nil)
 	const root = "LEGION-837"
 	// The root as the park left it, with the architect claim of the run that was parked: the
-	// shape parkedRoot records, under a key a claim token can be minted from, since the sweep
+	// shape rootInBacklog records, under a key a claim token can be minted from, since the sweep
 	// reads no run of an issue whose key yields none.
 	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Done,

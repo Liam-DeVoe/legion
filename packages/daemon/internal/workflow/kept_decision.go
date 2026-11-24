@@ -13,40 +13,40 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// relayParkedDecision hands a person's answer, resolution or reply on ask of key to the one rule
-// for a decision nobody in its tree hears (record.RelayParkedDecision), and logs one line for what
+// relayKeptDecision hands a person's answer, resolution or reply on ask of key to the one rule
+// for a decision nobody in its tree hears (record.RelayKeptDecision), and logs one line for what
 // became of it: relayed to the project's controller, which decides whether the tree runs again
-// (skill://legion-controller/references/parked-decisions.md); kept alone for the next architect
+// (skill://legion-controller/references/kept-decisions.md); kept alone for the next architect
 // start of a root that waits for its slot, whose tree already runs again; not relayed, for a
-// session's write on a parked tree or on a root waiting for its slot, or for a lingering root
-// someone moved back into the workflow. A decision on a tree that runs, which hears it itself, and
-// an ask of an issue Legion does not record log nothing: that is every ordinary ask. The writes are
-// in the event's own transaction, which ApplyFact keys by the Dispatch event's id, so a replay
-// writes none of them again.
-func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask string, decision record.ParkedDecision) error {
+// session's write on a tree that does not run or on a root waiting for its slot, or for a
+// lingering root someone moved back into the workflow. A decision on a tree that runs, which
+// hears it itself, and an ask of an issue Legion does not record log nothing: that is every
+// ordinary ask. The writes are in the event's own transaction, which ApplyFact keys by the
+// Dispatch event's id, so a replay writes none of them again.
+func (e *Engine) relayKeptDecision(ctx context.Context, tx pgx.Tx, key, ask string, decision record.KeptDecision) error {
 	root, err := e.treeRoot(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
+	outcome, err := record.RelayKeptDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
 	if err != nil {
 		return err
 	}
 	args := []any{"issue", key, "root", root.Key, "ask", ask, "decision", decision.Decision, "ref", decision.Ref, "actor", decision.Actor}
 	switch outcome {
 	case record.RelaySent:
-		e.logOnCommit(ctx, "workflow: a person's decision on a parked tree goes to the controller", args...)
+		e.logOnCommit(ctx, "workflow: a person's decision on a tree that does not run goes to the controller", args...)
 	case record.RelayKept:
 		e.logOnCommit(ctx, "workflow: a person's decision on a tree waiting for its slot is kept for its architect's start", args...)
 	case record.RelayNoPerson:
 		if decision.Decision == record.DecisionAskReply {
-			e.logOnCommit(ctx, "workflow: a session's reply on a parked tree is not relayed", args...)
+			e.logOnCommit(ctx, "workflow: a session's reply on a tree that does not run is not relayed", args...)
 		} else {
-			e.logOnCommit(ctx, "workflow: a session's answer or resolution on a parked tree is not relayed", args...)
+			e.logOnCommit(ctx, "workflow: a session's answer or resolution on a tree that does not run is not relayed", args...)
 		}
 	case record.RelayNoPersonWaiting:
 		e.logOnCommit(ctx, "workflow: a session's decision on a tree waiting for its slot is not kept", args...)
-	case record.RelayNotParked:
+	case record.RelayBackInWorkflow:
 		e.logOnCommit(ctx, "workflow: a decision on a lingering root someone moved back into the workflow is not relayed", args...)
 	}
 	return nil
@@ -62,21 +62,22 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 	return e.store.Issue(ctx, tx, issue.Tree)
 }
 
-// ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's
-// decision on an issue of its tree while nobody in the tree could hear it (relayParkedDecision,
-// the outbox's parkDecision): each decision's ref, kind and author, newest first, so the architect
-// reads what brought it back, as ResumeAwaitedRoot names an answered root's answer. Admission's
-// start carries it as its task; every later launch's ready (claimReady: a relaunch, `legion claims
-// retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
-// approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
-// person approved a version the spec has since moved past), it also names both versions, so the
-// architect requests approval of the latest; never under gates.design off, which asks no person.
+// UnclaimedKeptTask is what root's architect is told at its start when the daemon kept a person's
+// decision on an issue of its tree while nobody in the tree could hear it (relayKeptDecision,
+// the outbox's relaySpecDecision): each decision's ref, kind and author, newest first, so the
+// architect reads what brought it back, as ResumeAwaitedRoot names an answered root's answer.
+// Admission's start carries it as its task; every later launch's ready (claimReady: a relaunch,
+// `legion claims retry`) adds what was kept since to its catch-up. When the re-admission found
+// the root's spec approved at a version below its latest (the admission's readmit,
+// Store.KeepReadmittedApproval: a person approved a version the spec has since moved past), it
+// also names both versions, so the architect requests approval of the latest; never under
+// gates.design off, which asks no person.
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and
 // that no counting claim or hold holds (Store.UnclaimedKept). A claim or a hold an issue left
-// behind in another tree counts for nothing, so a child handed over, a parked child orphaned, a
-// grandchild handed over beside its parent and a queued root adopted each bring what was decided
-// on them to this task with nothing moved, in whatever order their admissions run.
+// behind in another tree counts for nothing, so a child handed over, a child in backlog orphaned,
+// a grandchild handed over beside its parent and a queued root adopted each bring what was
+// decided on them to this task with nothing moved, in whatever order their admissions run.
 //
 // The text names no generation: a start's task waits on its claim and is prompted whenever that
 // claim is next ready, which can be generations later, and the one architect session of the root
@@ -86,7 +87,7 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // (Store.ForgetKeptDecisions) and a start's task tells it at the confirmation of the delivery the
 // claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
 // zero when there was nothing.
-func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
+func UnclaimedKeptTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
 	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
 	if err != nil {
 		return "", nil, err
@@ -107,7 +108,7 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 }
 
 // KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
-// task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
+// task and a catch-up both use (UnclaimedKeptTask) and the one a held task is written back to
 // when an issue it names leaves that tree while the task waits to be sent (supervise's
 // Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
 // "", which is a task that names nothing and is retired rather than sent. The approval is the
@@ -132,13 +133,13 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 	return strings.Join(parts, " ")
 }
 
-// ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
-func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
-	return ParkedDecisionTask(ctx, tx, e.store, e.cfg.Steps, root)
+// UnclaimedKeptTask is UnclaimedKeptTask over the engine's store and gated steps.
+func (e *Engine) UnclaimedKeptTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
+	return UnclaimedKeptTask(ctx, tx, e.store, e.cfg.Steps, root)
 }
 
 // EnqueueNaming enqueues payload for issue, due at, a root-architect start or a catch-up notice
-// whose task names kept of what tree is owed (ParkedDecisionTask), and claims those rows for that
+// whose task names kept of what tree is owed (UnclaimedKeptTask), and claims those rows for that
 // outbox row in the same transaction (Store.ClaimKeptDecisions), so no other start or catch-up of
 // that tree names them until that row settles them: a catch-up that published tells them, a start
 // whose task the claim queued leaves them to that delivery's confirmation, and a row that reached
@@ -266,8 +267,8 @@ func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a
 // deployment could gate more than one step, and the slug Dispatch files the document under for
-// the other two. A person's decision is kept and relayed under it (record.ParkedDecision.Ref,
-// the outbox's parkDecision), and the newest decision per reference is the one kept, so two
+// the other two. A person's decision is kept and relayed under it (record.KeptDecision.Ref,
+// the outbox's relaySpecDecision), and the newest decision per reference is the one kept, so two
 // steps of one root must answer to two references or each person's decision would replace the
 // other's.
 func stepRef(key string, step record.DesignStep) string {

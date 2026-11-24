@@ -48,7 +48,9 @@ func ownerStepsWayBack(t *testing.T) string {
 // this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
 // three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
 // no step_stop. Both are copies because that release's code is not in the tree. Its list of the
-// kinds for the controller alone is this release's (controllerOnlyNoticeKind), unchanged.
+// kinds for the controller alone is this release's (controllerOnlyNoticeKind) but for one kind:
+// the kind of a kept decision, which that release wrote under the name migration 20261124002047
+// renames, so the list carries that release's own name of it as a literal.
 var (
 	noticeKindsBeforeOwnerSteps = []record.NoticeKind{
 		"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
@@ -60,7 +62,7 @@ var (
 	}
 	controllerKindsBeforeOwnerSteps = []record.NoticeKind{
 		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, record.UnslottedNotice,
-		record.AwaitingPersonNotice, record.ParkedDecisionNotice, record.UpdateStalledNotice, record.ProviderErrorsNotice,
+		record.AwaitingPersonNotice, "parked-decision", record.UpdateStalledNotice, record.ProviderErrorsNotice,
 		record.TreeStalledNotice, record.ArchitectStalledNotice,
 	}
 	superviseOpsBeforeOwnerSteps = []record.SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close", "pause_stop"}

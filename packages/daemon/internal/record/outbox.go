@@ -481,7 +481,7 @@ type Notice struct {
 	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
-	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
+	// carried-gate-opened notice reports, or the decision a kept-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
 	// gates.design off opened the gate.
 	Actor string `json:"actor,omitempty"`
@@ -490,7 +490,7 @@ type Notice struct {
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
-	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
+	// Decision is what a kept-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
 	Root     string       `json:"root,omitempty"`
@@ -830,7 +830,7 @@ type SilentIssue struct {
 // root's workers already run their phases, so its architect decomposes nothing anew; one that
 // carried no gate registers its own spec. Decided names what a person decided on the tree while
 // nobody in it could hear it and the start did not name (a decision made while the architect's
-// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
+// claim had ended, before this relaunch), in the words of workflow.Engine.UnclaimedKeptTask;
 // empty when there is none, and on every child's catch-up, since what is kept for a tree is its
 // root architect's to hear. Kept is what Decided named, which a published catch-up forgets
 // (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
@@ -944,14 +944,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
 // admit.Admission.TellController).
 //
-// A parked-decision notice names a person's decision on a tree Legion is not running, which
+// A kept-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
 // tree's architect (it stopped with its finished tree, or its claim ended), or a person's answer,
 // resolution or reply (one that leaves the turn with the agent, or one under a closed ask) on an ask
 // of an issue whose tree lingers or has closed. Its issue is where the decision was made, Root the
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
-// again (skill://legion-controller/references/parked-decisions.md).
+// again (skill://legion-controller/references/kept-decisions.md).
 //
 // An architect-stalled notice names a root whose own architect has stalled, in one of the three
 // readings ArchitectStallArm names below. Its Role is the architect, and its
@@ -982,7 +982,7 @@ const (
 	TickNotice             NoticeKind = "tick"
 	UnslottedNotice        NoticeKind = "unslotted"
 	AwaitingPersonNotice   NoticeKind = "awaiting-person"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	KeptDecisionNotice     NoticeKind = "kept-decision"
 	UpdateStalledNotice    NoticeKind = "update-stalled"
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
@@ -1115,7 +1115,7 @@ type SuperviseRequest struct {
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
-	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
+	// (workflow.Engine.UnclaimedKeptTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
@@ -2333,7 +2333,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
-			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
+			return fmt.Errorf("a %s notice carries a decision or a root; only a kept-decision controller notice does", value.Kind)
 		}
 		if catchUp := value.CatchUp; catchUp != nil && catchUp.Kept != nil {
 			if err := catchUp.Kept.validate(); err != nil {
@@ -2365,12 +2365,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
 		}
-		if value.Kind == ParkedDecisionNotice {
+		if value.Kind == KeptDecisionNotice {
 			if !validDecisionKind(value.Decision) || value.Root == "" || value.Ref == "" || !PersonActor(value.Actor) {
-				return fmt.Errorf("a parked-decision notice needs a known decision, its tree's root, the decision's Dispatch reference and the person who made it")
+				return fmt.Errorf("a kept-decision notice needs a known decision, its tree's root, the decision's Dispatch reference and the person who made it")
 			}
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
-			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
+			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a kept-decision does", value.Kind)
 		}
 		if (value.Kind == UpdateStalledNotice) != (value.Update != nil) {
 			return fmt.Errorf("a %s notice carries an update round only when it is one", value.Kind)
@@ -2771,7 +2771,7 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, KeptDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
 		ProjectPausedNotice, ProjectResumedNotice:
 		return true

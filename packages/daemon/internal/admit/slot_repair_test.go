@@ -246,7 +246,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 }
 
 // owedRepairRow is one row of the repair of a start that can no longer act. Every row is the same
-// fixture as parked_owed_start_test.go's — a running tree and a member of it, holding no slot,
+// fixture as backlog_owed_start_test.go's — a running tree and a member of it, holding no slot,
 // owing its worker the start row the transition wrote — with the claim that start would reach.
 type owedRepairRow struct {
 	name string
