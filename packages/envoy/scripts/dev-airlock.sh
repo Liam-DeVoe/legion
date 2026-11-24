@@ -552,7 +552,6 @@ if [ "$GIT_STAND_IN" = true ]; then
   GIT_PID=$!
   await "the $GIT_HOST stand-in" 30 "$GIT_LOG" 'git listening addr=' "$GIT_PID"
   DIAL_ALLOW="$DIAL_ALLOW ${GIT_HOST}:443"
-  RESOLVE="$RESOLVE ${GIT_HOST}=${GIT_ADDRESS%:*}"
 fi
 
 # --- The profiles file: each secret a profile of its own name whose proxy block says where its
