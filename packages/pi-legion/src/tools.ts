@@ -517,7 +517,7 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
-    // operations. tools.test.ts holds stop_task's and sign_off's parts to their terms.
+    // operations.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,

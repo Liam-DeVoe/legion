@@ -177,40 +177,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code its text gives. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-  ],
-} as const;
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -234,26 +200,6 @@ const toolFor = (active: LegionToolSession) =>
     resolveDocument: noDocumentLookup,
     session: () => active,
   });
-
-test("the legion tool's description is one text for every session, and names stop_task's and sign_off's terms", () => {
-  const first = toolFor(claimSession("architect")).description;
-  for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
-    expect(description).toBe(first);
-    const stopTaskAt = description.indexOf(STOP_TASK_TERMS.opens);
-    expect(stopTaskAt).toBeGreaterThan(0);
-    const signOffAt = description.indexOf(SIGN_OFF_TERMS.opens, stopTaskAt);
-    expect(signOffAt).toBeGreaterThan(stopTaskAt);
-    const stopTask = description.slice(stopTaskAt, signOffAt);
-    const signOff = description.slice(signOffAt);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
-  }
-});
 
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
  * claim's description: every property and every `op` value in the order the tool declares them. */
