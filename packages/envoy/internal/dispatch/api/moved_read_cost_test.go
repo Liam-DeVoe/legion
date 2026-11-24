@@ -1078,7 +1078,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 		t.Fatalf("this head's commit %q must be a whole commit other than %s=%s, or the two builds cannot be told apart",
 			headCommit, movedCostBaseVariable, baseCommit)
 	}
-	databaseURL := readCostDatabase(t)
+	databaseURL := readCostDatabase(t, false)
 	baseBinary := testbaseline.Build(t, baseCommit, movedCostBaseVariable)
 	headBinary := cmdtest.BuildCommand(t, cmdtest.Command{
 		Name:   "envoy-dispatch-head",
@@ -1091,6 +1091,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	client := readCostClient()
 	listener := readCostListener(t)
 	conn := readCostConnect(t, databaseURL)
+	holdReadCostJITOff(t, "c-moved-read-cost", conn)
 	statements := newReadCostStatements(t, "c-moved-read-cost", databaseURL)
 	reads := movedCostReads(corpus)
 	baseName := func(what string) string { return "the release before (" + baseCommit + ")" + what }

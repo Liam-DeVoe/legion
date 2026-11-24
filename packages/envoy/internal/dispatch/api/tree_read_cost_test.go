@@ -18,8 +18,9 @@ package api
 //	BASELINE_SHA=<the commit the pull request body's BASELINE_SHA= line names> go test -tags basebuild ./internal/dispatch/api/ -run '^TestNoReadThisTreeMovesGetsSlower$' -timeout 170m -count=1 -v
 //
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
-// database on. READ_COST_READS, for diagnosis, names the arms to measure (readCostArmFilter); a
-// run of the check leaves it unset.
+// database on. READ_COST_READS, for diagnosis, names the arms to measure (readCostArmFilter), and
+// READ_COST_KEEP_DATABASE=1, for diagnosis, keeps the run's database when the test ends
+// (readCostKeepDatabase); a run of the check leaves both unset.
 
 import (
 	"bytes"
@@ -418,11 +419,11 @@ func readCostListener(t *testing.T) string {
 // ───── the run's database ─────────────────────────────────────────────────
 
 // readCostDatabase creates an empty database for this run alone on the server
-// DISPATCH_TEST_DATABASE_URL names and answers its URL; it is dropped when the test ends. It is
-// empty, and no clone of a migrated template, because the release before must migrate it itself.
-// The variable unset fails the run rather than skipping it, since a skipped measurement reads as
-// one that held.
-func readCostDatabase(t *testing.T) string {
+// DISPATCH_TEST_DATABASE_URL names, turns JIT off on it (readCostJITOff) and answers its URL; it is
+// dropped when the test ends, unless keep is set (readCostKeepDatabase). It is empty, and no clone
+// of a migrated template, because the release before must migrate it itself. The variable unset
+// fails the run rather than skipping it, since a skipped measurement reads as one that held.
+func readCostDatabase(t *testing.T, keep bool) string {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
 	if raw == "" {
@@ -448,11 +449,73 @@ func readCostDatabase(t *testing.T) string {
 	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
 		t.Fatalf("create the run's database: %v", err)
 	}
-	t.Cleanup(func() { dropReadCostDatabase(t, admin.String(), name) })
+	if !keep {
+		t.Cleanup(func() { dropReadCostDatabase(t, admin.String(), name) })
+	}
+	readCostJITOff(t, conn, name)
 	own := *server
 	own.Path = "/" + name
 	t.Logf("the run's database is %s", name)
+	if keep {
+		t.Logf("c-read-cost: %s keeps the run's database %s (jit off), so this run is not a reading of the check", readCostKeepVariable, name)
+		kept := filepath.Join(os.TempDir(), readCostKeptDatabaseFile)
+		if err := os.WriteFile(kept, []byte(name+"\n"), 0o644); err != nil {
+			t.Fatalf("write the kept database's name %s to %s: %v", name, kept, err)
+		}
+	}
 	return own.String()
+}
+
+// readCostKeepVariable, set to 1 for diagnosis, keeps c-read-cost's run's database when the test
+// ends (readCostKeepDatabase), and readCostKeptDatabaseFile is the file in $TMPDIR its name is
+// written to.
+const (
+	readCostKeepVariable     = "READ_COST_KEEP_DATABASE"
+	readCostKeptDatabaseFile = "read-cost-kept-database"
+)
+
+// readCostKeepDatabase reads READ_COST_KEEP_DATABASE before anything is built or read. Unset, it
+// answers false, and the run's database is dropped when the test ends, as a run of the check drops
+// it. Set to 1, it answers true, and readCostDatabase keeps the database, says in one line that the
+// run is not a reading of the check and writes the database's name to readCostKeptDatabaseFile in
+// $TMPDIR. Set to anything else, it fails, naming the value it takes.
+func readCostKeepDatabase(t *testing.T) bool {
+	t.Helper()
+	switch named := strings.TrimSpace(os.Getenv(readCostKeepVariable)); named {
+	case "":
+		return false
+	case "1":
+		return true
+	default:
+		t.Fatalf("%s=%q: it takes 1, which keeps the run's database when the test ends, or is left unset", readCostKeepVariable, named)
+		return false
+	}
+}
+
+// readCostJITOff turns JIT off on the database name, over conn to its server, right after the
+// database is created and before any server connects to it, so every session on it plans as
+// production's do: production's Postgres is Cloud SQL, which does not support LLVM JIT, and a
+// Postgres that JITs adds the compile to every statement whose plan costs more than
+// jit_above_cost (one statement read 122 ms with JIT, against about 5 ms without).
+func readCostJITOff(t *testing.T, conn *pgx.Conn, name string) {
+	t.Helper()
+	if _, err := conn.Exec(context.Background(), "alter database "+name+" set jit = off"); err != nil {
+		t.Fatalf("alter database %s set jit = off: %v", name, err)
+	}
+}
+
+// holdReadCostJITOff reads jit over conn, a session opened on the run's database after
+// readCostJITOff as every server's are, and fails the run where it reads anything but off.
+func holdReadCostJITOff(t *testing.T, check string, conn *pgx.Conn) {
+	t.Helper()
+	var jit string
+	if err := conn.QueryRow(context.Background(), "show jit").Scan(&jit); err != nil {
+		t.Fatalf("%s: show jit on the run's database: %v", check, err)
+	}
+	if jit != "off" {
+		t.Fatalf("%s: a session on the run's database reads jit as %s, where production's Cloud SQL runs without JIT", check, jit)
+	}
+	t.Logf("%s: jit is off on the run's databases, as production's Cloud SQL runs (it does not support LLVM JIT)", check)
 }
 
 // dropReadCostDatabase drops the run's database once every process on it has gone, trying again
@@ -1936,19 +1999,24 @@ func readCostPodName(pod readCostPod) string {
 // where it cannot, the run says so in one line and fails on none of it. The run then reads the
 // event horizon from the subscriber's side (TestNoEventOutrunsItsNode) and prints its own wall
 // time. READ_COST_READS, for diagnosis, measures only the arms it names, on both sides
-// (readCostArmFilter); a run with it set is no reading of the check.
+// (readCostArmFilter); a run with it set is no reading of the check. READ_COST_KEEP_DATABASE=1,
+// for diagnosis, keeps the run's database when the test ends and writes its name to
+// $TMPDIR/read-cost-kept-database (readCostKeepDatabase); a run with it set is no reading of the
+// check either.
 //
-// It fails, never skips, where READ_COST_READS names anything but arms of the check, or
-// BASELINE_SHA is unset or names no 40-character commit, before it builds or measures anything: a
-// reading of the replaced reads needs the server of that commit.
+// It fails, never skips, where READ_COST_READS names anything but arms of the check,
+// READ_COST_KEEP_DATABASE is set to anything but 1, or BASELINE_SHA is unset or names no
+// 40-character commit, before it builds or measures anything: a reading of the replaced reads
+// needs the server of that commit.
 func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-read-cost: TestNoReadThisTreeMovesGetsSlower took %s of wall time", time.Since(began).Round(time.Second))
 	})
 	arms := readCostArmFilter(t)
+	keep := readCostKeepDatabase(t)
 	baseCommit := readCostBaseCommit(t)
-	databaseURL := readCostDatabase(t)
+	databaseURL := readCostDatabase(t, keep)
 	headCommit := gitOutput(t, ".", "rev-parse", "HEAD")
 	if !readCostFullCommit.MatchString(headCommit) || headCommit == baseCommit {
 		t.Fatalf("this head's commit %q must be a whole commit other than %s=%s, or the two builds cannot be told apart",
@@ -1966,6 +2034,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	client := readCostClient()
 	listener := readCostListener(t)
 	conn := readCostConnect(t, databaseURL)
+	holdReadCostJITOff(t, "c-read-cost", conn)
 	statements := newReadCostStatements(t, "c-read-cost", databaseURL)
 
 	// ───── first: the corpus and the old side, on the release before ─────
