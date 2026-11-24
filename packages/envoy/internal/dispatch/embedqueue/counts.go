@@ -43,20 +43,29 @@ const (
 	coverageBackoffCeiling = 10 * time.Minute
 )
 
+// coverageLoopBound is the fill's timeout and the recount's bound, one constant so that a raise is
+// a one-line change. R7's design (dispatch://INFRA-4864/spec) sets each of the two as the larger
+// of two times. The first is four times its own longest time in the coverage-scale Job. The second
+// is four times the longer of two production runs of main's coverage statement, a first run and a
+// second run right after it, through INFRA-4863's read login. Where that login's 30 s statement
+// bound cut a run, the bound is at least 120 s.
+//
+// The Job is the builds Job infra-4864-coverage-scale-h96p8 at f28566f1 (2026-11-24), at scale 3.6
+// of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
+// 2026-11-24. Its longest fill was the server's own at its first start, 15,104 ms; the scale
+// test's fill took 10,659 ms. Its longest whole recount took 16,213 ms, in the state where no page
+// of embeddings is all-visible ("all"). Four times each, rounded up to the next 10 s, is 70 s.
+//
+// The production reading is not taken yet. Where it asks for more than 70 s, this constant is
+// raised before the merge, and cb-delta-bound's span, the recount bound plus 11 s, follows it.
+const coverageLoopBound = 70 * time.Second
+
 // The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
 var (
-	// coverageFillTimeout bounds the whole fill (FillCoverage): a fill that reaches it is a failed
-	// fill. Its value is four times the longest fill measured at scale 3.6 of
-	// scripts/coverage-scale.sh's corpus (3,582,232 items, 2.2 times production's 1,622,093 on
-	// 2026-11-24), rounded up to the next 10 s: the server's own fill at its first start, 15,104 ms,
-	// in the builds Job infra-4864-coverage-scale-h96p8 at f28566f1 (2026-11-24); the scale test's
-	// fill there took 10,659 ms.
-	coverageFillTimeout = 70 * time.Second
-	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage): every
-	// refresh batch and every group statement runs under the time left to it. Its value is four
-	// times the longest whole recount measured in that Job at scale 3.6, 16,213 ms in the state
-	// where no page of embeddings is all-visible ("all"), rounded up to the next 10 s.
-	coverageRecountTimeout = 70 * time.Second
+	// coverageFillTimeout bounds the whole fill (FillCoverage); a fill that reaches it fails.
+	coverageFillTimeout = coverageLoopBound
+	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage).
+	coverageRecountTimeout = coverageLoopBound
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval
 	// plus up to the jitter after the one before started (recountGap). Both follow from T
 	// (recountSchedule).
@@ -277,8 +286,20 @@ func foldCoverage(ctx context.Context, database *store.Store) error {
 	})
 }
 
+// coverageRefreshBatch bounds how many issues one transaction of the refresh refreshes
+// (refreshIssueStates). Each refresh (search_coverage_issue_refresh) holds its issue's state row
+// lock until its batch commits, and a write of that issue's inputs, whose trigger refreshes the
+// same row, waits for it; so a batch holds at most 10 refreshes, about 10 x 0.2 ms on the
+// coverage-scale Job's 8 CPUs (the fill's refresh of 40,144 issues at scale 3.6 took 6,384 ms in
+// infra-4864-coverage-scale-h96p8). It replaces batches of coverageStatementRows, 500 issues:
+// measured at scale 1 of that corpus in dispatch://INFRA-4864's pod beside four writers, the
+// fill's batches took 344 to 991 ms, and an issue's title update waited about 330 ms on one; a
+// recount's batches over 2,000 stale issues took 2,561 to 4,740 ms, and a title update took
+// 2,048 ms, about 1.7 s of it waiting.
+const coverageRefreshBatch = 10
+
 // refreshIssueStates brings every issue's state row up to its inputs before the issue group is
-// counted: staleIssueStates, then goneIssueStates, each in batches of coverageStatementRows, each
+// counted: staleIssueStates, then goneIssueStates, each in batches of coverageRefreshBatch, each
 // batch a transaction of its own that takes no counts lock (a refresh writes state rows, and
 // through their trigger delta rows, as any write does, and no base row).
 func refreshIssueStates(ctx context.Context, database *store.Store) error {
@@ -288,11 +309,11 @@ func refreshIssueStates(ctx context.Context, database *store.Store) error {
 			var last string
 			var refreshed int
 			if err := countsTransaction(ctx, database, false, func(tx pgx.Tx) error {
-				return tx.QueryRow(ctx, statement, after, coverageStatementRows).Scan(&last, &refreshed)
+				return tx.QueryRow(ctx, statement, after, coverageRefreshBatch).Scan(&last, &refreshed)
 			}); err != nil {
 				return fmt.Errorf("refresh the issues' coverage states: %w", err)
 			}
-			if refreshed < coverageStatementRows {
+			if refreshed < coverageRefreshBatch {
 				break
 			}
 			after = last
