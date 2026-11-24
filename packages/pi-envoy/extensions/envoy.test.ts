@@ -6177,7 +6177,14 @@ console.log(JSON.stringify(args));
         },
       ]);
       expect(notifications).toEqual([]);
-    }, 30_000);
+      // A hang guard: what can hang is the session's start or the gated call, whose model and
+      // Dispatch are stand-ins in this process. Worst measured cost: 9 204 ms in envoy.test.ts run
+      // whole at the 96 rung in the Job infra-1580-wfb-j9gmw of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (139 busy loops, at which row A's runs took 39.1 s against the
+      // calibration's 31.2 s), at cb1c237f, and 5 802 ms in the Job infra-1580-wfh-gwft9 (180 busy
+      // loops, row A 34.0 s) at 7025b6c8. Main's 30_000 is 3.3 times the 9 204 ms, so this takes
+      // 60_000, 6.5 times it.
+    }, 60_000);
     // A session whose envoy.json is not there still has Dispatch when its variables name one, and
     // the gate binds there: the file is only the switch, and no file leaves it on.
     test("with no envoy.json at ENVOY_CONFIG_FILE and only DISPATCH_URL and its token set, the gate binds and reviews a dispatch ask", async () => {
@@ -6209,7 +6216,10 @@ console.log(JSON.stringify(args));
           data: { tool: "dispatch_ask", outcome: "verdict", decision: "revise" },
         },
       ]);
-    }, 30_000);
+      // A hang guard, as in the row above. Worst measured cost: 5 391 ms in the whole-file run of
+      // the Job infra-1580-wfb-j9gmw, at cb1c237f, against which main's 30_000 is 5.6 times, so
+      // this takes 60_000, 11.1 times it.
+    }, 60_000);
     // The rules notice is about one session's calls: it goes to the plain log and to that session's
     // UI, never into the notices every later session start shows again.
     test("three rules-check failures in a row raise the rules notice, and a new session start does not show it again", async () => {
@@ -16685,7 +16695,12 @@ console.log(JSON.stringify(args));
           streamFrames().map((frame) => [frame.message.dispatchMessageId, frame.message.parts])
         ).toEqual([[DIRECT_MESSAGE_ID, [{ text: "!printf hi\n\n```\nhi\n```", type: "text" }]]]);
         expect(copy.details).toEqual({ ...LOCAL_ENVOY_NOTICE, dispatchMessageId: DIRECT_MESSAGE_ID });
-      }, 20_000);
+        // A hang guard: what can hang is the shell session's boot or its real `printf`. Worst
+        // measured cost: 8 837 ms in envoy.test.ts run whole at the 96 rung in the Job
+        // infra-1580-wfb-j9gmw of the cluster's `builds` namespace, two CPUs and 8 GiB (139 busy
+        // loops, at which row A's runs took 39.1 s against the calibration's 31.2 s), at cb1c237f.
+        // Main's 20_000 is 2.3 times that, so this takes 60_000, 6.8 times it.
+      }, 60_000);
 
       test("runs it in the directory the session's context names", async () => {
         const { agent, delivered, replied, replies, work } = await bootShellSession(
