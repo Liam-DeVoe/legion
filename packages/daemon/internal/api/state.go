@@ -1826,18 +1826,24 @@ func (c StrandedClaim) Name() string {
 }
 
 // ClaimName is a claim of issue on role whose token is token as the boot's line and `legion state`
-// name it: `<issue> <role>` for the claim of an agent named for its role, whose token the issue and
-// the role spell (and for an entry that names no token), and `<issue> <role> (claim <token>)` for
-// every other claim: the agent of another role's name that holds the role for a step, or
+// name it: the issue, then the claim as a line that has named the issue already names it
+// (ClaimNameInIssue).
+func ClaimName(issue string, role claim.Role, token claim.Token) string {
+	return issue + " " + ClaimNameInIssue(role, token)
+}
+
+// ClaimNameInIssue is a claim on role whose token is token as a line that has named the claim's
+// issue already names it: `<role>` for the claim of an agent named for its role, whose token the
+// issue and the role spell (and for an entry that names no token), and `<role> (claim <token>)`
+// for every other claim: the agent of another role's name that holds the role for a step, or
 // `implementer-2` on an issue whose plan runs the role twice. Two claims of one issue can hold one
 // role (record.WorkerClaim), and they are then named apart; the token is what `legion claims`
 // takes.
-func ClaimName(issue string, role claim.Role, token claim.Token) string {
-	named := issue + " " + string(role)
+func ClaimNameInIssue(role claim.Role, token claim.Token) string {
 	if _, agent, ok := token.Cut(); ok && string(agent) != string(role) {
-		return named + " (claim " + string(token) + ")"
+		return string(role) + " (claim " + string(token) + ")"
 	}
-	return named
+	return string(role)
 }
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
