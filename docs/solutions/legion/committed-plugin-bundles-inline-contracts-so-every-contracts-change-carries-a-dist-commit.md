@@ -25,7 +25,7 @@ related_issues:
 applies_when:
   - Your branch changes anything under packages/contracts or packages/envoy-client
   - The `claude-envoy` job fails "Check the committed bundle is fresh" with `dist/ is stale (envoy-channel.js, session-hook.js)` while GitHub reports MERGEABLE
-  - You are deciding whether Sami's no-unnecessary-rebase rule (2026-09-11) applies
+  - You are deciding whether Sami's request against unnecessary rebases (2026-09-11, quoted below) applies
   - You are reviewing or fingerprinting a pull request that carries a `chore(claude-envoy)` dist commit
 symptoms:
   - "dist/ is stale (envoy-channel.js, session-hook.js); run `bun run build` on Bun 1.3.14 and commit the result"
