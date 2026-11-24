@@ -1673,7 +1673,8 @@ and a corpus of production's size is more disk than an issue pod may use;
 the script refuses to start where a server already answers on that port.
 It needs the worker image, which carries Go, the PostgreSQL 18 server with pgvector and `legion-testpg`,
 and a scratch disk of about 10 GB for scales 1 and 2:
-one scale's database at a time, the write-ahead log, the Go caches and the clone.
+one scale's database at a time, the write-ahead log, the Go caches and the clone;
+under `COVERAGE_SCALE_SERVE=1`, room for a second database at the largest scale, the copy below.
 The Job runs it from `packages/envoy` of a clone:
 
 ```bash
@@ -1681,8 +1682,9 @@ cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
 ```
 
 `COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
-The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the tests' logs, `coverage-scale.log` and `coverage-fill.log`, go under it.
 `DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The fit needs two scales, so a run names at least two.
 The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
 both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
 
@@ -1700,11 +1702,47 @@ each window index's build time and size at every scale;
 then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible and the whole recount, at the two smallest scales,
 and the item count at which the whole recount would reach `coverageRecountTimeout` by a linear fit and by a power law `t = a × s^k` through the two points,
 with the smaller of the two as a multiple of the 1 × corpus's items.
-It ends with the slowest state, the one with the smallest multiple, and its multiple, or the states where the recount did not grow between the two scales and no fit is defined.
+It ends with the slowest state, the one with the smallest multiple, with the corpus size in items at which its whole recount would reach `coverageRecountTimeout` and that size's multiple,
+or the states where the recount did not grow between the two scales and no fit is defined.
 `pass` means four times the fill at S is within `coverageFillTimeout` and four times the longest whole recount at S within `coverageRecountTimeout`;
 `FAIL` means one of them is not.
 The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
 CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
+
+### A server's start at the largest scale (`COVERAGE_SCALE_SERVE=1`)
+
+`COVERAGE_SCALE_SERVE=1`, which reaches the test as it is, adds cb-fill-length's start of the head's server on the corpus at S, the largest scale:
+
+```bash
+cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch COVERAGE_SCALE_SERVE=1 DISPATCH_COVERAGE_SCALES="1 $S" scripts/coverage-scale.sh
+```
+
+At S, once the corpus is loaded, analyzed, its issues' sources recorded and the corpus checked, and before the window indexes are built again or anything is counted,
+the test closes every connection to that scale's database and copies it (`create database <name>_serve template <name> strategy file_copy`).
+The load ran with its tables' triggers off, so the copy holds the corpus with every vector and no row of `search_coverage_filled`, `search_coverage_counts`, `search_coverage_deltas` or `search_coverage_issues`:
+`done_at` is unset, as the first deploy of the counts finds production.
+On a connection of its own, closed before the test goes on, it makes the copy what a production database is beside that:
+autovacuum on `embeddings` as the migrations leave it, every session committing synchronously,
+the boot's `document_search` pass (`store.FillDocumentSearch`) recorded as done, as on every database a server has booted on since that table's release
+(the load writes the document versions with their triggers off, so none holds the search vector the pass copies, and the pass would end the boot),
+and the corpus's tables vacuumed and analyzed, so the server's fill reads pages whose hint bits and visibility map are set, as the scale test's own fill does.
+It prints the copy's name on a line that starts `coverage-scale-database:` and leaves the copy.
+
+The script then runs `TestTheServerFillsTheCoverageCountsAtScale` (`cmd/dispatch/coverage_fill_scale_test.go`) with `DISPATCH_COVERAGE_FILL_URL` naming the copy, whatever the scale test's verdict,
+and drops the copy after it.
+The test starts the head's binary on the copy, reads from the server's own lines `since_start_ms` of `dispatch: listening`,
+the timeout the fill's start line names (`coverageFillTimeout` in force), the fill's `elapsed_ms`, and the fill's end against the listening line's time,
+and stops the server once the fill line is logged.
+It starts it again, now with `done_at` set, and reads whether it logged a fill, `since_start_ms`, the timeout the recount's start line names (`coverageRecountTimeout` in force), the recount's `elapsed_ms`, and the recount's end against the listening line's time.
+It prints one line that starts `fill-length:` for each of these, and last a line that starts `fill-length: pass` or `fill-length: FAIL` naming every one.
+A missing line fails it at once.
+The first start fails it when the server listened after its fill ended, when the fill failed or reached its timeout, or when `coverageFillTimeout` is less than four times the fill's time;
+the second when it logged a fill, when the server listened after its recount ended, when the recount failed or reached its bound, or when `coverageRecountTimeout` is less than four times the recount's time.
+The test hands `DISPATCH_TEST_COVERAGE_FILL_TIMEOUT`, when its own environment sets it, to both starts: the negative control's way to run the server with a fill timeout below four times the fill.
+
+The script prints the `coverage-scale:` lines again and then the `fill-length:` lines, each test's verdict last.
+It exits with the scale test's status when that is not 0, and otherwise with the server test's;
+and with 1 also when the test printed no `coverage-scale-database:` line, when the server test printed no `fill-length:` line, or when the copy was not dropped.
 
 ## going-smoke.sh
 

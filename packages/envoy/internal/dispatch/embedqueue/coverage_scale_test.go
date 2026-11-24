@@ -31,11 +31,15 @@ import (
 // one database per scale, which it creates and drops: never a server that holds anything else of
 // value, and never CI's, which leaves it unset. Its database path is ignored, as storetest's
 // DISPATCH_TEST_DATABASE_URL's is. coverageScalesEnv lists the scales, space-separated; 1 is
-// production's counts of 2026-11-17.
+// production's counts of 2026-11-17. coverageScaleServeEnv is scripts/coverage-scale.sh's
+// COVERAGE_SCALE_SERVE, which reaches the test as it is: set to 1, it makes the test copy the
+// database of the largest scale before any measurement and leave the copy for a server's start on
+// it (copyForServerStart).
 const (
 	coverageScaleURLEnv   = "DISPATCH_COVERAGE_SCALE_URL"
 	coverageScalesEnv     = "DISPATCH_COVERAGE_SCALES"
 	coverageScalesDefault = "1 2"
+	coverageScaleServeEnv = "COVERAGE_SCALE_SERVE"
 )
 
 // scaleMeasurementBound is the bound the fill and each recount the scale test times run under in
@@ -279,6 +283,14 @@ type coverageScalePoint struct {
 // is the time of counts that answer what main's statements answer. The database is dropped before
 // the next scale is built.
 //
+// Under COVERAGE_SCALE_SERVE=1 (coverageScaleServeEnv) the database of the largest scale, S, is
+// copied once the corpus is loaded, analyzed, recorded and checked, before the window indexes are
+// built again and before any count (copyForServerStart): the copy holds the corpus and no row of
+// the counts, done_at unset, as the first deploy of the counts finds production. The test prints
+// its name on a line that starts `coverage-scale-database:` and leaves it, and
+// scripts/coverage-scale.sh starts the server on it (cmd/dispatch's
+// TestTheServerFillsTheCoverageCountsAtScale) and drops it.
+//
 // The fill and each recount run under scaleMeasurementBound rather than their own bounds, so the
 // time read is their whole length, and on a pool whose statements a tracer times (statementTimer),
 // so each group statement's time is read too. In each state the size at which the whole recount
@@ -298,6 +310,8 @@ func TestCoverageStatementScale(t *testing.T) {
 	setForTest(t, &coverageFillTimeout, scaleMeasurementBound)
 	setForTest(t, &coverageRecountTimeout, scaleMeasurementBound)
 	scales := coverageScales(t)
+	serve := os.Getenv(coverageScaleServeEnv) == "1"
+	largest := slices.MaxFunc(scales, func(a, b coverageScale) int { return cmp.Compare(a.value, b.value) })
 	prose := repositoryProse(t)
 	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
 	if err != nil {
@@ -313,7 +327,7 @@ func TestCoverageStatementScale(t *testing.T) {
 	var points []coverageScalePoint
 	for _, scale := range scales {
 		t.Run("scale="+scale.text, func(t *testing.T) {
-			points = append(points, measureCoverageAtScale(t, admin, server, scale, prose, string(script)))
+			points = append(points, measureCoverageAtScale(t, admin, server, scale, prose, string(script), serve && scale == largest))
 		})
 	}
 	judgeCoverageScale(t, scales, points, fillBound, recountBound)
@@ -402,12 +416,13 @@ func serverDatabaseURL(t *testing.T, raw, database string) string {
 	return server.String()
 }
 
-// measureCoverageAtScale builds the corpus at scale in a database of its own, checks it, builds
-// the window indexes again from their migrations (rebuildWindowIndexes), times the fill, and times
-// the recount in each state of scaleStates, comparing the counts with main's statements after each
-// (requireMainsAnswerFor), logging what it read and printing the scale's coverage-scale line; the
-// database is dropped when t ends.
-func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale coverageScale, prose [][]any, script string) coverageScalePoint {
+// measureCoverageAtScale builds the corpus at scale in a database of its own, checks it, copies it
+// for a server's start when serve (copyForServerStart), builds the window indexes again from their
+// migrations (rebuildWindowIndexes), times the fill, and times the recount in each state of
+// scaleStates, comparing the counts with main's statements after each (requireMainsAnswerFor),
+// logging what it read and printing the scale's coverage-scale line; the database is dropped when
+// t ends, and the copy is left.
+func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale coverageScale, prose [][]any, script string, serve bool) coverageScalePoint {
 	ctx := context.Background()
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
@@ -456,6 +471,16 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	t.Logf("scale %s: corpus loaded in %v, %d issue sources recorded in %v",
 		scale.text, loaded.Round(time.Millisecond), recorded, recording.Round(time.Millisecond))
 	checkCoverageCorpus(t, database, scale, recorded)
+	if serve {
+		// Postgres copies no database a session is connected to: the pool closes first, and a
+		// pool of its own reads the database from then on.
+		database.Pool.Close()
+		copyForServerStart(t, admin, server, name)
+		if database, err = store.Open(ctx, databaseURL); err != nil {
+			t.Fatalf("open %s again once it is copied: %v", name, err)
+		}
+		t.Cleanup(database.Pool.Close)
+	}
 
 	point := coverageScalePoint{scale: scale, builds: rebuildWindowIndexes(t, database, "scale "+scale.text)}
 	timer := &statementTimer{}
@@ -791,6 +816,59 @@ func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
 	}
 }
 
+// copyForServerStart copies name, a scale's database that no session is connected to, to
+// name_serve (create database ... template ... strategy file_copy), again while Postgres answers
+// that name is in use (SQLSTATE 55006, a backend of the closed pool still being torn down), and
+// prints the copy's name on a line that starts `coverage-scale-database:`, which
+// scripts/coverage-scale.sh reads to start the server on it and drop it. It is the database a
+// server's first start meets at the first deploy of the counts: the corpus as loaded with its
+// tables' triggers off, analyzed and its issues' sources recorded, and no row of
+// search_coverage_filled, search_coverage_counts, search_coverage_deltas or
+// search_coverage_issues, so done_at is unset. On one connection of its own, closed before it
+// answers, it then makes the copy what production is beside that: autovacuum on embeddings as the
+// migrations leave it, which the scale test turned off on the database it copied; every session
+// committing synchronously, Postgres's default, as the copied database's did, a setting no copy
+// carries; the boot's document_search pass (store.FillDocumentSearch) recorded as done, as every
+// database a server has booted on since the release that brought document_search records it,
+// since the load writes the document versions with their triggers off, so none holds the search
+// vector its trigger writes, and the pass, which the boot runs before it serves, would refuse the
+// first one and end the boot; and the corpus's tables vacuumed and analyzed, so the server's fill
+// reads the tables with their hint bits and visibility map set, as the scale test's fill reads them
+// after rebuildWindowIndexes' vacuum and as a production table long since read and vacuumed is,
+// rather than writing every page it reads.
+func copyForServerStart(t *testing.T, admin *pgx.Conn, server, name string) {
+	t.Helper()
+	ctx := context.Background()
+	copied := name + "_serve"
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		_, err := admin.Exec(ctx, "create database "+copied+" template "+name+" strategy file_copy")
+		if err == nil {
+			break
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55006" || time.Now().After(deadline) {
+			t.Fatalf("copy %s to %s for the server's start: %v", name, copied, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fmt.Printf("coverage-scale-database: %s\n", copied)
+	if _, err := admin.Exec(ctx, "alter database "+copied+" set synchronous_commit = on"); err != nil {
+		t.Fatalf("make %s commit synchronously: %v", copied, err)
+	}
+	conn, err := pgx.Connect(ctx, serverDatabaseURL(t, server, copied))
+	if err != nil {
+		t.Fatalf("connect to %s: %v", copied, err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	started := time.Now()
+	mustExec(t, conn, `set statement_timeout = 0`)
+	mustExec(t, conn, `alter table embeddings reset (autovacuum_enabled)`)
+	mustExec(t, conn, `update document_search_backfill set done = true`)
+	mustExec(t, conn, "vacuum (analyze) "+coverageScaleTables)
+	t.Logf("%s copied to %s, which is vacuumed and analyzed in %v and left for the server's start", name, copied, time.Since(started).Round(time.Millisecond))
+}
+
 // judgeCoverageScale judges the fill and the recount at S, the largest scale measured, against the
 // bounds the counts loop holds them to, fillBound (coverageFillTimeout) and recountBound
 // (coverageRecountTimeout): it fails when four times the fill at S passes fillBound, or four times
@@ -806,7 +884,8 @@ func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
 // build time and size at every scale; for each state the vectors its embedder change dropped at the
 // two smallest scales, where it changes the embedder, the share of embeddings' pages its statistics
 // record as all-visible there, the whole recount there and the fits and their multiple; then the
-// slowest state and its multiple, or the states where no fit is defined.
+// slowest state with the corpus size, in items, at which its whole recount would reach
+// recountBound and that size's multiple, or the states where no fit is defined.
 func judgeCoverageScale(t *testing.T, scales []coverageScale, points []coverageScalePoint, fillBound, recountBound time.Duration) {
 	t.Helper()
 	if len(points) < 2 {
@@ -888,10 +967,11 @@ func judgeCoverageScale(t *testing.T, scales []coverageScale, points []coverageS
 	case slowest == "":
 		fitted = "no fit is defined in any state"
 	case len(unfitStates) > 0:
-		fitted = fmt.Sprintf("no fit is defined in %s; of the others, %s is the slowest, its whole recount reaching %v at %.2f x the 1 x corpus's %.0f items",
-			strings.Join(unfitStates, " and "), slowest, recountBound, slowestMultiple, oneX)
+		fitted = fmt.Sprintf("no fit is defined in %s; of the others, %s is the slowest, its whole recount reaching %v at %.0f items, %.2f x the 1 x corpus's %.0f items",
+			strings.Join(unfitStates, " and "), slowest, recountBound, slowestMultiple*oneX, slowestMultiple, oneX)
 	default:
-		fitted = fmt.Sprintf("the slowest state, %s, its whole recount reaching %v at %.2f x the 1 x corpus's %.0f items", slowest, recountBound, slowestMultiple, oneX)
+		fitted = fmt.Sprintf("the slowest state, %s, its whole recount reaching %v at %.0f items, %.2f x the 1 x corpus's %.0f items",
+			slowest, recountBound, slowestMultiple*oneX, slowestMultiple, oneX)
 	}
 	verdict := "pass"
 	if len(failures) > 0 {
