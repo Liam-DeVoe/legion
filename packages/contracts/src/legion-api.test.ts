@@ -174,7 +174,7 @@ const schemas: Record<string, z.ZodType> = {
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
   // register_plan's answer to a request that ended while the daemon read or checked the plan
-  // (contract 240): the refusal with its code, PLAN_CHECK_STOPPED, which tells a client it is the
+  // (contract 242): the refusal with its code, PLAN_CHECK_STOPPED, which tells a client it is the
   // daemon's own answer and no proxy's dropped attempt.
   "plan-check-stopped.json": LegionErrorResponse,
   // The project pause (contract 178), each written from what the route itself answers

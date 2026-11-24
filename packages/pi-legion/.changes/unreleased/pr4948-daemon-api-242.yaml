@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 240. `register_plan` passes on the daemon's
+    The plugin declares daemon API contract 242. `register_plan` passes on the daemon's
     `503 PLAN_CHECK_STOPPED` after one attempt, with the daemon's sentence, as the daemon's own
     answer: the request ended before the check of the plan was done, Legion decided nothing, and
     the same call can be sent again. It is never retried as a dropped attempt or reported as one

@@ -249,7 +249,7 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planCheckStopped answers a register_plan whose request ended while the plan was read
 // (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
-// context: 503 PLAN_CHECK_STOPPED (version.go's 240). The request ended before the check of the
+// context: 503 PLAN_CHECK_STOPPED (version.go's 242). The request ended before the check of the
 // plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
 // again. The code is what tells a client this is the daemon's answer and not a proxy's dropped
 // attempt, which pi-shared's daemonUnreachable reads a 503 with no code as.

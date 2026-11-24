@@ -279,7 +279,7 @@ test("the daemon's own 502 or 503, which carries its code, is its answer and is 
   expect(updates).toEqual([]);
 });
 
-// register_plan's request can end while the daemon reads or checks the plan (contract 240), and
+// register_plan's request can end while the daemon reads or checks the plan (contract 242), and
 // the daemon then answers 503 PLAN_CHECK_STOPPED, the golden its route test writes
 // (internal/api's TestRegisterPlanStopsItsCheckWhenTheRequestEnds): it decided nothing and
 // recorded nothing, and the same call can be sent again. The code makes the answer the daemon's

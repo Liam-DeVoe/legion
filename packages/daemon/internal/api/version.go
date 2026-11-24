@@ -3399,7 +3399,7 @@ package api
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
 //
-// 240: register_plan reads each need of the plan it is given and checks the plan before the fact
+// 242: register_plan reads each need of the plan it is given and checks the plan before the fact
 // lock, on the request's own context, and a request that ends during either is answered
 // `503 PLAN_CHECK_STOPPED` (`api.Failure`: `code` and `error`), where 219 and 220 answered the end
 // of the check with a 503 that carried no code. The code means: the request ended before the check
@@ -3409,7 +3409,7 @@ package api
 // applied), so with the code the answer is read as the daemon's: handed back with its sentence,
 // never retried as a dropped attempt, and never marked as one that may have been applied.
 // `PLAN_CHECK_STOPPED` is a value of the refusal's `code`, which no reader enumerates, so the
-// answers and the requests of 240 are 220's and no caller below it is served anything else.
+// answers and the requests of 242 are 220's and no caller below it is served anything else.
 // (This entry took 238 at first, the lowest number above main's 219 that no open pull request
 // declared at a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 of
 // the 501 open pull requests whose files include this one or are cut short, made between
@@ -3417,6 +3417,10 @@ package api
 // 220 (the entry above), and the same reading of the 133 of the 510 open pull requests whose
 // files include this one or are cut short, made between 2026-11-23T23:27:08Z and 23:30:29Z, found
 // 221 to 239 each declared by at least one, 238 by #4771 and #5285, so this entry moved to 240.
-// Read main's own number and every open pull request again at the next merge rather than from
-// this line.)
-const DaemonAPIVersion = 240
+// A reading made between 2026-11-24T01:53:19Z and 01:56:41Z, of the 132 of the 521 open pull
+// requests whose files include this one or are cut short, found 240 declared by #3831, #4596 and
+// #5271, and the reading before the push, of the 134 of the 522, made between 02:40:42Z and
+// 02:44:20Z, found 221 to 241 each declared by at least one, 241 by #4771 and #5307, so this entry
+// moved to 242. Read main's own number and every open pull request again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 242
