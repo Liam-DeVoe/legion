@@ -1273,6 +1273,15 @@ Closing the terminal leaves the project without one, and the daemon logs
 2. **Update `legion.yaml`**: set `runtime.kubernetes.image` to the new digest and run
    `legion config check --config legion.yaml`.
 
+   **Before the first upgrade to the release that stores no tree,** list the members its first
+   boot brings back: run that release's `legion members-back --config legion.yaml` against the
+   daemon's store, before the new image is pinned. On the release before, a root's departure
+   suspended every member of its tree. The first boot starts each such member that is still in
+   Legion's work again in its phase. The command prints each one with its phase and how its tree
+   left, and changes nothing. Set any of them to backlog before the boot to keep it stopped. The
+   repository's `docs/kubernetes.md` ("Rolling back the release that stores no tree") gives the
+   one-shot pod that runs it in the cluster.
+
    **After the first upgrade to a release that takes each issue's repository from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with
    `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch, …`.

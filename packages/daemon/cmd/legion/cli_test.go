@@ -70,7 +70,7 @@ var legionCommands = [][]string{
 	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
 	{"project"}, {"project", "pause"}, {"project", "resume"},
 	{"sessions"}, {"sessions", "import"},
-	{"probe-boot"},
+	{"probe-boot"}, {"members-back"},
 	{"controller"}, {"controller", "start"},
 	{"intake"}, {"intake", "replay"}, {"intake", "discard"},
 }

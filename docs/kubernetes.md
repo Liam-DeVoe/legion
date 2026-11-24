@@ -3387,6 +3387,51 @@ Its Dispatch runs dispatch://INFRA-4731's status-change route before the daemon 
 A roll forward after a rollback converts again from the state the earlier release left, its rows included.
 That conversion also marks each claim the earlier release wrote whose issue holds its own gate, before the daemon builds any claim's machine, so an architect an operator started on a root while the rollback held is that tree's root again, and the operator's close of the tree is accepted.
 
+**Before the pin that carries this release is applied: list the members that its first boot brings back.**
+On the release before, a root that left Legion's work suspended the claims of every member of its tree, and only the root's re-admission brought the members back.
+This release keeps no tree, so a root's return resumes only the root itself (dispatch://INFRA-3320 R20).
+So the first boot's conversion brings back each such member that is still in Legion's work itself (step 8, `bringMembersBack` in `internal/daemon/tree_conversion.go`).
+The member starts again in the phase it stands in, at a new phase entry.
+A member with an open Dispatch child waits in `awaiting_children` instead.
+The step leaves these as they are: a claim that the operator suspended, a claim that the idle release suspended, a member whose own status is out of work, and a member whose Dispatch claim a person holds.
+
+`legion members-back` of this release lists these members, with the selection that the step uses (`record.ReadMembersBack`).
+Run it once for each project, INFRA, BET, LINUX and OSSV, before the pin moves.
+Run it as a one-shot pod in the namespace `legion`, as [Probing a configuration before the daemon boots on it](#probing-a-configuration-before-the-daemon-boots-on-it) says to run probe-boot:
+the image that the pin will move to, the daemon's ServiceAccount, the daemon pod's environment (`LEGION_POSTGRES_DSN`) and its `/etc/legion-config` mount.
+The daemon's pod runs the release before, whose `legion` has no `members-back`.
+The one-shot pod runs this command, with the image's entrypoint `legion`:
+
+```sh
+legion members-back --config /etc/legion-config/legion.yaml
+```
+
+The command reads the store as `legion start` reads it: the file's `postgres_dsn`, else `LEGION_POSTGRES_DSN`.
+It reads in one read-only transaction and changes nothing.
+It reads only columns that the store of `legion-v22.16.2` holds, and `issues.members_owed` where the store holds it.
+Where the store holds no `issues.members_owed`, it reads the state that the column's migration marks (`20261123224717_members_owed.up.sql`).
+So it gives the same answer before and after the store's migration to this release.
+An operator who holds the DSN on a machine of their own can run this release's `legion` there instead, with a copy of the project's `legion.yaml` and `LEGION_POSTGRES_DSN` set.
+Read the pod's output with `kubectl -n legion logs <pod>`. For example:
+
+```text
+CAPTURE: the first boot on this release brings back 1 member, each in the phase it stands in:
+CAPTURE-11 implementing: its root CAPTURE-10 went to backlog
+```
+
+The first line names the project and how many members its first boot brings back.
+Each line after it is one member: its key, the phase where it starts again, and how its tree left Legion's work.
+How the tree left is read from the root's records, in this order:
+`its root <KEY> closed at its merge`;
+`an operator's act stopped its root <KEY>` (the operator holds the root's tree, or suspended a claim of the root);
+`a claim of its root <KEY> failed`;
+`its root <KEY> went to <status>` (the root's own status: `backlog`, `icebox`, `triage` or `done`);
+`its root <KEY> came back into work before its members` (the root is back in work, and the release before had not brought its members back yet: `issues.members_owed`).
+The output names no claim token, no session id and no secret.
+On a store whose conversion has already run, it prints that the conversion ran and lists no member.
+
+Set any of them to backlog before the boot to keep it stopped.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3967,7 +4012,7 @@ The migrations recorded above this one are these.
 20261122154645_issue_facts, of dispatch://INFRA-4730, adds six columns of `issues`, five of `claims` and two of `outbox`, the tables `issue_lifecycles` and `tree_conversions` and four functions the design news reads through over the Dispatch chain, opens an issue lifecycle for each issue a live claim names under an open tree lifecycle and binds its claims to it, sets `claims.holds_gate` on every claim whose issue is its stored tree, and writes the outbox's kind check again with `retention_end` added to the basis seeds' list, and touches none of the six, so the block holds over it and leaves the columns, the tables and the functions standing, which the earlier release names in no statement; a rollback to a release before it runs the step of its own section first, [Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree), which deletes no version row, so after the eleven statements a store that release migrated records it and reports 20261123212127, which stands above it and whose row no statement deletes either.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
-20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, which main's re-admission (#5303) sets on the roots whose members it has still to bring back and which this release neither reads nor writes, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, which main's re-admission (#5303) sets on the roots whose members it has still to bring back, which this release writes nowhere and reads only in its first boot's conversion and in `legion members-back`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

@@ -473,7 +473,7 @@ func TestTheTreeCutoverLive(t *testing.T) {
 	})
 
 	step("the reserved cleanup is the reservation of each issue of its tree", func() {
-		// Step 5 reserves each issue the tree's cleanup covers, L and L3; step 8 reserves L2, whose
+		// Step 5 reserves each issue the tree's cleanup covers, L and L3; step 9 reserves L2, whose
 		// hand-over's write never landed, and leaves L1, whose write landed, a root of its own whose
 		// lifecycle is open (record.ReserveIssuesOfTreeCleanups, convertHandOvers).
 		for issue, want := range map[string]int{l: 1, l2: 1, l3: 1, l1: 0} {

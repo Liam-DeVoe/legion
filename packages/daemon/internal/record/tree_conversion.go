@@ -52,6 +52,21 @@ func ReadTreeConversion(ctx context.Context, tx pgx.Tx, project string) (TreeCon
 	return conversion, nil
 }
 
+// ReadTreeConversionOfAnyRelease is ReadTreeConversion on the store of any release: the zero
+// record where the store keeps no tree_conversions, as the release before's store keeps none.
+// `legion members-back`, which an operator runs before the upgrade, reads it (the daemon's
+// ListMembersBack).
+func ReadTreeConversionOfAnyRelease(ctx context.Context, tx pgx.Tx, project string) (TreeConversion, error) {
+	var kept bool
+	if err := tx.QueryRow(ctx, `select to_regclass('tree_conversions') is not null`).Scan(&kept); err != nil {
+		return TreeConversion{}, fmt.Errorf("read whether the store keeps the conversion of %s: %w", project, err)
+	}
+	if !kept {
+		return TreeConversion{}, nil
+	}
+	return ReadTreeConversion(ctx, tx, project)
+}
+
 // RecordTreeConversionStep records that step of project's conversion committed, in the
 // transaction of the step itself; convertedAt is nil for every step but the last, which writes
 // when the conversion ended.

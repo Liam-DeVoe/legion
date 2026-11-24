@@ -121,7 +121,7 @@ func rowsOfKind(t *testing.T, pool *store.Pool, kind record.OutboxKind) []record
 
 // The first boot on this release tells R18's notice of each issue the release before ran as a root
 // of its own whose Dispatch parent, in the copy the boot's listing fills, is in Legion's work (R21
-// of dispatch://INFRA-3320, step 10 of the first boot's conversion, decision 21 of
+// of dispatch://INFRA-3320, step 11 of the first boot's conversion, decision 21 of
 // dispatch://INFRA-4730). CAPTURE-500 is recorded as its own tree under CAPTURE-300, a root at
 // work, and the release before already told it under that parent (told_parent): after the boot it
 // owes one re-parent seed naming CAPTURE-300 as its new parent and no old parent, and the seed's
@@ -511,7 +511,7 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 	if err := bootConversionStoppedAt(ctx, w, convertRecord); !errors.Is(err, errStoppedAfterStep) {
 		t.Fatalf("the boot that converts the store ended with %v, want it to reach the last step", err)
 	}
-	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 11 t"}) {
+	if got := conversionDump(t, st.Pool())["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 12 t"}) {
 		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
 	}
 	rows, err := st.Pool().Query(ctx, `select concat_ws(' ', state, published_since is null, unpublished_since is null) from claims
@@ -533,7 +533,7 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 }
 
 // A hand-over the release before had in flight in a tree whose cleanup it reserved is decided by
-// the listing, not by the reservation (R22 of dispatch://INFRA-3320, steps 5 and 8 of the first
+// the listing, not by the reservation (R22 of dispatch://INFRA-3320, steps 5 and 9 of the first
 // boot's conversion, decision 21 of dispatch://INFRA-4730). CAPTURE-60 lingers at generation 2
 // with its tree cleanup reserved; CAPTURE-61 and CAPTURE-62, members in implementing whose
 // implementers still work, were handed over, and CAPTURE-63 is a done member whose suspended
@@ -641,7 +641,7 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 	}
 }
 
-// A hand-over whose write landed carries its run's plan into its new run (step 8 of the first
+// A hand-over whose write landed carries its run's plan into its new run (step 9 of the first
 // boot's conversion; main's #4611: an owner's plan picks which steps run). The release before
 // carried such a run into a root of its own at a new generation, in the phase it ran in, so that
 // run never leaves admitted, where a run's plan is written otherwise. finishHandOver copies the
@@ -734,7 +734,7 @@ func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
 }
 
 // A hand-over whose write landed carries the member's open pull request into its new run with the
-// CI settlement fence it held (step 8 of the first boot's conversion, finishHandOver). The
+// CI settlement fence it held (step 9 of the first boot's conversion, finishHandOver). The
 // fence's generation is the listener's generation of the settlement that stands, not the issue's,
 // so a settlement of the head from before the carry, delivered late or replayed from a message
 // the intake gave up on, is as stale after the carry as it was before: the record keeps the newer
@@ -883,7 +883,7 @@ func planAtGeneration(stored *record.StoredPlan, generation uint64) *record.Stor
 // tree, which the workflow never starts. After the steps that read the store, that claim holds the
 // mark in the claims the boot's supervision reads (openSupervision), and in the machine the boot's
 // restore builds from them (supervisor.restore). CAPTURE-61 is a member of CAPTURE-60's tree whose
-// hand-over landed: step 8 makes it a root that holds its own gate, the first admission pass queues
+// hand-over landed: step 9 makes it a root that holds its own gate, the first admission pass queues
 // its architect's start (workflow.Engine.StartArchitect, which admit's promotion of a queued root
 // calls), and that start, run by the outbox, makes the architect's claim with the mark it reads on
 // the Dispatch chain (the outbox's start, launchOf). Negative control, run when this was written,
@@ -1009,6 +1009,8 @@ var errStoppedAfterStep = errors.New("the test stopped the boot after a step of 
 //     CAPTURE-5, a root of its own whose Dispatch parent is CAPTURE-6; a notice to CAPTURE-6's
 //     architect queued with no fence; and the architects of both, written as the release before
 //     writes a claim, with no mark that its issue holds its gate.
+//   - CAPTURE-7, a root a person set to backlog, and CAPTURE-8, a member of its tree in
+//     implementing whose implementer the root's departure suspended, at its third entry.
 func conversionScenario(t *testing.T, pool *store.Pool) *copyBoard {
 	t.Helper()
 	ctx := context.Background()
@@ -1023,6 +1025,8 @@ func conversionScenario(t *testing.T, pool *store.Pool) *copyBoard {
 		conversionIssue("CAPTURE-4", "CAPTURE-1", phase.Implementing, "in_progress", 1),
 		conversionIssue("CAPTURE-5", "CAPTURE-5", phase.Implementing, "in_progress", 1),
 		conversionIssue("CAPTURE-6", "CAPTURE-6", phase.Planning, "in_progress", 1),
+		conversionIssue("CAPTURE-7", "CAPTURE-7", phase.Done, "backlog", 1),
+		conversionIssue("CAPTURE-8", "CAPTURE-7", phase.Implementing, "in_progress", 1),
 	} {
 		putOutboxIssue(t, pool, records, issue)
 	}
@@ -1030,10 +1034,17 @@ func conversionScenario(t *testing.T, pool *store.Pool) *copyBoard {
 	for _, key := range []string{"CAPTURE-5", "CAPTURE-6"} {
 		seedConversionClaim(t, pool, key, claim.RoleArchitect, key, "working", "")
 	}
+	seedConversionClaim(t, pool, "CAPTURE-8", claim.RoleImplementer, "CAPTURE-7", "suspended", "")
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: "CAPTURE-8", Role: claim.RoleImplementer, Entry: 3, EntryRaisedAt: time.Now()})
+	}); err != nil {
+		t.Fatalf("raise the implementer's entry of CAPTURE-8: %v", err)
+	}
 	for _, statement := range []string{
 		`insert into tree_lifecycles (project, tree, epoch, authority, cleanup_started) values ('capture', 'CAPTURE-1', 1, 'workflow', true)`,
 		`insert into tree_lifecycles (project, tree, epoch, authority) values ('capture', 'CAPTURE-6', 1, 'operator')`,
 		`insert into handed_over_roots (issue, generation, gate_carried) values ('CAPTURE-6', 1, true)`,
+		`update claims set suspended_by = 'daemon' where issue = 'CAPTURE-8'`,
 		`insert into handovers (issue, tree, linger_generation) values ('CAPTURE-3', 'CAPTURE-1', 2), ('CAPTURE-4', 'CAPTURE-1', 2)`,
 		`insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at)
 			values ('CAPTURE-1', 'prompt-style', 'tree', 'terse', 'draw', '2026-11-01T00:00:00Z')`,
@@ -1058,25 +1069,29 @@ func conversionScenario(t *testing.T, pool *store.Pool) *copyBoard {
 		conversionSummary("CAPTURE-4", "in_progress", 3, "CAPTURE-1"),
 		conversionSummary("CAPTURE-5", "in_progress", 3, "CAPTURE-6"),
 		conversionSummary("CAPTURE-6", "in_progress", 3, ""),
+		conversionSummary("CAPTURE-7", "backlog", 3, ""),
+		conversionSummary("CAPTURE-8", "in_progress", 3, "CAPTURE-7"),
 	}}
 }
 
 // conversionDump is every table the conversion writes, as text, leaving out what no step decides:
-// ids, the moments a row was made or written, and when the conversion ended, of which only that
-// it is set is read.
+// ids, the moments a row was made or written, the moment a step record names its step started at,
+// and when the conversion ended, of which only that it is set is read. The phases rows name each
+// role's entry, which a member brought back raises.
 func conversionDump(t *testing.T, pool *store.Pool) map[string][]string {
 	t.Helper()
 	queries := map[string]string{
 		"issues": `select concat_ws(' ', key, tree, phase, generation, status, dispatch_status, taken_back, holds_gate, handed_over,
 			told_parent, carried_generation, carried_gate, retained_until, handed_over_from, linger_until) from issues order by key`,
-		"outbox": `select concat_ws(' ', kind, issue, payload::text, case when kind = 'retention_end' then next_at::text end) from outbox
-			order by kind, issue, payload::text`,
+		"outbox": `select concat_ws(' ', kind, issue, (payload - 'started_at')::text, case when kind = 'retention_end' then next_at::text end)
+			from outbox order by kind, issue, (payload - 'started_at')::text`,
 		"issue_lifecycles":       `select concat_ws(' ', project, issue, epoch, authority, cleanup_started) from issue_lifecycles order by issue`,
 		"claims":                 `select concat_ws(' ', token, tree, tree_epoch, issue_epoch, holds_gate, state) from claims order by token`,
 		"experiment_assignments": `select concat_ws(' ', issue_key, experiment, unit, variant, carried) from experiment_assignments order by 1`,
 		"handovers":              `select issue from handovers order by issue`,
 		"handed_over_roots":      `select concat_ws(' ', issue, generation, gate_carried) from handed_over_roots order by issue`,
 		"tree_conversions":       `select concat_ws(' ', project, step, converted_at is not null) from tree_conversions order by project`,
+		"phases":                 `select concat_ws(' ', issue, role, entry) from phases order by issue, role`,
 	}
 	dump := map[string][]string{}
 	for table, query := range queries {
@@ -1145,7 +1160,7 @@ func TestASecondConversionAndAnInterruptedOneChangeNothingMore(t *testing.T) {
 		return conversionDump(t, pool), w, pool
 	}
 	whole, w, pool := converted(t, convertRecord)
-	if got := whole["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 11 t"}) {
+	if got := whole["tree_conversions"]; !slices.Equal(got, []string{"CAPTURE 12 t"}) {
 		t.Fatalf("the conversion is recorded as %q, want its last step and when it ended", got)
 	}
 	// The premise: each step found something of the scenario to convert.
@@ -1161,11 +1176,14 @@ func TestASecondConversionAndAnInterruptedOneChangeNothingMore(t *testing.T) {
 			and exists (select 1 from outbox where kind = 'supervise' and issue = 'CAPTURE-2' and payload->>'op' = 'issue_close')`,
 		"a tree's draw carried onto a started issue (6)": `select count(*) from experiment_assignments where issue_key = 'CAPTURE-4' and carried`,
 		"a claim marked as holding its issue's gate (7)": `select count(*) from claims where issue in ('CAPTURE-5', 'CAPTURE-6') and holds_gate`,
-		"a landed hand-over finished (8)": `select count(*) from issues where key = 'CAPTURE-3' and tree = 'CAPTURE-1' and generation = 2
+		"a member its root's departure suspended brought back (8)": `select count(*) from phases where issue = 'CAPTURE-8'
+			and role = 'implementer' and entry = 4 and exists (select 1 from outbox where kind = 'supervise' and issue = 'CAPTURE-8'
+			and payload->>'op' = 'start' and payload->>'role' = 'implementer' and (payload->>'entry')::bigint = 4)`,
+		"a landed hand-over finished (9)": `select count(*) from issues where key = 'CAPTURE-3' and tree = 'CAPTURE-1' and generation = 2
 			and carried_generation = 2 and taken_back and status = 'todo' and holds_gate`,
-		"the rows only the release before runs deleted (9)": `select count(*) where not exists (select 1 from outbox where kind in ('linger_close', 'workspace_remove')
+		"the rows only the release before runs deleted (10)": `select count(*) where not exists (select 1 from outbox where kind in ('linger_close', 'workspace_remove')
 			or (kind = 'supervise' and payload->>'op' = 'tree_close') or payload->>'kind' = 'hand-over') and not exists (select 1 from handovers)`,
-		"a root under a parent at work told (10)": `select count(*) from outbox where kind = 'reparent_seed' and issue = 'CAPTURE-5'`,
+		"a root under a parent at work told (11)": `select count(*) from outbox where kind = 'reparent_seed' and issue = 'CAPTURE-5'`,
 	} {
 		var n int
 		if err := pool.QueryRow(ctx, query).Scan(&n); err != nil || n == 0 {

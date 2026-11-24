@@ -105,7 +105,7 @@ func (e *Engine) forgetToldAcrossGateRoots(ctx context.Context, tx pgx.Tx, issue
 	return e.queueMovedNews(ctx, tx, issue)
 }
 
-// TellParentAtFirstBoot is the first boot's notice of a root under a parent at work (step 9 of
+// TellParentAtFirstBoot is the first boot's notice of a root under a parent at work (step 11 of
 // the conversion, decision 21 of dispatch://INFRA-4730; R21 of dispatch://INFRA-3320): the
 // release before ran issue as a root of its own, and the copy its boot filled shows it under
 // parent, an issue in Legion's work. R18's notice is told through

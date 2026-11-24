@@ -60,6 +60,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 			newSessionsImportCommand(stdout, own),
 		),
 		newProbeBootCommand(stdout, own),
+		newMembersBackCommand(stdout, own),
 		group(&cobra.Command{Use: "controller", Short: "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 			newControllerStartCommand(own, stderr),
 		),

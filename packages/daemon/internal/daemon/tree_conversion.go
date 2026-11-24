@@ -32,8 +32,8 @@ import (
 // anything decodes a queued row (convertStore, before openUncountedRuns), and before supervision
 // reads the claims: the release before queued its rows with no fence, which step 1 gives them.
 // Then the boot's reconcile reads the listing and fills the copy of Dispatch's issues in a
-// transaction of its own, runs the steps that read the listing or the copy (8 to 10) and the record
-// (11), and only then the first admission pass (convertListed). A boot whose conversion is finished
+// transaction of its own, runs the steps that read the listing or the copy (8 to 11) and the record
+// (12), and only then the first admission pass (convertListed). A boot whose conversion is finished
 // runs the reconcile's one transaction, as every later boot does.
 const (
 	// convertFences stamps the fence of each row the release before queued without one
@@ -58,6 +58,9 @@ const (
 	// convertClaimGates marks each claim whose issue holds its own gate as holding it
 	// (markClaimsOfGateHolders).
 	convertClaimGates
+	// convertMembersBack brings back each member that its root's departure suspended under the
+	// release before (bringMembersBack).
+	convertMembersBack
 	// convertHandOvers finishes each hand-over whose write landed and cancels the rest
 	// (convertHandOvers).
 	convertHandOvers
@@ -111,10 +114,11 @@ func (w *workflowRuntime) storeConversionSteps() []conversionStep {
 	}
 }
 
-// listedConversionSteps are the steps that read the listing and the copy it filled, 8 to 10, and
-// the record, 11, in order. listing is the boot's listing of the project, by key.
+// listedConversionSteps are the steps that read the listing and the copy it filled, 8 to 11, and
+// the record, 12, in order. listing is the boot's listing of the project, by key.
 func (w *workflowRuntime) listedConversionSteps(listing map[string]dispatch.IssueSummary) []conversionStep {
 	return []conversionStep{
+		{convertMembersBack, "bring back each member its root's departure suspended", w.bringMembersBack},
 		{convertHandOvers, "finish or cancel each hand-over", func(ctx context.Context, tx pgx.Tx) error {
 			return w.convertHandOvers(ctx, tx, listing)
 		}},
@@ -170,7 +174,7 @@ func (w *workflowRuntime) convertStore(ctx context.Context) error {
 
 // convertListed is the boot's reconcile of a project whose conversion is not finished: the copy of
 // Dispatch's issues is filled from issues, the boot's listing, in a transaction of its own; the
-// steps that read the listing or the copy and the record run (8 to 11) where the record does not
+// steps that read the listing or the copy and the record run (8 to 12) where the record does not
 // hold them yet; and then the first admission pass, in a transaction of its own. A retry of the
 // reconcile reads the record again, so it runs no step twice. It answers the keys that pass
 // refused (admitListing).
@@ -257,7 +261,7 @@ func (w *workflowRuntime) runConversionStep(ctx context.Context, step conversion
 // (record.ReserveIssuesOfTreeCleanups), and what finishes each is queued
 // (queueReservedCleanups). An issue whose hand-over the release before would still apply once its
 // write landed (handOverStands) is left out, with its lifecycle opened: whether it carries on as a
-// root of its own is step 8's, which reads the listing, and that step reserves it where it does
+// root of its own is step 9's, which reads the listing, and that step reserves it where it does
 // not (convertHandOvers). A reservation would hold such an issue's start and every launch of its
 // claims until a cleanup that its next run fences out confirms, which none ever does.
 func (w *workflowRuntime) reserveIssuesOfTreeCleanups(ctx context.Context, tx pgx.Tx) error {
@@ -292,7 +296,7 @@ func (w *workflowRuntime) reserveIssuesOfTreeCleanups(ctx context.Context, tx pg
 
 // queueReservedCleanups queues what finishes each reservation the conversion made of an issue a
 // tree cleanup of the release before covered. That release finished such a cleanup through its
-// tree's close rows, which step 9 deletes, so for each issue the workflow reserved and records,
+// tree's close rows, which step 10 deletes, so for each issue the workflow reserved and records,
 // each claim of it that has not retired is closed (an issue_close row, which retires it with its
 // session kept, as the tree's close did) and its own cleanup is queued (an issue_suspend row, whose
 // executor finishes a reserved cleanup once every claim of the issue has retired: it deletes the
@@ -375,7 +379,7 @@ func (w *workflowRuntime) liveRoles(ctx context.Context, tx pgx.Tx, key string) 
 // It reads only the store because supervision reads every claim before the boot's reconcile runs
 // the steps that read the listing (openSupervision), and builds its machines from that reading: a
 // claim a later step marked would be built unmarked, and its first write would store it unmarked
-// again. So no claim of a root a landed hand-over makes, which step 8 marks as holding its own
+// again. So no claim of a root a landed hand-over makes, which step 9 marks as holding its own
 // gate, is marked here: its architect's claim is made by the start the first admission pass
 // queues for it (workflow.Engine.StartArchitect, from admit's promotion of a queued root), which
 // reads the gate on the Dispatch chain and writes the mark (the outbox's start, launchOf), and
@@ -386,7 +390,129 @@ func (w *workflowRuntime) markClaimsOfGateHolders(ctx context.Context, tx pgx.Tx
 	return err
 }
 
-// convertHandOvers is step 8: the listing's reading of each hand-over's issue decides it. Where
+// bringMembersBack is step 8 (item 46 of dispatch://INFRA-4730; R20 and R21 of
+// dispatch://INFRA-3320). Each member that its root's departure left suspended under the release
+// before (record.ReadMembersBack) comes back into Legion's work as a return brings back an issue a
+// stop left in its phase (workflow.Engine.ReturnToWork): it resumes the phase it stands in at a new
+// phase entry, with its generation and its sessions, and every other claim of it that has run
+// comes back too. No event brings the member back, so the return reads Dispatch as the record last
+// read it (recordedReading). Its start then goes through the children-first judgement (R9): where
+// an open Dispatch child holds the start of its phase, it waits in awaiting_children instead, and
+// the start its worker was owed is finished undelivered (holdForOpenChildren).
+//
+// The step runs before the hand-overs (step 9), so it reads the store as the release before left
+// it, as `legion members-back` reads it before the upgrade (ListMembersBack): the members it brings
+// back are the members that listing prints. It logs one line for each member and one count.
+func (w *workflowRuntime) bringMembersBack(ctx context.Context, tx pgx.Tx) error {
+	members, err := record.ReadMembersBack(ctx, tx, w.dispatchProject)
+	if err != nil {
+		return err
+	}
+	for _, member := range members {
+		issue, err := w.records.Issue(ctx, tx, member.Key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return fmt.Errorf("bring back %s: the daemon records no such issue", member.Key)
+		}
+		if err := w.engine.ReturnToWork(ctx, tx, *issue, recordedReading(*issue)); err != nil {
+			return fmt.Errorf("bring back %s: %w", member.Key, err)
+		}
+		waits, err := w.holdForOpenChildren(ctx, tx, member.Key)
+		if err != nil {
+			return fmt.Errorf("bring back %s: %w", member.Key, err)
+		}
+		store.OnCommit(ctx, func() {
+			w.log.Info("the first boot's conversion brought back a member its root's departure suspended", "project", w.dispatchProject,
+				"issue", member.Key, "phase", member.Phase, "root", member.Root, "left", member.Left, "awaitingChildren", waits)
+		})
+	}
+	w.logConverted(ctx, "members brought back", int64(len(members)))
+	return nil
+}
+
+// recordedReading is issue's own record of Dispatch as an observation of it: the reading that a
+// return is handed where no event brings the issue back (bringMembersBack). It holds the status
+// that Dispatch last showed where that is a status in work, else the status the record holds, and
+// the sequence the record last read, so it moves no fence.
+func recordedReading(issue record.Issue) intake.DispatchIssue {
+	status := issue.DispatchStatus
+	if !record.InWorkStatus(status) {
+		status = issue.Status
+	}
+	parent := ""
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
+	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
+		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
+}
+
+// holdForOpenChildren moves key, a member that the conversion has just brought back, into
+// awaiting_children in place of the start of its phase, where an open Dispatch child of key holds
+// that start (R9 of dispatch://INFRA-3320). This is the move that the admission pass makes of a
+// started parent whose start is written and not delivered (workflow.Engine.StopForChildren), over
+// the same judgement of its open children (record.OpenChildWaits): every start that the return
+// owes its worker is finished undelivered. The admission pass makes no such move while the
+// member's gate root waits in the line for its first start, as a returned root does, so the step
+// makes it itself. It says whether it moved key.
+func (w *workflowRuntime) holdForOpenChildren(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	back, err := w.records.Issue(ctx, tx, key)
+	if err != nil || back == nil || !record.OpenChildHolds(back.Phase) {
+		return false, err
+	}
+	waits, err := record.OpenChildWaits(ctx, tx, w.records, w.dispatchProject, []record.Issue{*back})
+	if err != nil {
+		return false, err
+	}
+	wait, open := waits[key]
+	if !open {
+		return false, nil
+	}
+	starts, err := w.records.OwedStarts(ctx, tx, w.dispatchProject)
+	if err != nil {
+		return false, err
+	}
+	var owed []record.OwedStart
+	for _, start := range starts {
+		if start.Issue == key {
+			owed = append(owed, start)
+		}
+	}
+	return w.engine.StopForChildren(ctx, tx, *back, wait.Open, owed)
+}
+
+// MembersBackListing is what `legion members-back` prints of a project (ListMembersBack): each
+// member that the project's first boot on this release brings back, or nothing where the
+// conversion has brought them back already. BroughtBack says that the conversion's step that
+// brings them back has committed (bringMembersBack), and ConvertedAt is when the whole conversion
+// ended, nil until it has.
+type MembersBackListing struct {
+	Project     string
+	BroughtBack bool
+	ConvertedAt *time.Time
+	Members     []record.MemberBack
+}
+
+// ListMembersBack is the listing of project in tx, a read-only transaction on the store of the
+// release before or of this release: the members that the conversion's step brings back, through
+// the one reading that the step makes (record.ReadMembersBack), or none where the project's record
+// of its conversion holds that step already.
+func ListMembersBack(ctx context.Context, tx pgx.Tx, project string) (MembersBackListing, error) {
+	conversion, err := record.ReadTreeConversionOfAnyRelease(ctx, tx, project)
+	if err != nil {
+		return MembersBackListing{}, err
+	}
+	listing := MembersBackListing{Project: project, BroughtBack: conversion.Step >= convertMembersBack, ConvertedAt: conversion.ConvertedAt}
+	if listing.BroughtBack {
+		return listing, nil
+	}
+	listing.Members, err = record.ReadMembersBack(ctx, tx, project)
+	return listing, err
+}
+
+// convertHandOvers is step 9: the listing's reading of each hand-over's issue decides it. Where
 // the hand-over's write landed — Dispatch shows the issue todo with the label, which is what the
 // release before's own outbox read to apply it, and the release before would still have applied
 // it (handOverStands) — the issue is made the root of its own the release before's
@@ -452,7 +578,7 @@ func (w *workflowRuntime) handOverLanded(ctx context.Context, tx pgx.Tx, issue r
 // handOverStands says whether handover, of issue, is one the release before would still have
 // applied once its write landed: its fence is not cancelled, the issue still stands in the tree it
 // names, and that tree's root still lingers at the generation it names. Only the listing decides
-// such a hand-over (handOverLanded), so step 5 leaves its issue to step 8
+// such a hand-over (handOverLanded), so step 5 leaves its issue to step 9
 // (reserveIssuesOfTreeCleanups).
 func (w *workflowRuntime) handOverStands(ctx context.Context, tx pgx.Tx, issue record.Issue, handover record.ReleaseBeforeHandover) (bool, error) {
 	if handover.Cancelled || issue.Tree != handover.Tree {
@@ -611,7 +737,7 @@ func (w *workflowRuntime) carriedGate(ctx context.Context, tx pgx.Tx, key string
 	return &gate, nil
 }
 
-// tellRootsUnderParents is step 10 (R21 of dispatch://INFRA-3320): each recorded issue the release
+// tellRootsUnderParents is step 11 (R21 of dispatch://INFRA-3320): each recorded issue the release
 // before ran as a root of its own (its stored tree is its own key) whose Dispatch parent, in the
 // copy the boot's listing filled, is in Legion's work is told R18's notice through the path a
 // change of parent takes (workflow.Engine.TellParentAtFirstBoot): the mark of the parent it was

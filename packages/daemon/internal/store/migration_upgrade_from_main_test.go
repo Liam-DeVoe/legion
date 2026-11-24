@@ -542,7 +542,7 @@ const mainsAppliedSequence = 20261121170714
 // keeps the failed one's (migration_20261123212127_test.go). Its database at 9ed30ada122a holds an
 // issue as this branch's daemon writes one, holding its own gate at its seen sequence, and the
 // upgrade keeps both and gives it members_owed at its default, false, a column this release
-// neither reads nor writes.
+// writes nowhere and reads only in its first boot's conversion and in `legion members-back`.
 //
 // Each database is built from the migrations numbered up to its own newest alone, so a migration
 // added after this test still finds the database that release left, and the upgrade applies it

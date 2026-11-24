@@ -14,7 +14,13 @@ body: |-
   ancestry and the hand-over of a lingering tree's children go. This release replaces #5303's
   return of a re-admitted root's members: a root's leave stops only its own claims and its return
   resumes its own phase, so no member waits for its root's re-admission; #5303's
-  `20261123224717_members_owed` stays in the store, and this release neither reads nor writes it.
+  `20261123224717_members_owed` stays in the store, and this release reads it only at its first
+  boot. That first boot brings back each member that its root's departure suspended under the
+  release before and that is still in Legion's work: it starts again in its phase at a new
+  phase entry, or waits in `awaiting_children` for an open Dispatch child. Before the pin moves,
+  run this release's `legion members-back` for each project to list those members, and set any of
+  them to backlog to keep it stopped (`docs/kubernetes.md`, "Rolling back the release that stores
+  no tree").
 time: 2026-11-22T22:26:12Z
 custom:
     Issue: pr4596

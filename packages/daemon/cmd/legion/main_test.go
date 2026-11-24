@@ -924,10 +924,10 @@ func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
 
 // A file given as an argument is refused rather than ignored, by every command that reads only
 // --config: `legion config check broken.yaml` would otherwise check ./legion.yaml and answer
-// Config OK for a file it never read, and start, stop, state and probe-boot would act on the team
-// ./legion.yaml names.
+// Config OK for a file it never read, and start, stop, state, probe-boot and members-back would act
+// on the team or read the store ./legion.yaml names.
 func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
-	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot"} {
+	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot", "members-back"} {
 		t.Run(command, func(t *testing.T) {
 			legionState(t)
 			config, _ := workflowConfig(t, 13370, "")
