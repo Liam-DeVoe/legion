@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -262,8 +263,8 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 	for _, c := range []struct {
 		name, value, slot string
 	}{
-		{"installations", "", requests.SlotGitHubPrefix + "ada"},
-		{"token", githubname.ValueToken, requests.SlotValue},
+		{"installations", "", slot.GitHubPrefix + "ada"},
+		{"token", githubname.ValueToken, slot.Value},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			pr := newProfileRig(t, readProfile(c.value, readOnly, `[{"method": "GET", "pathPrefix": "/repos/"}]`), Options{})
@@ -307,7 +308,7 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/repos/ada/"}]`), Options{})
 	_, released := pr.grant(t)
-	placeholder := placeholderOf(t, released, requests.SlotValue)
+	placeholder := placeholderOf(t, released, slot.Value)
 	client := pr.client(released.ProxyPassword)
 
 	answer, body := pr.get(client, "https://"+boundHost+profileRepository, "Authorization", "Bearer "+placeholder)
@@ -375,7 +376,7 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 	allow := `[{"method": "GET", "pathPrefix": "/repos/"}]`
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, allow), Options{})
 	grantID, released := pr.grant(t)
-	placeholder := placeholderOf(t, released, requests.SlotValue)
+	placeholder := placeholderOf(t, released, slot.Value)
 	client := pr.client(released.ProxyPassword)
 	if answer, body := pr.get(client, "https://"+boundHost+profileRepository, "Authorization", "Bearer "+placeholder); answer.StatusCode != http.StatusOK {
 		t.Fatalf("the first call = %d %s; want 200", answer.StatusCode, body)
@@ -413,7 +414,7 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/ada/proofs.git/"}]`), Options{})
 	_, released := pr.grant(t)
-	placeholder := placeholderOf(t, released, requests.SlotValue)
+	placeholder := placeholderOf(t, released, slot.Value)
 	client := pr.client(released.ProxyPassword)
 
 	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+placeholder))

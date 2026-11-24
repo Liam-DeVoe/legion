@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -327,8 +328,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// A token request carries the grant's placeholder in its form rather than in a header,
 		// so what it is handled for is the federated slot whatever choosePair read of its
 		// headers. The exchange below checks the form itself.
-		chosen.slot = requests.SlotAzureFederated
-	} else if holdsPlaceholder && chosen.slot == requests.SlotAzureFederated {
+		chosen.slot = slot.AzureFederated
+	} else if holdsPlaceholder && chosen.slot == slot.AzureFederated {
 		// The federated token leaves the broker inside an exchange at the token authority and
 		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
 		// application federated with the broker, so the header swap below would hand the host
@@ -922,7 +923,7 @@ type pair struct{ name, slot, kind string }
 // it came from. A name whose value is the one "value" slot says nothing by naming it, so that
 // slot, and none, is "".
 func (p pair) namedSlot() string {
-	if p.slot == requests.SlotValue {
+	if p.slot == slot.Value {
 		return ""
 	}
 	return p.slot

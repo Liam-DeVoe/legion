@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing: the proxy's password is a
@@ -892,13 +893,13 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			alphaName: {Slots: map[string]string{requests.SlotValue: alphaPlaceholder}},
-			betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
+			alphaName: {Slots: map[string]string{slot.Value: alphaPlaceholder}},
+			betaName:  {Slots: map[string]string{slot.Value: betaPlaceholder}},
 		},
 	}
 	r.grants.values[testGrantID] = map[string]requests.AirlockSecret{
-		alphaName: {Slots: map[string]string{requests.SlotValue: alphaValue}},
-		betaName:  {Slots: map[string]string{requests.SlotValue: betaValue}},
+		alphaName: {Slots: map[string]string{slot.Value: alphaValue}},
+		betaName:  {Slots: map[string]string{slot.Value: betaValue}},
 	}
 	client := r.client(alphaPlaceholder)
 
@@ -1154,7 +1155,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	expires := clock.read().Add(time.Hour)
 	r := newRig(t, Options{Now: clock.read})
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: firstToken}, Expires: expires, Type: "google-login"},
+		workerName: {Slots: map[string]string{slot.Value: firstToken}, Expires: expires, Type: "google-login"},
 	})
 	client := r.client(workerPlaceholder)
 	call := func(path string) string {
@@ -1174,7 +1175,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	// the release checks are not run again.
 	clock.set(expires.Add(-6 * time.Minute))
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: secondToken}, Expires: expires.Add(time.Hour), Type: "google-login"},
+		workerName: {Slots: map[string]string{slot.Value: secondToken}, Expires: expires.Add(time.Hour), Type: "google-login"},
 	})
 	if got, want := call("/v1/second"), "Bearer "+firstToken; got != want {
 		t.Fatalf("the service saw Authorization %q six minutes before the expiry; want the held %q", got, want)
@@ -1220,13 +1221,13 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			alphaName: {Slots: map[string]string{requests.SlotValue: alphaPlaceholder}},
-			betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
+			alphaName: {Slots: map[string]string{slot.Value: alphaPlaceholder}},
+			betaName:  {Slots: map[string]string{slot.Value: betaPlaceholder}},
 		},
 	}
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		alphaName: {Slots: map[string]string{requests.SlotValue: "alpha-v1"}},
-		betaName:  {Slots: map[string]string{requests.SlotValue: "beta-v1"}},
+		alphaName: {Slots: map[string]string{slot.Value: "alpha-v1"}},
+		betaName:  {Slots: map[string]string{slot.Value: "beta-v1"}},
 	})
 	client := r.client(alphaPlaceholder)
 	r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+alphaPlaceholder)
@@ -1249,8 +1250,8 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 
 	// The next request reads the grant's values again, and carries what that read answered.
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		alphaName: {Slots: map[string]string{requests.SlotValue: "alpha-v1"}},
-		betaName:  {Slots: map[string]string{requests.SlotValue: "beta-v2"}},
+		alphaName: {Slots: map[string]string{slot.Value: "alpha-v1"}},
+		betaName:  {Slots: map[string]string{slot.Value: "beta-v2"}},
 	})
 	r.get(client, "https://"+boundHost+"/v1/other", "X-Beta", "Token "+betaPlaceholder)
 	if calls := r.grants.valueReads(testGrantID); calls != 2 {
@@ -1325,17 +1326,17 @@ func TestKeepValuesHoldsAValueAcrossAReread(t *testing.T) {
 	r.grants.connections[placeholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			workerName: {Slots: map[string]string{requests.SlotValue: placeholder}},
+			workerName: {Slots: map[string]string{slot.Value: placeholder}},
 		},
 	}
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: "value-v1"}},
+		workerName: {Slots: map[string]string{slot.Value: "value-v1"}},
 	})
 	client := r.client(placeholder)
 	r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+placeholder)
 
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: "value-v2"}},
+		workerName: {Slots: map[string]string{slot.Value: "value-v2"}},
 	})
 	r.proxy.DropName(workerName)
 	r.get(client, "https://"+boundHost+"/v1/other", "Authorization", "Bearer "+placeholder)
@@ -1356,8 +1357,8 @@ func TestKeepValuesHoldsAValueAcrossAReread(t *testing.T) {
 func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testing.T) {
 	const (
 		appName    = "GITHUB_APP_KEY"
-		acmeSlot   = requests.SlotGitHubPrefix + "acme"
-		zedSlot    = requests.SlotGitHubPrefix + "zed"
+		acmeSlot   = slot.GitHubPrefix + "acme"
+		zedSlot    = slot.GitHubPrefix + "zed"
 		acmeHolder = requests.PlaceholderPrefix + "acmeacmeacmeacmeacmeacmeacmeac01"
 		zedHolder  = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed01"
 		acmeToken  = "ghs_the-real-acme-installation-token"
@@ -1549,15 +1550,15 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 		both := requests.AirlockConnection{
 			GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 			Names: map[string]requests.AirlockGrantName{
-				alphaName: {Slots: map[string]string{requests.SlotValue: alphaPlaceholder}},
-				betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
+				alphaName: {Slots: map[string]string{slot.Value: alphaPlaceholder}},
+				betaName:  {Slots: map[string]string{slot.Value: betaPlaceholder}},
 			},
 		}
 		r := newRig(t, Options{Rules: rules})
 		r.grants.setConnection(alphaPlaceholder, both)
 		r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-			alphaName: {Slots: map[string]string{requests.SlotValue: alphaValue}},
-			betaName:  {Slots: map[string]string{requests.SlotValue: betaValue}},
+			alphaName: {Slots: map[string]string{slot.Value: alphaValue}},
+			betaName:  {Slots: map[string]string{slot.Value: betaValue}},
 		})
 		client := r.client(alphaPlaceholder)
 		if answer, body := r.get(client, "https://"+boundHost+"/v1/things", "X-Beta", "Token "+betaPlaceholder); answer.StatusCode != http.StatusOK {
@@ -1568,7 +1569,7 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 		// grant's, so what must change is beta's placeholder and nothing else.
 		withheld := both
 		withheld.Names = map[string]requests.AirlockGrantName{
-			alphaName: {Slots: map[string]string{requests.SlotValue: alphaPlaceholder}},
+			alphaName: {Slots: map[string]string{slot.Value: alphaPlaceholder}},
 		}
 		r.grants.setConnection(alphaPlaceholder, withheld)
 

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -382,7 +383,7 @@ func TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt(t *testing.T) {
 	// for, holding one other name so that the read answers a grant rather than refusing.
 	withheld := testConnection()
 	withheld.Names = map[string]requests.AirlockGrantName{
-		"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: requests.PlaceholderPrefix + "otherotherotherotherotherother01"}},
+		"OTHER_TOKEN": {Slots: map[string]string{slot.Value: requests.PlaceholderPrefix + "otherotherotherotherotherother01"}},
 	}
 	for _, row := range []struct {
 		name   string
