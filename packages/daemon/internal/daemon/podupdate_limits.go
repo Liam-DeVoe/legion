@@ -76,13 +76,24 @@ func (a *podUpdateAllowance) take() {
 // as endedRounds read them once before the walk (podUpdateEnded). The walk decides such an issue
 // from its group as the end leaves it, and the slots are counted over that same group, so a round
 // the sweep has ended holds no slot while its end is on its way to a member's machine.
+//
+// keptReads is each read the walk found due of a pod an earlier round kept (podKeptForWork), which
+// the sweep makes after its walk, as it makes the replacements (readKeptPod): the read waits on
+// the pod as long as a sweep interval.
 type podUpdateSweep struct {
-	slots    podUpdateAllowance
-	budget   podUpdateAllowance
-	inFlight map[string]string
-	ended    map[string]string
-	waiting  []podUpdateHeld
-	inRound  []string
+	slots     podUpdateAllowance
+	budget    podUpdateAllowance
+	inFlight  map[string]string
+	ended     map[string]string
+	waiting   []podUpdateHeld
+	inRound   []string
+	keptReads []keptPodRead
+}
+
+// keptPodRead is a read that may end an earlier round's keep of issue's pod, which the walk found
+// due (podKeptForWork): reasons is the drift the sweep read of the pod, as a round would record it.
+type keptPodRead struct {
+	issue, pod, reasons string
 }
 
 // holds is whether a limit of the project holds this issue's opening back, and records the issue

@@ -5,7 +5,7 @@ package daemon
 // workspace finds, and the issue's architect is told once what the replacement took. A round is one
 // over a drift that breaks the pod where the reasons it recorded open on the mark
 // runtime.BreakingDrift ("[breaks the pod] "), which the runtime puts at the start of the reason of
-// a drift that breaks the pod (runtime.BreaksPod): today a drift of the pod's service account (spec
+// a drift that breaks the pod (runtime.Breaks): today a drift of the pod's service account (spec
 // v23), and the kinds dispatch://INFRA-4754 declares. This test scripts such a reason of the image.
 
 import (

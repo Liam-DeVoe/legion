@@ -312,7 +312,7 @@ type PodUpdateOpen struct {
 // replacement the daemon makes. That keep has two exceptions, and the text names each where it
 // holds (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a pod whose disk is a kept volume
 // that the issue's next pod mounts is replaced whatever the read finds, and the volume keeps the
-// work; and a round over a drift that breaks the pod (runtime.BreaksPod: its recorded reasons open
+// work; and a round over a drift that breaks the pod (runtime.Breaks: its recorded reasons open
 // on runtime.BreakingDrift, today a drift of the pod's service account) replaces the pod whatever
 // the read finds and tells the issue's architect what it took, so its ask promises no keep.
 //
@@ -333,7 +333,7 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, " +
 		"and the work on the disk stays on that volume. Otherwise the daemon deletes the pod and the disk."
 	held := "The daemon holds your next task until your process runs again, or until the round ends with no replacement."
-	if runtime.BreaksPod(reasons) {
+	if runtime.Breaks(reasons) {
 		read = "This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds. " +
 			"Before it replaces the pod, the daemon reads the workspace on the pod's disk and tells the issue's architect what the read found. " +
 			"The daemon deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts."

@@ -2776,7 +2776,7 @@ const WorkspaceKeptNotice NoticeKind = "workspace-kept"
 
 // WorkspaceTakenNotice is the architect's notice that a replacement of its issue's pod took a disk
 // that may hold work no branch or tag on origin holds (R7 of dispatch://INFRA-3271): an update
-// round over a drift that breaks the pod (runtime.BreaksPod), or a launch's own
+// round over a drift that breaks the pod (runtime.Breaks), or a launch's own
 // replacement of an issue pod (runtime.TakenPod), whose read of the workspace before the
 // replacement found such work or could not be made. It names each commit and the working-copy
 // change, or that no read could be made and why, and it is sent once for each replacement. It is

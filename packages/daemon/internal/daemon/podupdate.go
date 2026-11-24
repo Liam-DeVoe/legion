@@ -33,7 +33,7 @@ import (
 // dispatch://INFRA-3271): over a drift the pod's roles can keep working under, a read that finds
 // work that no branch or tag on origin holds, or that cannot be made, keeps the pod, and the round
 // ends with no replacement (roundKeeps, keepPodForRound). What a role has not pushed when a
-// replacement still takes the pod — a round over a drift that breaks the pod (runtime.BreaksPod) —
+// replacement still takes the pod — a round over a drift that breaks the pod (runtime.Breaks) —
 // is lost with the pod, unless the pod's disk is a kept volume that the issue's next pod mounts
 // (roundKeptVolume), and the issue's architect is told what the replacement took. An answer from
 // every role the round asks ends the round early once nothing else holds it (roundEnd.holding,
@@ -174,14 +174,17 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		if ctx.Err() != nil {
 			return
 		}
-		switch {
-		case replace.keptRead:
-			s.readKeptPod(ctx, replace)
-		case replace.by == viaIssue:
+		if replace.by == viaIssue {
 			s.replaceIssuePodForRound(ctx, replace)
-		default:
+		} else {
 			s.replacePodForRound(ctx, replace)
 		}
+	}
+	for _, read := range sweep.keptReads {
+		if ctx.Err() != nil {
+			return
+		}
+		s.readKeptPod(ctx, read)
 	}
 }
 
@@ -480,8 +483,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// while that record stands, unless this drift breaks the pod, and the read that may end
 		// the record is a step after the walk (readKeptPod), without a round (R7 of
 		// dispatch://INFRA-3271).
-		if kept, read := s.podKeptForWork(ctx, issue, group, pod, terms); kept {
-			return read
+		if kept, due := s.podKeptForWork(ctx, issue, group, pod, terms); kept {
+			if due {
+				sweep.keptReads = append(sweep.keptReads, keptPodRead{issue: issue, pod: pod, reasons: terms})
+			}
+			return nil
 		}
 	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
@@ -991,12 +997,6 @@ type podReplacement struct {
 	// value, asks it through a process (replacePodForRound). A launch makes its own replacement
 	// (viaLaunch, endRoundALaunchReplaced), and the sweep hands none on.
 	by roundReplacer
-	// keptRead is a step that replaces nothing: the read that may end an earlier round's keep of
-	// the pod, which the walk found due on its snapshot (podKeptForWork) and leaves for after the
-	// walk (readKeptPod), as it leaves a replacement, since the read waits on the pod as long as a
-	// sweep interval. round is the pod's round, which no claim records, and reasons the drift the
-	// sweep read of the pod; holds and by are unset.
-	keptRead bool
 }
 
 // replacePodForRound makes one replacement the sweep's walk over the issues decided on, after
@@ -1051,7 +1051,7 @@ type podReplacement struct {
 // replacement (roundKeeps): a read that finds nothing lets it go on, and a read that finds work
 // that no branch or tag on origin holds, or that cannot be made, keeps the pod over a drift its
 // roles can keep working under, and the round ends with no replacement (keepPodForRound). A round
-// over a drift that breaks the pod (runtime.BreaksPod), and a pod whose disk is a kept volume that
+// over a drift that breaks the pod (runtime.Breaks), and a pod whose disk is a kept volume that
 // the issue's next pod mounts (roundKeptVolume), are replaced whatever the read found. The read is
 // bounded to one sweep interval, and a read its bound ends is a read that failed. The last word
 // under the pod's launch turn refuses the replacement where a claim of the issue started a turn

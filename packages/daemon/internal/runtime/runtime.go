@@ -190,28 +190,30 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // the drift, at the start of that drift's reason (Breaks), and nowhere else: a value a reason
 // displays, an image name or an account among them, follows the reason's own first words, so it
 // can hold the mark's words without making the drift one that breaks the pod. The Sandbox
-// runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v22:
+// runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
 // a role must not be able to keep a pod on an account the operator replaced by leaving its
 // working copy dirty or its read failing). dispatch://INFRA-4754 declares which other kinds of
 // drift break a pod, and a pod below a declared contract floor breaks too, and it opens an update
 // round over such a pod at once, whatever its spec names as the cause. A round records its
 // reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons), with every
 // marked reason first, so the string opens on the mark exactly where one of its reasons does
-// (BreaksPod). Such a round replaces its pod whatever the read of its workspace finds, and tells
+// (Breaks). Such a round replaces its pod whatever the read of its workspace finds, and tells
 // the issue's architect what it took. Every other round is one the pod's roles can keep working
 // under, and a read that finds work, or that cannot be made, keeps that pod. The leak check
 // digest's drift is not marked: INFRA-4754 declares that it drains, and a kept pod's roles are
 // told the checker they run.
 const BreakingDrift = "[breaks the pod] "
 
-// Breaks is whether reason, one reason PodDrift gave, is of a drift that breaks the pod: it opens
-// on BreakingDrift.
+// Breaks is whether reason is of a drift that breaks the pod: it opens on BreakingDrift. It reads
+// one reason PodDrift gave, and a round's recorded reasons alike (RoundReasons): those open on the
+// mark exactly where one of the round's reasons does, and the mark inside a displayed value
+// further on says nothing.
 func Breaks(reason string) bool { return strings.HasPrefix(reason, BreakingDrift) }
 
 // RoundReasons is the one string an update round records of the reasons PodDrift gave for its pod
 // (supervise.Claim.UpdateReasons): each reason of a drift that breaks the pod (Breaks) first, then
 // every other, each group in the order given, joined with ", ". The string opens on BreakingDrift
-// exactly where a reason does (BreaksPod).
+// exactly where a reason does (Breaks).
 func RoundReasons(reasons []string) string {
 	ordered := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
@@ -226,11 +228,6 @@ func RoundReasons(reasons []string) string {
 	}
 	return strings.Join(ordered, ", ")
 }
-
-// BreaksPod is whether a round whose recorded reasons are reasons (RoundReasons) is over a drift
-// that breaks the pod: its first recorded reason opens on BreakingDrift. The mark inside a
-// displayed value further on says nothing.
-func BreaksPod(reasons string) bool { return Breaks(reasons) }
 
 // TakenPod is what a launch's own replacement of an issue pod takes (R7 of dispatch://INFRA-3271):
 // the claim whose launch makes it, the issue, the pod ("" where the issue's Sandbox runs no pod of
