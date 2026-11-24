@@ -122,16 +122,16 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 	if report.Finished != 1 || report.WorkTime.Issues[0].Key != "INFRA-2" {
 		t.Fatalf("the report counted %d issues (%+v), want the child alone", report.Finished, report.WorkTime.Issues)
 	}
-	// Nine hours from the first worker event to the close, less the two parked ones.
-	if row := report.WorkTime.Issues[0]; row.Hours != 7 || row.ParkedHours != 2 {
-		t.Errorf("the child's work time = %g hours with %g parked, want 7 and 2", row.Hours, row.ParkedHours)
+	// Nine hours from the first worker event to the close, less the two in backlog.
+	if row := report.WorkTime.Issues[0]; row.Hours != 7 || row.BacklogOrIceboxHours != 2 {
+		t.Errorf("the child's work time = %g hours with %g in backlog or icebox, want 7 and 2", row.Hours, row.BacklogOrIceboxHours)
 	}
-	// The turn the daemon recorded runs from hour 1 to hour 3, and the issue was parked from
-	// hour 2, so one of its two hours is off the bar with the rest of the parked time: the bar's
-	// seven hours are the work time's own.
+	// The turn the daemon recorded runs from hour 1 to hour 3, and the issue was in backlog from
+	// hour 2, so one of its two hours is off the bar with the rest of the time in backlog: the
+	// bar's seven hours are the work time's own.
 	bar := barOf(t, report, "implementer")
 	if bar.Segments.InATurn != 1 || bar.Segments.WaitingOnPerson != 1 || bar.Hours != 7 {
-		t.Errorf("the implementer bar = %g hours, %+v, want seven hours with the unparked hour of the turn and the hour of the ask on the person",
+		t.Errorf("the implementer bar = %g hours, %+v, want seven hours with the hour of the turn outside the backlog and the hour of the ask on the person",
 			bar.Hours, bar.Segments)
 	}
 	classed := map[string]string{}
@@ -274,8 +274,9 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 		t.Fatalf("the child's ask turns = %+v, want its own implementer's hour and the grandchild's, and not the other tree's",
 			child.AskTurns)
 	}
-	// The child's seven bar hours: the unparked hour of its turn, the two hours of the asks its
-	// own tree opened, and four idle. The hour of the ask the other tree opened is idle too.
+	// The child's seven bar hours: the hour of its turn outside the backlog, the two hours of the
+	// asks its own tree opened, and four idle. The hour of the ask the other tree opened is idle
+	// too.
 	bar := barOf(t, Compute(population, ScopeAll, after(24)), "implementer")
 	if bar.Hours != 7 || bar.Segments.WaitingOnPerson != 2 || bar.Segments.InATurn != 1 || bar.Segments.Idle != 4 {
 		t.Fatalf("the implementer bar = %g hours, %+v, want seven hours with two waiting on a person", bar.Hours, bar.Segments)

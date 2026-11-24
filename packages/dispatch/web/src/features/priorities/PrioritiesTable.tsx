@@ -16,6 +16,7 @@ import {
   matchesPrioritySearch,
   PRIORITY_COLUMNS,
   PRIORITY_COLUMNS_BY_ID,
+  PRIORITY_FORMER_IDS,
   PRIORITY_LAYOUT,
   PRIORITY_SORTING,
   type PriorityItem,
@@ -30,8 +31,10 @@ import { usePriorityWrites } from "./priority-writes";
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** What a row of this table is, which its pager and its group headings count in. */
 const NOUN: RowNoun = { many: "priorities", one: "priority" };
-/** The layout key of the priorities table: one table, one deployment, one stored layout. */
+/** The layout key of the priorities table: one table, one deployment, one stored layout. Its
+ *  backlog column was stored under an older id, which moves once (`PRIORITY_FORMER_IDS`). */
 const LAYOUT_KEY = "priorities";
+const FORMER_LAYOUT = { ids: PRIORITY_FORMER_IDS };
 /** The address prefix of this table's own view, so the two fault lists keep their own. */
 const VIEW_PREFIX = "p";
 /** The address prefix of the work under an opened row, which is the issues table's own view. */
@@ -53,8 +56,8 @@ export function PrioritiesTable({
   titles: ReadonlyMap<string, string>;
 }): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
-  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING, PRIORITY_FORMER_IDS);
+  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT, FORMER_LAYOUT);
   const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();

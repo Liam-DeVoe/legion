@@ -166,7 +166,7 @@ board() {
       first=0
       printf '%s' "$row"
     done
-    printf '],"work_under_no_priority":{"count":0},"priority_work_parked":{"count":0}}'
+    printf '],"work_under_no_priority":{"count":0},"priority_work_in_backlog_or_icebox":{"count":0}}'
   } >"${state}/priorities.json"
 }
 

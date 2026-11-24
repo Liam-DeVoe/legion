@@ -664,11 +664,11 @@ func (s *server) supersededApprovalAdvice(
 // that hold a READY back and no others. Two things decide that.
 //
 // The issue must be in the workflow, which is every status but the four that take it out
-// (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
-// refuse no READY, and an issue still in `triage` runs nothing either. Nothing clears a parked
-// issue's gate rows - the daemon suspends its claims and deletes none, and its boot republishes
-// them for as long as it stays parked - so the rows outlive the tree that ran, and only the
-// re-admission that brings it back clears them.
+// (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree moved to `backlog` or `icebox`,
+// refuse no READY, and an issue still in `triage` runs nothing either. Nothing clears the gate
+// rows of an issue in backlog or icebox - the daemon suspends its claims and deletes none, and
+// its boot republishes them for as long as it stays there - so the rows outlive the tree that
+// ran, and only the re-admission that brings it back clears them.
 //
 // The row must hold its tree, and the daemon that published it says whether it does
 // (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's

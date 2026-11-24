@@ -28,7 +28,7 @@ export interface ReviewSeed {
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
   /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
-   *  carries work in flight under it and work parked under it, so both pages draw rows rather
+   *  carries work in flight under it and work in backlog under it, so both pages draw rows rather
    *  than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
@@ -324,7 +324,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // priorities`, and both fault headings stand over their tables while each fault list's own
     // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
     // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
+    // that advances none, and the issue in backlog that advances one - and together they say the
     // priorities table and both fault lists have their rows rather than their empty words. Each
     // fault list is the Issues table, named by the label the page passes it with " table"
     // after it (`features/project/IssuesTable.tsx`). The three issues are

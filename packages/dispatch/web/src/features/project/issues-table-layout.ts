@@ -10,7 +10,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { readLayout, type StoredColumns, writeLayout } from "./issues-table-storage";
+import {
+  moveTableStore,
+  readLayout,
+  renameStoredColumns,
+  type StoredColumns,
+  writeLayout,
+} from "./issues-table-storage";
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
  *  box it is drawn in. */
@@ -65,6 +71,16 @@ export interface TableLayoutModel {
   readonly visibility: VisibilityState;
 }
 
+/** The names a table's layout was stored under before it took the ones it has now: an older
+ *  storage key, and older ids of its columns, each with the id the column has now. A reader's
+ *  layout under either moves to the new names once, before the table first reads it. */
+export interface FormerLayout {
+  readonly key?: string;
+  readonly ids?: ReadonlyMap<string, string>;
+}
+
+const NO_FORMER_LAYOUT: FormerLayout = {};
+
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
  * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` for
@@ -77,9 +93,23 @@ export interface TableLayoutModel {
  * changing its width — and a window resize, which the observer cannot see because the box's own
  * height is what this sets. A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
+ *
+ * A layout stored under the names in `former` moves to `layoutKey` and the columns' ids in the
+ * same memo as the first read, so the mount effect's first write, which writes the whole layout,
+ * writes it under the new names rather than dropping it (`moveTableStore`,
+ * `renameStoredColumns`).
  */
-export function useTableLayout(layoutKey: string, columns: LayoutColumns): TableLayoutModel {
-  const saved = useMemo(() => readLayout(layoutKey, columns), [layoutKey, columns]);
+export function useTableLayout(
+  layoutKey: string,
+  columns: LayoutColumns,
+  former: FormerLayout = NO_FORMER_LAYOUT
+): TableLayoutModel {
+  const { key: formerKey, ids: formerIds } = former;
+  const saved = useMemo(() => {
+    if (formerKey !== undefined) moveTableStore(formerKey, layoutKey);
+    if (formerIds !== undefined) renameStoredColumns(layoutKey, formerIds);
+    return readLayout(layoutKey, columns);
+  }, [layoutKey, columns, formerKey, formerIds]);
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);

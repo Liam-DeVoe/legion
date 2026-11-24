@@ -30,7 +30,7 @@ const PRIORITIES_PATH = "/priorities";
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
  *  " table" after it. */
 const NO_PRIORITY_TABLE = "Issues in flight under no priority table";
-const PARKED_TABLE = "Priority issues in backlog or icebox table";
+const BACKLOG_TABLE = "Priority issues in backlog or icebox table";
 
 /** What the server says of a deployment with no live priority, in its own words
  *  (`priorityNoneWritten`, `internal/dispatch/api/priority_queries.go`): the empty page draws the
@@ -43,7 +43,7 @@ const NONE_LIVE =
  *  quietly changing what a reader is told a list means. */
 const NO_PRIORITY_RULE =
   "Work in progress, testing, review or retro that advances no priority, its own or one it inherits.";
-const PARKED_RULE =
+const BACKLOG_RULE =
   "Work that advances a priority and stands in the backlog or the icebox, with the time it was " +
   "moved there and whoever moved it. No reason is recorded for a move yet.";
 
@@ -109,7 +109,8 @@ async function seedPriorities(): Promise<Seeded> {
   const ledger = await createIssue({ project: "WEB", title: "Ledger read path" });
   const cutover = await createIssue({ project: "WEB", title: "Ledger cut-over" });
   // The child states nothing of its own: it advances `P3` because the issue above it does
-  // (INFRA-2947, R4), which is what the parked list's row and the rail's second count read.
+  // (INFRA-2947, R4), which is what the row of the list in backlog or icebox and the rail's
+  // second count read.
   const child = await createIssue({
     parent: cutover.key,
     project: "WEB",
@@ -262,26 +263,27 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(firstRow.getByRole("cell").nth(4)).toHaveText("1");
 
     // The agreed picture (dispatch://INFRA-2947/artifact/priorities-round10-png): the
-    // priorities, then the work in flight under none, then the priority work parked.
+    // priorities, then the work in flight under none, then the priority work in backlog or
+    // icebox.
     const unplaced = section(page, "In flight under no priority");
-    const parked = section(page, "Priority work in backlog or icebox");
-    const tops = await Promise.all([topOf(priorities), topOf(unplaced), topOf(parked)]);
+    const backlog = section(page, "Priority work in backlog or icebox");
+    const tops = await Promise.all([topOf(priorities), topOf(unplaced), topOf(backlog)]);
     expect(tops[0]).toBeLessThan(tops[1]);
     expect(tops[1]).toBeLessThan(tops[2]);
 
     // Each fault says what it is and how big it is, and neither is a judgement.
     await expect(unplaced.getByText(NO_PRIORITY_RULE)).toBeVisible();
     await expect(unplaced.getByText(/^4 issues · CORE 2 · OPS 1 · WEB 1$/)).toBeVisible();
-    await expect(parked.getByText(PARKED_RULE)).toBeVisible();
-    await expect(parked.getByText(/^1 issue · /)).toBeVisible();
+    await expect(backlog.getByText(BACKLOG_RULE)).toBeVisible();
+    await expect(backlog.getByText(/^1 issue · /)).toBeVisible();
 
     // Each fault list is the application's one Issues table over its own issue listing, which
     // is a read of its own beside the priorities read: its rows are waited for, not assumed
     // there once the count line above them is.
     const unplacedTable = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
-    const parkedTable = page.getByRole("table", { exact: true, name: PARKED_TABLE });
+    const backlogTable = page.getByRole("table", { exact: true, name: BACKLOG_TABLE });
     await expect(unplaced.getByRole("table")).toHaveAccessibleName(NO_PRIORITY_TABLE);
-    await expect(parked.getByRole("table")).toHaveAccessibleName(PARKED_TABLE);
+    await expect(backlog.getByRole("table")).toHaveAccessibleName(BACKLOG_TABLE);
 
     // The first fault's rows: one issue in each of the four in-flight statuses, and nothing
     // that advances a priority.
@@ -311,7 +313,8 @@ test("the priorities page draws the order first and the two fault lists under it
     // When it last changed, which the fault lists show by default and a project's table does
     // not (`PrioritiesPage.tsx`'s two layouts).
     await expect((await clockCell("Updated")).locator("time")).toHaveCount(1);
-    // Nor does it have the parked list's Reason column: this list asks for no move.
+    // Nor does it have the Reason column of the list in backlog or icebox: this list asks for no
+    // move.
     expect(
       (await unplacedTable.getByRole("columnheader").allTextContents()).some((text) =>
         text.trim().startsWith("Reason")
@@ -320,12 +323,12 @@ test("the priorities page draws the order first and the two fault lists under it
 
     // The second fault's one row is the child, which advances P3 through the issue above it,
     // and it names the priority it advances and when it was moved out of the way.
-    await expectRowOrder(parkedTable, [`${seed.child} Ledger client migration`]);
-    const childRow = parkedTable.getByRole("row", {
+    await expectRowOrder(backlogTable, [`${seed.child} Ledger client migration`]);
+    const childRow = backlogTable.getByRole("row", {
       exact: true,
       name: `${seed.child} Ledger client migration`,
     });
-    const childCell = (header: string) => cellUnder(parkedTable, childRow, header);
+    const childCell = (header: string) => cellUnder(backlogTable, childRow, header);
     await expect((await childCell("Key")).getByRole("link")).toHaveText(seed.child);
     await expect(await childCell("Project")).toHaveText("WEB");
     await expect(await childCell("Status")).toHaveText("Backlog");
@@ -492,7 +495,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
         .getByRole("table", { exact: true, name: NO_PRIORITY_TABLE })
         .locator("tr[data-issue-row]")
     ).toHaveCount(4);
-    await expectRowOrder(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+    await expectRowOrder(page.getByRole("table", { exact: true, name: BACKLOG_TABLE }), [
       `${seed.child} Ledger client migration`,
     ]);
     const future = await page
@@ -532,14 +535,14 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     await expect(entry).toBeVisible();
     await expect(entry.locator("span").last()).toHaveText("5");
 
-    // Four in flight under no priority plus one parked. An issue that leaves `in_progress` is
+    // Four in flight under no priority plus one in backlog. An issue that leaves `in_progress` is
     // no longer in flight, so the first fault loses it - with no reload: the event that moved
     // it refreshes the two counts (`web/src/api/event-refresh.ts`).
     await patchIssue(seed.clock, { status: "done" });
     await expect(entry.locator("span").last()).toHaveText("4");
 
     // And the child advances P3 only through the issue above it, so moving that link out
-    // leaves it parked under nothing, which is no fault at all.
+    // leaves it in backlog under nothing, which is no fault at all.
     await patchIssue(seed.child, { parent: null });
     await expect(entry.locator("span").last()).toHaveText("3");
 
@@ -561,7 +564,7 @@ test("another person's rename and delete of a priority redraw an open page with 
 }) => {
   const seed = await seedPriorities();
   // P3's one issue in flight leaves flight first, so the delete below moves no issue into the
-  // first fault list, and what the rail counts can only fall by the work parked under P3.
+  // first fault list, and what the rail counts can only fall by the work in backlog under P3.
   await patchIssue(seed.ledger, { status: "todo" });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -575,8 +578,8 @@ test("another person's rename and delete of a priority redraw an open page with 
       document.documentElement.dataset.heldOpen = "yes";
     });
     const priorities = section(reader, "Priorities");
-    const parkedTable = reader.getByRole("table", { exact: true, name: PARKED_TABLE });
-    const childRow = parkedTable.getByRole("row", {
+    const backlogTable = reader.getByRole("table", { exact: true, name: BACKLOG_TABLE });
+    const childRow = backlogTable.getByRole("row", {
       exact: true,
       name: `${seed.child} Ledger client migration`,
     });
@@ -587,11 +590,12 @@ test("another person's rename and delete of a priority redraw an open page with 
       `P3 ${seed.titles[2]}`,
     ]);
     await expect(childRow).toBeVisible();
-    // Four in flight under no priority plus the one parked.
+    // Four in flight under no priority plus the one in backlog.
     await expect(badge).toHaveText("5");
 
     // Reader B: bob renames P3 on his own page. Alice's row takes the new title, and so does
-    // the parked work's Advances cell, which names a priority by the title a person wrote.
+    // the Advances cell of the work in backlog, which names a priority by the title a person
+    // wrote.
     const renamed = "Retire the old ledger for good";
     const writer = await bob.newPage();
     await writer.goto(PRIORITIES_PATH);
@@ -602,16 +606,16 @@ test("another person's rename and delete of a priority redraw an open page with 
       `P2 ${seed.titles[1]}`,
       `P3 ${renamed}`,
     ]);
-    await expect((await cellUnder(parkedTable, childRow, "Advances")).getByRole("link")).toHaveText(
-      renamed
-    );
+    await expect(
+      (await cellUnder(backlogTable, childRow, "Advances")).getByRole("link")
+    ).toHaveText(renamed);
 
     // Then bob retires P3, over the API, since neither page offers a delete. The child advanced
-    // only P3, through its parent, so it is no fault at all now: it leaves the parked list, and
-    // the rail's count falls by it.
+    // only P3, through its parent, so it is no fault at all now: it leaves the list in backlog or
+    // icebox, and the rail's count falls by it.
     await endPriority(seed.ids[2], { login: "bob" });
     await expectRowOrder(priorities, [`P1 ${seed.titles[0]}`, `P2 ${seed.titles[1]}`]);
-    await expectRowNames(parkedTable, []);
+    await expectRowNames(backlogTable, []);
     await expect(
       section(reader, "Priority work in backlog or icebox").getByText(/^0 issues$/)
     ).toBeVisible();
@@ -942,7 +946,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
 });
 
 // SLOW(>=2s): the seed and two pages read for what they do not draw.
-test("a priority's page offers no versions and no delete, and the parked rule says no reason is recorded", async ({
+test("a priority's page offers no versions and no delete, and the backlog-or-icebox rule says no reason is recorded", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
@@ -962,11 +966,11 @@ test("a priority's page offers no versions and no delete, and the parked rule sa
     await expect(main.getByRole("button", { name: /delete/i })).toHaveCount(0);
     await expect(main.getByRole("link", { name: /delete/i })).toHaveCount(0);
 
-    // And the second fault's rule says the one thing it cannot say about a parked issue: why it
-    // was moved. Nothing records a reason until dispatch://INFRA-2934 does.
+    // And the second fault's rule says the one thing it cannot say about an issue in backlog:
+    // why it was moved. Nothing records a reason until dispatch://INFRA-2934 does.
     await page.goto(PRIORITIES_PATH);
-    const parked = section(page, "Priority work in backlog or icebox");
-    await expect(parked.getByText(PARKED_RULE)).toBeVisible();
+    const backlog = section(page, "Priority work in backlog or icebox");
+    await expect(backlog.getByText(BACKLOG_RULE)).toBeVisible();
   } finally {
     await context.close();
   }

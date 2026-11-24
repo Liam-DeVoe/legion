@@ -150,7 +150,7 @@ export function PriorityPage(): ReactNode {
             <p>Order {item.order}, dragged on the priorities page</p>
             <p>
               In flight {item.inFlight} · waiting {item.waiting} · in backlog or icebox{" "}
-              {item.parked}
+              {item.backlog}
             </p>
           </div>
         </header>

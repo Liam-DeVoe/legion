@@ -1698,7 +1698,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_ask",
-      "Never create an issue to park a question: the question is an ask on the issue it concerns.",
+      "Never create an issue to hold a question: the question is an ask on the issue it concerns.",
     ],
     [
       "dispatch_doc_edit",

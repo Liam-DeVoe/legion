@@ -394,22 +394,22 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 	})
 
-	t.Run("a gate on an issue parked out of the workflow names none", func(t *testing.T) {
-		// Nothing clears a parked issue's gate rows: the daemon suspends its claims and deletes
-		// none, its boot republishes them for as long as it stays parked, and only the
-		// re-admission that brings the tree back clears them. Every status that takes an issue
-		// out of the workflow reads the same way here, done among them.
+	t.Run("a gate on an issue out of the workflow names none", func(t *testing.T) {
+		// Nothing clears the gate rows of an issue out of the workflow: the daemon suspends its
+		// claims and deletes none, its boot republishes them for as long as it stays there, and
+		// only the re-admission that brings the tree back clears them. Every status that takes an
+		// issue out of the workflow reads the same way here, done among them.
 		for _, status := range model.IssueStatusesOutOfWorkflow {
 			t.Run(status, func(t *testing.T) {
 				live := createWorkingIssue(t, handler, "DGATE", "The gate still open", &spec)
-				parked := createWorkingIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
+				outOfWorkflow := createWorkingIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
 				publishDesignGates(t, handler, live.Key, []issueDesignGate{
 					{Step: model.GatedStepSpec, ArtifactID: live.PrimaryArtifactID},
 				})
-				publishDesignGates(t, handler, parked.Key, []issueDesignGate{
+				publishDesignGates(t, handler, outOfWorkflow.Key, []issueDesignGate{
 					{Step: model.GatedStepCriteria, ArtifactID: live.PrimaryArtifactID},
 				})
-				setIssueStatus(t, handler, parked.Key, status)
+				setIssueStatus(t, handler, outOfWorkflow.Key, status)
 				approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
 
 				superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence only the open gate waits on.", approved)

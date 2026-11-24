@@ -307,16 +307,16 @@ func issueSummaryColumns(advances string) string {
 
 // issueMovedColumns are the two cells `?moved=true` answers on a listing row, in
 // issueSummaryRow's order: when the issue was moved into `backlog` or `icebox` and who moved it
-// (parkedMoveLateral). Both are null on every row of a request that did not ask for them, and on
+// (backlogMoveLateral). Both are null on every row of a request that did not ask for them, and on
 // a row the read finds no move for.
 const issueMovedColumns = `moved.created_at, moved.actor`
 
 // issueMovedJoin is that read for the issue aliased `i`, gated on the request asking for it ($14)
 // and on the issue standing in one of the two statuses now. A row the gate is false for reads no
 // event, so a listing without the key pays nothing for the read and one with it pays for its
-// parked rows alone. An issue standing in any other status answers null although it may once
-// have been moved there, since the cells say how the issue came to stand where it stands.
-var issueMovedJoin = parkedMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityParkedStatuses)+`)`)
+// rows in backlog or icebox alone. An issue standing in any other status answers null although it
+// may once have been moved there, since the cells say how the issue came to stand where it stands.
+var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
 
 // issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time, and the

@@ -4761,7 +4761,7 @@ Each item below names a path with its method and identity, then its purpose.
   several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
   A blank `advances` is `400 INVALID_ADVANCES`.
   `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
-  `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
+  `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the fault `priority_work_in_backlog_or_icebox` of `GET /api/v1/priorities` reads them;
   a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;

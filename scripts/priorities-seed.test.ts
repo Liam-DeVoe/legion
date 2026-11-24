@@ -46,7 +46,7 @@ const TABLE = [
   "| 1 | Legion works reliably first | INFRA controller | TEST-1 is implementing |",
   "| 2 | Uninstall the old tracker | CHIEF | DONE: TEST-9 removed it from mise |",
   "| 3 | Ship the gateway | OSSV controller | TEST-2 finished it |",
-  "| 4 | Nothing a person asked for is parked | INFRA controller (enforcement), BET controller " +
+  "| 4 | Nothing a person asked for waits in backlog or icebox | INFRA controller (enforcement), BET controller " +
     "(its own list) | TEST-3 sits in icebox |",
   "| 5 | Hourly self-check against this list | CHIEF | nothing to point at yet |",
   "| 6 | One cross-project view of priorities | INFRA fan | TEST-4, and the spec at " +
@@ -232,7 +232,7 @@ test("writes one priority for each row but the DONE one, in the table's order", 
   expect(priorities.map((priority) => priority.title)).toEqual([
     "Legion works reliably first",
     "Ship the gateway",
-    "Nothing a person asked for is parked",
+    "Nothing a person asked for waits in backlog or icebox",
     "Hourly self-check against this list",
     "One cross-project view of priorities",
     "Chase the applications",
@@ -255,7 +255,7 @@ test("relates every key that is not done, the icebox one included", async () => 
   await seedPriorities(config, DOCUMENT);
 
   expect(advanced("TEST-1")).toEqual(["legion-works-reliably-first"]);
-  expect(advanced("TEST-3")).toEqual(["nothing-a-person-asked-for-is-parked"]);
+  expect(advanced("TEST-3")).toEqual(["nothing-a-person-asked-for-waits-in-backlog-or-icebox"]);
   expect(advanced("TEST-4")).toEqual(["one-cross-project-view-of-priorities"]);
   // A key inside a `dispatch://` reference is a key the row names.
   expect(advanced("TEST-5")).toEqual(["one-cross-project-view-of-priorities"]);

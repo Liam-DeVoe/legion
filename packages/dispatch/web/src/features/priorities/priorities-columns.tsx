@@ -143,9 +143,9 @@ export function usePriorityColumns(actions: PriorityRowActions): ColumnDef<Prior
             accessorFn: (item) => item.waiting,
             cell: ({ row }) => countCell(row.original.waiting),
           },
-          parked: {
-            accessorFn: (item) => item.parked,
-            cell: ({ row }) => countCell(row.original.parked),
+          backlog: {
+            accessorFn: (item) => item.backlog,
+            cell: ({ row }) => countCell(row.original.backlog),
           },
           closed: {
             accessorFn: (item) => item.closed,

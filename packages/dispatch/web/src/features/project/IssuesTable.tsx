@@ -67,8 +67,13 @@ export function IssuesTable({
   label?: string;
   /** The layout this table keeps, under its own key, where it is not its listing's, and the
    *  columns it opens with shown: each fault list of the priorities page shows its listing
-   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). `formerKey` is
+   *  the key the layout was kept under before, which it moves from once (`useTableLayout`). */
+  layout?: {
+    readonly key: string;
+    readonly formerKey?: string;
+    readonly shown: readonly ShownColumnId[];
+  };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
@@ -99,7 +104,8 @@ export function IssuesTable({
   // for the priorities page and the priority's own page alike, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
-    columnsLayout
+    columnsLayout,
+    { key: ownLayout?.formerKey }
   );
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();

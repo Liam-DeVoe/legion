@@ -1115,11 +1115,11 @@ export function ConversationTab({
     return reply.id === target.id;
   };
   // The thread composer shows in the thread its reply answers, unless the reader's Cancel reply
-  // put it away there (`parked`).
+  // put it away there (`putAway`).
   const phoneReplyTargetsThread =
     phoneThread !== undefined &&
     phone.replyTo?.id === phoneThread.root.id &&
-    phone.parked === undefined;
+    phone.putAway === undefined;
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
   // Reply. Once the list no longer holds the comment, no Reply brings it back, so the docked
@@ -1127,18 +1127,18 @@ export function ConversationTab({
   // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
   // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
   // write over it.
-  let parkedNotice: ReactNode;
-  if (phone.parked !== undefined && phone.replyTo !== null) {
-    parkedNotice = listed.has(phone.replyTo.id) ? (
+  let putAwayNotice: ReactNode;
+  if (phone.putAway !== undefined && phone.replyTo !== null) {
+    putAwayNotice = listed.has(phone.replyTo.id) ? (
       <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
         <KeptReply actor={phone.replyTo.actor} />
       </p>
     ) : (
       <DraftOffer
-        body={phone.parked.body}
-        drop={{ label: "Discard my draft", press: phone.dropParked }}
+        body={phone.putAway.body}
+        drop={{ label: "Discard my draft", press: phone.dropPutAway }}
         lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
-        replacement={phone.parked.replacement}
+        replacement={phone.putAway.replacement}
       />
     );
   }
@@ -1306,7 +1306,7 @@ export function ConversationTab({
           intake={phone.dockedIntake}
           listed={listed}
           mutationKey={sendKey}
-          notice={parkedNotice}
+          notice={putAwayNotice}
           onCancelReply={() => setReplyTo(null)}
           onClose={() => setReplyTo(null)}
           onSent={() => {

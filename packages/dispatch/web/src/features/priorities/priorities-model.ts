@@ -6,12 +6,12 @@ import { columnsById, type TableColumn, tableLayout } from "./priority-table-mod
 
 /** The statuses each count column adds up. In flight is the statuses an issue is being worked
  *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
- *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
+ *  admitted and not started; in backlog or icebox is work that stands in either. The three
  *  together are every open status, so no open issue under a priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
-/** The one list of the parked statuses: the parked count here and the parked fault list of the
+/** The one list of the backlog and icebox statuses: the count here and the fault list of the
  *  priorities page (`PrioritiesPage.tsx`) both read it. */
-export const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+export const BACKLOG_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
@@ -28,7 +28,7 @@ export interface PriorityItem {
   readonly summary: string;
   readonly inFlight: number;
   readonly waiting: number;
-  readonly parked: number;
+  readonly backlog: number;
   readonly closed: number;
   readonly newest: string | null;
 }
@@ -51,7 +51,7 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
     summary: questionLine(priority.description),
     inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
-    parked: countOf(priority.work.by_status, PARKED_STATUSES),
+    backlog: countOf(priority.work.by_status, BACKLOG_STATUSES),
     closed: priority.work.closed_last_7_days,
     newest: priority.work.newest_event_at,
   }));
@@ -116,11 +116,11 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
   { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
   {
-    id: "parked",
+    id: "backlog",
     header: "In backlog or icebox",
     size: 180,
     min: 180,
-    values: (item) => [String(item.parked)],
+    values: (item) => [String(item.backlog)],
   },
   { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
   {
@@ -139,3 +139,7 @@ export const PRIORITY_COLUMNS_BY_ID = columnsById(PRIORITY_COLUMNS);
 export const PRIORITY_LAYOUT = tableLayout(PRIORITY_COLUMNS, "title");
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];
+/** The id the backlog column had before, with the id it has now: a reader's stored width, place
+ *  and visibility of it, and an older link's sort or filter by it, are read under `backlog`
+ *  (`renameStoredColumns`, `readTableView`). */
+export const PRIORITY_FORMER_IDS: ReadonlyMap<string, string> = new Map([["parked", "backlog"]]);

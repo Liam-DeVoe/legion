@@ -98,7 +98,7 @@ const recorded: Priorities = {
       },
     ],
   },
-  priority_work_parked: {
+  priority_work_in_backlog_or_icebox: {
     count: 1,
     by_priority: { "ship-the-daemon": 1, "legion-first": 1 },
     issues: [
@@ -378,8 +378,8 @@ describe("dispatch priorities", () => {
         "Work under no priority (2: CORE 1, DSP 1; showing the newest 1):",
         "- CORE-7 [in_progress] Rotate the broker keys · CORE · ana@example.com · changed 2026-11-10T08:00:00Z",
         "",
-        "Priority work parked (1: legion-first 1, ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · parked 2026-10-01T00:00:00Z by ana@example.com · changed 2026-10-02T00:00:00Z",
+        "Priority work in backlog or icebox (1: legion-first 1, ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · moved to backlog 2026-10-01T00:00:00Z by ana@example.com · changed 2026-10-02T00:00:00Z",
       ].join("\n")
     );
   });
@@ -395,7 +395,7 @@ describe("dispatch priorities", () => {
     priorities = {
       priorities: [],
       work_under_no_priority: { count: 0, by_project: {}, issues: [] },
-      priority_work_parked: { count: 0, by_priority: {}, issues: [] },
+      priority_work_in_backlog_or_icebox: { count: 0, by_priority: {}, issues: [] },
       empty: NONE_WRITTEN,
     };
 

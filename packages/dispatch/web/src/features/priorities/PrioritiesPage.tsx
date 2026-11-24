@@ -10,32 +10,35 @@ import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
-import { PARKED_STATUSES } from "./priorities-model";
+import { BACKLOG_STATUSES } from "./priorities-model";
 
 /** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
  *  true or false of an issue as it stands now. */
 const NO_PRIORITY_RULE =
   "Work in progress, testing, review or retro that advances no priority, its own or one it inherits.";
-const PARKED_RULE =
+const BACKLOG_RULE =
   "Work that advances a priority and stands in the backlog or the icebox, with the time it was moved there and whoever moved it. No reason is recorded for a move yet.";
 
 /** The two faults, as the issue listing answers each: the work being done under no priority,
  *  in the statuses an issue is worked in, and the work under a priority standing in backlog or
  *  icebox, with the move that put it there. */
 const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
-const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
+const BACKLOG: IssueListing = { advances: "any", statuses: BACKLOG_STATUSES, moved: true };
 
 /** Each fault list's own stored layout and the columns it opens with shown. Both name each row's
  *  project, since neither stands on one, and when the issue last changed, which is how long it
- *  has stood as it is (R6); the parked list names what the work advances, when it was moved
- *  there and why besides, the why being, on every row, that nothing records it yet. The list
- *  under no priority has no Advances column at all: every row of it advances nothing. */
+ *  has stood as it is (R6); the list in backlog or icebox names what the work advances, when it
+ *  was moved there and why besides, the why being, on every row, that nothing records it yet.
+ *  The list under no priority has no Advances column at all: every row of it advances nothing.
+ *  The list in backlog or icebox kept its layout under an older key, which moves once to its
+ *  key now (`moveTableStore`). */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   shown: ["project", "updated"] satisfies ShownColumnId[],
 };
-const PARKED_LAYOUT = {
-  key: "priorities-parked",
+const BACKLOG_LAYOUT = {
+  key: "priorities-backlog",
+  formerKey: "priorities-parked",
   shown: ["project", "advances", "moved", "reason", "updated"] satisfies ShownColumnId[],
 };
 
@@ -57,23 +60,22 @@ function countsLine(by: Readonly<Record<string, number>> | null): string {
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   // What the page draws of one read, built once that read answers rather than once a render:
-  // the titles are what the parked list's columns are declared over, so a map built afresh
-  // would rebuild that table's columns on every refetch of anything.
+  // the titles are what the columns of the list in backlog or icebox are declared over, so a map
+  // built afresh would rebuild that table's columns on every refetch of anything.
   //
   // Every column and every count line of this page names a priority by the title a person
   // wrote, never by the id, which is a slug of that title and no name at all to a reader.
-  const { parkedByPriority, rows, titles } = useMemo(() => {
+  const { backlogByPriority, rows, titles } = useMemo(() => {
     const read = priorities.data;
     const priorityRows = read?.priorities ?? [];
     const byId = new Map(priorityRows.map((row) => [row.id, row.title]));
     return {
       rows: priorityRows,
       titles: byId,
-      parkedByPriority: Object.fromEntries(
-        Object.entries(read?.priority_work_parked.by_priority ?? {}).map(([id, count]) => [
-          byId.get(id) ?? id,
-          count,
-        ])
+      backlogByPriority: Object.fromEntries(
+        Object.entries(read?.priority_work_in_backlog_or_icebox.by_priority ?? {}).map(
+          ([id, count]) => [byId.get(id) ?? id, count]
+        )
       ),
     };
   }, [priorities.data]);
@@ -89,9 +91,9 @@ export function PrioritiesPage(): ReactNode {
     );
   const body = priorities.data;
   const unpriorited = body.work_under_no_priority;
-  const parked = body.priority_work_parked;
+  const backlog = body.priority_work_in_backlog_or_icebox;
   const unprioritedCounts = countsLine(unpriorited.by_project);
-  const parkedCounts = countsLine(parkedByPriority);
+  const backlogCounts = countsLine(backlogByPriority);
   return (
     <div className="space-y-8">
       <header className="space-y-1">
@@ -136,15 +138,15 @@ export function PrioritiesPage(): ReactNode {
         <h2 className={`text-lg font-semibold ${textPrimaryOnCanvas}`}>
           Priority work in backlog or icebox
         </h2>
-        <p className={textSecondaryOnCanvas}>{PARKED_RULE}</p>
+        <p className={textSecondaryOnCanvas}>{BACKLOG_RULE}</p>
         <p className={textSecondaryOnCanvas}>
-          {parked.count} {parked.count === 1 ? "issue" : "issues"}
-          {parkedCounts === "" ? "" : ` · ${parkedCounts}`}
+          {backlog.count} {backlog.count === 1 ? "issue" : "issues"}
+          {backlogCounts === "" ? "" : ` · ${backlogCounts}`}
         </p>
         <IssuesTable
           label="Priority issues in backlog or icebox"
-          layout={PARKED_LAYOUT}
-          listing={PARKED}
+          layout={BACKLOG_LAYOUT}
+          listing={BACKLOG}
           priorityTitles={titles}
           stateKey="k"
         />

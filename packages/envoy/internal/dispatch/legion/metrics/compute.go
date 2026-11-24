@@ -82,8 +82,8 @@ type Report struct {
 	Splitting Splitting `json:"splitting"`
 }
 
-// WorkTime is metric 1: hours from an issue's first worker event to its close, less its parked
-// and queued time and its time out of the workflow.
+// WorkTime is metric 1: hours from an issue's first worker event to its close, less its time in
+// backlog or icebox, its queued time and its time out of the workflow.
 type WorkTime struct {
 	MedianHours float64         `json:"median_hours"`
 	P90Hours    float64         `json:"p90_hours"`
@@ -92,20 +92,20 @@ type WorkTime struct {
 
 // WorkTimeIssue is one finished issue's work time with what was taken out of it.
 type WorkTimeIssue struct {
-	Key         string     `json:"key"`
-	Title       string     `json:"title"`
-	Priority    *int       `json:"priority"`
-	Root        bool       `json:"root"`
-	StartedAt   time.Time  `json:"started_at"`
-	ClosedAt    time.Time  `json:"closed_at"`
-	MergedAt    *time.Time `json:"merged_at"`
-	Hours       float64    `json:"hours"`
-	ParkedHours float64    `json:"parked_hours"`
-	QueuedHours float64    `json:"queued_hours"`
+	Key                  string     `json:"key"`
+	Title                string     `json:"title"`
+	Priority             *int       `json:"priority"`
+	Root                 bool       `json:"root"`
+	StartedAt            time.Time  `json:"started_at"`
+	ClosedAt             time.Time  `json:"closed_at"`
+	MergedAt             *time.Time `json:"merged_at"`
+	Hours                float64    `json:"hours"`
+	BacklogOrIceboxHours float64    `json:"backlog_or_icebox_hours"`
+	QueuedHours          float64    `json:"queued_hours"`
 	// OutOfWorkflowHours is the time out of the workflow before the close (outOfWorkflowSpans),
-	// which ParkedHours does not hold: that is the time in `backlog` or `icebox` alone. Each of
-	// the three is its own measure, so an hour can be in two of them, such as a child the daemon
-	// reports `done` while it sits in `backlog`, and the work time leaves it out once.
+	// which BacklogOrIceboxHours does not hold: that is the time in `backlog` or `icebox` alone.
+	// Each of the three is its own measure, so an hour can be in two of them, such as a child the
+	// daemon reports `done` while it sits in `backlog`, and the work time leaves it out once.
 	OutOfWorkflowHours float64 `json:"out_of_workflow_hours"`
 }
 
@@ -432,11 +432,12 @@ func (c *computation) workedOf(issue *Issue) workTimeRow {
 	return held
 }
 
-// computeWorkTime is the work time itself: the issue's life, less the time it sat parked, the
-// time it sat back in the queue and the time it was out of the workflow. The spans that are left
-// are the answer's second half, because they are what the issue's bars of phase time are shared
-// out over. The queue and the time out of the workflow are read off the issue's own timeline
-// (queuedSpans, outOfWorkflowSpans), the one the bars read, so the two cannot disagree on them.
+// computeWorkTime is the work time itself: the issue's life, less the time it sat in backlog or
+// icebox, the time it sat back in the queue and the time it was out of the workflow. The spans
+// that are left are the answer's second half, because they are what the issue's bars of phase
+// time are shared out over. The queue and the time out of the workflow are read off the issue's
+// own timeline (queuedSpans, outOfWorkflowSpans), the one the bars read, so the two cannot
+// disagree on them.
 //
 // Every issue the metric reports a row for has closed (finishedInWindow), and the row's ClosedAt
 // is that close. A child still open has a work time too, which its root's waiting-on-children
@@ -449,21 +450,21 @@ func (c *computation) computeWorkTime(issue *Issue) workTimeRow {
 	}
 	end := c.population.issueEnd(issue)
 	timeline := c.phasesOf(issue)
-	// A life of no length leaves no span to park, to queue or to put on a bar, which the span
+	// A life of no length leaves no span to take out, to queue or to put on a bar, which the span
 	// algebra below answers on its own.
 	life := []Span{{From: start, To: end}}
-	parked := intersect(c.population.parkedSpans(issue), life)
+	inBacklog := intersect(c.population.backlogSpans(issue), life)
 	queued := intersect(queuedSpans(timeline), life)
 	out := intersect(outOfWorkflowSpans(timeline), life)
-	worked := subtract(subtract(subtract(life, parked), queued), out)
+	worked := subtract(subtract(subtract(life, inBacklog), queued), out)
 	return workTimeRow{
 		row: WorkTimeIssue{
 			Key: issue.Key, Title: issue.Title, Priority: issue.Priority, Root: c.isRoot(issue.Key),
 			StartedAt: start, ClosedAt: end, MergedAt: issue.MergedAt,
-			Hours:              hours(totalOf(worked)),
-			ParkedHours:        hours(totalOf(parked)),
-			QueuedHours:        hours(totalOf(queued)),
-			OutOfWorkflowHours: hours(totalOf(out)),
+			Hours:                hours(totalOf(worked)),
+			BacklogOrIceboxHours: hours(totalOf(inBacklog)),
+			QueuedHours:          hours(totalOf(queued)),
+			OutOfWorkflowHours:   hours(totalOf(out)),
 		},
 		worked: worked,
 		ok:     true,
@@ -499,14 +500,15 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 // phaseTime is metric 2: one stacked bar per worker type, each hour of each phase going to the
 // first segment of the precedence that holds.
 //
-// The hours shared out are the issue's work time and nothing else (the spec's "Rule details —
-// Parked and pre-work hours in phase time": "An hour that work time to merge leaves out is on no
-// bar of phase time ... So the bars of an issue add up to its work time, and the two cards
-// agree"). Each bar takes the phases it holds, so the seven are a partition of the work time: the
-// timeline leaves no hour between two phases (the spec's "Phase boundaries before observations"),
-// and every phase an issue can be in is on one of the seven bars but `queued` and `done`, the
-// queue and the time out of the workflow before the close, whose hours the work time leaves out
-// (queuedSpans, outOfWorkflowSpans).
+// The hours shared out are the issue's work time and nothing else: an hour that work time to
+// merge leaves out is on no bar of phase time, so the bars of an issue add up to its work time
+// and the two cards agree (the spec's rule on hours out of the work time in phase time,
+// dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645). Each bar takes the phases
+// it holds, so the seven are a partition of the work time: the timeline leaves no hour between
+// two phases (the spec's "Phase boundaries before observations"), and every phase an issue can be
+// in is on one of the seven bars but `queued` and `done`, the queue and the time out of the
+// workflow before the close, whose hours the work time leaves out (queuedSpans,
+// outOfWorkflowSpans).
 func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 	metric := PhaseTime{Bars: make([]RoleBar, len(bars))}
 	perIssue := make([][]float64, len(bars))

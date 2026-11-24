@@ -73,8 +73,8 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 // both, in the byte order of the id, however the database collates the ids. The issue states
 // `ci-fixes` and its parent states `ci-fixes` and `cicd`, so the issue holds `ci-fixes` both ways:
 // under a collation weighing punctuation last its inherited list comes back `cicd, ci-fixes`,
-// and a merge that trusted that order met `ci-fixes` twice and listed it twice. The issue is
-// parked, so the parked fault of GET /api/v1/priorities reads it as well.
+// and a merge that trusted that order met `ci-fixes` twice and listed it twice. The issue stands
+// in backlog, so the fault in backlog or icebox of GET /api/v1/priorities reads it as well.
 func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -109,7 +109,7 @@ func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing
 		}
 	}
 	body := readPriorities(t, handler, "")
-	if got, entries := advanceEntries(parkedRow(t, body, child).Advances), want[child]; !slices.Equal(got, entries) {
-		t.Errorf("the parked list says %s advances %v, want %v", child, got, entries)
+	if got, entries := advanceEntries(backlogRow(t, body, child).Advances), want[child]; !slices.Equal(got, entries) {
+		t.Errorf("the list in backlog or icebox says %s advances %v, want %v", child, got, entries)
 	}
 }

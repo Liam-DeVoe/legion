@@ -33,7 +33,7 @@ function body(overrides: Partial<Priorities> = {}): Priorities {
   return {
     priorities: [],
     work_under_no_priority: { by_project: null, count: 0, issues: null },
-    priority_work_parked: { by_priority: null, count: 0, issues: null },
+    priority_work_in_backlog_or_icebox: { by_priority: null, count: 0, issues: null },
     ...overrides,
   };
 }
@@ -121,9 +121,10 @@ function answerListing(issues: readonly IssueSummary[]) {
       );
 }
 
-/** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
-function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
+/** The page as a signed-in person sees it at `at`, with the reads it makes answered from
+ *  `answer`; a reader who is not a person, and so may not write a priority, where `writer` is
+ *  false. `remount` loads the page again in the same browser, as a reader's next visit does. */
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at = "/priorities") {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -145,13 +146,14 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
-  const view = render(
-    <MemoryRouter initialEntries={["/priorities"]}>
+  const tree = (
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={client}>
         <PrioritiesPage />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  let view = render(tree);
   restores.push(() => {
     view.unmount();
     client.clear();
@@ -160,7 +162,11 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { create, listing, patch, view };
+  const remount = () => {
+    view.unmount();
+    view = render(tree);
+  };
+  return { create, listing, patch, remount };
 }
 
 const FIFTEEN = body({
@@ -197,7 +203,11 @@ test("the page draws the priorities table above both fault lists", async () => {
     body({
       ...FIFTEEN,
       work_under_no_priority: { by_project: { CORE: 1 }, count: 1, issues: null },
-      priority_work_parked: { by_priority: { "linkage-closure": 1 }, count: 1, issues: null },
+      priority_work_in_backlog_or_icebox: {
+        by_priority: { "linkage-closure": 1 },
+        count: 1,
+        issues: null,
+      },
     }),
     [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
@@ -205,7 +215,7 @@ test("the page draws the priorities table above both fault lists", async () => {
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
   });
-  const parked = await screen.findByRole("table", {
+  const backlog = await screen.findByRole("table", {
     name: "Priority issues in backlog or icebox table",
   });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
@@ -218,7 +228,7 @@ test("the page draws the priorities table above both fault lists", async () => {
   expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
   );
-  expect(faults.compareDocumentPosition(parked) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+  expect(faults.compareDocumentPosition(backlog) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
   );
   // Each fault stands under its rule in plain words, with its count and where it falls.
@@ -229,11 +239,11 @@ test("the page draws the priorities table above both fault lists", async () => {
   // Each list holds its own fault's rows and no other's.
   expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
-  expect(await within(parked).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
-  expect(within(parked).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+  expect(await within(backlog).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
+  expect(within(backlog).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
 });
 
-test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
+test("each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move", async () => {
   const user = userEvent.setup();
   const { listing } = page(FIFTEEN, [
     issue("CORE-1"),
@@ -248,11 +258,12 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
   });
-  const parked = await screen.findByRole("table", {
+  const backlog = await screen.findByRole("table", {
     name: "Priority issues in backlog or icebox table",
   });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
-  // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
+  // the list in backlog or icebox those two statuses with the move into them. Neither reads a
+  // closed issue.
   expect(listing).toHaveBeenCalledWith({
     advances: ["none"],
     status: ["in_progress", "testing", "needs_review", "retro"],
@@ -288,7 +299,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   };
 
   // The no-priority list names each row's project and when it last changed, which is how long it
-  // has stood as it is (R6), and shows none of the parked columns.
+  // has stood as it is (R6), and shows none of the columns of the list in backlog or icebox.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
   expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -301,10 +312,10 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
   expect(faultHeaders.some((text) => text.startsWith("Reason"))).toBe(false);
 
-  // The parked list names the project, each priority advanced by its title, linking to it, and
-  // when the work was moved there and by whom. A row answered with no move draws an empty Moved
-  // there cell: absent is absent, and that cell does not say a record is missing.
-  const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
+  // The list in backlog or icebox names the project, each priority advanced by its title, linking
+  // to it, and when the work was moved there and by whom. A row answered with no move draws an
+  // empty Moved there cell: absent is absent, and that cell does not say a record is missing.
+  const moved = await cellsOf(backlog, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
     "2026-11-01T00:00:00Z"
@@ -318,7 +329,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     "2026-11-09T12:00:00Z"
   );
   expect(moved("Moved there").textContent).toContain("bob");
-  const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
+  const unrecorded = await cellsOf(backlog, "OPS-4 Work OPS-4");
   expect(
     within(unrecorded("Advances"))
       .getAllByRole("link")
@@ -335,7 +346,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     );
   }
 
-  // Nor does the list under no priority offer the parked columns among those a reader may show.
+  // Nor does the list under no priority offer the columns of the list in backlog or icebox among
+  // those a reader may show.
   await user.click(
     within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
       "button",
@@ -366,7 +378,7 @@ test("with no priority a reader who may not write one is shown only the sentence
   expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
-test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
+test("a row counts the work in flight, waiting, in backlog or icebox and closed in the last 7 days", async () => {
   page(FIFTEEN);
   const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
   const cells = within(row)
@@ -588,4 +600,159 @@ test("a grouped table counts each group in the plural its rows are called by", a
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
+});
+
+// The stored layouts' move on the page's first render (the plan's state table L8a), one row per
+// test. A layout the reader kept under a name the page no longer uses moves to the name it uses
+// now on the first render, before the first write, and a second render moves nothing more.
+
+/** The browser keys the page's layouts are stored under (`tableStorageKey`): the list in backlog
+ *  or icebox, the key that list kept its layout under before, and the priorities table. */
+const BACKLOG_KEY = "dispatch.project-table.priorities-backlog";
+const FORMER_BACKLOG_KEY = "dispatch.project-table.priorities-parked";
+const PRIORITIES_KEY = "dispatch.project-table.priorities";
+
+/** A layout of the list in backlog or icebox as a reader stores one: the Status column's width,
+ *  Status before Key, and one column hidden. */
+const backlogLayout = (width: number, hidden: string) =>
+  JSON.stringify({
+    sizing: { status: width },
+    order: ["status", "key"],
+    visibility: { [hidden]: false },
+  });
+
+const storedAt = (key: string) => JSON.parse(localStorage.getItem(key) ?? "null");
+
+/** Both tables whose layouts move are drawn, so each one's mount effect has written. */
+async function bothTablesDrawn() {
+  await screen.findByRole("table", { name: "Priorities table" });
+  await screen.findByRole("table", { name: "Priority issues in backlog or icebox table" });
+}
+
+test("a layout under the list's former key moves to its key, and the former key goes", async () => {
+  localStorage.setItem(FORMER_BACKLOG_KEY, backlogLayout(222, "assignee"));
+  const { remount } = page(FIFTEEN);
+  await bothTablesDrawn();
+  await waitFor(() => expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull());
+  const moved = storedAt(BACKLOG_KEY);
+  expect(moved.sizing).toEqual({ status: 222 });
+  expect(moved.order).toEqual(["status", "key"]);
+  expect(moved.visibility.assignee).toBe(false);
+  // A second render finds nothing under the former key and moves nothing.
+  const first = localStorage.getItem(BACKLOG_KEY);
+  remount();
+  await bothTablesDrawn();
+  expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull();
+  expect(localStorage.getItem(BACKLOG_KEY)).toBe(first);
+});
+
+test("a layout already under the list's key stays, and the former key goes", async () => {
+  localStorage.setItem(FORMER_BACKLOG_KEY, backlogLayout(222, "assignee"));
+  localStorage.setItem(BACKLOG_KEY, backlogLayout(333, "labels"));
+  const { remount } = page(FIFTEEN);
+  await bothTablesDrawn();
+  await waitFor(() => expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull());
+  const kept = storedAt(BACKLOG_KEY);
+  expect(kept.sizing).toEqual({ status: 333 });
+  expect(kept.visibility.labels).toBe(false);
+  expect(kept.visibility.assignee).toBeUndefined();
+  const first = localStorage.getItem(BACKLOG_KEY);
+  remount();
+  await bothTablesDrawn();
+  expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull();
+  expect(localStorage.getItem(BACKLOG_KEY)).toBe(first);
+});
+
+test("with no layout under either key the page writes only what each table's mount writes", async () => {
+  const { remount } = page(FIFTEEN);
+  await bothTablesDrawn();
+  const tableKeys = () =>
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith("dispatch.project-table."))
+      .sort();
+  await waitFor(() =>
+    expect(tableKeys()).toEqual([
+      PRIORITIES_KEY,
+      BACKLOG_KEY,
+      "dispatch.project-table.priorities-no-priority",
+    ])
+  );
+  const written = storedAt(BACKLOG_KEY);
+  expect(written.sizing).toEqual({});
+  expect(written.order).toEqual([]);
+  const first = localStorage.getItem(BACKLOG_KEY);
+  remount();
+  await bothTablesDrawn();
+  expect(tableKeys()).toEqual([
+    PRIORITIES_KEY,
+    BACKLOG_KEY,
+    "dispatch.project-table.priorities-no-priority",
+  ]);
+  expect(localStorage.getItem(BACKLOG_KEY)).toBe(first);
+});
+
+test("the priorities table's stored width, place and visibility of its backlog column move to its id now", async () => {
+  localStorage.setItem(
+    PRIORITIES_KEY,
+    JSON.stringify({
+      sizing: { owner: 230, parked: 240 },
+      order: ["owner", "parked", "title"],
+      visibility: { parked: false },
+    })
+  );
+  const moved = JSON.stringify({
+    sizing: { owner: 230, backlog: 240 },
+    order: ["owner", "backlog", "title"],
+    visibility: { backlog: false },
+  });
+  const { remount } = page(FIFTEEN);
+  await bothTablesDrawn();
+  await waitFor(() => expect(localStorage.getItem(PRIORITIES_KEY)).toBe(moved));
+  // The stored visibility is the reader's: the column stays hidden under its id now.
+  const table = screen.getByRole("table", { name: "Priorities table" });
+  expect(within(table).queryByRole("columnheader", { name: /^In backlog or icebox/ })).toBeNull();
+  remount();
+  await bothTablesDrawn();
+  expect(localStorage.getItem(PRIORITIES_KEY)).toBe(moved);
+});
+
+test("a priorities layout that names the backlog column by its id now is left as it is", async () => {
+  const layout = JSON.stringify({
+    sizing: { backlog: 250 },
+    order: ["owner", "backlog"],
+    visibility: { backlog: false },
+  });
+  localStorage.setItem(PRIORITIES_KEY, layout);
+  const { remount } = page(FIFTEEN);
+  await bothTablesDrawn();
+  expect(localStorage.getItem(PRIORITIES_KEY)).toBe(layout);
+  remount();
+  await bothTablesDrawn();
+  expect(localStorage.getItem(PRIORITIES_KEY)).toBe(layout);
+});
+
+test("an older link sorted by the backlog column under its former id sorts by it", async () => {
+  page(FIFTEEN, [], true, "/priorities?p.sort=parked");
+  const table = await screen.findByRole("table", { name: "Priorities table" });
+  const linkage = await within(table).findByRole("row", { name: "P2 Linkage closure eval" });
+  expect(
+    within(table)
+      .getByRole("columnheader", { name: /^In backlog or icebox/ })
+      .getAttribute("aria-sort")
+  ).toBe("ascending");
+  // Linkage closure eval holds the three issues in backlog or icebox and the two others none, so
+  // it comes after both, where the order alone puts it between them.
+  for (const name of ["P1 Legion works reliably first", "P3 OSS Verify"]) {
+    const other = within(table).getByRole("row", { name });
+    expect(other.compareDocumentPosition(linkage) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  }
+});
+
+test("an older link filtered by the backlog column under its former id filters by it", async () => {
+  page(FIFTEEN, [], true, "/priorities?p.f.parked=3");
+  expect(await screen.findByRole("row", { name: "P2 Linkage closure eval" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "P1 Legion works reliably first" })).toBeNull();
+  expect(screen.queryByRole("row", { name: "P3 OSS Verify" })).toBeNull();
 });
