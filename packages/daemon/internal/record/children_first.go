@@ -101,7 +101,7 @@ func OpenChildHolds(p phase.Phase) bool {
 // one read of the daemon's own record of every child, whatever the number of parents: the
 // children-first waits of the issues whose first phase has not started (ChildrenFirstCandidates,
 // ChildWaits), the open children of every started parent (StartedParents), and the open children
-// of every parent held before its retro, held (RetroHeldParents, LineFacts.RetroHeldChildren), the
+// of every parent held before its retro, held (RetroHeldParents, LineFacts.RetroHolds), the
 // last two with the one child withoutHeldUnderAccepted leaves out. ChildWaits judges each parent
 // on its own, from that parent's rows and its children's records alone, so one read split by
 // parent gives each judgement exactly what a read of its own parents would; an issue in more than
@@ -141,8 +141,8 @@ func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string,
 
 // RetroHeldParents is every issue of issues in the workflow held before its retro
 // (HoldForChildren), in key order: the parents whose open Dispatch children and resting roots
-// ReadLineFacts reads (LineFacts.RetroHeldChildren, LineFacts.RetroHeldResting), which the held
-// word children_before_retro names (HeldReasonOf). A pass with none reads nothing for them.
+// ReadLineFacts reads, and whose three holds it puts together (LineFacts.RetroHolds), which the
+// held word children_before_retro names (HeldReasonOf). A pass with none reads nothing for them.
 func RetroHeldParents(issues []Issue) []string {
 	var keys []string
 	for _, issue := range issues {

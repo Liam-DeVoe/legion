@@ -52,12 +52,12 @@ type Admission struct {
 	// names none (config.Config.StalledTreeNotice).
 	stalledTreeNotice time.Duration
 
-	// mu guards pending, stamps, target, catchingUp and retroHeldReads, the only Admission state a
-	// caller outside its own transactions touches: the daemon's boot-owned poll calls Held on every
-	// tick, outside any transaction and the database's own advisory fact lock, concurrently with
-	// whatever release call currently holds both while it clears them, and a commit hook that runs
-	// late clears or writes them on the commit watcher's goroutine (clearReleased,
-	// rememberHeldRetro).
+	// mu guards pending, stamps, target, catchingUp, retroHeldReads and retroHeldPass, the only
+	// Admission state a caller outside its own transactions touches: the daemon's boot-owned poll
+	// calls Held on every tick, outside any transaction and the database's own advisory fact lock,
+	// concurrently with whatever release call currently holds both while it clears them, and a
+	// commit hook that runs late clears or writes them on the commit watcher's goroutine
+	// (clearReleased, rememberHeldRetro).
 	mu sync.Mutex
 	// pending holds, for every key Reconcile found the Dispatch consumer still needs to catch up
 	// before an admission decision on it is safe, the boot listing's own summary of that key —
@@ -92,8 +92,14 @@ type Admission struct {
 	// facts of the last pass that read its release and committed showed of it (retroHeldRead,
 	// readsHeldRetro). It is this daemon run's own memory and nothing durable: a restart reads each
 	// such parent once more, which tells nothing twice, since the told-once marks are durable
-	// (workflow's tellRetroHeld). It holds one entry for each parent held so in this run.
+	// (workflow's tellRetroHeld). It holds an entry only for a parent the last pass's facts held
+	// so: each pass first drops every other (forgetRetroHeldReads), a parent whose retro started or
+	// that left the workflow among them.
 	retroHeldReads map[string]retroHeldRead
+	// retroHeldPass counts the passes that read retroHeldReads (forgetRetroHeldReads). It fences
+	// the hooks that write it: a hook writes only while no pass has begun after its own
+	// (rememberHeldRetro).
+	retroHeldPass uint64
 
 	// openCapabilities answers the deployment capabilities with no decision, by name
 	// (capabilities.Deployment.Open), for the tick notice to carry; nil until the daemon registers
@@ -1864,6 +1870,9 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	held func(string) bool,
 ) (bool, error) {
+	// The reads of the parents no longer held before their retro are dropped first, on every pass,
+	// whatever it reads after.
+	pass := a.forgetRetroHeldReads(facts.RetroHolds)
 	// Each move reaches a parent in awaiting_children, one an open child holds, or one held before
 	// its retro, and nothing else, and on most passes there is none: the rest is read for those
 	// alone, in byte order of their keys (SQL's `order by key` may collate otherwise).
@@ -1883,7 +1892,6 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		owed[start.Issue] = append(owed[start.Issue], start)
 	}
 	wrote := false
-	var retroHolds map[string]record.RetroHolds
 	for _, parent := range parents {
 		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) {
 			continue
@@ -1894,10 +1902,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		wait, open := facts.StartedParentWaits[parent.Key]
 		switch {
 		case record.HeldForChildren(parent):
-			if retroHolds == nil {
-				retroHolds = record.RetroHoldsOf(issues, facts)
-			}
-			read := retroHeldRead{moved: parent.MovedAt, holds: retroHolds[parent.Key]}
+			read := retroHeldRead{moved: parent.MovedAt, holds: facts.RetroHolds[parent.Key]}
 			if !a.readsHeldRetro(parent.Key, read) {
 				continue
 			}
@@ -1905,7 +1910,9 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 			if err != nil {
 				return wrote, fmt.Errorf("start the held retro of %s: %w", parent.Key, err)
 			}
-			a.rememberHeldRetro(ctx, parent.Key, read, released)
+			if !released {
+				a.rememberHeldRetro(ctx, pass, parent.Key, read)
+			}
 			wrote = wrote || released
 		case parent.Phase == phase.AwaitingChildren && !open:
 			if err := a.engine.ReturnFromChildren(ctx, tx, parent); err != nil {
@@ -1965,20 +1972,35 @@ func (a *Admission) readsHeldRetro(key string, read retroHeldRead) bool {
 	return !seen || !last.same(read)
 }
 
-// rememberHeldRetro writes read as what the last read of key's release found, once the pass
-// commits, and forgets key where that read started its retro: a pass rolled back told nothing, so
-// its facts stay unread. The hook may run late, after a later pass wrote newer facts of key
-// (store.OnCommit); what it writes stays true of a read that committed, so a late write costs that
-// later pass's facts at most one more read, and never leaves a notice untold.
-func (a *Admission) rememberHeldRetro(ctx context.Context, key string, read retroHeldRead, released bool) {
+// forgetRetroHeldReads begins a pass's reading of the parents held before their retro, held
+// (record.LineFacts.RetroHolds): it drops the read of every parent not among them — one a settle
+// released into its retro, or one that left the workflow — and answers the number of this pass
+// (retroHeldPass), which fences the hooks of every pass before it (rememberHeldRetro). A drop that
+// a rolled-back pass made costs that parent one more read, which tells nothing twice.
+func (a *Admission) forgetRetroHeldReads(held map[string]record.RetroHolds) uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	maps.DeleteFunc(a.retroHeldReads, func(key string, _ retroHeldRead) bool {
+		_, still := held[key]
+		return !still
+	})
+	a.retroHeldPass++
+	return a.retroHeldPass
+}
+
+// rememberHeldRetro writes read, a read of key's release that left key held, as what the last read
+// of it found, once the pass commits: a pass rolled back told nothing, so its facts stay unread.
+// The write stands behind a fence a late run cannot cross (store.OnCommit): pass is the number of
+// the pass that read key (forgetRetroHeldReads), and the hook writes only while no later pass has
+// begun, so a hook the commit watcher runs after a later pass writes nothing over what that pass
+// read. What it leaves unwritten costs key one more read, which tells nothing twice.
+func (a *Admission) rememberHeldRetro(ctx context.Context, pass uint64, key string, read retroHeldRead) {
 	store.OnCommit(ctx, func() {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if released {
-			delete(a.retroHeldReads, key)
-			return
+		if a.retroHeldPass == pass {
+			a.retroHeldReads[key] = read
 		}
-		a.retroHeldReads[key] = read
 	})
 }
 

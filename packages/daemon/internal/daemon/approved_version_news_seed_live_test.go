@@ -11,7 +11,8 @@ package daemon
 // of a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and
 // the write of a told row by hand, checked against the row the start path writes (seedToldRow).
 // Part one's requests to Dispatch are here too (dispatchAs, dispatchAgent, setDefaultRepository),
-// which the boot's setup makes before the seed, and the seed and the steps after it.
+// which the boot's setup makes before the seed, and the seed and the steps after it, with the one
+// exchange with Dispatch both parts' requests make (dispatchExchange).
 
 import (
 	"bytes"
@@ -493,33 +494,48 @@ func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, 
 }
 
 // dispatchSend sends one request to Dispatch, identified by identify, and answers its status and
-// its body, whatever the status.
+// its body, whatever the status (dispatchExchange). A failure before the answer fails the run.
 func (r *versionNewsLive) dispatchSend(method, path string, body any, identify func(*http.Request)) (int, []byte) {
 	r.t.Helper()
+	status, answer, err := dispatchExchange(r.client, r.dispatch.base, method, path, body, identify)
+	if err != nil {
+		r.fail("%s", err)
+	}
+	return status, answer
+}
+
+// dispatchExchange sends one request to Dispatch at base through client, identified by identify,
+// and answers its status and its body, whatever the status. Its error is a failure before the
+// answer, in the words each caller's failure line prints: the encoding of body, the request's
+// own, the send ("Dispatch <method> <path>: …") or the read of the answer ("read Dispatch's
+// answer to <method> <path>: …"). Part one's runs (dispatchSend) and part two's
+// (sessionsRun.dispatchCall) each fail their own way on it; it lives here, beside part one's
+// requests, since part one's control builds this file into its base commit.
+func dispatchExchange(client *http.Client, base, method, path string, body any, identify func(*http.Request)) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			r.t.Fatal(err)
+			return 0, nil, err
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, r.dispatch.base+path, reader)
+	request, err := http.NewRequest(method, base+path, reader)
 	if err != nil {
-		r.t.Fatal(err)
+		return 0, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	identify(request)
-	response, err := r.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
-		r.fail("Dispatch %s %s: %v", method, path, err)
+		return 0, nil, fmt.Errorf("Dispatch %s %s: %w", method, path, err)
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		r.fail("read Dispatch's answer to %s %s: %v", method, path, err)
+		return 0, nil, fmt.Errorf("read Dispatch's answer to %s %s: %w", method, path, err)
 	}
-	return response.StatusCode, answer
+	return response.StatusCode, answer, nil
 }
 
 // dispatchUser identifies a request to Dispatch as the person login, through the trusted identity

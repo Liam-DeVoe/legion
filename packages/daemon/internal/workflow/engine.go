@@ -2721,15 +2721,15 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	if held.code != "" {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
 		refusal, _ := held.refusal(actSignOff, issue.Key, heldAcceptanceBack(w))
 		return refusal, nil
 	}
-	accepted, err := e.acceptedRole(ctx, tx, *issue)
+	accepted, err := acceptedRoleOn(*issue, w)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2742,16 +2742,6 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
-}
-
-// acceptedRole is the role of the step the owner's acceptance of issue accepts (acceptedRoleOn),
-// on the walk of its run, which it reads (walk).
-func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return claim.RoleReviewer, err
-	}
-	return acceptedRoleOn(issue, w)
 }
 
 // acceptedRoleOn is the role of the step the owner's acceptance of issue accepts on w, the walk of

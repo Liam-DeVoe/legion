@@ -621,16 +621,15 @@ type LineFacts struct {
 	// since the judgement reads the mirror against the daemon's records in the transaction the line
 	// is never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
-	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
-	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over
-	// RetroHeldParents), and RetroHeldResting the roots still in the workflow that rest on each
-	// such parent's approval (RestingRootsOn): with the issues beneath it still in the workflow
-	// (OpenBeneath), the three holds on its acceptance that hold its retro (workflow's
-	// acceptanceHeld), which the held word children_before_retro names in R8's order
-	// (HeldReasonOf). A parent nothing holds so has no entry in either. ReadLineFacts fills both
-	// and reads nothing for them where no parent is held before its retro.
-	RetroHeldChildren map[string]ChildWait
-	RetroHeldResting  map[string][]RestingRoot
+	// RetroHolds is the three holds on the acceptance of each parent held before its retro
+	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
+	// still in the workflow (OpenBeneath), the roots still in the workflow that rest on its
+	// approval (RestingRootsOn) and its open Dispatch children, judged as StartedParentWaits is
+	// (readChildWaits). They are the three that hold its retro (workflow's acceptanceHeld), which
+	// the held word children_before_retro names in R8's order (HeldReasonOf) and the admission
+	// pass compares from one pass to the next (admit's childrenWaits). ReadLineFacts fills it, and
+	// reads nothing for it where no parent is held before its retro.
+	RetroHolds map[string]RetroHolds
 	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
 	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
 	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
@@ -794,7 +793,7 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // tree roots it leaves out (ReadTreeRoots), one gate read (gatesOf), one read of the starts the
 // project owes, the three judgements of a parent's open children — the started parents'
 // (LineFacts.StartedParentWaits), the children-first waits ChildWaitsOf hands on and those of the
-// parents held before their retro (LineFacts.RetroHeldChildren) — from one read of the children
+// parents held before their retro (LineFacts.RetroHolds) — from one read of the children
 // (readChildWaits: no read where no issue can wait on its children, and two where any can), and
 // after the children, where any parent is held before its retro, the roots resting on them
 // (RestingRootsOn: two reads, and none where no parent is held so), whatever the number of trees,
@@ -844,14 +843,18 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
 	// crosses the records above the pass's own. The parents held before their retro
 	// (RetroHeldParents) are found once, for that read and for the read of the roots that rest on
-	// them (RestingRootsOn) after it, which reads nothing where no parent is held so.
+	// them (RestingRootsOn) after it, which reads nothing where no parent is held so, and the three
+	// holds of each are put together from the two reads once (retroHoldsOf).
 	held := RetroHeldParents(issues)
-	if facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren, err = readChildWaits(ctx, tx, store, project, issues, held, facts); err != nil {
+	var children map[string]ChildWait
+	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, issues, held, facts); err != nil {
 		return LineFacts{}, err
 	}
-	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, held); err != nil {
+	resting, err := RestingRootsOn(ctx, tx, store, held)
+	if err != nil {
 		return LineFacts{}, err
 	}
+	facts.RetroHolds = retroHoldsOf(issues, held, facts.Parents, children, resting)
 	return facts, nil
 }
 

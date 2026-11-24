@@ -1059,6 +1059,65 @@ test("register_gate resolves a basis reference on the issue it names, and sends 
   ]);
 });
 
+// A basis reference names its issue, so an artifact id it carries is looked up on that issue as a
+// slug is: the id of another issue's document refuses the call, naming the id and the issue the
+// reference names, before a grant is minted or the daemon is asked anything. The same reference
+// over that issue's own document registers it.
+test("register_gate refuses a basis reference whose artifact id is no document of the issue it names", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const { paths, dispatch } = treeDispatch();
+  const register = (basis: string) =>
+    gateTool(daemon, dispatch).execute(
+      "",
+      {
+        op: "register_gate",
+        issue: "LEGION-208",
+        artifactId: "spec",
+        version: 4,
+        step: "spec",
+        basis,
+        basisVersion: 3,
+        reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
+      },
+      undefined,
+      undefined,
+      context()
+    );
+
+  await expect(register(`dispatch://LEGION-100/artifact/${ROOT_SPEC}`)).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: `register_gate could not look up document "${ROOT_SPEC}" on LEGION-100 in Dispatch: document "${ROOT_SPEC}" not found by slug; this issue's documents: spec (spec.md), verification-md (verification.md)`,
+      },
+    ],
+    details: {},
+    isError: true,
+  });
+  expect(calls).toEqual([]);
+  expect(paths).toEqual([
+    "/api/v1/issues/LEGION-208",
+    `/api/v1/artifacts/${ROOT_SPEC}/blocks`,
+    "/api/v1/issues/LEGION-100",
+  ]);
+
+  await expect(register(`dispatch://LEGION-100/artifact/${ANCESTOR_SPEC}`)).resolves.toMatchObject({
+    details: {},
+  });
+  expect(registrations(calls)).toEqual([
+    {
+      grantId: "grant-208",
+      issue: "LEGION-208",
+      artifactId: ROOT_SPEC,
+      version: 4,
+      step: "spec",
+      basisArtifactId: ANCESTOR_SPEC,
+      basisVersion: 3,
+      reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
+    },
+  ]);
+});
+
 // basis, basisVersion and reason come together or not at all, as the daemon's BASIS_INCOMPLETE
 // says: a call that names some of them, or a basis that names no issue's document, is refused
 // whole before the tool reads Dispatch or mints a grant.
