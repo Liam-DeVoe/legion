@@ -442,16 +442,18 @@ func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
 	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
 }
 
-// The controller's retry of the same agent runs no launch at once. runDroppedLaunchForRetry takes
-// the operator's retry alone, the line exemptWake draws: the controller asks its retries of as many
-// agents at once as it decides to, so each keeps the turn the pacing gave it. The retry is refused
-// naming the state the gate found, as a retry of an agent whose claim is queued is, and the agent
-// launches once, at its turn.
+// The controller's retry of an agent whose launch waits its turn runs no launch at once. The wake
+// pacing lets the operator's retry alone through (exemptWake, dropsWaitingWake): the controller
+// asks its retries of as many agents at once as it decides to, so each keeps the turn the pacing
+// gave it. Its retry drops no wake, so the decision finds the claim where the park wrote it,
+// launching for the whole wait (waitOnMachine), and the retry is refused naming that state, as a
+// retry of a claim whose launch is under way is. The agent launches once, at its turn.
 //
-// The negative control is runDroppedLaunchForRetry matching every RequestAskedRetry, whoever asks
-// it: the controller's retry then launches the agent at once, and this test reads that at the
-// runtime's starts.
-func TestAControllersRetryOfAnAgentWaitingFromQueuedKeepsItsTurn(t *testing.T) {
+// The negative control is exemptWake letting every RequestAskedRetry through, whoever asks it: the
+// controller's retry then drops the wake, the claim is put back in the state the gate found,
+// queued, and the refusal names queued; with runDroppedLaunchForRetry taking every retry as well,
+// the agent launches at once, and this test reads that at the runtime's starts.
+func TestAControllersRetryOfAnAgentWhoseLaunchWaitsItsTurnKeepsTheTurn(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
 
@@ -465,8 +467,8 @@ func TestAControllersRetryOfAnAgentWaitingFromQueuedKeepsItsTurn(t *testing.T) {
 	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByController})
 
 	var refused *RefusedError
-	if !errors.As(err, &refused) || refused.State != StateQueued {
-		t.Fatalf("the controller's retry answered %v, want a refusal naming %s", err, StateQueued)
+	if !errors.As(err, &refused) || refused.State != StateLaunching {
+		t.Fatalf("the controller's retry answered %v, want a refusal naming %s", err, StateLaunching)
 	}
 	h.wantStarts(secondToken, 0)
 	if again := second.View().WakeWaiting; again == nil || *again != *held {
