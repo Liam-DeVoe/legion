@@ -1009,8 +1009,13 @@ test.skipIf(skip || withoutPython)(
     // started keeps every process of the run below it, its own orphans included, and run_descendant
     // passes any process whose line of parents meets an older process before the shell. The harness
     // here starts under subreaper.py and waits; this test process, which is no descendant of it,
-    // then starts a not-dumpable python3 that leaves its parent and is adopted above the harness;
-    // the harness walks, then starts its own such orphan and walks again.
+    // then starts a not-dumpable python3 that leaves its parent and is adopted above the harness,
+    // and lets the harness walk only once that parent has ended, so the walk never meets the orphan
+    // while its parent exits (a line of parents the walk cannot read to its end, on which it fails
+    // closed with 2). The harness then starts its own such orphan, whose parent `unreadable` waits
+    // out, and walks again. The first walk's stderr is part of the row's first assertion, so a
+    // failure says why: one forced run of 3 at 2f41f2bcb6, in a builds pod of 64 CPUs, read "walk
+    // beside the foreign orphan: 2, named []" and kept no reason.
     const work = join(dir, "subreaper");
     mkdirSync(work);
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
@@ -1042,7 +1047,10 @@ echo "pids $foreign $own"`;
     });
     started.push(shell.pid);
     for (let i = 0; i < 200 && !existsSync(join(work, "shell.ready")); i++) await Bun.sleep(50);
-    spawn(["python3", "-I", unreadablePy, join(work, "foreign.ready"), "orphan"], { cwd: dir });
+    const starter = spawn(["python3", "-I", unreadablePy, join(work, "foreign.ready"), "orphan"], {
+      cwd: dir,
+    });
+    expect(await gone(starter)).toBe(true);
     writeFileSync(join(work, "go"), "");
     const [out, err] = await Promise.all([
       new Response(shell.stdout).text(),
@@ -1051,11 +1059,16 @@ echo "pids $foreign $own"`;
     await shell.exited;
     const ids = /^pids (\d+) (\d+)$/m.exec(out)?.slice(1) ?? [];
     for (const pid of ids) started.push(Number(pid));
-    expect({ err, out: out.replace(/^pids .*\n/m, "") }).toEqual({
+    const walk1 = join(work, "rp1.err");
+    expect({
+      err,
+      out: out.replace(/^pids .*\n/m, ""),
+      walk1: existsSync(walk1) ? readFileSync(walk1, "utf8") : "(no rp1.err)",
+    }).toEqual({
       err: "",
       out: `the shell is the subreaper\nforeign unreadable, parent elsewhere\nwalk beside the foreign orphan: 0, named [${marked} ]\nown unreadable, parent shell\nwalk beside the run's own orphan too: 2\n`,
+      walk1: "",
     });
-    expect(readFileSync(join(work, "rp1.err"), "utf8")).toBe("");
     expect(readFileSync(join(work, "rp2.err"), "utf8").trimEnd()).toMatch(
       new RegExp(
         `^procs_naming: process ${ids[1]} \\([^)\\n]+\\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \\S+ were not checked$`
