@@ -411,9 +411,10 @@ describe("dispatch plans", () => {
         `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0 on set model 0 off 0 unknown 0`,
       ]);
       // The reason as the line prints it reads back as the reason Dispatch answered.
-      const shown = /^.* ratings 3\/5 (".*") time - failed steps 0 on set model 0 off 0 unknown 0$/.exec(
-        lines[1] ?? ""
-      )?.[1];
+      const shown =
+        /^.* ratings 3\/5 (".*") time - failed steps 0 on set model 0 off 0 unknown 0$/.exec(
+          lines[1] ?? ""
+        )?.[1];
       expect(JSON.parse(shown ?? "null"), printed).toBe(reason);
     }
   });

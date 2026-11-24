@@ -327,7 +327,10 @@ describe("dispatch steps", () => {
       "set A answered A=41(93%),B=3(7%)",
       "set A answered none",
     ];
-    const answer: IssueSteps = { issue: "LEG-1", tasks: [{ task: "default", steps: [...records] }] };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [...records] }],
+    };
 
     const { result } = await readSteps(answer);
 

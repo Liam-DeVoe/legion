@@ -46,7 +46,8 @@ test("a record with no answers key reads unknown, and one with no set_model key 
 // The daemon writes the answers most calls first; the text keeps the record's order whatever it
 // is, and rounds each share alone, so three equal shares read 33% each.
 test("answeredText keeps the record's order and rounds each share to a whole percent", () => {
-  const ended = (answers: StepRecordModels["answers"]) => answeredText({ ended_at: ENDED, answers });
+  const ended = (answers: StepRecordModels["answers"]) =>
+    answeredText({ ended_at: ENDED, answers });
 
   expect(
     ended([
@@ -68,7 +69,7 @@ test("answeredText keeps the record's order and rounds each share to a whole per
 
 // Only the end writes the answers, so a run that has not ended reads as running whatever it holds.
 test("a run that has not ended reads running, whatever answers it holds", () => {
-  expect(answeredText({ ended_at: null, set_model: "A", answers: [{ model: "A", calls: 1 }] })).toBe(
-    "running"
-  );
+  expect(
+    answeredText({ ended_at: null, set_model: "A", answers: [{ model: "A", calls: 1 }] })
+  ).toBe("running");
 });
