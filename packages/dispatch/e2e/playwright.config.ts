@@ -348,7 +348,9 @@ const parallelProjects = [
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
   // does with no `focusout`: `table-controls`'s page-own focus row, its row whose focused row a
   // live update takes away, its row that Add a priority opens its form in view with the focus on
-  // Priority to advance, whose `+` takes itself away, its row that an ask withdrawn
+  // Priority to advance, whose `+` takes itself away, its row that Change answer opens the
+  // answer form with its first choice whole in the window, whose button takes itself away, its
+  // row that an ask withdrawn
   // while the reader types its answer in the Inbox's list takes none of their next keys as text,
   // whose answer box the record takes away, its row that a Conversation turn resolved
   // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
@@ -393,6 +395,13 @@ const parallelProjects = [
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
   // with spaces reads.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the issue header's Status list keeps the option its arrows mark active inside its
+  // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
+  // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
+  // before the read they count answers, that a Move with only closed issues marked keeps no
+  // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
+  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -468,7 +477,9 @@ const parallelProjects = [
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
   // takes away, its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, and its scrolling-table row, whose focused row a scroll takes away.
+  // advance, its row that Change answer opens the answer form with its first choice whole in
+  // the window, whose button takes itself away, and its scrolling-table row, whose focused row a
+  // scroll takes away.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
   // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
   // outside it, close it and leave the next key to the page, as above `webkit`.
@@ -482,6 +493,13 @@ const parallelProjects = [
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the issue header's Status list keeps the option its arrows mark active inside its
+  // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
+  // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
+  // before the read they count answers, that a Move with only closed issues marked keeps no
+  // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
+  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
