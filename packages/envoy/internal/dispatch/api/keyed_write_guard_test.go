@@ -301,10 +301,34 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
+	for _, route := range tableRoutes(t, graph) {
+		if !keyedMethod(route.method) {
+			continue
+		}
+		for _, handler := range route.handlers {
+			guard.routes[route.method+" "+route.pattern] = handler
+			guard.walk(handler)
+		}
+	}
+	return guard
+}
+
+// tableRoute is one row of the routes table as the static guards read it: its method, its
+// pattern, and the handler it registers.
+type tableRoute struct {
+	method, pattern string
+	handlers        []*lockFunction
+}
+
+// tableRoutes reads every row of the routes table (api.server.routes) off graph, in the table's
+// order: each five-field row literal whose method is a net/http constant.
+func tableRoutes(t *testing.T, graph *lockGraph) []tableRoute {
+	t.Helper()
 	table := graph.named["api.server.routes"]
 	if table == nil {
 		t.Fatal("the guard finds no routes table (api.server.routes)")
 	}
+	var routes []tableRoute
 	ast.Inspect(table.body, func(node ast.Node) bool {
 		literal, ok := node.(*ast.CompositeLit)
 		if !ok || len(literal.Elts) != 5 {
@@ -314,18 +338,15 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		if !ok {
 			return true
 		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
 		pattern, _ := literalText(literal.Elts[1], table.pkg, graph.constants)
-		for _, handler := range graph.functionValue(literal.Elts[4]) {
-			guard.routes[verb+" "+pattern] = handler
-			guard.walk(handler)
-		}
+		routes = append(routes, tableRoute{
+			method:   strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method")),
+			pattern:  pattern,
+			handlers: graph.functionValue(literal.Elts[4]),
+		})
 		return false
 	})
-	return guard
+	return routes
 }
 
 // walk marks fn and everything it runs while its request's commit step is live reached.
