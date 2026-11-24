@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
@@ -56,7 +57,7 @@ export function SignInsSection(): ReactNode {
       heading="Sign-ins"
       headingId="signins-heading"
       noun="sign-ins"
-      onRevoked={() => void queryClient.invalidateQueries({ queryKey: signInsQuery().queryKey })}
+      onRevoked={() => invalidateWaitingForPaused(queryClient, signInsQuery().queryKey)}
       query={signIns}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
       rowKey={(signIn) => signIn.signin_id}

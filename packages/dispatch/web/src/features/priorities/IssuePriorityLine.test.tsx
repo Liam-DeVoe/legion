@@ -1,20 +1,25 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { NoTooltips } from "../issue-page/NoTooltips";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
@@ -60,23 +65,29 @@ const REVISION = 41;
 // Queries are scoped to this render's container: bun runs every test file in one document, and
 // a sibling file's un-unmounted render would otherwise leak its links into a `screen`-wide query.
 // `inMain` mounts the line in the shell's main content, beside a control of the page after it;
+// `page` draws it inside the new issue page's `NoTooltips`, through `queryClient` where given;
 // `redraw` draws it again for the issue's `advances` a later read answers.
 function renderLine(
   advances: Issue["advances"],
-  { closed = false, inMain = false }: { closed?: boolean; inMain?: boolean } = {}
+  {
+    closed = false,
+    inMain = false,
+    page = false,
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  }: { closed?: boolean; inMain?: boolean; page?: boolean; queryClient?: QueryClient } = {}
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
   const patchIssue = answerIssuePatches();
   patchIssue.mockResolvedValue({} as never);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidations = spyOn(queryClient, "invalidateQueries");
   const tree = (shown: Issue["advances"]) => {
-    const line = (
+    const drawn = (
       <IssuePriorityLine
         disabled={closed}
         issue={{ advances: shown, advances_revision: REVISION, key: "CORE-9" }}
       />
     );
+    const line = page ? <NoTooltips>{drawn}</NoTooltips> : drawn;
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
@@ -264,6 +275,95 @@ test("a write the reader stopped says it may have been saved, not that it failed
     realClock();
     view.unmountAll();
     view.queryClient.clear();
+  }
+});
+
+// Offline, a write of the line is tried under its key until Dispatch answers it: each try fails at
+// the network, and the next waits out its backoff. At its deadline (`SEND_DEADLINE_MS`) the write
+// goes late, still tried and now stoppable at the shell's indicator, and the line's hold ends
+// there, so a write that never answers holds none of its controls for good, as the Legion daemons
+// form's hold ends (`LegionDaemonsSection`). The Remove the reader pressed keeps the focus while
+// it is held and once it is let go, under `emulateChromiumFocusFixup` throughout.
+test("offline, a priority's Remove is held until its write's deadline, let go there, and keeps the focus throughout", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  view.patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
+  );
+  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
+    jest.useFakeTimers();
+    onlineManager.setOnline(false);
+    await pressHeld(userOnFakeClock(), remove, {
+      name,
+      sent: () => view.patchIssue.mock.calls.length,
+    });
+
+    // A second short of the deadline the write is still within it, and Remove still held.
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(writesOf(view.queryClient).rows()[0]?.status).toBe("sending");
+    expect(heldNotDisabled(remove, name)).toBe(true);
+    expect(remove).toHaveFocus();
+
+    // Past it the write is late and still tried, and Remove is let go with the focus on it.
+    await tick(1_000);
+    expect(writesOf(view.queryClient).rows()[0]?.status).toBe("late");
+    expect(heldNotDisabled(remove, name)).toBe(false);
+    expect(remove).toHaveFocus();
+  } finally {
+    // The line and its reads go before the network returns, so no read goes on after it.
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the line holds its controls through the reads its write makes again. A
+// write that lands just as the browser goes offline has those reads paused by the network, with
+// no deadline of their own running: the app's client holds a read of an idle query until its
+// paused fetch answers (`DispatchQueryClient`). So the line holds them only up to the request
+// deadline (`REQUEST_DEADLINE_MS`), and lets them go there, with the focus on the Remove pressed.
+test("offline, inside NoTooltips, a priority's Remove is held through the reads its landed write made only until the request deadline", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), remove, {
+      name,
+      sent: () => view.patchIssue.mock.calls.length,
+    });
+    onlineManager.setOnline(false);
+    await act(async () => answer.resolve({} as never));
+
+    // A second short of the request deadline the reads are still paused, and Remove held.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(remove, name)).toBe(true);
+    expect(remove).toHaveFocus();
+
+    // At it the line lets Remove go, with the focus on it.
+    await tick(1_000);
+    expect(heldNotDisabled(remove, name)).toBe(false);
+    expect(remove).toHaveFocus();
+  } finally {
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
   }
 });
 

@@ -1380,6 +1380,65 @@ test("Agents sends without an issue through the agent message route", async () =
   }
 });
 
+// A send that lands gives the box back the focus only where the focus still is where the send
+// left it: on the box, on Send, or lost to the page's body by the send itself. The reader who
+// pressed Send writes their next message in the box; one who took the focus off the composer
+// while the send was out - to the page's body, as a press on a row's plain words puts it - keeps
+// where they went, so their next key is never typed into a box they have already sent from.
+test("a send that lands gives the box back the focus from Send", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const out = Promise.withResolvers<Message>();
+  page.createAgentMessage.mockImplementation(() => out.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await type(user, comment, "Check the deployment");
+    const send = within(planner).getByRole("button", { name: "Send" });
+    await user.click(send);
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+    expect(send).toHaveFocus();
+
+    await act(async () => out.resolve(message("Check the deployment")));
+    // The send has landed once its draft is cleared.
+    await waitFor(() => expect(comment).toHaveValue(""));
+    expect(comment).toHaveFocus();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a send that lands leaves a focus the reader took off the composer while it was out", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const out = Promise.withResolvers<Message>();
+  page.createAgentMessage.mockImplementation(() => out.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await type(user, comment, "Check the deployment");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+    // The reader goes on while the send is out, with a press on nothing that takes the focus.
+    act(() => comment.blur());
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => out.resolve(message("Check the deployment")));
+    await waitFor(() => expect(comment).toHaveValue(""));
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 const coreIssue: IssueSummary = {
   advances: [],
   advances_revision: 0,

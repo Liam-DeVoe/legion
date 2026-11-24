@@ -58,6 +58,7 @@ import {
   TWENTY_LABELS,
   TYPEFACE,
   timesDrawn,
+  titleControl,
   titleOfLines,
   typefaceAddress,
   typefaceStatuses,
@@ -202,7 +203,8 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // the project, the crumbs' separators, the key and the one chip's "Not requested". The status
     // is a trigger named for its menu (dispatch://INFRA-2160), and the priority and the assignee
     // are each the shared list's single pick, a button named for its list; each is named then for
-    // the value it shows. The status's shape is an svg with no words.
+    // the value it shows. The status's shape is an svg with no words. The title is a heading that
+    // holds its control, a button named by the title (`IssueTitleRow`).
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -210,6 +212,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       /^button Issue actions$/,
       /^button Details$/,
       /^h1 /,
+      exactly(`button ${MEASURED_TITLE}`),
       /^button Status In progress$/,
       new RegExp(`^button Priority of ${seeded.key} P1$`),
       new RegExp(`^button Assignee of ${seeded.key} alice$`),
@@ -1207,8 +1210,8 @@ test("a press on the status straight out of the title's editor lands on the stat
     page.off("request", countStatusWrite);
     await page.unroute(held);
 
-    // Escape and Enter leave the title's editor with the focus on the heading it opened from,
-    // which does not open the editor again; Enter saves what was typed.
+    // Escape and Enter leave the title's editor with the focus on the title's button it opened
+    // from, which does not open the editor again; Enter saves what was typed.
     for (const leave of ["Escape", "Enter"] as const) {
       await page.keyboard.press("Escape");
       await title.click();
@@ -1216,7 +1219,10 @@ test("a press on the status straight out of the title's editor lands on the stat
       if (leave === "Enter") await editor.pressSequentially("entered ");
       await page.keyboard.press(leave);
       await expect(editor, `${leave} left the title's editor open`).toHaveCount(0);
-      await expect(title, `${leave} dropped the focus out of the header`).toBeFocused();
+      await expect(
+        titleControl(issueHeader(page)),
+        `${leave} dropped the focus out of the header`
+      ).toBeFocused();
     }
     await expect
       .poll(async () => (await getIssue(seeded.key)).title, {
@@ -1296,12 +1302,13 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 
         // An edit the keyboard opens and ends after the one that press ended: the press is
         // over, so nothing holds the heading at the editor's height, and at 1440 px the title
-        // of three lines is clamped to two again. The edit is opened with Enter on the focused
-        // heading, which sends no click: `e` opens it by clicking the heading, and that click
-        // would end a press still under way before the edit opened.
+        // of three lines is clamped to two again. The edit is opened with Enter on the title's
+        // focused button, which sends no click: `e` opens it by clicking that button, and that
+        // click would end a press still under way before the edit opened.
         if (width === DESKTOP.width && lines === 3) {
-          await heading.focus();
-          await expect(heading).toBeFocused();
+          const titleButton = titleControl(issueHeader(page));
+          await titleButton.focus();
+          await expect(titleButton).toBeFocused();
           await page.keyboard.press("Enter");
           await expect(editor).toBeFocused();
           await page.keyboard.press("Enter");
@@ -1525,10 +1532,11 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       .poll(() => getIssue(key))
       .toMatchObject({ priority: 2, title: "The header's issue" });
 
-    // Escape and Enter leave the focus on the heading, and `e` there opens the editor again.
-    const heading = header.getByRole("heading", { level: 1 });
+    // Escape and Enter leave the focus on the title's button, and `e` there opens the editor
+    // again. The heading around it takes no Tab stop of its own.
+    const titleButton = titleControl(header);
     for (const leave of ["Escape", "Enter"] as const) {
-      await expect(heading, `${leave} dropped the focus out of the header`).toBeFocused();
+      await expect(titleButton, `${leave} dropped the focus out of the header`).toBeFocused();
       await page.keyboard.press("e");
       await expect(
         editor,
@@ -1538,10 +1546,10 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       await expect(editor, "Enter left the title's editor open").toHaveCount(0);
     }
 
-    // A focus the page gives back to the heading opens no editor: Details, opened from its
-    // control while the heading holds the focus, gives the focus back to the heading as Escape
+    // A focus the page gives back to the title's button opens no editor: Details, opened from
+    // its control while that button holds the focus, gives the focus back to it as Escape
     // closes it, and a key typed then is no part of the title.
-    await expect(heading, "Enter dropped the focus out of the header").toBeFocused();
+    await expect(titleButton, "Enter dropped the focus out of the header").toBeFocused();
     await header.getByTestId("issue-details-control").click();
     await expect(details(page), "Details' control opened no Details").toBeVisible();
     await page.keyboard.press("Escape");
@@ -1556,7 +1564,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(editor, "a focus given back to the heading opened the title's editor").toHaveCount(
       0
     );
-    await expect(heading, "Details did not give the focus back to the heading").toBeFocused();
+    await expect(titleButton, "Details did not give the focus back to the title").toBeFocused();
     await page.keyboard.press("x");
     await focusThePage(page);
     expect(
@@ -2153,7 +2161,7 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
     await expectOpeningLanded(page);
     await focusThePage(page);
     const header = issueHeader(page);
-    const heading = header.getByRole("heading", { level: 1 });
+    const titleButton = titleControl(header);
     const editor = header.getByRole("textbox", { name: "Issue title" });
     const title = (await getIssue(seeded.key)).title;
     // Enter ends an edit with the focus on the heading; the page then loses the focus and gives
@@ -2161,8 +2169,8 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
     await page.keyboard.press("e");
     await expect(editor, "e did not put the caret in the title").toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(heading, "Enter dropped the focus out of the header").toBeFocused();
-    await heading.evaluate((element) => {
+    await expect(titleButton, "Enter dropped the focus out of the header").toBeFocused();
+    await titleButton.evaluate((element) => {
       (element as HTMLElement).blur();
       (element as HTMLElement).focus();
     });
@@ -2591,9 +2599,9 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
       "the menu stayed open once Tab took the focus out of it at 390 px"
     ).toHaveAttribute("aria-expanded", "false");
     await expectFocusInSight(page, menuId, "the first Tab out of the menu left the focus unseen");
-    // On from there to the title's heading and then the Status, each found by its role and name.
+    // On from there to the title's button and then the Status, each found by its role and name.
     for (const [what, target] of [
-      ["the title's heading", header.getByRole("heading", { level: 1 })],
+      ["the title's button", titleControl(header)],
       ["the Status", badgeValue(page, "Status")],
     ] as const) {
       let reached = false;
@@ -2846,9 +2854,9 @@ test("the approval chip's a approves the document whose request waits, and a els
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
     await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
 
-    const heading = header.getByRole("heading", { level: 1 });
-    await heading.focus();
-    await expect(heading).toBeFocused();
+    const titleButton = titleControl(header);
+    await titleButton.focus();
+    await expect(titleButton).toBeFocused();
     await page.keyboard.press("a");
     await framesDrawn(page, 2);
     expect(reviewed, "a on the title's heading sent a review").toEqual([]);
@@ -2905,9 +2913,9 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
     await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
     const dialog = page.getByRole("dialog", { name: "Request changes" });
 
-    const heading = header.getByRole("heading", { level: 1 });
-    await heading.focus();
-    await expect(heading).toBeFocused();
+    const titleButton = titleControl(header);
+    await titleButton.focus();
+    await expect(titleButton).toBeFocused();
     await page.keyboard.press("Shift+R");
     await framesDrawn(page, 2);
     await expect(dialog, "Shift+R on the title's heading opened Request changes").toHaveCount(0);
@@ -3739,8 +3747,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
         `**/api/v1/issues/${key}`,
         "PATCH",
         async () => {
-          const heading = header.getByRole("heading", { level: 1 });
-          await heading.focus();
+          await titleControl(header).focus();
           await page.keyboard.press("e");
           await expect(header.getByRole("textbox", { name: "Issue title" })).toBeFocused();
           await page.keyboard.press("End");
@@ -3830,13 +3837,13 @@ test("Shift+P pins and unpins and leaves the focus where it was", async ({ brows
       `Shift+P from the page's body moved the focus to ${fromBody.what}`
     ).toBe(true);
 
-    const heading = header.getByRole("heading", { level: 1 });
-    await heading.focus();
-    await expect(heading).toBeFocused();
+    const titleButton = titleControl(header);
+    await titleButton.focus();
+    await expect(titleButton).toBeFocused();
     await page.keyboard.press("Shift+P");
     await expect(pin, "Shift+P did not unpin the issue").toHaveAttribute("aria-pressed", "false");
     await framesDrawn(page, 2);
-    await expect(heading, "Shift+P from the title's heading moved the focus").toBeFocused();
+    await expect(titleButton, "Shift+P from the title's button moved the focus").toBeFocused();
   });
 });
 

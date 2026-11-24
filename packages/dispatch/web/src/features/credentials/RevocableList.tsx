@@ -1,7 +1,9 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 import type { WriteBounds } from "../../api/client";
+import { useReadBound } from "../../api/read-bound";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -47,10 +49,17 @@ export interface RevocableColumn<Row> {
  * revoke in flight: every Revoke button is held while it is pending (`heldPress`), never disabled,
  * so the pressed Revoke keeps the focus and a press of any Revoke does nothing, and the submit
  * guard drops a second press that lands before that re-render (a same-tick double click).
- * `onRevoked` runs once a revoke succeeds, for the section to refresh what it changed. A section
- * may also list rows the broker lets nobody revoke: `unrevocable` names why for such a row, which
- * is then read-only, with that line where its button would be, so the page offers no button that
- * can only fail.
+ * `onRevoked` runs once a revoke succeeds, and answers the read that refreshes what it changed:
+ * the buttons stay held through that read, up to the request deadline (`useReadBound`), and a
+ * read that has not settled by then lets them go, with the line under the table saying why the
+ * list is not read yet. That read takes the revoked row away, and with it the Revoke that held the
+ * focus, which the browser would leave on the page's body. So the list hands that focus on itself
+ * (`useFocusPlace`), to the control now at the Revoke's place, or the nearest one before it, that
+ * the reader can see: the press arms that hand-off at the list's root (`ARM_ON_PRESS`), and the
+ * hold through the read keeps the press the cause of the row's going. A section may also list
+ * rows the broker lets nobody revoke: `unrevocable` names why for such a row, which is then
+ * read-only, with that line where its button would be, so the page offers no button that can
+ * only fail.
  */
 export function RevocableList<Row>({
   className,
@@ -76,7 +85,9 @@ export function RevocableList<Row>({
   heading: string;
   headingId: string;
   noun: string;
-  onRevoked: () => void;
+  /** Refreshes what a revoke that succeeded changed, and answers that read, waited on through a
+   *  fetch the network has paused (`invalidateWaitingForPaused`). */
+  onRevoked: () => Promise<unknown>;
   query: UseQueryResult<readonly Row[]>;
   /** One attempt of `row`'s revoke - a `POST` of its revoke route - under the write's key. */
   revoke: (row: Row, bounds: WriteBounds) => Promise<void>;
@@ -89,12 +100,15 @@ export function RevocableList<Row>({
   unrevocable?: (row: Row) => string | null;
 }): ReactNode {
   const submitGuard = useSubmitGuard();
+  // Why the read a landed revoke made has not settled, once its hold ran out (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound();
   // The list shows a refused revoke itself, under the table.
   const mutation = useKeyedWrite({
     inline: true,
     label: (row: Row) => `${heading}: revoke ${rowKey(row)}`,
     onSettled: () => submitGuard.release(),
-    onSuccess: onRevoked,
+    // Pending, and every Revoke held, through the read that takes the revoked row away.
+    onSuccess: () => holdThrough(onRevoked()),
     method: "POST",
     write: revoke,
   });
@@ -109,9 +123,23 @@ export function RevocableList<Row>({
       submitGuard.guard(() => mutation.mutate(row));
     }
   };
+  // The list's own hand-off for the Revoke its row takes away, counted among the list's controls;
+  // it names no fallback, so a list left with no control before that place walks back over the
+  // page's main content.
+  const list = useRef<HTMLElement>(null);
+  const noteFocus = useFocusPlace(
+    () => list.current,
+    () => null
+  );
 
   return (
-    <section aria-labelledby={headingId} className={className}>
+    <section
+      aria-labelledby={headingId}
+      className={className}
+      {...ARM_ON_PRESS}
+      onFocus={noteFocus}
+      ref={list}
+    >
       <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
         {heading}
       </h2>
@@ -184,6 +212,12 @@ export function RevocableList<Row>({
             : refusedNote(`revoke ${rowName(refused)}`, mutation.error)}
         </p>
       )}
+      {/* A list read that has not settled is said as the list says a list that failed to load. */}
+      {refused === undefined && unsettled !== undefined ? (
+        <p className={`mt-2 ${dangerText}`}>
+          Couldn't load {noun}. {unsettled}.
+        </p>
+      ) : null}
     </section>
   );
 }

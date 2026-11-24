@@ -35,6 +35,7 @@ import { type ActionBinding, useKeymap } from "../../shell/keymap";
 import type { KeymapActionId } from "../../shell/keymap-catalogue";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { FoldMark } from "../FoldMark";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -1175,12 +1176,15 @@ function Statement({
  * the row - its words, a link in them, its facts, its results, the line of earlier results or
  * the row itself - and while the reader has pressed them open, which is the rule the outline
  * draws a focused node's body by. A pointer's press on the words or on the latest result's cell,
- * or Enter or Space on the words, opens them where they are shut and shuts them where they are
- * open, the focus inside or not, so the row says what it does (`aria-expanded`) and does it; a
- * press on a link or a button of the row is that control's own. The words are a tab stop with
- * no role: their links are tab stops too, and no control holds another. So a reader reaches
- * every fact of a check and of its results by the keyboard alone, and the table stays the table
- * the picture draws.
+ * or a press of the control beside the words, opens them where they are shut and shuts them where
+ * they are open, the focus inside or not, so the row says what it does (`aria-expanded`) and does
+ * it; a press on a link or another button of the row is that control's own. The control is a
+ * real disclosure button, named by the check's words, which says whether the facts are drawn
+ * (`aria-expanded`): the words hold links, so no button may hold them, and they take no Tab
+ * stop of their own, only the focus a press or a script gives them, where Enter and Space press
+ * them as the control does. Their links are tab stops, and no control holds another. So a reader
+ * reaches every fact of a check and of its results by the keyboard alone, and the table stays
+ * the table the picture draws.
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
@@ -1227,11 +1231,20 @@ function Check({
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;
-  const pointerPress = (event: MouseEvent<HTMLElement>) => {
+  /** Opens the facts where they were shut as the press began and shuts them where they were
+   *  drawn: a pointer's press reads them as its `mousedown` found them (`markPress`), a key as
+   *  they stand now. */
+  const pressFacts = () => {
     const drawn = drawnAtPress.current ?? opened;
     drawnAtPress.current = undefined;
-    if (pressIsOwn(event)) return;
     onPress(row, !drawn);
+  };
+  const pointerPress = (event: MouseEvent<HTMLElement>) => {
+    if (pressIsOwn(event)) {
+      drawnAtPress.current = undefined;
+      return;
+    }
+    pressFacts();
   };
   const markPress = () => {
     drawnAtPress.current = opened;
@@ -1251,14 +1264,14 @@ function Check({
     <>
       <div className={CELL}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: the words hold links that are tab
-            stops of their own, so no role may make them a control that holds controls; the row's
-            `aria-expanded` says what a press does. */}
+            stops of their own, so no role may make them a control that holds controls; the
+            control beside them is the row's button for what a press of them does. */}
         <div
           className={`flex min-w-0 items-baseline gap-2 text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
           data-verification-check-words=""
           onClick={pointerPress}
           onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
-            // A key on a link in the words is the link's own.
+            // A key on a link in the words, or on the control beside them, is that one's own.
             if (event.target !== event.currentTarget) return;
             if (event.key !== "Enter" && event.key !== " ") return;
             if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -1267,8 +1280,9 @@ function Check({
             onPress(row, !opened);
           }}
           onMouseDown={markPress}
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view.
-          tabIndex={0}
+          // No Tab stop: the control beside the words takes it. The words keep the focus a press
+          // or a script gives them, which opens the facts as any focus in the row does.
+          tabIndex={-1}
         >
           <span
             aria-hidden="true"
@@ -1277,6 +1291,18 @@ function Check({
           <div className="min-w-0 break-words" data-node-words="">
             <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
           </div>
+          {/* The facts' disclosure control: 24 px square, drawn into the words' 20 px line by
+              its margins, so the line keeps its height. */}
+          <button
+            aria-expanded={opened}
+            aria-label={`${VERIFICATION_WORDS.show_facts} ${chipWords(lineWords(node))}`}
+            className={`-my-0.5 ml-auto inline-flex size-6 shrink-0 items-center justify-center self-start rounded hover:text-page-ink ${pageQuietText} ${focusVisibleRing}`}
+            data-verification-facts=""
+            onClick={pressFacts}
+            type="button"
+          >
+            <FoldMark open={opened} />
+          </button>
         </div>
         {surface === "" ? null : (
           <p

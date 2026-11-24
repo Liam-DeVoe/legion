@@ -297,3 +297,60 @@ for (const section of sections) {
     }
   });
 }
+
+// A revoke that lands takes its row away once the list is read again, and the browser would leave
+// the focus the reader's press left on Revoke on the page's body. The list's own hand-off
+// (`useFocusPlace`), armed by the press at the list's root (`ARM_ON_PRESS`), gives it to the
+// Revoke before it, a control the reader can see. The press counts while Revoke is held, and
+// Revoke is held through the read that takes the row away, so a read that answers well after the
+// revoke still finds the press live.
+test("Sign-ins: Revoke by the keyboard hands the focus to the Revoke before it once its row leaves the list", async () => {
+  const user = userEvent.setup();
+  const signIn = (signin_id: string, machine: string) => ({
+    created_at: "2026-10-03T12:00:00Z",
+    last_used_at: "2026-10-03T12:30:00Z",
+    machine,
+    signin_id,
+    thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+  });
+  const kept = signIn("signin-1", "devbox.example.com");
+  let revoked = false;
+  const list = spyOn(api, "getSignIns").mockImplementation(async () => {
+    if (!revoked) return { signins: [kept, signIn("signin-2", "laptop.example.com")] };
+    // The read after the revoke answers long after the frame and the task a press outlives
+    // the hold that kept it live by.
+    const later = Promise.withResolvers<void>();
+    setTimeout(later.resolve, 200);
+    await later.promise;
+    return { signins: [kept] };
+  });
+  const revoke = spyOn(api, "revokeSignIn").mockImplementation(async () => {
+    revoked = true;
+  });
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SignInsSection />
+      </QueryClientProvider>
+    );
+    const region = within(await screen.findByRole("region", { name: "Sign-ins" }));
+    const [before, pressed] = await region.findAllByRole("button", { name: "Revoke" });
+    if (before === undefined || pressed === undefined) throw new Error("two rows, two Revokes");
+    act(() => pressed.focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(region.getAllByRole("button", { name: "Revoke" })).toHaveLength(1), {
+      timeout: 2_000,
+    });
+    expect(revoke.mock.calls).toEqual([["signin-2", keyedAttempt]]);
+    await waitFor(() => expect(before).toHaveFocus());
+  } finally {
+    cleanup();
+    queryClient.clear();
+    confirm.mockRestore();
+    list.mockRestore();
+    revoke.mockRestore();
+  }
+});

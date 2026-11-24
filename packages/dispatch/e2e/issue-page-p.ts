@@ -169,6 +169,13 @@ export function issueHeader(page: Page): Locator {
   return page.locator("[data-issue-page] header[data-issue-header]");
 }
 
+/** The title's control in `header`: the button inside its heading, named by the title, which
+ *  takes the title's Tab stop, its keys and the focus an edit gives back (`IssueTitleRow`). The
+ *  heading itself takes no Tab stop. */
+export function titleControl(header: Locator): Locator {
+  return header.getByRole("heading", { level: 1 }).getByRole("button");
+}
+
 /** The part of the header that stays at the top of the screen from 761 px up: the key's row
  *  and the title. */
 export function identityBand(page: Page): Locator {

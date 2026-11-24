@@ -8,6 +8,7 @@ import {
   isCapExceeded,
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
+import { readWithinBound } from "../../api/read-bound";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { heldField, heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
@@ -495,6 +496,7 @@ export function ApprovalChip({
     },
     onSettled: () => submitGuard.release(),
     method: "POST",
+    readsLate: true,
     write: ({ artifact: reviewed, input, version }, bounds) =>
       api.createArtifactVersionReview(reviewed.id, version, input, bounds),
     onSuccess: (_result, { artifact: reviewed }) => {
@@ -502,20 +504,24 @@ export function ApprovalChip({
       // the write stops pending, on both sides of `NoTooltips`: Approve, Request changes and the
       // dialog's submit stay refused, and keep the focus, until the new approval is read. So no
       // second press - a second `a`, a held key's repeat, a second click - records a second
-      // approval while the page still draws the request as waiting. Outside `NoTooltips` the
-      // dialog closes as the write lands, as on `main`. Inside, it closes once the reads are in,
-      // and a dialog the reader has not closed (`onClose`) then gives the focus back to the button
-      // that opened it. The reads are the reviewed document's, from the press.
+      // approval while the page still draws the request as waiting. A read that has not settled
+      // by the request deadline - one the network paused while the browser is offline - ends the
+      // wait there (`readWithinBound`), so no read holds the actions for good. Outside
+      // `NoTooltips` the dialog closes as the write lands, as on `main`. Inside, it closes once
+      // the reads are in, and a dialog the reader has not closed (`onClose`) then gives the focus
+      // back to the button that opened it. The reads are the reviewed document's, from the press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
-      const rereads = Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
-        queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-        ...(reviewed.issue_key === null
-          ? []
-          : [queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] })]),
-        ...approvalReads(reviewed).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
-      ]);
+      const rereads = readWithinBound(
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+          queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+          ...(reviewed.issue_key === null
+            ? []
+            : [queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] })]),
+          ...approvalReads(reviewed).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+        ])
+      );
       return page === null ? rereads : rereads.then(() => setRequestChangesOpen(false));
     },
   });
@@ -556,9 +562,15 @@ export function ApprovalChip({
     return null;
   }
 
-  /** Held while a review is out, until the reads it made stale are read again (`onSuccess`), and
-   *  in the pane's head until the read has given the approval. */
-  const held = review.isPending || approval === undefined;
+  /** Whether a review holds the actions and the dialog's submit: while it is out within its
+   *  deadline, until the reads it made stale are read again (`onSuccess`). A review past its
+   *  deadline (`late`) holds them no longer: it is still tried under its key, and the shell's
+   *  indicator offers to stop it, but one that never answers - the browser offline - would
+   *  otherwise hold them for good. */
+  const reviewHolds = review.isPending && !review.late;
+  /** Held while a review holds them, and in the pane's head until the read has given the
+   *  approval. */
+  const held = reviewHolds || approval === undefined;
   const approveLabel =
     !pane && approval?.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
   const requestChangesLabel = "Request changes";
@@ -698,7 +710,7 @@ export function ApprovalChip({
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
-          held={review.isPending}
+          held={reviewHolds}
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel

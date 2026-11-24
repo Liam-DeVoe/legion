@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
+import { readWithinBound } from "../../api/read-bound";
 import type { Issue, PriorityRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
@@ -150,6 +151,7 @@ export function IssuePriorityLine({
     label: () => `Advances of ${issue.key}`,
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issue.key}`,
+    readsLate: true,
     // The set and the revision of the read it was drawn from, both taken at the press: a retry
     // sends the same pair, never a revision read after the set was chosen.
     request: (input: { advances: string[]; advances_revision: number }) =>
@@ -166,18 +168,24 @@ export function IssuePriorityLine({
       // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
       // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
       // write stops pending: each control of the line stays refused, and keeps the focus, until
-      // the issue it draws is the one read after the write.
+      // the issue it draws is the one read after the write, or until the request deadline where
+      // that read has not settled - one the network paused while the browser is offline
+      // (`readWithinBound`) - so no read holds the line for good.
       if (page === null) return;
-      return Promise.all(rereads);
+      return readWithinBound(Promise.all(rereads));
     },
   });
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
-  // Disabled on a closed issue; held while a write is out, so each control keeps the focus the
-  // press gave it and sends nothing more until the write lands (`heldPress`): a priority's
-  // Remove, the form's Add and the add control, on both sides of `NoTooltips`. Inside, the write
-  // is out until the issue is read again (`onSettled`, above).
-  const held = write.isPending;
+  // Disabled on a closed issue; held while a write is out within its deadline, so each control
+  // keeps the focus the press gave it and sends nothing more until the write lands (`heldPress`):
+  // a priority's Remove, the form's Add and the add control, on both sides of `NoTooltips`.
+  // Inside, the write is out until the issue is read again (`onSettled`, above). A write past its
+  // deadline (`late`) holds them no longer: it is still tried under its key, and the shell's
+  // indicator offers to stop it, but one that never answers - the browser offline - would
+  // otherwise hold the line for good. A press made then waits its turn behind it on the issue's
+  // line (`target`), late as well.
+  const held = write.isPending && !write.late;
   const addControl = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLFormElement>(null);
   // Opening the form puts the focus in its first field, the list's trigger: the add control the

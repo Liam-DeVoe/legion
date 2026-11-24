@@ -5,6 +5,7 @@ import { STATUS_TRIGGER_SELECTOR } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
+import { TITLE_CONTROL } from "./IssueTitleRow";
 import { usableControl } from "./usable-control";
 
 /**
@@ -15,7 +16,6 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
-const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
  *  names by `aria-controls`: the actions menu's, hidden while the menu is shut
@@ -158,13 +158,14 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
-      // The heading's click opens the editor, and a focus does not, so the key clicks it: a
-      // heading that already holds the focus - where Escape and Enter leave it - takes no new
-      // focus. The selector finds the heading only while the issue is open and not edited
-      // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
+      // The title's button opens the editor at a click, and a focus does not, so the key clicks
+      // it: a button that already holds the focus - where Escape and Enter leave it - takes no
+      // new focus. The button is drawn only while the issue is open, and while the title is
+      // edited it stands in a heading that is unseen and `aria-hidden`, which takes no press
+      // (`usableControl`), so the key is offered exactly while a click opens the editor.
       action: "issue.title",
-      run: () => headerControl(TITLE_HEADING)?.click(),
-      when: () => headerControl(TITLE_HEADING) !== null,
+      run: () => headerControl(TITLE_CONTROL)?.click(),
+      when: () => headerControl(TITLE_CONTROL) !== null,
     },
     {
       // Held while its write is out (`heldPress`), when it takes no press, and so no key.

@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -9,11 +9,14 @@ import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { ApprovalChip } from "./ApprovalChip";
 
 function artifact(approval: ArtifactApproval | undefined): Artifact {
@@ -669,6 +672,115 @@ test("a change request the reader stopped says it may have been made, not that i
     view.unmount();
     queryClient.clear();
     realClock();
+  }
+});
+
+// Offline, a review is tried under its key until Dispatch answers it: each try fails at the
+// network, and the next waits out its backoff. At its deadline (`SEND_DEADLINE_MS`) the write goes
+// late, still tried and now stoppable at the shell's indicator, and the chip's hold ends there, so
+// a review that never answers holds neither action for good, as the Legion daemons form's hold
+// ends (`LegionDaemonsSection`). Approve keeps the focus while it is held and once it is let go,
+// under `emulateChromiumFocusFixup` throughout.
+test("offline, Approve is held until its review's deadline, let go there, and keeps the focus throughout", async () => {
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new NetworkError(
+      "/api/v1/artifacts/artifact-1/versions/3/reviews",
+      new TypeError("Failed to fetch")
+    )
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  const approve = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+  const online = onlineManager.isOnline();
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    onlineManager.setOnline(false);
+    await pressHeld(userOnFakeClock(), approve, {
+      name: "Approve",
+      sent: () => createArtifactVersionReview.mock.calls.length,
+    });
+
+    // A second short of the deadline the review is still within it, and Approve still held.
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(writesOf(queryClient).rows()[0]?.status).toBe("sending");
+    expect(heldNotDisabled(approve, "Approve")).toBe(true);
+    expect(approve).toHaveFocus();
+
+    // Past it the review is late and still tried, and Approve is let go with the focus on it.
+    await tick(1_000);
+    expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+    expect(heldNotDisabled(approve, "Approve")).toBe(false);
+    expect(approve).toHaveFocus();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+    createArtifactVersionReview.mockRestore();
+  }
+});
+
+// A review that lands just as the browser goes offline: the reads it made stale are asked again,
+// and the network pauses them until it returns, with no deadline of their own running: the app's
+// client holds a read of an idle query until its paused fetch answers (`DispatchQueryClient`). The
+// chip holds its actions through those reads only up to the request deadline
+// (`REQUEST_DEADLINE_MS`), and lets them go there, with the focus on the Approve the reader pressed.
+test("offline, Approve is held through the reads its landed review made stale only until the request deadline", async () => {
+  const answer = Promise.withResolvers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockReturnValue(
+    answer.promise
+  );
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <IssueReadChip
+        read={() =>
+          Promise.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+        }
+      />
+    </QueryClientProvider>
+  );
+  const approve = (await screen.findByRole("button", { name: "Approve" })) as HTMLButtonElement;
+  const online = onlineManager.isOnline();
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    await pressHeld(userOnFakeClock(), approve, {
+      name: "Approve",
+      sent: () => createArtifactVersionReview.mock.calls.length,
+    });
+    onlineManager.setOnline(false);
+    await act(async () => answer.resolve(approvedReview(3)));
+
+    // A second short of the request deadline the issue's read is still paused, and Approve held.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(approve, "Approve")).toBe(true);
+    expect(approve).toHaveFocus();
+
+    // At it the chip lets Approve go, with the focus on it.
+    await tick(1_000);
+    expect(heldNotDisabled(approve, "Approve")).toBe(false);
+    expect(approve).toHaveFocus();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+    createArtifactVersionReview.mockRestore();
   }
 });
 

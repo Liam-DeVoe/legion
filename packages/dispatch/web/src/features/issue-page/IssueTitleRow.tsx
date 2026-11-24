@@ -12,10 +12,15 @@ import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
 
+/** The title's control: the button inside the heading that opens the editor (`IssueTitleRow`),
+ *  drawn while the issue is open, which the header's `e` key presses (`useHeaderKeys.ts`). */
+export const TITLE_CONTROL = "h1 > button[data-title-control]";
+
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
- * editor it becomes when the reader presses it: a click, Enter or Space on the heading, or the
- * header's `e` key, which clicks it (`useHeaderKeys.ts`).
+ * editor it becomes when the reader presses it: a click on the heading, Enter or Space on the
+ * button that holds its words, or the header's `e` key, which clicks that button
+ * (`useHeaderKeys.ts`).
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
  * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it. It keeps that
@@ -32,11 +37,18 @@ import { authorText } from "./page-structure";
  * the read view keeps that height until the press that ended the edit has been delivered, and
  * only then clamps it again.
  *
- * Escape and Enter end the edit from the keyboard, and give the focus back to the heading the
- * reader opened the editor from, so the keyboard reader is where they were. A focus alone
- * never opens the editor: the page gives the focus back to the heading on its own - Details
+ * Escape and Enter end the edit from the keyboard, and give the focus back to the title's button
+ * the reader opened the editor from, so the keyboard reader is where they were. A focus alone
+ * never opens the editor: the page gives the focus back to that button on its own - Details
  * closing onto the control that opened it, a return to the window - and an editor opened then
  * would take the next shortcut key as text of the title.
+ *
+ * The heading keeps its role and takes no Tab stop of its own: the control is a real button
+ * inside it, named by the title it holds, which Tab reaches and a screen reader names a button.
+ * The button holds the title's words in a box of their own, which the clamp holds to two lines
+ * from 761 px up as the heading's would: a button is drawn as a box of its own, so the
+ * heading's clamp, which the heading keeps, counts it as one line. A closed issue's title takes
+ * no edit, so it draws no button, and the heading holds the words itself.
  */
 export function IssueTitleRow({
   drafts,
@@ -65,6 +77,7 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  const control = useRef<HTMLButtonElement>(null);
   const editor = useRef<HTMLTextAreaElement | null>(null);
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
@@ -96,7 +109,7 @@ export function IssueTitleRow({
   };
   useEffect(() => {
     if (editing || !returning.current) return;
-    heading.current?.focus({ preventScroll: true });
+    control.current?.focus({ preventScroll: true });
     returning.current = false;
   }, [editing]);
   // The editor takes the focus once, as the edit opens. Focused at every render, it took the
@@ -201,28 +214,47 @@ export function IssueTitleRow({
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
 
+  // A trailing space or an empty draft still holds a line, as the editor does.
+  const words = shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown;
+  const clamp = whole ? "" : "min-[761px]:line-clamp-2";
+
   return (
     <div className="-mx-[5px] mt-px -mb-px grid min-w-0">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the heading's click takes a press on its
+          rule and its padding as on its words; the button inside it is the control, which takes
+          the keys and whose click reaches this one. */}
       <h1
         aria-hidden={editing ? true : undefined}
-        className={`${box} ${borderTransparent} ${whole ? "" : "min-[761px]:line-clamp-2"} ${
+        className={`${box} ${borderTransparent} ${clamp} ${
           editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
         }`}
         onClick={() => {
           if (!isClosed) openEdit();
         }}
-        onKeyDown={(event) => {
-          if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-            event.preventDefault();
-            openEdit();
-          }
-        }}
         ref={heading}
-        tabIndex={isClosed || editing ? -1 : 0}
         {...authorText}
       >
-        {/* A trailing space or an empty draft still holds a line, as the editor does. */}
-        {shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown}
+        {isClosed ? (
+          words
+        ) : (
+          <button
+            className="block w-full cursor-text text-left"
+            data-title-control=""
+            onKeyDown={(event) => {
+              // The edit opens at the key itself, and the key does nothing else: no click of the
+              // button's own after it, and no scroll of the page by Space.
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openEdit();
+              }
+            }}
+            ref={control}
+            tabIndex={editing ? -1 : undefined}
+            type="button"
+          >
+            <span className={`block ${clamp}`}>{words}</span>
+          </button>
+        )}
       </h1>
       {editing ? (
         <textarea

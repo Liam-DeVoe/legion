@@ -405,6 +405,9 @@ export const VERIFICATION_WORDS = freeze({
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
   of: "of",
+  /** Before a check's first words, the name of the control beside them that opens or shuts the
+   *  check's facts. */
+  show_facts: "Show the facts of",
   /** How a statement stands at the commit the page names (R17): every check of it passed
    *  there, one failed there, or neither is known. */
   states: {

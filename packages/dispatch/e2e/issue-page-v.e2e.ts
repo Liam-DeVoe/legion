@@ -881,14 +881,24 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       })
       .toBe(statements.length);
     const check1 = verificationCheck(page, checkOf(1));
-    await tabTo(
-      check1.locator("[data-verification-check-words]"),
-      "Tab does not reach check 1's words"
-    );
+    // A check's words take no Tab stop: the control of its facts beside them does.
+    const facts = check1.locator("[data-verification-facts]");
+    await tabTo(facts, "Tab does not reach the control of check 1's facts");
     await expect(
       rowBody(check1).first(),
-      "the focus on check 1's words does not open its facts"
+      "the focus on the control of check 1's facts does not open them"
     ).toBeVisible();
+    // Enter on it shuts the facts the focus opened, and Enter again opens them.
+    await page.keyboard.press("Enter");
+    await expect(facts, "Enter on the control does not shut check 1's facts").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await page.keyboard.press("Enter");
+    await expect(facts, "a second Enter on the control does not open them").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await tabTo(
       rowBody(check1)
         .getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command })

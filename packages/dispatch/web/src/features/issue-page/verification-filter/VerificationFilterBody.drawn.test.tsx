@@ -675,8 +675,9 @@ test("a statement that a child's check covers draws one line of the checks drawn
 // four of its attributes and a result what it recorded. The body opens where the reader's focus
 // reaches the check and closes when the focus leaves it; a press keeps it open once the focus has
 // gone, and a press on an open one closes it. The check's row says whether it is open, and its
-// words, a tab stop with no role, take the press by a pointer, Enter or Space, as its latest
-// result's cell takes a pointer's.
+// words, which have no role and no Tab stop (the control beside them takes it), take the press
+// by a pointer, and by Enter or Space where a press or a script gave them the focus, as its
+// latest result's cell takes a pointer's.
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
@@ -695,7 +696,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
       words?.tabIndex,
       words?.hasAttribute("role"),
       words?.hasAttribute("aria-expanded"),
-    ]).toEqual([0, false, false]);
+    ]).toEqual([-1, false, false]);
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     act(() => words?.focus());
     expect(card?.getAttribute("aria-expanded")).toBe("true");
@@ -2372,14 +2373,18 @@ function layOut(height: number): () => void {
 }
 
 // The keyboard reaches each control of the view by Tab: each chip, the "more" control of a cut
-// statement, each check's words, each link in a check's words, each link in the words of a node
-// an address named, the line of earlier results and, in the opened facts, the copy control of a
-// command. This reads that each of them holds tab index 0, so none is out of the tab order; the
-// order Tab takes them in is read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks
-// it. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`, so none of them takes
-// its controls out of the tab order. In document order the issue's row comes before the chip
-// All, so the Tab after `t k` reaches the first chip. The page measures only the words of rows
-// near the viewport, so the rows' words are brought near and measured before the cut is read.
+// statement, each check's control of its facts, each link in a check's words, each link in the
+// words of a node an address named, the line of earlier results and, in the opened facts, the
+// copy control of a command. This reads that each of them holds tab index 0, so none is out of
+// the tab order; the order Tab takes them in is read in the browser, where row 4 of
+// `e2e/issue-page-v.e2e.ts` walks it. A check's words are no control and take no Tab stop: they
+// hold links, so no button holds them, and the control beside them is a real disclosure button,
+// named by the check, which says whether its facts are drawn and which Enter and Space press as a
+// press on the words does. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`,
+// so none of them takes its controls out of the tab order. In document order the issue's row
+// comes before the chip All, so the Tab after `t k` reaches the first chip. The page measures
+// only the words of rows near the viewport, so the rows' words are brought near and measured
+// before the cut is read.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const linked = check({
@@ -2429,6 +2434,18 @@ test("each control of the view is a tab stop", async () => {
         ...view.container.querySelectorAll<HTMLElement>("[data-verification-check-words]"),
       ];
       expect(words).toHaveLength(2);
+      expect(words.map((one) => one.tabIndex)).toEqual([-1, -1]);
+      const facts = [...view.container.querySelectorAll<HTMLElement>("[data-verification-facts]")];
+      expect(
+        facts.map((one) => ({
+          expanded: one.getAttribute("aria-expanded"),
+          named: one.getAttribute("aria-label")?.startsWith(`${VERIFICATION_WORDS.show_facts} `),
+          tag: one.tagName,
+        }))
+      ).toEqual([
+        { expanded: "false", named: true, tag: "BUTTON" },
+        { expanded: "false", named: true, tag: "BUTTON" },
+      ]);
 
       // The reader presses the first check's facts open, so they stay drawn wherever the focus
       // goes next.
@@ -2473,7 +2490,7 @@ test("each control of the view is a tab stop", async () => {
           chip,
         ]),
         ["more", more],
-        ...words.map((one, at): [string, HTMLElement] => [`words of check ${at + 1}`, one]),
+        ...facts.map((one, at): [string, HTMLElement] => [`facts of check ${at + 1}`, one]),
         ...links.map((link): [string, HTMLElement] => [`link ${link.getAttribute("href")}`, link]),
         ...otherLinks.map((link): [string, HTMLElement] => [
           `link of the named row ${link.getAttribute("href")}`,
@@ -2485,6 +2502,15 @@ test("each control of the view is a tab stop", async () => {
       expect(controls.map(([name, control]) => [name, control?.tabIndex])).toEqual(
         controls.map(([name]) => [name, 0])
       );
+
+      // Enter and Space on the control press the facts as a press on the words does: the focus
+      // on it draws them, Enter shuts them while it stays, and Space opens them again.
+      act(() => facts[1]?.focus());
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("true");
+      await user.keyboard("{Enter}");
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("false");
+      await user.keyboard(" ");
+      expect(facts[1]?.getAttribute("aria-expanded")).toBe("true");
     } finally {
       view.unmount();
     }

@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
+import { focusLost } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import type { Sending } from "../../hooks/useSending";
 import {
@@ -121,34 +122,34 @@ export function AgentMessageComposer({
   const sentJustNow = useRef(false);
   const box = useRef<HTMLDivElement>(null);
   // `MentionComposer` holds its control fieldset while a send is in flight (`aria-disabled`, each
-  // text field read-only), never disabled, so this textarea keeps the focus through the send. A
-  // focus that is on the document once the send lands is given back to the field then, and a
-  // field disabled at that moment is given it once it is enabled again - watched, rather than
-  // guessed at with a frame or timer.
-  const refocusWatcher = useRef<MutationObserver | null>(null);
-  useEffect(() => () => refocusWatcher.current?.disconnect(), []);
-  /** Only a focus left on the document is the composer's to give back: a reader who has clicked
-   *  something else while the send was out keeps where they went - otherwise the next keys,
-   *  `Ctrl+Enter` included, would land in the composer they have already sent from, addressed to
-   *  another agent. */
+  // text field read-only), never disabled, so the box and Send keep the focus through the send.
+  // Where the focus is as the send goes out is noted (`sentFrom`): only a send out while this
+  // composer is drawn has a place it left the focus, so a row drawn again around a send already
+  // out notes none.
+  const sentFrom = useRef<Element | null>(null);
+  const wasSending = useRef(sending);
+  useLayoutEffect(() => {
+    if (sending && !wasSending.current) sentFrom.current = document.activeElement;
+    wasSending.current = sending;
+  }, [sending]);
+  /** Gives the box the focus once a send lands, only while the focus is still where the send left
+   *  it: on the box, on Send, on the control the send was made from, or lost to the page's body by
+   *  the send itself, the control it was made from having left the page. A reader who has moved
+   *  on while the send was out - to another control, or to the body by a press on nothing -
+   *  keeps where they went: otherwise the next keys, `Ctrl+Enter` included, would land in the
+   *  composer they have already sent from, addressed to another agent. */
   const refocusComposer = () => {
+    const from = sentFrom.current;
+    sentFrom.current = null;
     const field = box.current?.querySelector("textarea");
     if (field === null || field === undefined) return;
-    const takeBack = () => {
-      if (focusOnDocument()) field.focus();
-    };
-    refocusWatcher.current?.disconnect();
-    if (!field.matches(":disabled")) {
-      takeBack();
-      return;
-    }
-    const watcher = new MutationObserver(() => {
-      if (field.matches(":disabled")) return;
-      watcher.disconnect();
-      takeBack();
-    });
-    watcher.observe(field.closest("fieldset") ?? field, { attributeFilter: ["disabled"] });
-    refocusWatcher.current = watcher;
+    const active = document.activeElement;
+    const send = box.current?.querySelector('button[type="submit"]');
+    const stillThere =
+      active === field ||
+      (active !== null && (active === send || active === from)) ||
+      (focusLost() && from?.isConnected === false);
+    if (stillThere) field.focus();
   };
   /** Where the focus goes once the Issue list has closed, set by the close that moves it on: a
    *  pick - the issue changed or not - hands the reader to the message it addresses, and Escape
@@ -293,7 +294,7 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
-          // A focus left on the document goes back to the field (`refocusComposer`).
+          // The box takes the focus back where the send left it (`refocusComposer`).
           refocusComposer();
         }}
         owner={composerOwner}
