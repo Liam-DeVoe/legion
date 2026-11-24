@@ -1,6 +1,6 @@
 import { expect, jest, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
 
@@ -13,7 +13,8 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * clock", then the reason), and docs/testing.md, "The clock of a unit test", is the rule.
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
- * `__tests__` folder, a `*-fixture(s).ts(x)` or `*.coverage.ts(x)` helper - for every call that
+ * `__tests__` folder, a `*-fixture(s).ts(x)` or `*.coverage.ts(x)` helper, and any other file
+ * that test files alone load (`loadedByTestsAlone`) - for every call that
  * reaches a wait of real time by a name, whatever its delay and whatever its callback is: a
  * `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a member
  * of any object (`window.setTimeout`, `globalThis.setInterval`, `window.requestAnimationFrame`),
@@ -30,19 +31,21 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * destructure or `bind` it is given, and where it is handed on: a declaration or an assignment
  * whose value is one of those, a member of one, another such name, or a choice of one (`const
  * later = setTimeout`, `options.wait ?? setTimeout`), a parameter's default, the default of a
- * name a destructure binds, of a parameter, a `for … of` or a `catch` too (`async function
- * settle({ sleep = Bun.sleep }: Options)`), and a destructure, renamed, nested or with a default,
- * from `Bun`, from "bun" or a timers module bound whole, by an import, an `import(…)` or a
- * `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay } = await
+ * name an object destructure binds, of a parameter, a `for … of` or a `catch` too (`async
+ * function settle({ sleep = Bun.sleep }: Options)`), and of one that assigns, in a `for … of`, a
+ * `for … in` or an array too (`[{ wait = setTimeout }] = [options]`), and a destructure, renamed,
+ * nested or with a default, from `Bun`, from "bun" or a timers module bound whole, by an import,
+ * an `import(…)` or a `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay } = await
  * import("node:timers/promises")`), and of a `setTimeout` from any object; such a module bound
  * whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the `call`
  * and the `apply` of a wait, and its `bind`, whose answer is such a name; and every reference to a
  * wait that the file hands on out of its view, which whatever it reaches may start: passed to
  * another call or a `new` (`[50].map(Bun.sleep)`, `act(setTimeout)`), stored in an object, an
  * array, a member, a class's field, by a parameter property's default too (`constructor(private
- * wait = setTimeout)`), or a JSX prop, returned, thrown, yielded, or exported (`export const pause
- * = Bun.sleep`, `export { setTimeout as later }`), each found at the reference as a call is
- * (`placeOf`). The scan does not follow a holder of waits handed to
+ * wait = setTimeout)`), or a JSX prop, the default of a name an array destructure binds, which
+ * the scan does not follow (`const [wait = setTimeout] = delays`), returned, thrown, yielded, or
+ * exported (`export const pause = Bun.sleep`, `export { setTimeout as later }`), each found at
+ * the reference as a call is (`placeOf`). The scan does not follow a holder of waits handed to
  * another function or stored inside a value, and a wait reached only through one: a holder is
  * `Bun`, "bun" or a timers module bound whole, or a timers module's `scheduler`, as in `nap(Bun)`
  * and `{ bun: Bun }`. An exported holder is found where the file exports it, since an export is no
@@ -86,7 +89,9 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * wait of the row's. The act-rule inputs (`*.fixture.ts` and `*.fixture.tsx`, which the scan's
  * `sourceFiles` skips by name) are left out, since they are written to break rules. A file that
  * imports `bun:test`, Testing Library or a module of a `__tests__` folder is a test file or a
- * helper whatever its name, and the scan holds itself to reading every such file.
+ * helper whatever its name, and the scan holds itself to reading every such file by its name. A
+ * file that test files alone load is a helper whatever its name and whatever it imports, as
+ * `features/issue-page/chromium-focus-fixup.ts` is, and the scan reads it by what loads it.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -150,6 +155,45 @@ function isTestFile(path: string): boolean {
     /\.coverage\.tsx?$/.test(path) ||
     path.split("/").includes("__tests__")
   );
+}
+
+/** A relative module a file loads, without its query: what an import or an export names (`from
+ *  "./fake-clock"`, `import "./setup"`), an `import(…)`, a `require(…)`, and a worker's `new
+ *  URL("./markdown-parse.worker.ts", import.meta.url)`. A spelling of one in a comment or a
+ *  string counts as a load too. */
+const loadedModule = /\b(?:from|import|require|new URL)\s*\(?\s*"(\.{1,2}\/[^"?]+)/g;
+
+/** The files of `texts` that test files alone load: each one some file loads (`loadedModule`,
+ *  resolved as the bundler resolves it, `./x` to `x`, `x.ts`, `x.tsx`, `x/index.ts` or
+ *  `x/index.tsx`), where every file that loads it is a test file by its name (`isTestFile`) or
+ *  another such file. A module a product file loads is none, however many tests load it too. */
+function loadedByTestsAlone(texts: ReadonlyMap<string, string>): Set<string> {
+  const loaders = new Map<string, string[]>();
+  for (const [path, text] of texts) {
+    for (const [, specifier] of text.matchAll(loadedModule)) {
+      const base = join(dirname(path), specifier);
+      const loaded = [
+        base,
+        `${base}.ts`,
+        `${base}.tsx`,
+        join(base, "index.ts"),
+        join(base, "index.tsx"),
+      ].find((each) => texts.has(each));
+      if (loaded !== undefined) loaders.set(loaded, [...(loaders.get(loaded) ?? []), path]);
+    }
+  }
+  const helpers = new Set<string>();
+  const testOrHelper = (path: string): boolean => isTestFile(path) || helpers.has(path);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [path, by] of loaders) {
+      if (testOrHelper(path) || !by.every(testOrHelper)) continue;
+      helpers.add(path);
+      grew = true;
+    }
+  }
+  return helpers;
 }
 
 interface RealWait {
@@ -380,9 +424,10 @@ function bindTo(target: ts.BindingName | ts.Expression, source: Is, names: WaitN
 }
 
 /** Every place `file` binds a name: an import, `import … = require(…)`, a declaration, a
- *  parameter's default, the default of a name a destructure binds, an assignment, and the first
- *  parameter of a callback that the `then` of a module's promise hands the module, each with what
- *  its value stands for, read from `names` as they stand when it is asked. */
+ *  parameter's default, the default of a name a destructure binds, a shorthand default
+ *  (`{ wait = setTimeout }`) wherever it stands, an assignment, and the first parameter of a
+ *  callback that the `then` of a module's promise hands the module, each with what its value
+ *  stands for, read from `names` as they stand when it is asked. */
 function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
   const found: Binding[] = [];
   const standsFor =
@@ -418,6 +463,15 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
       node.initializer !== undefined
     ) {
       found.push({ source: standsFor(node.initializer), target: node.name });
+    } else if (
+      // A shorthand default stands only in a destructure that assigns, which TypeScript parses as
+      // an object literal: on the left of a `=`, at the head of a `for … of` or a `for … in`, or
+      // nested in either, inside an array literal too. `parts` reads it only on the left of a
+      // `=`, so it binds its name here, wherever it stands.
+      ts.isShorthandPropertyAssignment(node) &&
+      node.objectAssignmentInitializer !== undefined
+    ) {
+      found.push({ source: standsFor(node.objectAssignmentInitializer), target: node.name });
     } else if (ts.isBinaryExpression(node) && assignments.has(node.operatorToken.kind)) {
       found.push({ source: standsFor(node.right), target: node.left });
     } else if (ts.isCallExpression(node)) {
@@ -738,13 +792,13 @@ export function realWaits(file: string, text: string): RealWait[] {
   });
 }
 
-const sources = sourceFiles(webSource);
-const files = sources
-  .filter(isTestFile)
-  .filter((path) => !path.endsWith("real-clock-waits.test.ts"));
-const waits = files.flatMap((path) =>
-  realWaits(relative(webSource, path), readFileSync(path, "utf8"))
+/** Every source file under `web/src` with its text, read once for the scan and its self-checks. */
+const texts = new Map(sourceFiles(webSource).map((path) => [path, readFileSync(path, "utf8")]));
+const helpers = loadedByTestsAlone(texts);
+const files = [...texts].filter(
+  ([path]) => (isTestFile(path) || helpers.has(path)) && !path.endsWith("real-clock-waits.test.ts")
 );
+const waits = files.flatMap(([path, text]) => realWaits(relative(webSource, path), text));
 
 test("the scan reads the unit suite and finds the waits it keeps", () => {
   expect(files.length).toBeGreaterThan(100);
@@ -756,15 +810,39 @@ test("the scan reads the unit suite and finds the waits it keeps", () => {
 // file or a test helper, as the `*.coverage.ts` lists are, which import
 // `__tests__/composer-census/coverage.ts`; the scan reads each by its name.
 test("the scan reads every file that imports bun:test, Testing Library or a __tests__ module", () => {
-  const unread = sources
-    .filter((path) => !isTestFile(path))
-    .filter((path) =>
-      /from "(?:bun:test|@testing-library\/[\w-]+|[^"]*\/__tests__\/[^"]*)"/.test(
-        readFileSync(path, "utf8")
-      )
+  const unread = [...texts]
+    .filter(
+      ([path, text]) =>
+        !isTestFile(path) &&
+        /from "(?:bun:test|@testing-library\/[\w-]+|[^"]*\/__tests__\/[^"]*)"/.test(text)
     )
-    .map((path) => relative(webSource, path));
+    .map(([path]) => relative(webSource, path));
   expect(unread, "a test helper the scan does not read by its name").toEqual([]);
+});
+
+// A file that test files alone load is a test helper whatever its name and whatever it imports:
+// `features/issue-page/chromium-focus-fixup.ts`, which five rows load to make happy-dom drop the
+// focus as Chromium does, and `fonts/inter/subset-script.ts`, which reads subset.sh for three
+// checks. The scan reads each such file, and so a helper of a helper; it reads no module a
+// product file loads, by an import or by a worker's `new URL(…)`, however many tests load it.
+test("the scan reads every file that test files alone load, and no module a product file loads", () => {
+  const sample = new Map([
+    ["row.test.tsx", 'import { emulate } from "./focus";\nimport { Page } from "./page";'],
+    ["focus.ts", 'import { nextFrame } from "./frames";'],
+    ["frames/index.ts", "export const nextFrame = () => {};"],
+    ["page.tsx", 'const worker = new Worker(new URL("./parse.worker.ts", import.meta.url));'],
+    ["parse.worker.ts", "export function parse() {}"],
+    ["parse.test.ts", 'import { parse } from "./parse.worker";'],
+    ["main.tsx", 'import { Page } from "./page";'],
+  ]);
+  expect([...loadedByTestsAlone(sample)].sort()).toEqual(["focus.ts", "frames/index.ts"]);
+  const read = files.map(([path]) => relative(webSource, path));
+  expect(read).toEqual(
+    expect.arrayContaining([
+      "features/issue-page/chromium-focus-fixup.ts",
+      "fonts/inter/subset-script.ts",
+    ])
+  );
 });
 
 /** A marker a kept wait could carry: the words, and a reason after them. */
@@ -1023,6 +1101,23 @@ test("a destructure's default in a parameter, a for of or a catch, and a paramet
     "try {\n  run();\n} catch ({ wait = setTimeout }) {\n  wait(run, 50);\n}",
     "class Clock {\n  constructor(private wait = setTimeout) {}\n  start() {\n    this.wait(run, 50);\n  }\n}",
     "async function settle({ timers: { sleep } = Bun }: Options) {\n  await sleep(50);\n}",
+  ]);
+});
+
+// The class search of that review found three more spellings, each waiting 50 ms, of which the
+// scan found none: a shorthand default (`{ wait = setTimeout }`) in a destructure that assigns,
+// at the head of a `for … of`, at the head of a `for … in`, and inside an array that is the left
+// of a `=`. Each is found once, at its call, and passes under the marker. The default of a name an
+// array destructure binds, in a declaration or a parameter, binds a name the scan does not
+// follow: it is found once, at the reference, as a value handed on, and passes under the marker
+// too.
+test("a shorthand default in a for of, a for in or an array that assigns, and an array destructure's default, are found", () => {
+  refusedAndKept([
+    "for ({ wait = setTimeout } of options) {\n  wait(run, 50);\n}",
+    "for ({ wait = setTimeout } in options) {\n  wait(run, 50);\n}",
+    "[{ wait = setTimeout }] = [options];\nwait(run, 50);",
+    "const [wait = setTimeout] = delays;\nwait(run, 50);",
+    "const settle = ([wait = setTimeout]) => wait(run, 50);",
   ]);
 });
 
