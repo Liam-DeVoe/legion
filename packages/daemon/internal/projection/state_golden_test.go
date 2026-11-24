@@ -194,13 +194,22 @@ func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64
 // helper moves into an internal/testgolden package.
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
+	goldenAt(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value)
+}
+
+// goldenAt is golden for the file at path: Go writes value there with `-update`, and the test
+// fails where the file differs from it, naming the first line that differs.
+func goldenAt(t *testing.T, path string, value any) {
+	t.Helper()
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
+		t.Fatalf("marshal %s: %v", path, err)
 	}
 	encoded = append(encoded, '\n')
-	path := filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
 	if *updateGolden {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create the directory of %s: %v", path, err)
+		}
 		if err := os.WriteFile(path, encoded, 0o644); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
@@ -211,6 +220,25 @@ func golden(t *testing.T, name string, value any) {
 		t.Fatalf("read golden (run `go test ./internal/projection/ -update`): %v", err)
 	}
 	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
+		line, held, written := firstDifference(want, encoded)
+		t.Fatalf("%s is stale (run `go test ./internal/projection/ -update`): line %d of the file holds %q, and Go writes %q", path, line, held, written)
+	}
+}
+
+// firstDifference is the first line, counted from 1, at which the file's bytes held and the
+// bytes Go writes differ, with that line of each ("" past the end of one of them).
+func firstDifference(held, written []byte) (int, string, string) {
+	heldLines, writtenLines := bytes.Split(held, []byte("\n")), bytes.Split(written, []byte("\n"))
+	for i := 0; ; i++ {
+		var h, w []byte
+		if i < len(heldLines) {
+			h = heldLines[i]
+		}
+		if i < len(writtenLines) {
+			w = writtenLines[i]
+		}
+		if !bytes.Equal(h, w) || i >= len(heldLines) || i >= len(writtenLines) {
+			return i + 1, string(h), string(w)
+		}
 	}
 }

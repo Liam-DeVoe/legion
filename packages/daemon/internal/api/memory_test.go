@@ -340,19 +340,22 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 
 			// Only LEGION-208's tree was drawn: its root and its child carry the draw when the
 			// caller is served it, and no other issue carries one whoever asks. Every root of the
-			// fixture carries the one step `root-issues` gates; LEGION-209, a child of LEGION-208's
-			// tree, carries none whoever asks. The two issues `admission.waiting` names carry their
-			// place in that line, and no other issue carries one: the issues `admission.active`
-			// names hold the slots, and LEGION-207 closed. The reviewing roots (waits below) are
-			// the issues whose round waits on GitHub's merge state for its head, and no other issue
-			// carries that object. The issues standing in a tree the admission block names
-			// (measured below) carry that tree's quiet time where the caller is served it;
-			// LEGION-207's tree closed and LEGION-209 stands in no tree of this fixture, so neither
-			// carries a measure whoever asks.
+			// fixture carries the one step `root-issues` gates, LEGION-214 and LEGION-215 among
+			// them; LEGION-209, a child of LEGION-208's tree, carries none whoever asks. The two
+			// issues `admission.waiting` names carry their place in that line, and no other issue
+			// carries one: the issues `admission.active` names hold the slots, and LEGION-207
+			// closed. The reviewing roots (waits below) are the issues whose round waits on
+			// GitHub's merge state for its head, and no other issue carries that object. The
+			// issues standing in a tree the admission block names (measured below) carry that
+			// tree's quiet time where the caller is served it, LEGION-209 its root LEGION-208's;
+			// LEGION-207's tree closed and LEGION-214's is no live tree, so neither carries a
+			// measure whoever asks.
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
-			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
+				"LEGION-214": true, "LEGION-215": true, "LEGION-218": true, "LEGION-219": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
-			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			measured := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
+				"LEGION-215": true, "LEGION-218": true, "LEGION-219": true}
 			// The issues the fixture holds an experiment answer for: the drawn tree's root and
 			// its child, each under two experiments, and LEGION-210, whose hand-over settled it
 			// at no arm, which is an answer and so a row.

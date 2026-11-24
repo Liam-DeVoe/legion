@@ -2291,11 +2291,11 @@ test("read_state's summary names the live trees and each held issue with its rea
   expect(admissionLines(golden)).toEqual([
     "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
     "waiting LEGION-212 LEGION-211",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
-    "blocked LEGION-211 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
     "held LEGION-214 label_off",
+    "held LEGION-215 ancestry by LEGION-208",
   ]);
 
   const idle = legionState({

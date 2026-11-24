@@ -1666,7 +1666,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   // The cause of the death whose relaunch the runtime refused, which stands beside `failure`.
   expect(failed.pendingCause).toBe("died");
   expect(state.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
-  expect(state.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+  expect(state.issues["LEGION-215"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
 
   // All seven survive the parse: the answer side strips what it does not name.
   const parsed = LegionStateResponse.parse(state);
@@ -1684,7 +1684,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   });
   expect(parsed.issues["LEGION-210"]?.workers?.implementer?.claim?.pendingCause).toBe("died");
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
-  expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+  expect(parsed.issues["LEGION-215"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
   // body: the operator routes are the only surface that serves it.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
@@ -1702,9 +1702,9 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   lingering.lingerUntil = "2026-09-22";
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
   lingering.lingerUntil = undefined;
-  const root = state.issues["LEGION-211"];
+  const root = state.issues["LEGION-215"];
   if (root === undefined) {
-    throw new Error("state fixture lacks LEGION-211");
+    throw new Error("state fixture lacks LEGION-215");
   }
   root.ancestry = [""];
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
