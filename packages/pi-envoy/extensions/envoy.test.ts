@@ -14299,9 +14299,9 @@ console.log(JSON.stringify(args));
           .filter((line) => line.includes("failed to deliver"));
       try {
         // Query-string isolation gives this stateful extension its own NATS subscription.
-        const { default: envoyExtension } = await import(`./envoy.ts?${name}`);
+        const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${name}`);
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.(
           {},
           {
@@ -22349,7 +22349,7 @@ console.log(JSON.stringify(args));
             ui: sessionContext().ui,
           };
           const fixture = createPi();
-          entry.default(fixture.pi);
+          await entry.default(fixture.pi);
           names.length = 0;
           await fixture.handlers.get("session_start")?.({}, context);
           await fixture.handlers.get("session_shutdown")?.({}, context);
@@ -25662,9 +25662,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       });
       // A module instance of its own, as every row here takes one: the extension keeps its
       // session's state, so a static import would share it with every other row of the file.
-      const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?reply-grant");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext(SESSION);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
