@@ -37,9 +37,11 @@
  *    bun e2e/tools/check-slow-rows.ts /tmp/report.json
  *
  *  That run names no project, which is the default selection, and the three wall-clock projects
- *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs neither
- *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts` and every marker those two hold lands in
- *  "a file the report never ran" above. Their rows are a second report and a second reading:
+ *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs none of the
+ *  four wall-clock files - `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`,
+ *  `inbox-dismissed-timing.e2e.ts` and `nested-directive.e2e.ts` - and every marker those four
+ *  hold lands in "a file the report never ran" above. Their rows are a second report and a
+ *  second reading:
  *
  *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/clock-report.json bunx playwright test \
  *      --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone \

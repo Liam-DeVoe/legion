@@ -89,7 +89,7 @@
       "inbox-compose.e2e.ts": 5.18,
       "inbox-decline.e2e.ts": 3.86,
       "inbox-dismiss.e2e.ts": 3.46,
-      "inbox-dismissed-window.e2e.ts": 25.84,
+      "inbox-dismissed-window.e2e.ts": 19.91,
       "inbox-drawer.e2e.ts": 5.68,
       "inbox-mark-all.e2e.ts": 4.67,
       "inbox-pane-scroll.e2e.ts": 5.6,
@@ -208,6 +208,7 @@
     "chromium-alone": {
       "agent-workspace-timing.e2e.ts": 1.92,
       "heavy-bodies.e2e.ts": 1.59,
+      "inbox-dismissed-timing.e2e.ts": 31.77,
       "nested-directive.e2e.ts": 0.62
     },
     "chromium-plain-http": {
@@ -392,7 +393,7 @@
     "webkit-iphone": 4.64
   },
   "source": {
-    "command": "bun e2e/tools/shard-weights.ts --main 17; then, by the same rules, each sharded file that table has no entry for, and chromium's approval.e2e.ts, from the merged report of run 45249938146 (pull request #4932 at e357cf98)",
+    "command": "bun e2e/tools/shard-weights.ts --main 17; then, by the same rules, each sharded file that table has no entry for, and chromium's approval.e2e.ts, from the merged report of run 45249938146 (pull request #4932 at e357cf98); then, from that same report, chromium's inbox-dismissed-window.e2e.ts and chromium-alone's inbox-dismissed-timing.e2e.ts, each from the rows it holds since the timed row moved to the second",
     "read": "2026-11-22T08:58:30.278Z",
     "runs": [
       {

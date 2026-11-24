@@ -556,7 +556,7 @@ const parallelProjects = [
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
- * command naming one of their three files, because a filter narrows a project it selects and
+ * command naming one of their files, because a filter narrows a project it selects and
  * never a project selected to run before it. With no dependency and no place in the default
  * selection, such a command now selects nothing at all, so the configuration refuses it at the
  * top of this file and prints the command that runs the file.
@@ -566,9 +566,9 @@ const parallelProjects = [
  * the run to that: its guard fails a measuring row in a run of more than one worker rather than
  * letting it report a reading of what the other workers were running, so such a reading survives
  * only where it was taken alone, whatever project it was taken in. The rows of
- * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
- * what holds them to one worker is the command: the refusal at the top of this file prints
- * `--workers=1`, and `bun run e2e:clock` names it too.
+ * `agent-workspace-timing.e2e.ts` and `inbox-dismissed-timing.e2e.ts` read a clock of their own
+ * and reach that guard nowhere, so what holds them to one worker is the command: the refusal at
+ * the top of this file prints `--workers=1`, and `bun run e2e:clock` names it too.
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
@@ -588,7 +588,10 @@ const parallelProjects = [
  * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
  * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
  * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
- * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
+ * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`), and
+ * as does `inbox-dismissed-timing.e2e.ts`, whose one row times the Dismissed view over thousands
+ * dismissed and ran in `chromium` until a shard of four workers swung its medians (INFRA-4948's
+ * R7; the window's focus row stays in `chromium`, in `inbox-dismissed-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it

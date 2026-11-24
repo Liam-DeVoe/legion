@@ -461,8 +461,8 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(more).toHaveText(`Show ${INBOX_DISMISSED_PAGE} more`);
     // Focusing Show more brings it into view, which reaches the end of the loaded rows, and that
     // scroll reads the last page as any scroll there does, so the control is held and then gone
-    // with no press on it. The window's own test (`inbox-dismissed-window.e2e.ts`) presses Show
-    // more by key and reads the page it reads.
+    // with no press on it. The window's own timed test (`inbox-dismissed-timing.e2e.ts`) presses
+    // Show more by key and reads the page it reads.
     await more.focus();
     await expect(rows.first()).toHaveAttribute("aria-setsize", String(THREADS));
     await expect(more).toHaveCount(0);

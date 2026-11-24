@@ -162,8 +162,10 @@ export const realStackReasons: Record<string, string> = {
   "inbox-decline.e2e.ts":
     "every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's",
   "inbox-dismiss.e2e.ts": "dismiss and restore writes, bulk requests, refusals and reloads",
+  "inbox-dismissed-timing.e2e.ts":
+    "times the first page the server answers over thousands of dismissed threads the server's own dismiss wrote, follows the cursor it answers to the next pages, and restores a row through that route; its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "inbox-dismissed-window.e2e.ts":
-    "times the first page the server answers over thousands of dismissed threads the server's own dismiss wrote, follows the cursor it answers to the next pages, and restores rows through that route, from another tab while the page is open; a recording holds neither the pages nor the live update",
+    "holds the focus over a window of a thousand dismissed threads the server's own dismiss wrote, and restores a row through that route from another tab while the page is open; a recording holds neither the pages nor the live update",
   "inbox-drawer.e2e.ts": "answers an ask in the drawer",
   "inbox-mark-all.e2e.ts": "mark-all is a server write, including its refusal",
   "inbox-pane-scroll.e2e.ts":
