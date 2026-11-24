@@ -1,5 +1,7 @@
 package api_test
 
+//ci:reads packages/contracts/fixtures/daemon-api/* TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds (testgolden.Check, paths from api.GoldenPath)
+
 import (
 	"context"
 	"io"
@@ -1012,7 +1014,110 @@ func seedPopulated(s *seeding) composition {
 	populatedRecord(s)
 	rows := populatedOutbox(s)
 	reports := populatedClaims(s, rows)
-	return populatedDeployment(s, reports)
+	c := populatedDeployment(s, reports)
+	populatedIntake(s)
+	return c
+}
+
+// populatedIntake writes the intake's three open give-ups as its consumers write them
+// (internal/intake's giveup.go), each in the order of its delivery and in its own transaction:
+//
+//   - the Dispatch consumer gave up LEGION-213's issue event at its bound: its first delivery
+//     failed at 06:30:04, its twenty-first at 07:31:04, over an hour later, and that delivery's
+//     transaction noted the failure and gave the message up (record.Postgres.NoteFailure, then
+//     GiveUpIntakeMessage, recordFailure's transaction);
+//   - the GitHub consumer's review event of LEGION-208's pull request failed three deliveries, and
+//     the consumer, made again, moved past it: the sweep listed it at its 07:50 pass and gave it up
+//     at the next, 07:55 (ListPassedFailures, SweepPassedFailures);
+//   - a Dispatch message about LEGION-214 did not decode, and was given up at its first delivery
+//     (RecordUndecodable).
+//
+// The project's controller is registered, so each give-up is counted in a controller notice due a
+// minute later (record's countGiveUps), which the outbox's controller-notice lane publishes then
+// (ClaimRow, FinishOutbox). The records' ids are the clone's sequence's, which an insert's
+// conflict consumes too.
+func populatedIntake(s *seeding) {
+	intakeRecords := record.NewStore()
+	publish := func(given record.IntakeFailure, at time.Time) {
+		s.t.Helper()
+		if given.NoticeID == 0 {
+			s.t.Fatalf("seed the give-up of %s's message %d: no notice counted it, though a controller is registered", given.Consumer, given.StreamSeq)
+		}
+		row := s.lease(given.NoticeID, at, time.Minute)
+		s.in("the publish of the intake-gave-up notice", func(ctx context.Context, tx pgx.Tx) error {
+			return s.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+		})
+	}
+
+	bound := record.IntakeMessage{Project: "LEGION", Consumer: "legion-go-LEGION-dispatch",
+		Subject: "notifications.dispatch.issue.LEGION-213.issue.updated", StreamSeq: 6044801, StoredAt: at(22, 6, 30, 0),
+		Payload: []byte(`{"source":"dispatch","event_id":"dispatch-6044801","key":"LEGION-213"}`), EventSource: "dispatch", EventID: "dispatch-6044801"}
+	const boundError = "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
+	s.in("the first failed delivery of LEGION-213's event", func(ctx context.Context, tx pgx.Tx) error {
+		_, err := intakeRecords.NoteFailure(ctx, tx, bound, 1, boundError, at(22, 6, 30, 4))
+		return err
+	})
+	var boundGiven record.IntakeFailure
+	s.in("the give-up of LEGION-213's event at its bound", func(ctx context.Context, tx pgx.Tx) error {
+		failure, err := intakeRecords.NoteFailure(ctx, tx, bound, 21, boundError, at(22, 7, 31, 4))
+		if err != nil {
+			return err
+		}
+		given, gaveUp, err := intakeRecords.GiveUpIntakeMessage(ctx, tx, "LEGION", failure.ID, record.GiveUpBound, boundError, at(22, 7, 31, 4))
+		if err == nil && !gaveUp {
+			s.t.Fatalf("seed the give-up of LEGION-213's event: record %d was no open failure", failure.ID)
+		}
+		boundGiven = given
+		return err
+	})
+	publish(boundGiven, at(22, 7, 32, 5))
+
+	passed := record.IntakeMessage{Project: "LEGION", Consumer: "legion-go-LEGION-github",
+		Subject: "notifications.github.acme.widgets.pr.1247.review", StreamSeq: 812004, StoredAt: at(22, 6, 2, 0),
+		Payload: []byte(`{"source":"github","event_id":"github-9b2c71e0","repository":"acme/widgets","number":1247}`), EventSource: "github", EventID: "github-9b2c71e0"}
+	const passedError = "apply the review event: read acme/widgets#1247 from GitHub: 502 Bad Gateway"
+	for _, failed := range []struct {
+		delivered int
+		at        time.Time
+	}{{1, at(22, 6, 2, 3)}, {3, at(22, 6, 20, 0)}} {
+		s.in("a failed delivery of LEGION-208's review event", func(ctx context.Context, tx pgx.Tx) error {
+			_, err := intakeRecords.NoteFailure(ctx, tx, passed, failed.delivered, passedError, failed.at)
+			return err
+		})
+	}
+	var listed []record.OpenFailure
+	s.in("the sweep's pass that listed the review event", func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		listed, err = intakeRecords.ListPassedFailures(ctx, tx, "LEGION", passed.Consumer, passed.StreamSeq)
+		return err
+	})
+	if len(listed) != 1 {
+		s.t.Fatalf("seed the sweep of the GitHub consumer: it listed %+v, want the one open failure", listed)
+	}
+	var swept []record.IntakeFailure
+	s.in("the sweep's give-up of the review event", func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		swept, err = intakeRecords.SweepPassedFailures(ctx, tx, "LEGION", []int64{listed[0].ID}, at(22, 7, 50, 0), at(22, 7, 55, 0))
+		return err
+	})
+	if len(swept) != 1 {
+		s.t.Fatalf("seed the sweep of the GitHub consumer: it gave up %+v, want the one failure it listed", swept)
+	}
+	publish(swept[0], at(22, 7, 56, 1))
+
+	undecodable := record.IntakeMessage{Project: "LEGION", Consumer: "legion-go-LEGION-dispatch",
+		Subject: "notifications.dispatch.issue.LEGION-214.issue.updated", StreamSeq: 6044896, StoredAt: at(22, 8, 40, 12),
+		Payload: []byte(`{"source":"dispatch","event_id":`)}
+	var undecodableGiven record.IntakeFailure
+	s.in("the give-up of LEGION-214's message that did not decode", func(ctx context.Context, tx pgx.Tx) error {
+		given, recorded, err := intakeRecords.RecordUndecodable(ctx, tx, undecodable, 1, "decode Envoy envelope: unexpected end of JSON input", at(22, 8, 40, 13))
+		if err == nil && !recorded {
+			s.t.Fatal("seed the give-up of LEGION-214's message: it was recorded as given up already")
+		}
+		undecodableGiven = given
+		return err
+	})
+	publish(undecodableGiven, at(22, 8, 41, 14))
 }
 
 // seedPaused is the populated record ten seconds after the controller paused the project for a
@@ -1029,6 +1134,7 @@ func seedPaused(s *seeding) composition {
 	rows := populatedOutbox(s)
 	reports := populatedClaims(s, rows)
 	c := populatedDeployment(s, reports)
+	populatedIntake(s)
 	s.in("the finish of LEGION-208's start", func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.FinishOutbox(ctx, tx, rows.running208, rows.runningLease)
 	})

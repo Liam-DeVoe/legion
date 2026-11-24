@@ -1,5 +1,7 @@
 package projection
 
+//ci:reads packages/contracts/fixtures/daemon-api/* golden (testgolden.Check)
+
 import (
 	"bytes"
 	"context"

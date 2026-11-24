@@ -423,5 +423,9 @@
       "lastHandledAt": "2026-11-15T10:00:30Z",
       "stalled": false
     }
-  ]
+  ],
+  "intakeGiveUps": {
+    "consumers": [],
+    "newest": []
+  }
 }

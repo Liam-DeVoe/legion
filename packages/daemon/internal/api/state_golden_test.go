@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/* golden and stateGolden (testgolden.Check, path from goldenPath)
+
 import (
 	"bytes"
 	"context"
@@ -291,13 +293,15 @@ func TestStateGolden(t *testing.T) {
 // below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
 // block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
-// row stands above that contract too, and every other key as a caller at shapedAnswersContract is
-// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
-// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
-// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
-// view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
-// copy of contract 152's schema of the block, so the narrowing is held to the reader it is written
-// for, and its drift gate holds every key of the file to that copy.
+// row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
+// intakeGiveUpsContract's row does as well, and every other key as a caller at
+// shapedAnswersContract is served it, since no other row of stateNarrowings stands between
+// shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row stands at or
+// below the contract it is served at, which is why the golden carries `lowestPluginContract` and
+// each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
+// `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
+// the block, so the narrowing is held to the reader it is written for, and its drift gate holds
+// every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
