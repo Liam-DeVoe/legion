@@ -402,12 +402,16 @@ func TestTheLandedReachesTheOwnerAtItsOwnStepOnceItsSlotHoldsTheStepsApp(t *test
 		string(record.OutboxKindSupervise)).Scan(&writeBacks); err != nil || writeBacks != 0 {
 		t.Fatalf("the landing queued %d write-backs (%v), want none: the ask was the fresh implementer's", writeBacks, err)
 	}
+	var message record.MergeForwardMessage
 	landed := r.queuedRow(t, "the landed to the owner's review step", func(payload record.OutboxPayload) bool {
-		message, ok := payload.(record.MergeForwardMessage)
-		return ok && message.Step == record.MergeForwardLanded
+		queued, ok := payload.(record.MergeForwardMessage)
+		if ok && queued.Step == record.MergeForwardLanded {
+			message = queued
+			return true
+		}
+		return false
 	})
-	if message, _ := record.DecodeOutboxPayload(landed); message.(record.MergeForwardMessage).Claim != r.owner ||
-		message.(record.MergeForwardMessage).Role != claim.RoleReviewer {
+	if message.Claim != r.owner || message.Role != claim.RoleReviewer {
 		t.Fatalf("the landing queued the landed %+v, want it to the owner's claim %s as the reviewer", message, r.owner)
 	}
 	r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
