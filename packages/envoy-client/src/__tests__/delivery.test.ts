@@ -1943,42 +1943,14 @@ describe("renderInbound non-dispatch envelopes", () => {
       expect(rendered.content).not.toContain("PUB");
     });
 
-    // A body read whole is never cut to the part the frame carried, in a card shown as text too.
-    test("a cut Dispatch comment the card cannot lay out shows its body read whole", () => {
-      const end = "the last words of the whole body.";
-      const rendered = renderInbound(
+    // A cut comment whose payload the card cannot lay out, rendered again with its body read
+    // whole, as a host renders it after reading that body (`cutItem`).
+    const end = "the last words of the whole body.";
+    const renderDeepCutComment = (eventId: string, wholeBody: string) =>
+      renderInbound(
         JSON.stringify(
           envelope({
-            event_id: "dispatch-deep-cut",
-            source: "dispatch",
-            payload: targetedCommentFrame({
-              ...targetedComment,
-              body: "The first paragraph.",
-              body_truncated: true,
-              deep: JSON.parse(nested),
-            }),
-          })
-        ),
-        reader,
-        undefined,
-        `${"word ".repeat(2_000)}${end}`
-      );
-
-      expect(rendered.payloadShownAsText).toBe(BOUND);
-      expect(rendered.content).toContain(end);
-      expect(rendered.content).not.toContain("The first paragraph.");
-    });
-
-    // The text of an event holds a body read whole escaped twice, once by JSON and once by the
-    // card: a quotation mark is four bytes there, as many as the bound gives it (twice TOON's two),
-    // so a body of them brings such a card near its bound, and it stays within it.
-    test("a cut Dispatch comment shown as text with a 1,048,300-byte body read whole stays within the bound", () => {
-      const end = "the last words of the whole body.";
-      const wholeBody = `${'"'.repeat(1_048_300 - end.length)}${end}`;
-      const rendered = renderInbound(
-        JSON.stringify(
-          envelope({
-            event_id: "dispatch-deep-cut-whole",
+            event_id: eventId,
             source: "dispatch",
             payload: targetedCommentFrame({
               ...targetedComment,
@@ -1991,6 +1963,24 @@ describe("renderInbound non-dispatch envelopes", () => {
         reader,
         undefined,
         wholeBody
+      );
+
+    // A body read whole is never cut to the part the frame carried, in a card shown as text too.
+    test("a cut Dispatch comment the card cannot lay out shows its body read whole", () => {
+      const rendered = renderDeepCutComment("dispatch-deep-cut", `${"word ".repeat(2_000)}${end}`);
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(rendered.content).toContain(end);
+      expect(rendered.content).not.toContain("The first paragraph.");
+    });
+
+    // The text of an event holds a body read whole escaped twice, once by JSON and once by the
+    // card: a quotation mark is four bytes there, as many as the bound gives it (twice TOON's two),
+    // so a body of them brings such a card near its bound, and it stays within it.
+    test("a cut Dispatch comment shown as text with a 1,048,300-byte body read whole stays within the bound", () => {
+      const rendered = renderDeepCutComment(
+        "dispatch-deep-cut-whole",
+        `${'"'.repeat(1_048_300 - end.length)}${end}`
       );
 
       const bound = Number(
