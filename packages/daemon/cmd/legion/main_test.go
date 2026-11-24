@@ -629,10 +629,12 @@ func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
 // Every Go role prompt tells a worker to re-read its issue record with `legion state` on relaunch.
 // A pane has no legion.yaml; it has the daemon's URL (LEGION_DAEMON_URL) and its issue
 // (LEGION_ISSUE), which the daemon names on every pane. From there `legion state` reads the state
-// the daemon serves and prints the pane's issue record.
+// the daemon serves and prints the pane's issue record. The state carries no admission block: the
+// record is all this reads, and an issue at testing holds a slot (record.PhaseKeepsSlot), which an
+// empty `active` would deny.
 func TestStateInAPaneReadsTheDaemonItNamesAndPrintsTheIssueRecord(t *testing.T) {
 	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{"LEGION-208":{"key":"LEGION-208","generation":2,"phase":"testing","status":"testing","workers":{}}},"pendingStatusWrites":[]}`
+		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":2,"phase":"testing","status":"testing","workers":{}}},"pendingStatusWrites":[]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/legion/v1/state" {
 			http.NotFound(w, r)
@@ -1642,9 +1644,15 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 // An operator reading plain `legion state` during a Dispatch outage is told how many status writes
 // wait and why the oldest has not landed: the count, the oldest's issue, its attempts, its next
 // attempt and its last error, on one line. With none waiting the line says so.
+//
+// The daemon serves a pending write only beside its issue's record (projection's Project), so the
+// state carries both records, each in the phase whose status its write carries
+// (workflow.PhaseStatus). It carries no admission block: the line reads none, and LEGION-208, at
+// testing, holds a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}`
+		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"testing","status":"testing"},` +
+		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"retro","status":"retro"}}`
 	for _, tc := range []struct {
 		name, pending, want string
 	}{
@@ -1686,9 +1694,17 @@ func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 // An operator reading plain `legion state` is told how many lifecycle rows wait behind their
 // issues' running ones and which has waited longest: its kind, id, issue, wait and the row it waits
 // on, on one line. With none held the line says so.
+//
+// The daemon lists held rows by next_at and then id (record.Store.HeldRows) and measures each
+// one's wait from its next_at (projection's Project), so no row has waited longer than the one
+// before it. LEGION-208's start waits behind a lifecycle row of its own that is running.
+// LEGION-209's rows are its tree's close (workflow's lingerExpired), which writes each role's
+// tree_close before the issue's workspace_remove, at one moment. The state carries both records
+// and no admission block: the line reads none, and LEGION-208, at implementing, holds a slot.
 func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+		`"issues":{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress"},` +
+		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"done","status":"done"}},"pendingStatusWrites":[]`
 	for _, tc := range []struct {
 		name, held, want string
 	}{
@@ -1698,11 +1714,13 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 			want: "held lifecycle rows: 1; the longest waiting, supervise row 802 of LEGION-208, has waited 2m30s behind row 801\n",
 		},
 		{
-			name: "several, the longest waiting not the first",
-			held: `[{"id":802,"kind":"supervise","issue":"LEGION-208","waitedSeconds":150,"waitsOn":801},` +
-				`{"id":811,"kind":"workspace_remove","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810},` +
-				`{"id":812,"kind":"supervise","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810}]`,
-			want: "held lifecycle rows: 3; the longest waiting, workspace_remove row 811 of LEGION-209, has waited 1h2m5s behind row 810\n",
+			// The store's order puts the longest waiting first, and of two that waited as long,
+			// the one with the lower id.
+			name: "several, the longest waiting first",
+			held: `[{"id":811,"kind":"supervise","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810},` +
+				`{"id":812,"kind":"workspace_remove","issue":"LEGION-209","waitedSeconds":3725,"waitsOn":810},` +
+				`{"id":802,"kind":"supervise","issue":"LEGION-208","waitedSeconds":150,"waitsOn":801}]`,
+			want: "held lifecycle rows: 3; the longest waiting, supervise row 811 of LEGION-209, has waited 1h2m5s behind row 810\n",
 		},
 		{name: "none", held: `[]`, want: "held lifecycle rows: none\n"},
 	} {
@@ -2138,8 +2156,10 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 // The lines name no issue: the keys stay in `--json`, where a line per issue would print hundreds
 // on a live deployment.
 func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
+	// No admission block: the lines read none, and an issue at implementing holds a slot
+	// (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	// The settings as the daemon serves them: the project's own experiments, in the file's
 	// order, which is the order the lines take — `plan-length` is declared first and printed
 	// first, though `memory` sorts before it.
@@ -2148,8 +2168,14 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 	}
 	const planLength = `{"name":"plan-length","mode":"random","unit":"issue","variants":[{"name":"short","weight":1,"config_files":[]},{"name":"long","weight":1,"config_files":[]}]}`
 	const memory = `{"name":"memory","mode":"random","unit":"tree","variants":[{"name":"memory","weight":1,"config_files":[]},{"name":"none","weight":1,"config_files":[]}]}`
+	// Each issue shows the status its phase writes (workflow.PhaseStatus): done for a done one,
+	// and in_progress for the rest, which planning and implementing write and admitted keeps.
 	issue := func(key, phase string, assignments ...string) string {
-		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + phase + `","status":"in_progress"` +
+		status := "in_progress"
+		if phase == "done" {
+			status = "done"
+		}
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + phase + `","status":"` + status + `"` +
 			`,"assignments":[` + strings.Join(assignments, ",") + `]}`
 	}
 	drawn := func(experiment, variant string) string {
@@ -2227,8 +2253,9 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 // is the one this deployment read before any experiment was declared: each arm with the mode it
 // was drawn under, and a tree drawn at mode off, which holds the empty arm, as `none (off)`.
 func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
+	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	drawn := func(variant, mode string) string {
 		return `{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}`
 	}
@@ -2274,8 +2301,9 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 // any experiment was declared. Printing `experiments: none` over it would drop a line every such
 // deployment has read since before any experiment was declared.
 func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) {
+	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	// What such a project's trees hold: the empty arm an experiment at mode off draws, recorded
 	// with the word `off` and the instant of the draw.
 	issue := func(key string) string {
@@ -2320,8 +2348,9 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 // legion-v20.8.1 (045ee0762538), a release without this change, printed for the same issues,
 // measured by INFRA-2566's tester on 2026-11-13.
 func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
+	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	drawn := func(key, variant, mode string) string {
 		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
 			`,"assignments":[{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}]}`
@@ -2363,8 +2392,9 @@ func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.
 // the one a `legion` without this change prints.
 // Where an issue carries `assignments` the fields are not counted a second time.
 func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAssignments(t *testing.T) {
+	// No admission block: the line reads none, and an issue at implementing holds a slot.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	// An issue as a daemon at contract 94 serves it: the three memory fields, and no
 	// `assignments`.
 	fields := func(key, group, mode string) string {
@@ -2433,14 +2463,70 @@ func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAs
 // command reads that from the operator claim list, with the bearer
 // --operator-token-file names (strandedSuspenders). Read without that flag, as a pane reads,
 // there is no bearer and a released claim reads as the suspended worker it is.
+//
+// Each case serves the record its stranded claims stand in: the daemon names a stranded claim
+// only on an issue it records, and every claim of an issue is on that issue's view (projection's
+// Project). It carries no admission block: the line reads none, and every issue here holds a slot
+// (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
-	// The claims as the operator routes serve them, which is the one surface that names a
-	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended.
-	operatorClaims := `{"claims":[` +
-		`{"token":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","state":"suspended","suspendedBy":"released","pluginContract":48},` +
-		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48}]}`
+		`"pendingStatusWrites":[]`
+	// recorded is one claim of the record a case serves: its issue, the phase that issue stands
+	// in, its role and state, and who suspended it, which the operator claim routes serve and the
+	// state does not. Each issue is its own tree's root, so its architect is its tree's.
+	type recorded struct{ issue, at, role, state, by string }
+	status := map[string]string{"implementing": "in_progress", "testing": "testing", "reviewing": "needs_review"}
+	// issuesOf is the issues block over claims: each claim on its issue's view where the
+	// projection puts it, a tree's architect under `architect` and a phase worker under
+	// `workers`, and each issue at the status its phase writes (workflow.PhaseStatus).
+	issuesOf := func(claims []recorded) string {
+		var keys []string
+		phases, architects, workers := map[string]string{}, map[string]string{}, map[string][]string{}
+		for _, c := range claims {
+			if _, seen := phases[c.issue]; !seen {
+				keys = append(keys, c.issue)
+			}
+			phases[c.issue] = c.at
+			view := `{"session":"ses_` + strings.ToLower(c.issue) + `_` + c.role + `","state":"` + c.state + `","pluginContract":48}`
+			if c.role == "architect" {
+				architects[c.issue] = view
+				continue
+			}
+			workers[c.issue] = append(workers[c.issue], `"`+c.role+`":{"claim":`+view+`}`)
+		}
+		records := make([]string, len(keys))
+		for i, key := range keys {
+			records[i] = `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + phases[key] + `","status":"` + status[phases[key]] +
+				`","tree":"` + key + `","architect":` + architects[key] + `,"workers":{` + strings.Join(workers[key], ",") + `}}`
+		}
+		return `{` + strings.Join(records, ",") + `}`
+	}
+	// listOf is the operator claim list over the same claims, the one surface that names a
+	// suspender. A claim released and then retired keeps `suspendedBy: released`
+	// (api.StrandedClaim.Move).
+	listOf := func(claims []recorded) string {
+		entries := make([]string, len(claims))
+		for i, c := range claims {
+			by := ""
+			if c.by != "" {
+				by = `,"suspendedBy":"` + c.by + `"`
+			}
+			entries[i] = `{"token":"legion-legion-` + strings.ToLower(c.issue) + `-` + c.role + `","issue":"` + c.issue +
+				`","role":"` + c.role + `","state":"` + c.state + `"` + by + `,"pluginContract":48}`
+		}
+		return `{"claims":[` + strings.Join(entries, ",") + `]}`
+	}
+	// The record two cases read, one with the bearer and one without: LEGION-208's implementer
+	// is one whose idle pod the daemon released, LEGION-209's tester one an operator suspended,
+	// and LEGION-210's reviewer failed.
+	releasedClaims := []recorded{
+		{"LEGION-208", "implementing", "architect", "ready", ""},
+		{"LEGION-208", "implementing", "implementer", "suspended", "released"},
+		{"LEGION-209", "testing", "architect", "ready", ""},
+		{"LEGION-209", "testing", "tester", "suspended", "operator"},
+		{"LEGION-210", "reviewing", "architect", "ready", ""},
+		{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+	}
 	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
 		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
 		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
@@ -2450,19 +2536,33 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	const workflowStart = "failed or retired, needs a workflow start: the architect's retry_or_escalate of a held phase, a transition into the phase, or a tree close and re-admission"
 	for _, tc := range []struct {
 		name, stranded, want string
+		// claims is the record the case serves, which the operator claim list names too.
+		claims []recorded
 		// bearer reads the daemon with --operator-token-file, as an operator does; otherwise the
 		// command reads it as a pane does, with no bearer to name a suspender with.
 		bearer bool
 	}{
 		{
 			name: "every move",
+			claims: []recorded{
+				{"LEGION-208", "implementing", "architect", "suspended", "operator"},
+				{"LEGION-208", "implementing", "implementer", "suspended", "operator"},
+				{"LEGION-210", "implementing", "architect", "failed", ""},
+				{"LEGION-210", "implementing", "implementer", "working", ""},
+				{"LEGION-211", "reviewing", "architect", "ready", ""},
+				{"LEGION-211", "reviewing", "reviewer", "failed", ""},
+			},
 			stranded: `[{"issue":"LEGION-208","role":"architect","state":"suspended"},{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
 				`{"issue":"LEGION-210","role":"architect","state":"failed"},{"issue":"LEGION-211","role":"reviewer","state":"failed"}]`,
 			want: "claims nothing will wake: 4 — resume LEGION-208 architect; suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer; failed, retry LEGION-210 architect; " +
 				workflowStart + " LEGION-211 reviewer\n",
 		},
 		{
-			name:     "only failed",
+			name: "only failed",
+			claims: []recorded{
+				{"LEGION-210", "reviewing", "architect", "ready", ""},
+				{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+			},
 			stranded: `[{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
 			want:     "claims nothing will wake: 1 — " + workflowStart + " LEGION-210 reviewer\n",
 		},
@@ -2471,12 +2571,12 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		// a failure to retry.
 		{
 			name: "a released claim apart from a suspended and a failed one", bearer: true,
-			stranded: released,
+			claims: releasedClaims, stranded: released,
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-209 tester; " +
 				"released, woken over ten minutes ago and the pod never came back LEGION-208 implementer; " + workflowStart + " LEGION-210 reviewer\n",
 		},
 		{
-			name: "no bearer to read the suspensions with", stranded: released,
+			name: "no bearer to read the suspensions with", claims: releasedClaims, stranded: released,
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
 		},
@@ -2485,6 +2585,12 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		// as released: the line names it under the workflow start, never as a pod coming back.
 		{
 			name: "a retired claim beside a failed one", bearer: true,
+			claims: []recorded{
+				{"LEGION-208", "implementing", "architect", "ready", ""},
+				{"LEGION-208", "implementing", "implementer", "retired", "released"},
+				{"LEGION-210", "reviewing", "architect", "ready", ""},
+				{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+			},
 			stranded: `[{"issue":"LEGION-208","role":"implementer","state":"retired"},` +
 				`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
 			want: "claims nothing will wake: 2 — " + workflowStart + " LEGION-208 implementer, LEGION-210 reviewer\n",
@@ -2492,7 +2598,8 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		{name: "none", stranded: `[]`, want: "claims nothing will wake: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"strandedClaims":` + tc.stranded + "}"
+			served := "{" + daemon + `,"issues":` + issuesOf(tc.claims) + `,"strandedClaims":` + tc.stranded + "}"
+			listing := listOf(tc.claims)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == claimsRoute {
@@ -2500,7 +2607,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 						w.WriteHeader(http.StatusUnauthorized)
 						return
 					}
-					_, _ = w.Write([]byte(operatorClaims))
+					_, _ = w.Write([]byte(listing))
 					return
 				}
 				_, _ = w.Write([]byte(served))
@@ -2531,23 +2638,36 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 // (api.State.WakesWaiting). The line is there only while something waits: outside a restart or a
 // stale-plugin refresh wave the queue is empty, and a line saying so on every read would be
 // noise.
+//
+// The daemon serves a wake beside its claim's view, which names the same wake (api.ClaimWakes),
+// on its issue's record: LEGION-208's new implementer waits for its first launch
+// (supervise.WakeLaunch), and LEGION-210's idle reviewer for the relaunch the stale-plugin lane
+// raises (supervise.WakePluginRefresh). The state carries no admission block: the line reads
+// none, and both issues hold a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
+	waiting := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-208",` +
+		`"architect":{"session":"ses_legion-208_architect","state":"ready","pluginContract":48},` +
+		`"workers":{"implementer":{"claim":{"session":"","state":"queued","pluginContract":0,"wake":{"kind":"launch","dueAt":"2026-09-23T00:00:08Z"}}}}},` +
+		`"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"reviewing","status":"needs_review","tree":"LEGION-210",` +
+		`"architect":{"session":"ses_legion-210_architect","state":"ready","pluginContract":48},` +
+		`"workers":{"reviewer":{"claim":{"session":"ses_legion-210_reviewer","state":"idle","pluginContract":48,"wake":{"kind":"plugin-refresh","dueAt":"2026-09-23T00:00:15Z"}}}}}}`
 	for _, tc := range []struct {
-		name, wakes, want string
+		name, issues, wakes, want string
 	}{
 		{
-			name: "a launch and a stale-plugin relaunch",
+			name:   "a launch and a stale-plugin relaunch",
+			issues: waiting,
 			wakes: `[{"claim":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","kind":"launch","dueAt":"2026-09-23T00:00:08Z"},` +
 				`{"claim":"legion-legion-legion-210-reviewer","issue":"LEGION-210","role":"reviewer","kind":"plugin-refresh","dueAt":"2026-09-23T00:00:15Z"}]`,
 			want: "wakes waiting: 2 — legion-legion-legion-208-implementer launch due 2026-09-23T00:00:08Z; " +
 				"legion-legion-legion-210-reviewer plugin-refresh due 2026-09-23T00:00:15Z\n",
 		},
-		{name: "none", wakes: `[]`, want: ""},
+		{name: "none", issues: `{}`, wakes: `[]`, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"wakesWaiting":` + tc.wakes + "}"
+			served := "{" + daemon + `,"issues":` + tc.issues + `,"wakesWaiting":` + tc.wakes + "}"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))
@@ -2579,10 +2699,11 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 // serves the state; with none the one line says so. The body is the one this contract serves:
 // `withoutWebhookApp` lists each such repository with its reason, in contract 152's shape, and is
 // the block's one report of the webhook App, so it is the list the lines are read from. A block
-// with no such list says nothing of the webhook App and gets no line at all.
+// with no such list says nothing of the webhook App and gets no line at all. The state carries a
+// record on each repository the block lists (recordsOn).
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+		`"issues":` + recordsOn("acme/tools", "acme/widgets", "zeta/tools") + `,"pendingStatusWrites":[]`
 	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
 	both := `"apps":{"implement":true,"review":true}`
@@ -2628,10 +2749,11 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 // where this CLI printed `webhook App missing: none`.
 //
 // The control is the CLI that read the gaps from the `live` block: webhookAppLines is then fed
-// nothing for this body, and the line this test reads is gone.
+// nothing for this body, and the line this test reads is gone. The state carries a record on the
+// repository the list names (recordsOn).
 func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+		`"issues":` + recordsOn("acme/widgets") + `,"pendingStatusWrites":[]`
 	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
 	block := `{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],` +
 		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + failed + `"}],"caches":[]}`
@@ -2653,9 +2775,12 @@ func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *
 //
 // The control is the property put back: the plain state before this contract printed no line
 // for such a repository, only the webhook App lines, and every line this test reads is then gone.
+// The state carries a record on each live repository (recordsOn), under the name the records keep
+// it under: sjawhar/legion for the repository served as cybermonklabs/legion.
 func TestPlainStateNamesEachLiveRepositoryGitHubDidNotReadOrAnAppIsMissingFrom(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+		`"issues":` + recordsOn("acme/fresh", "acme/gadgets", "acme/widgets", "sjawhar/legion", "zeta/archive", "zeta/gone") +
+		`,"pendingStatusWrites":[]`
 	unread := "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
 	live := `[{"repo":"acme/fresh"},` +
 		`{"repo":"acme/gadgets","apps":{"implement":true,"review":false}},` +
@@ -2697,6 +2822,22 @@ func plainStateOf(t *testing.T, served string) string {
 		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 	}
 	return out.String()
+}
+
+// recordsOn is the issues block of a state whose live records name repos, one record at
+// implementing on each, keyed from LEGION-208 up in the order given. The daemon lists a repository
+// in its repositories block only where a live record of the same read names it (internal/daemon's
+// source.State and repositoriesOf), so a state that lists one carries a record naming it. It
+// carries no admission block beside them, since each of these records holds a slot
+// (record.PhaseKeepsSlot), which an empty `active` would deny.
+func recordsOn(repos ...string) string {
+	records := make([]string, len(repos))
+	for i, repo := range repos {
+		key := "LEGION-" + strconv.Itoa(208+i)
+		records[i] = `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress","tree":"` + key +
+			`","repo":"` + repo + `","defaultBranch":"main"}`
+	}
+	return `{` + strings.Join(records, ",") + `}`
 }
 
 // An operator reading plain `legion state` is told, one line per durable consumer, how many
