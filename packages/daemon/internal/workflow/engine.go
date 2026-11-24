@@ -1074,8 +1074,6 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row re
 		return nil
 	}
 	if why := stepCommitStays(fact, row); why != "" {
-		e.logOnCommit(ctx, stepCommitStaysLog+why, "issue", fact.Issue, "role", fact.Role, "task", w.Task,
-			"step", w.Place.Position, "commit", fact.Commit, "completion_entry", fact.Entry, "entry", row.Entry)
 		return nil
 	}
 	row.ReviewedHead = fact.Commit
