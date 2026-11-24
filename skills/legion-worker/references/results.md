@@ -33,8 +33,9 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 - An `after_merge` result counts only at a commit on the branch the issue's pull request merged into, or on the default branch.
   That commit must also be the merge of the work on that branch, or have it in its history.
   The merge of the work is the commit that brought the issue's pull request that merged last into that branch.
+  Where the pull request merged into another branch, the default branch's merge of the work is the merge that brought that branch in.
   The result recorded last among those that count decides.
-  Where a pass and a fail both count at its commit, the check reads not known until one of them is retracted.
+  Where a pass and a fail both count at that result's commit, the check reads not known until one of them is retracted.
 
 ## The rules every phase's evidence follows
 
