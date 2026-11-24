@@ -237,10 +237,12 @@
  * and the reply after them. A written case's runs also answer, from the shared checkout of its
  * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
  * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a read of a
- * code file the pin may summarize answered with its whole text marked `wholeText`). A run whose
- * reply after the last answered round still only reads skill files, or, in a written case, makes
- * a read-only call the checkout answers in no form, gets no verdict and is run again, its reason
- * beginning `reads-past-last-round` or `unanswered-read`; each case's line and `report` count such
+ * code file the pin may summarize answered with its whole text marked `wholeText`); a written
+ * case with no checkout (built before build-cases passed over a context session in no checkout it
+ * knows) answers none (`NO_CHECKOUT`). A run whose reply after the last answered round still only
+ * reads skill files, or, in a written case, makes a read-only call the checkout answers in no
+ * form, gets no verdict and is run again, its reason beginning `reads-past-last-round` or
+ * `unanswered-read`; each case's line and `report` count such
  * runs by arm, `report` by kind of case too beside the whole-text answers, and a stage left
  * unscreened by an arm with such runs drops its case under `reads-past-last-round`, with the
  * counts. A stage left unscreened in which the provider refused, on a content policy (a stream
@@ -403,6 +405,7 @@ import {
   messagesRunJj,
   readOnlyCall,
   removeOutsideLinks,
+  type Unanswered,
 } from "./checkout";
 import {
   configFrom,
@@ -2814,14 +2817,14 @@ const REPLAY_FAILED = "the replay failed";
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
  *  a session id of its own and its arm's installed copies of the profile's other skills, from its
  *  capture's record and the cache (context.ts's `installedCopies`), and, for a written case,
- *  `checkout`, the copy of its checkout its read-only calls are answered from; then every reply
- *  judged blind under `seed`. A replay that fails is a run with no verdict, its reason
- *  `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal there), and so is one
- *  whose reply after the last answered round still only reads, or makes a read-only call the
- *  checkout answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason
- *  begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply and
- *  spend); one the budget refused, or whose judgement the budget refused, is no run. The runs are
- *  numbered, within their arm, in the order they were sent. */
+ *  `checkout`, the copy of its checkout its read-only calls are answered from, or why it has none
+ *  (NO_CHECKOUT); then every reply judged blind under `seed`. A replay that fails is a run with no
+ *  verdict, its reason `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal
+ *  there), and so is one whose reply after the last answered round still only reads, or makes a
+ *  read-only call the checkout answers in no form (replay.ts's ReadsPastLastRound and
+ *  UnansweredRead: its reason begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that
+ *  run's reads, reply and spend); one the budget refused, or whose judgement the budget refused,
+ *  is no run. The runs are numbered, within their arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -2832,7 +2835,7 @@ async function runRound(
   round: number,
   seed: string,
   phases: Phases,
-  checkout: CheckoutCopy | undefined
+  checkout: CheckoutCopy | Unanswered | undefined
 ): Promise<{ runs: Run[]; budgetSpent: boolean }> {
   const replaysStarted = performance.now();
   const sent = await replayInterleaved(
@@ -2918,6 +2921,14 @@ async function runRound(
   }
   return { runs, budgetSpent };
 }
+
+/** Why a written case with no `checkout` answers none of its read-only calls: it was built
+ *  before build-cases passed over a context session whose working directory is in no checkout
+ *  it knows (build.ts's `no-checkout`). A reply of such calls, its skill reads aside, gets no
+ *  verdict (replay.ts's UnansweredRead) and its run is made again. */
+const NO_CHECKOUT: Unanswered = {
+  why: "the case has no checkout of its context session's repository, so the runner answers none of its read-only calls (build-cases now passes over a context session whose working directory is in no checkout it knows, as no-checkout)",
+};
 
 /**
  * Runs `stage` of case `c` until score.ts's `stageOutcome` says its runs are counted or
@@ -3033,9 +3044,12 @@ async function runStage(
 
   // A written case's read-only calls are answered from the shared checkout of its context
   // session's repository at its commit, made once and kept in the cache; a colocated jj
-  // repository too once a case whose session ran jj needs it.
-  let checkout: CheckoutCopy | undefined;
-  if (caseKind(c) === "written" && c.checkout !== undefined) {
+  // repository too once a case whose session ran jj needs it. A written case with no checkout
+  // answers none of them (NO_CHECKOUT).
+  const written = caseKind(c) === "written";
+  let checkout: CheckoutCopy | Unanswered | undefined =
+    written && c.checkout === undefined ? NO_CHECKOUT : undefined;
+  if (written && c.checkout !== undefined) {
     const { repo, commit, root, cwd } = c.checkout;
     try {
       // Whether the context session ran jj, as the written build recorded it from that session's

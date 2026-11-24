@@ -63,8 +63,12 @@
  * round's answers are recorded (`CheckoutRead`: the tool, its input, `from: "checkout"`), and its
  * calls go into the judged step before the reply that ends the run, as a round of skill reads
  * does; a reply after the last checkout round that is still all read-only calls the copy answers
- * gets no verdict (ReadsPastLastRound). A session case's run has no checkout, so no such round:
- * its read-only calls end the run as any other call does.
+ * gets no verdict (ReadsPastLastRound). A written case with no checkout (one built before
+ * build-cases passed over a context session in no checkout it knows) gives, in place of a copy,
+ * why it has none (`Unanswered`): no call of such a reply but its skill reads is answered, so the
+ * reply gets no verdict as UnansweredRead, naming its first other call and that why. A session
+ * case's run has no checkout, so no such round: its read-only calls end the run as any other call
+ * does.
  *
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
@@ -107,7 +111,7 @@ import {
   unknownSkill,
 } from "./arms";
 import { pathReadFile, skillReadFile } from "./cases";
-import { answerCall, type CheckoutCopy, readOnlyCall } from "./checkout";
+import { answerCall, type CheckoutCopy, readOnlyCall, type Unanswered } from "./checkout";
 import {
   type ContentBlock,
   freshIdentity,
@@ -291,8 +295,9 @@ export class ReadsPastLastRound extends Error {
 }
 
 /** What a written case's replay rejects with when a reply's every call is read-only and the
- *  checkout copy answers one of them in no form (checkout.ts's `answerCall`): the run gets no
- *  verdict, never judged on a call every arm would take alike (see the file's header).
+ *  checkout copy answers one of them in no form (checkout.ts's `answerCall`), or the case has no
+ *  checkout and one of them is no skill read: the run gets no verdict, never judged on a call
+ *  every arm would take alike (see the file's header).
  *  `replayed` is the run as it stood, its `step` that reply after the answered rounds' calls. Its
  *  message begins UNANSWERED_READ, and names the call and why. */
 export class UnansweredRead extends Error {
@@ -316,8 +321,8 @@ export class UnansweredRead extends Error {
  *  reply is the judged step, its answers are not sent, and they are in no round of `reads`.
  *  Without it, a run ends only as the file's header says. load.ts's load test uses it. A written
  *  case's run gives `checkout`, the copy of its checkout its read-only calls are answered from, at
- *  most MAX_CHECKOUT_ROUNDS rounds of them (see the file's header); a run without one answers
- *  none. */
+ *  most MAX_CHECKOUT_ROUNDS rounds of them, or, for a written case with no checkout, why none is
+ *  answered (see the file's header); a run without one answers none, and is judged on them. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly InstalledCopy[];
@@ -325,7 +330,7 @@ export interface ReplayOptions extends SendOptions {
     content: readonly ContentBlock[],
     round: readonly SkillRead[] | undefined
   ) => boolean;
-  readonly checkout?: CheckoutCopy;
+  readonly checkout?: CheckoutCopy | Unanswered;
 }
 
 /** A tool call an answered round answered: the call's id, the answer's text, and its record,
@@ -434,15 +439,15 @@ function roundReads(
 
 /** The answers to a reply's `content` from the checkout copy `checkout` when every tool call of it
  *  is read-only (checkout.ts's `readOnlyCall`): each read of a skill file as `skillRead` answers
- *  it, each other call from the copy (`answerCall`); undefined when it holds no tool call or one
- *  that is not read-only; `why` a call of it is answered in no form, when one is (see the file's
- *  header). */
+ *  it, each other call from the copy (`answerCall`), or, where `checkout` is why the case has none,
+ *  with no answer; undefined when it holds no tool call or one that is not read-only; `why` a call
+ *  of it is answered in no form, when one is (see the file's header). */
 async function checkoutRound(
   content: readonly ContentBlock[],
   arm: Arm,
   copies: readonly InstalledCopy[],
-  checkout: CheckoutCopy
-): Promise<AnsweredCall[] | { readonly why: string } | undefined> {
+  checkout: CheckoutCopy | Unanswered
+): Promise<AnsweredCall[] | Unanswered | undefined> {
   const calls = toolCalls(content);
   if (calls.length === 0) return undefined;
   for (const { id, name, input } of calls) {
@@ -457,7 +462,7 @@ async function checkoutRound(
       answers.push(skill);
       continue;
     }
-    const answer = await answerCall(checkout, name, input, rows);
+    const answer = "why" in checkout ? checkout : await answerCall(checkout, name, input, rows);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
     const { text, isError, wholeText } = answer;
     const read = {
@@ -572,8 +577,8 @@ async function replaySent(
  *  answers its skill reads, and returns the judged step. Rejects when a send does (the gateway's
  *  `BudgetSpent` among them), with ReadsPastLastRound when the reply after the last answered
  *  round still only reads, and with UnansweredRead when a written case's reply makes a read-only
- *  call its checkout copy answers in no form. `firstSettled` is told once the run's first send has its
- *  reply or its failure. */
+ *  call its checkout copy answers in no form, or that a case with no checkout answers none of.
+ *  `firstSettled` is told once the run's first send has its reply or its failure. */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
@@ -645,7 +650,8 @@ export interface InterleavedRun extends Slot {
  * runs. Those waits change no place of the order. Each arm's body to send is made once for all
  * its runs, each run's a copy of its top level with its own id (the body itself, when it names no
  * id). Each run's outcome is kept, whether it was a step or a failure, in the order sent. A
- * written case's round gives `checkout`, the copy every arm's runs answer read-only calls from.
+ * written case's round gives `checkout`, the copy every arm's runs answer read-only calls from,
+ * or, where the case has none, why none is answered.
  */
 export async function replayInterleaved(
   arms: readonly ArmRuns[],

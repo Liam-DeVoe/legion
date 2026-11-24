@@ -53,7 +53,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
-import { READS_PAST_LAST_ROUND, sendOrder } from "./replay";
+import { READS_PAST_LAST_ROUND, sendOrder, UNANSWERED_READ } from "./replay";
 import {
   type Compared,
   FRESH_RUNS,
@@ -5280,6 +5280,56 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
       `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 unanswered-read, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 unanswered-read, ${3 * SCREEN_RUNS} reads answered with the file's whole text in place of the pin's summary`
+    );
+  }, 120_000);
+
+  // Catches: a written case built before build-cases passed over a context session in no checkout
+  // it knows, so it has no checkout, judged on a reply whose calls all read, which the runner
+  // answers in no form (the defect: such cases floored at 0 of 10 in both arms, each run judged
+  // fail on its reads of files no checkout holds); or a session case's reply of such calls, which no
+  // checkout answers by design, no longer judged.
+  test("a written case with no checkout whose reply reads a file gets no verdict as unanswered-read, saying the case has no checkout, and runs again; a session case's run is judged on that reply", async () => {
+    const s = withWritten(scenario("no-checkout", LOSS_SKILL(), [{ id: "c04" }]), ["w00"]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // w00's first two runs, and every run of c04, read docs/guide.md; w00's later runs act.
+    const looks: Record<"c04" | "w00", number> = { c04: 0, w00: 0 };
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      const id = JSON.stringify(body.messages).includes("Case w00") ? "w00" : "c04";
+      looks[id] += 1;
+      return id === "w00" && looks.w00 > 2 ? behaviourStandIn(body) : readReply("docs/guide.md");
+    };
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const written = result(s.out, "w00").stages.screen?.runs ?? [];
+    expect(written).toHaveLength(3 * SCREEN_RUNS + 2);
+    const unjudged = written.filter((run) => run.verdict === null);
+    expect(unjudged).toHaveLength(2);
+    for (const run of unjudged) {
+      expect(run.reason).toStartWith(
+        `${UNANSWERED_READ}: read {"path":"docs/guide.md"}: the case has no checkout`
+      );
+      expect({ rounds: run.checkoutRounds, reply: run.reply }).toEqual({
+        rounds: 0,
+        reply: [expect.objectContaining({ name: "read", input: { path: "docs/guide.md" } })],
+      });
+    }
+    expect(ran.stdout).toContain(`(2 runs with no verdict, run again; ${UNANSWERED_READ}: `);
+    const session = result(s.out, "c04").stages.screen?.runs ?? [];
+    expect(session).toHaveLength(3 * SCREEN_RUNS);
+    for (const run of session) {
+      expect({ verdict: run.verdict, rounds: run.checkoutRounds }).toEqual({
+        verdict: "fail",
+        rounds: 0,
+      });
+      expect(run.reply).toEqual([
+        expect.objectContaining({ name: "read", input: { path: "docs/guide.md" } }),
+      ]);
+    }
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")).toContain(
+      `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 ${UNANSWERED_READ}, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 ${UNANSWERED_READ}, 0 reads answered with the file's whole text in place of the pin's summary`
     );
   }, 120_000);
 });

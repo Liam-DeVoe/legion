@@ -1365,7 +1365,8 @@ const CHECKOUT_RULE =
  *  FRESH_MADE: acme/fresh holds fresh-one, which a dev box's installer installs from then on, and
  *  acme/newproj holds its own skill nova in `.claude/skills/` and a CLAUDE.md. acme/alpha-set is a
  *  skill set's repository: a package named alpha-set whose `pi` manifest declares its skills/,
- *  which hold its own alpha beside acme/skills's (setTarget). */
+ *  which hold its own alpha beside acme/skills's (setTarget). acme/work holds a README.md alone:
+ *  F1's working directory is its checkout where the written builds' copies output lists it. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -1620,6 +1621,9 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
       "---\nname: beta\ndescription: Use for the plug's own beta.\n---\n\n# beta of plug-tools\n",
     "plugins/plug-tools/skills/alpha/SKILL.md": skillMd("alpha"),
   },
+  // The repository whose checkout F1's working directory (F1_CWD, named work) is where the
+  // written builds' copies output lists it (writtenCopies): a file no profile reads.
+  "acme/work": { "README.md": "# Made-up work\n\nThe fixture project's notes.\n" },
 };
 
 /** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
@@ -4464,6 +4468,16 @@ test("a set target keeps a read placed at the set's copy and drops a Legion fork
 
 // build-cases --written: cases of a skill from written tasks, each in a recorded session's context.
 
+/** The copies output of the written builds: the suite's, with acme/work listed, so F1's working
+ *  directory F1_CWD, named work, is a checkout of acme/work at SHA, and a context session made from
+ *  F1 is one the written build knows a checkout of; one in no checkout it knows is passed over
+ *  (no-checkout). */
+function writtenCopies(): string {
+  return copiesWith("copies-written", {
+    "repositories.tsv": [["acme/work", "main", SHA, "no", "no", "", 1, "recursive", 0, ""]],
+  });
+}
+
 /** The arguments of one `build-cases --written 3` run of alpha, and `extra`. */
 function writtenArgs(out: string, ...extra: string[]): string[] {
   return [
@@ -4479,7 +4493,7 @@ function writtenArgs(out: string, ...extra: string[]): string[] {
     "--old",
     old,
     "--copies",
-    copiesDir,
+    writtenCopies(),
     "--count",
     countDir,
     "--written",
@@ -4761,7 +4775,7 @@ describe("build-cases --written", () => {
       "--old",
       old,
       "--copies",
-      copiesDir,
+      writtenCopies(),
       "--count",
       countDir,
       "--reprofile",
@@ -5332,6 +5346,63 @@ test("build-cases --written passes over, before asking the written-case reader, 
   expect(await main(skill, io([]))).toBe(EXIT.ok);
 }, 120_000);
 
+// Catches: written cases taken from a context session whose working directory is in no checkout
+// the build knows, which record no checkout, so their runs answer no read-only call (the defect:
+// verification-before-completion's 7 written cases, and 8 of two other skills, were built so, and
+// each run was judged on a read no form answers, every case flooring at 0 of 10 in both arms).
+test("build-cases --written passes over, before asking the written-case reader, a context session whose working directory is in no checkout it knows, as no-checkout, takes the next one, whose cases record its checkout, and refuses a --context-session of it", async () => {
+  const names = ["two-repos", "good"];
+  const sessions = sessionsFile("written-no-checkout.jsonl", names);
+  const candidates = names.map((name) => ({
+    store: "store_a",
+    hash: fileHash(sessionPath(name)),
+    path: sessionPath(name),
+  }));
+  const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+    (each) => blindOrder(candidates, each)[0]?.item.path === sessionPath("two-repos")
+  );
+  expect(seed).toBeDefined();
+  const out = path.join(scratch, "written-no-checkout", "cases.jsonl");
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(
+    await main(writtenArgs(out, "--sessions", sessions, "--seed", seed ?? ""), io(printed))
+  ).toBe(EXIT.ok);
+  const hash = fileHash(sessionPath("two-repos"));
+  const cwd = "/home/dev/src/skills/notes";
+  const why = `no-checkout: its working directory ${cwd} is in no checkout the build knows: its profile names no session repository (${CHECKOUT_RULE}. The working directory ${cwd} is under /home/dev/src/skills, named skills, which 2 repositories of the list are named (acme/skills, forker/skills), so which one it is a checkout of is not known)`;
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.contextSession.hash).toBe(fileHash(sessionPath("good")));
+  expect(summary.contextSession.passed).toEqual([{ store: "store_a", hash, why }]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${hash}: passed over (${why})\n`
+  );
+  // The written-case reader is asked of the chosen session alone, given its checkout.
+  const asked = usersOf(recorder.requests.slice(from), WRITTEN_PROMPT);
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toContain(`<checkout repo="acme/work" root="${F1_CWD}" cwd="${F1_CWD}"`);
+  const cases = loadCases(out, old);
+  expect(cases.length).toBeGreaterThan(0);
+  for (const c of cases) {
+    expect(c.checkout).toEqual({
+      repo: "acme/work",
+      commit: SHA,
+      root: F1_CWD,
+      cwd: F1_CWD,
+      jj: false,
+    });
+  }
+  // A --context-session of it is refused (exit 1), naming why.
+  const refused: string[] = [];
+  const named = path.join(scratch, "written-no-checkout-named", "cases.jsonl");
+  const context = `store_a:${hash}`;
+  expect(await main(writtenArgs(named, "--context-session", context), io(refused))).toBe(
+    EXIT.failed
+  );
+  expect(refused.join("")).toContain(`--context-session ${context}: ${why}`);
+  expect(existsSync(named)).toBe(false);
+}, 120_000);
+
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
   // not-served runs on a model no route serves; other-copy read acme/other's alpha, so its profile
   // installs no alpha of the cut's repository; good and openai are on served models, and list it.
@@ -5530,7 +5601,7 @@ describe("build-cases --written over context sessions that read the skill by pat
   test("--reprofile builds that written case's profile again from the read by path its evidence names", async () => {
     const fresh = path.join(scratch, "written-by-path", "reprofiled.jsonl");
     const args = [
-      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["build-cases", "--config", config, "--old", old, "--copies", writtenCopies()],
       ...["--count", countDir, "--reprofile", out, "--out", fresh],
     ];
     expect(await main(args, io([]))).toBe(EXIT.ok);

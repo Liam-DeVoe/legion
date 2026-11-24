@@ -363,9 +363,14 @@ A written case's run (`source.kind` `written`, with a `checkout`) also answers a
 tool call is read-only ("Read-only calls" below) from the checkout of its context session's
 repository at its commit, at most 5 rounds (`MAX_CHECKOUT_ROUNDS`) beside the 3 rounds of skill
 reads; a skill read in such a reply is answered as above. A session case's run gets no such
-answers. Every written case of one commit, in every stage and every run that shares the cache,
-answers from one shared checkout, `<cache-dir>/checkouts/<owner>/<name>/<commit>`, read-only once
-made and never removed by a stage (cli.ts's `sharedCheckout`). It is made once: `git init`, `git
+answers. A written case with no `checkout` (one built before build-cases passed over a context
+session in no checkout it knows, `no-checkout` below) answers none: its reply whose every tool call
+is read-only, one of them other than a skill read, gets no verdict as `unanswered-read` (below),
+its reason naming that call and saying the case has no checkout, and the run is made again; a
+session case's run is judged on such a reply, as before. Every written case of one commit, in
+every stage and every run that shares the cache, answers from one shared checkout,
+`<cache-dir>/checkouts/<owner>/<name>/<commit>`, read-only once made and never removed by a stage
+(cli.ts's `sharedCheckout`). It is made once: `git init`, `git
 remote add origin https://github.com/<repo>.git` (through the pod's git; `<repos>/<owner>/<name>.git`
 with `--repos`), `git fetch --depth=50 origin <commit>`, which brings the blobs of each of those 50
 commits (an answer runs with no network, below, so it could fetch no blob the checkout lacked),
@@ -568,10 +573,11 @@ command where its colocation failed or whose checkout tracks a `.jj` at its root
 sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
 name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a `find`
 or `ls` tool, a run past its time, a `grep` or `glob` past 30 s, a `grep` one regex test of which
-took more than 100 ms) gets no
-verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
-why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
-an arm that cannot finish for such runs and those that read past round 5 drops its case as
+took more than 100 ms; and any call but a skill read where the written case has no checkout,
+above) gets no verdict, never judged on that call: its reason begins `unanswered-read:` and names
+the call and why, and it is run again as any run with no verdict (at most 5 extra runs a case,
+stage and arm; an arm that cannot finish for such runs and those that read past round 5 drops its
+case as
 `reads-past-last-round`, its reason counting each kind). The judged step is each answered round's
 calls, then the act; a reply after round 5 still all read-only calls the copy answers gets no
 verdict and is run again (`reads-past-last-round`). A session case's read-only calls are its
@@ -2151,9 +2157,10 @@ a skill whose session cases give fewer than 6 informative cases in the screen.
 A written case is a written task in a recorded session's context, not that session run again.
 The context session is the one `--context-session` names (`<store>:<file hash>`, the hash the
 sessions file names a file by), else the first of `--sessions` in the order `--seed` gives that is
-on a model the gateway serves and whose rebuilt profile installs the cut repository's (or the
-set's) copy of the skill; when no such session is on a served model, the first whose profile
-installs it, on any model. `--context-session` with `--sessions` or `--seed` is refused (exit 2),
+on a model the gateway serves, whose rebuilt profile installs the cut repository's (or the set's)
+copy of the skill and whose working directory is in a checkout the build knows (below); when no
+such session is on a served model, the first such session on any model.
+`--context-session` with `--sessions` or `--seed` is refused (exit 2),
 since the build would read neither. A session gives a context as a session gives a case: its first
 successful read of the skill is the earlier of its first successful `skill://` read, which
 `attribute.ts`'s rules must place at the cut repository's copy, and its first successful whole read
@@ -2171,6 +2178,10 @@ spawned under that build; a subagent's at its root's last prompt build before it
 summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
 detail, `model-not-served` for a session on a model the gateway does not serve,
+`no-checkout: <detail>` for a session whose working directory is in no checkout the build knows
+(its header names no working directory, or its profile no session repository, the detail giving
+the profile's evidence of why; or the directory is not at the profile's path in the checkout),
+whose runs would get no answer to any read-only call,
 `outside-material: <detail>` for a session whose recorded system prompt, role's prompt or first
 user message names by an absolute path outside its checkout's root a file the session itself
 reads, by a `read` call or with `cat`, `head`, `tail` or `sed -n` in a `bash` call (a skill's
@@ -2178,9 +2189,9 @@ file, read by `skill://`, shown as a skill file or under a skill's installed dir
 the detail names the path, where it is named and the message that reads it), whose runs would ask
 for material the checkout copy answers no read of, or `skill-as-material: <why>` for a session
 whose work, by the written-case reader's answer, is on the skill's own text: such a session is
-passed over, an `outside-material` one before the reader is asked, as the session form drops a
-`skill-as-material` one, and the next candidate taken; a `--context-session` of one is refused,
-exit 1). A case's
+passed over, a `no-checkout` or an `outside-material` one before the reader is asked, as the
+session form drops a `skill-as-material` one, and the next candidate taken; a `--context-session`
+of one is refused, exit 1). A case's
 `model` is the context session's when the gateway serves it; else the served model with the most
 reading sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
 else the served model with the most reading sessions summed over the `--model-pool` files (each a
@@ -2196,8 +2207,8 @@ tree's directories, shallowest first, at most 5,000, then the files under each d
 session's first message names (a word of it that is such a directory, from the root or the working
 directory, or a path under one) and under the working directory, at most 3,000, its `listing`
 saying what it holds and where each part was cut (and that GitHub cut the tree short, where it
-did), the prompt telling the reader the list may be partial; `None.` when the build knows
-no checkout) and its first user message, and writes at most n tasks in which a line of the skill
+did), the prompt telling the reader the list may be partial) and its first user message, and
+writes at most n tasks in which a line of the skill
 (of any file of it, none of the navigation lines) decides the agent's act once it has read the
 skill and looked at what the act needs; or `{"tasks": [], "material": {"why": …}}` when the
 session's work at the skill's read is on the skill's own text. Each task comes with the task (the
@@ -2208,8 +2219,8 @@ following step and a violating step. `--written-answer <file>` gives that answer
 in place of the reader's call and checked by the same schema (its count against `--written`;
 refused, exit 2, when it is none); the summary records its path and SHA-256
 (`inputs.writtenAnswer`) and `tasksFrom`, and every check below runs on it as on the reader's. A
-task one of whose `existing` paths the checkout does not hold at the commit (or any, where the
-build knows no checkout) is dropped as `written-missing-path`, naming the path; a path it asks to
+task one of whose `existing` paths the checkout does not hold at the commit is dropped as
+`written-missing-path`, naming the path; a path it asks to
 create is never checked. When every task of the reader's answer is dropped so, the reader is asked
 once more, the same input with `<absent>` naming each such path as absent from the checkout at the
 commit (one retry, its spend counted with the readers'); its tasks are decided as the first
@@ -2226,8 +2237,10 @@ one, its `source` the context session's store and path hash with `kind` `written
 the context session's (`{repo, commit, root, cwd, jj}`: the profile's session repository and
 commit, the checkout's root on the session's machine, the working directory, and whether the
 context session ran jj, a `bash` call of its transcript whose command holds the word `jj`, which
-the case's own history, the task and the skill's read, cannot show; absent where the build knows
-none), and its profile, working directory and system context the context session's; its
+the case's own history, the task and the skill's read, cannot show; a case built before the build
+passed over a context session in no checkout it knows may have none, and its runs answer no
+read-only call, above), and its profile, working directory and system context the context
+session's; its
 evidence names each read of the context session its profile is built from, and so how it read the
 skill (`context session read: message <n> reads [Skill file: <path>]` for a `skill://` read,
 `context session read: message <n> reads <path> by its path` for a whole read by path of the cut's

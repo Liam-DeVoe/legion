@@ -1766,6 +1766,44 @@ test("a written case's reply one of whose read-only calls the copy answers in no
   }).toEqual({ checkoutRounds: 0, step: [INSPECTION[0], log] });
 });
 
+// Catches: a written case with no checkout (one built before build-cases passed over a context
+// session whose working directory is in no checkout it knows) judged on a reply whose calls all
+// read, which the runner answers in no form, a step every arm takes alike whatever the skill says
+// (the defect: such cases floored at 0 of 10 in both arms, each run judged fail on its reads of
+// files no checkout holds); or its reads of the skill, or its act, no longer answered and judged.
+test("a written case's reply whose calls all read, where the case has no checkout, gets no verdict, as unanswered-read, naming the call and that the case has no checkout; its skill reads are answered and its act is judged", async () => {
+  const none = { why: "the case has no checkout" };
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const skill = readCall("toolu_skill", "skill://alpha/references/x.md");
+  const brief = toolCall("toolu_brief", "read", { path: "/mnt/briefs/plan.md" });
+  const grep = INSPECTION[1] as ContentBlock;
+  const { gateway, bodies } = scripted([[skill], [brief, grep]]);
+  const failed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+    checkout: none,
+  }).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  if (!(failed instanceof UnansweredRead)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${UNANSWERED_READ}: read {"path":"/mnt/briefs/plan.md"}: the case has no checkout`
+  );
+  expect(bodies).toHaveLength(2);
+  expect({
+    rounds: failed.replayed.rounds,
+    checkoutRounds: failed.replayed.checkoutRounds,
+    step: failed.replayed.step.message.content,
+  }).toEqual({ rounds: 1, checkoutRounds: 0, step: [skill, brief, grep] });
+  // A reply that acts is the judged step, as any written case's.
+  const judged = await replayOnce(
+    { ...BODY, stream: false },
+    arm,
+    scripted([[brief, WRITE_ACT]]).gateway,
+    { checkout: none }
+  );
+  expect(judged.step.message.content).toEqual([brief, WRITE_ACT]);
+});
+
 // Catches: a session case's reply answered from a checkout, which a session case has none of.
 test("a session case's reply whose calls all read files of the project is the judged step: no checkout answers it", async () => {
   const { gateway, bodies } = scripted([INSPECTION, [WRITE_ACT]]);

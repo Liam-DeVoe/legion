@@ -430,15 +430,19 @@
  * directories the first message names and under the working directory, each part capped); when
  * every task of its answer is dropped as `written-missing-path`, it is asked once more with those
  * paths named absent (`<absent>`), and the summary records the retry (`retry`); a
- * `--written-answer` is not asked again. A context session whose recorded system prompt, role's
- * prompt or first user message names by an absolute path outside its checkout's root a file it
- * reads itself (a `read` call, or `cat`, `head`, `tail` or `sed -n` in a `bash` call), a skill's
- * file aside, is passed over as `outside-material` before the reader is asked, and one whose work
- * the reader finds is on the skill's own text as `skill-as-material` (`chooseContext`). The context
- * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
- * is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first read of
- * the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://` read, or
- * a whole read by path of the cut's copy, whose copy's directory the written case's reads show.
+ * `--written-answer` is not asked again. A context session whose working directory is in no
+ * checkout the build knows (`writtenCheckout`: its header names none, or its profile no session
+ * repository) is passed over as `no-checkout`, since its cases' runs could answer no read-only
+ * call; one whose recorded system prompt, role's prompt or first user message names by an
+ * absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
+ * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`, both
+ * before the reader is asked; and one whose work the reader finds is on the skill's own text as
+ * `skill-as-material` (`chooseContext`). A `--context-session` of any of them is refused (exit 1).
+ * The context session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build
+ * given both is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first
+ * read of the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://`
+ * read, or a whole read by path of the cut's copy, whose copy's directory the written case's reads
+ * show.
  *
  * **--drop-navigation** (both forms; README.md, "build-cases and build-tasks") gives no case of a
  * navigation line: a line whose only instruction a step could show is to read or open a file of
@@ -879,6 +883,8 @@ export const DROP_REASONS = {
     "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it; in build-cases --written, the written-case reader finds so of the context session's first message, and the session is passed over",
   "outside-material":
     "in build-cases --written, the context session's recorded system prompt, its role's prompt or its first user message names by an absolute path outside its checkout's root a file the session itself reads (by a read call, or with cat, head, tail or sed -n in a bash call), other than a skill file; a written case's run answers no read of it from the checkout, so the session is passed over",
+  "no-checkout":
+    "in build-cases --written, the build knows no checkout of the context session's working directory: its header names none, its profile names no session repository, or the directory is not at the profile's path in the checkout; a written case's run answers its read-only calls from that checkout alone, so the session is passed over",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -914,7 +920,7 @@ export const DROP_REASONS = {
   "written-navigation":
     "the navigation reader calls a written task's line one that only sends the agent to a file of the skill (build-cases --written --drop-navigation)",
   "written-missing-path":
-    "a written task treats as already there a path the context session's checkout does not hold at its commit, or names one where the build knows no checkout (build-cases --written)",
+    "a written task treats as already there a path the context session's checkout does not hold at its commit (build-cases --written)",
 } as const;
 export type DropReason = keyof typeof DROP_REASONS;
 
@@ -7736,8 +7742,8 @@ interface WrittenContext {
   /** What its listing measure is made from, the window of the build its profile is read at
    *  among it for a top-level session. */
   readonly listing: ListingInput;
-  /** The session's checkout, a written case's `checkout` (`writtenCheckout`), or undefined. */
-  readonly checkout: Case["checkout"];
+  /** The session's checkout, a written case's `checkout` (`writtenCheckout`). */
+  readonly checkout: NonNullable<Case["checkout"]>;
 }
 
 /**
@@ -7753,7 +7759,8 @@ interface WrittenContext {
  * reads a written case's, which records no time of its step: a subagent's at its root's last
  * prompt build before its start (PARENT_LOAD_RULE), a top-level session's at its first build, the
  * session's start (TOP_BUILD_RULE, `stepBuild`); it must install the cut repository's copy of the
- * skill.
+ * skill, and its working directory must be in a checkout the build knows (`writtenCheckout`, else
+ * `no-checkout`): a written case's run answers its read-only calls from that checkout alone.
  */
 async function writtenContext(
   run: CaseRun,
@@ -7843,9 +7850,11 @@ async function writtenContext(
   if (!installsCutCopy(profiled.profile, run.skill, run.cut.repo)) {
     return drop("not-cut-copy", notInstalled(run));
   }
+  const checkout = writtenCheckout(profiled, dirs.cwd);
+  if ("drop" in checkout) return checkout;
   // Whether the session ran jj: the whole message of each of its bash calls, read again (a light
   // message keeps no call's command).
-  const ranJj = messagesRunJj(
+  const jj = messagesRunJj(
     t.items.flatMap((item, index) =>
       item.slim.content?.some((block) => block.type === "toolCall" && block.name === "bash") ===
       true
@@ -7870,7 +7879,7 @@ async function writtenContext(
     reads: shown,
     profiled,
     digest,
-    checkout: writtenCheckout(profiled.profile, dirs.cwd, ranJj),
+    checkout: { ...checkout, jj },
     listing: {
       listed: listedNames(profiled),
       recorded: rebuilt.init?.systemPrompt,
@@ -7890,11 +7899,9 @@ const NAMED_PATH = /(?:^|[\s"'`(<[{=])(\/(?!\/)[^\s"'`)<>\]}]*)/g;
  *  absolute path, outside its checkout's root, its recorded system prompt, its role's prompt or its
  *  first user message names (a final `.`, `,`, `;`, `:`, `!` or `?` taken off); a skill's file (a
  *  `skill://` read, a file a read shows as a skill file, or one under the installed directory of
- *  the case's skill or of a skill whose SKILL.md a read shows) is none. A session whose checkout
- *  the build does not know (`checkout` undefined) is not judged by it. */
+ *  the case's skill or of a skill whose SKILL.md a read shows) is none. */
 function outsideMaterial(made: WrittenContext): string | undefined {
   const checkout = made.checkout;
-  if (checkout === undefined) return undefined;
   const firstUser = made.t.items.findIndex((item) => item.slim.role === "user");
   const role = made.profiled.profile.appendSystemPrompt;
   const texts: (readonly [string, string])[] = [
@@ -7978,11 +7985,13 @@ interface ChosenContext {
 /**
  * The context session of a written build, the written-case reader's tasks for it (`ask`), how it
  * was chosen, and the sessions passed over before it: the one `given` names (`--context-session`),
- * refused (thrown, naming why) where it reads material outside its checkout (`outsideMaterial`) or
- * `ask` says its work is on the skill's own text; else the first session of `order` (the build's
- * seeded order of `--sessions`) that gives written cases (`writtenContext`) on a model the gateway
- * serves and whose answer is tasks, one that reads material outside its checkout passed over,
- * before it is asked, as `outside-material`, and one whose answer is `material` as
+ * refused (thrown, naming why) where it gives no written cases (`writtenContext`: one in no
+ * checkout the build knows among them, `no-checkout`), reads material outside its checkout
+ * (`outsideMaterial`) or `ask` says its work is on the skill's own text; else the first session of
+ * `order` (the build's seeded order of `--sessions`) that gives written cases on a model the
+ * gateway serves and whose answer is tasks, one that gives none passed over under its drop reason
+ * (`no-checkout` among them), one that reads material outside its checkout passed over, before it
+ * is asked, as `outside-material`, and one whose answer is `material` as
  * `skill-as-material` with the reader's why; else, when none does, the first that gives them on
  * any model and whose answer is tasks, each such session asked in its turn (the first one's
  * context kept, each later one's pulled again). `paths` gives the path of a candidate whose line
@@ -8125,17 +8134,34 @@ async function chooseContext(
   );
 }
 
-/** A written case's `checkout` (cases.ts): the session repository and commit of the context
- *  session's profile (`sessionRepository`), the checkout's root (the working directory `cwd` less
- *  its path in the checkout, the profile's `workingDirectory`), `cwd`, and whether the session ran
- *  jj (`jj`); undefined when the profile names no session repository, or the session no working
- *  directory. */
-function writtenCheckout(profile: Profile, cwd: string | undefined, jj: boolean): Case["checkout"] {
-  const repo = profile.sessionRepository;
-  if (repo === undefined || cwd === undefined) return undefined;
-  const rel = profile.workingDirectory ?? "";
+/** A written case's `checkout` (cases.ts) less `jj`, from the context session's profile
+ *  `profiled` and working directory `cwd`: the profile's session repository and commit
+ *  (`sessionRepository`), the checkout's root (`cwd` less its path in the checkout, the profile's
+ *  `workingDirectory`), and `cwd`; or why the build knows none (`no-checkout`): the session names
+ *  no working directory, the profile names no session repository (its evidence of why,
+ *  NO_SESSION_REPOSITORY_ITEM, in the detail), or `cwd` does not end with that path. */
+function writtenCheckout(
+  profiled: ProfileResult,
+  cwd: string | undefined
+):
+  | Omit<NonNullable<Case["checkout"]>, "jj">
+  | { readonly drop: "no-checkout"; readonly detail: string } {
+  const none = (detail: string) => ({ drop: "no-checkout" as const, detail });
+  if (cwd === undefined) return none("its header names no working directory");
+  const { sessionRepository: repo, workingDirectory: rel = "" } = profiled.profile;
+  if (repo === undefined) {
+    const why = profiled.evidence.find((each) => each.item === NO_SESSION_REPOSITORY_ITEM)?.source;
+    return none(
+      `its working directory ${cwd} is in no checkout the build knows: its profile names no session repository${why === undefined ? "" : ` (${why})`}`
+    );
+  }
   const root = rel === "" ? cwd : cwd.endsWith(`/${rel}`) ? cwd.slice(0, -(rel.length + 1)) : "";
-  return root === "" ? undefined : { repo: repo.repo, commit: repo.commit, root, cwd, jj };
+  if (root === "") {
+    return none(
+      `its working directory ${cwd} does not end with ${rel}, its path in the checkout of ${repo.repo}`
+    );
+  }
+  return { repo: repo.repo, commit: repo.commit, root, cwd };
 }
 
 /** The most paths of a checkout's tree the written-case reader is given whole: a larger tree, or
@@ -8523,22 +8549,19 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         );
       }
       if (givenAnswer !== undefined) return givenAnswer.answer;
-      let checkout: WrittenCaseInput["checkout"] = null;
-      if (context.checkout !== undefined) {
-        const { repo, root, cwd } = context.checkout;
-        const { paths: listed, whole } = await listingOf(context.checkout);
-        // A tree past CHECKOUT_LIST_PATHS, or cut short, is given by a partial listing.
-        checkout =
-          whole && listed.length <= CHECKOUT_LIST_PATHS
-            ? { repo, root, cwd, files: listed.filter((each) => !each.endsWith("/")), whole }
-            : {
-                repo,
-                root,
-                cwd,
-                ...partialListing(listed, whole, insideRoot(root, cwd) ?? "", firstMessage),
-                whole: false,
-              };
-      }
+      const { repo, root, cwd } = context.checkout;
+      const { paths: listed, whole } = await listingOf(context.checkout);
+      // A tree past CHECKOUT_LIST_PATHS, or cut short, is given by a partial listing.
+      const checkout: WrittenCaseInput["checkout"] =
+        whole && listed.length <= CHECKOUT_LIST_PATHS
+          ? { repo, root, cwd, files: listed.filter((each) => !each.endsWith("/")), whole }
+          : {
+              repo,
+              root,
+              cwd,
+              ...partialListing(listed, whole, insideRoot(root, cwd) ?? "", firstMessage),
+              whole: false,
+            };
       try {
         const result = await runReader(
           "written-case",
@@ -8616,12 +8639,6 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       const items: Evidence[] = [];
       const checkout = chosen.checkout;
       for (const named of task.existing) {
-        if (checkout === undefined) {
-          return {
-            missing: `it treats ${named} as there, and the build knows no checkout of the context session (no session repository, or no working directory in it)`,
-            path: named,
-          };
-        }
         const full = resolvedReadPath(named, { cwd: checkout.cwd });
         const inside = full === undefined ? undefined : insideRoot(checkout.root, full);
         if (inside === undefined) {
@@ -8880,7 +8897,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         realStep,
         violatingStep,
         source: { store: chosen.store.name, pathHash: contextPathHash, kind: "written" },
-        ...(chosen.checkout === undefined ? {} : { checkout: chosen.checkout }),
+        checkout: chosen.checkout,
         sessionStart: chosen.sessionStart,
         secretsRemoved: secrets.removed,
         sessionDigest: chosen.digest ?? null,
@@ -8898,14 +8915,10 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
             source: `${tasksFrom} gave the task, the paths it treats as there, the line, the criterion, the following step (the case's real step) and the violating step, from the base text (--old), ${navigation.length === 0 ? "" : `the navigation lines of the session build (${navigationWords}), `}${sessionCases.length} session cases, the context session's checkout and its first user message; the history holds the task and the read of the skill alone; the restatement check (the restate reader) finds no statement of the line in the task, and the audit calls the following step follows`,
           },
           ...existing.items,
-          ...(chosen.checkout === undefined
-            ? []
-            : [
-                {
-                  item: `${WRITTEN_EVIDENCE}checkout ${chosen.checkout.repo} at ${chosen.checkout.commit}`,
-                  source: `the context session's working directory ${chosen.checkout.cwd} is in a checkout of ${chosen.checkout.repo} rooted at ${chosen.checkout.root} (its profile's session repository and the working directory's path in it), at the commit its project was read at: a run of the case answers its read-only calls from that commit (cases.ts's checkout); ${chosen.checkout.jj === true ? "a bash call of the context session ran jj, so its checkout was a jj workspace, and the copy a run answers from is a colocated jj repository" : "no bash call of the context session ran jj"}`,
-                },
-              ]),
+          {
+            item: `${WRITTEN_EVIDENCE}checkout ${chosen.checkout.repo} at ${chosen.checkout.commit}`,
+            source: `the context session's working directory ${chosen.checkout.cwd} is in a checkout of ${chosen.checkout.repo} rooted at ${chosen.checkout.root} (its profile's session repository and the working directory's path in it), at the commit its project was read at: a run of the case answers its read-only calls from that commit (cases.ts's checkout); ${chosen.checkout.jj === true ? "a bash call of the context session ran jj, so its checkout was a jj workspace, and the copy a run answers from is a colocated jj repository" : "no bash call of the context session ran jj"}`,
+          },
           { item: `${WRITTEN_EVIDENCE}context session ${contextName}`, source: how },
           {
             item: `${WRITTEN_EVIDENCE}model ${model.model}`,
