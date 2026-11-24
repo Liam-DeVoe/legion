@@ -3609,9 +3609,11 @@ package api
 // The same change adds the notice kind `workspace-kept`, to the issue's architect, for a pod no
 // role runs in that the daemon keeps for its disk (`record.WorkspaceKeptNotice`), and two members
 // of the workspace check's outbox row, `launcher` and `close` (`record.IssueWorkspaceCheck`). An
-// outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row; there
-// is no migration, and the rollback deletes those rows first (docs/kubernetes.md, "Rolling back
-// the release that keeps no saved workspace"). No shape of `GET /legion/v1/state` moves.
+// outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and the
+// rollback deletes those rows first (docs/kubernetes.md, "Rolling back the release that keeps no
+// saved workspace"). R6 adds one migration, 20261123231000_idle_release_declines_told_pod
+// (`idle_release_declines.told_pod`, whether the architect was told of a pod), beside R7's
+// 20261124041455 below. No shape of `GET /legion/v1/state` moves.
 //
 // R7 of the same issue rides this entry and moves no wire of its own: an update round reads the
 // workspace before every replacement, through a role's shim or through the launcher's read

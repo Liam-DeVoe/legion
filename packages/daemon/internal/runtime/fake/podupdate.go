@@ -181,10 +181,10 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 // (runtime.ActReader). It takes the pods' launch turn without waiting (turn), and answers
 // runtime.ErrTurnBusy, calling nothing, where a launch or a replacement by issue holds it, as the
 // Sandbox runtime answers a turn another holds. Under the turn, an act that takes the pod
-// (runtime.TakesPod) is made where a ReplacePod replaced the target (took), and where the issue's
-// Sandbox no longer holds it (podGone); it is not made otherwise. An act that takes the kept volume
-// (runtime.TakesVolume) is made where the Sandbox of its target uid is gone (ScriptSandboxGone), not
-// made where the issue's Sandbox runs a live pod of its own (runsOwnPod), which uses the volume, and
+// (runtime.TakesPod) is made where its target is taken (podTaken); it is not made otherwise. An act
+// that takes the kept volume (runtime.TakesVolume) is made where the Sandbox of its target uid is
+// gone (ScriptSandboxGone), not made where the issue's Sandbox runs a live pod of its own that is
+// not taken, which uses the volume, and
 // uncertain otherwise, as the Sandbox runtime reads a Sandbox of that uid that still stands
 // Suspended. It records no call, and decide runs with mu free.
 func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
@@ -197,14 +197,16 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 	switch act.Takes {
 	case runtime.TakesPod:
 		state = runtime.ActNotMade
-		if r.took[act.Target] || r.podGone(issue, act.Target) {
+		if r.podTaken(issue, act.Target) {
 			state = runtime.ActMade
 		}
 	case runtime.TakesVolume:
+		held, read := r.issuePods[issue]
+		now, live := r.podNow(held)
 		switch {
 		case r.sandboxGone[act.Target]:
 			state = runtime.ActMade
-		case r.runsOwnPod(issue):
+		case read && live && !r.podTaken(issue, now):
 			state = runtime.ActNotMade
 		default:
 			state = runtime.ActUncertain
@@ -231,16 +233,11 @@ func (r *Runtime) podGone(issue, pod string) bool {
 	return gone
 }
 
-// runsOwnPod is whether the issue's Sandbox runs a live pod of its own that nothing took: IssuePod
-// answers a pod for the issue (ScriptIssuePod), no replacement's suspension landed over it
-// (suspendedOver), and no ReplacePod replaced it (took). Called with mu held.
-func (r *Runtime) runsOwnPod(issue string) bool {
-	held, read := r.issuePods[issue]
-	if !read {
-		return false
-	}
-	now, live := r.podNow(held)
-	return live && !r.suspendedOver[now] && !r.took[now]
+// podTaken is whether pod is taken from the issue's Sandbox: a ReplacePod replaced it (took), or
+// the Sandbox no longer holds it (podGone). It is the fake's one test of a taken pod, as the
+// Sandbox runtime has one (podTaken). Called with mu held.
+func (r *Runtime) podTaken(issue, pod string) bool {
+	return r.took[pod] || r.podGone(issue, pod)
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that

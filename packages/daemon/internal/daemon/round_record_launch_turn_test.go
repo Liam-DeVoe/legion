@@ -15,18 +15,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 func TestASweepInsideALaunchsReplacementLeavesItsRecordStanding(t *testing.T) {
 	t.Parallel()
-	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: roundBreakingDrift, unasked: true})
-	rig.drifts(roundBreakingDrift)
-	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
-	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+	rig := podlessBreakingRound(t)
 
 	// The launch's hook, as the boot binds it, with a sweep's finish of the standing records in the
 	// gap between the record's commit and the launch's in-memory record of its replacement: the

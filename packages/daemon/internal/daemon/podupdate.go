@@ -1225,11 +1225,12 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // roundReplaced is what each of a round's own replacements owes once it is made: through a process
 // (replacePodForRound), by issue (replaceIssuePodForRound), at a launch (endRoundALaunchReplaced),
 // or one whose call failed or whose daemon stopped once its suspension landed (finishReplacements).
-// It logs the replacement's line, and the bound's own line where the bound let the replacement
-// through (ended, what the last word or the launch read of the round's end under the pod's launch
-// turn), finishes the replacement's record, recorded, telling the issue's architect what the
-// replacement took where the read before it found work or failed (finishReplacement), and only
-// then ends the round on the claims of members (endPodUpdates). A store that refuses the finish
+// It logs the bound's own line where the bound let the replacement through (ended, what the last
+// word or the launch read of the round's end under the pod's launch turn), since the replacement
+// is made by then, finishes the replacement's record, recorded, telling the issue's architect what
+// the replacement took where the read before it found work or failed (finishReplacement), and
+// only then logs the replacement's line and ends the round on the claims of members
+// (endPodUpdates). A store that refuses the finish
 // leaves the round open with its record (the Legion reviewer's point D on fa9deb04): the notice
 // names what the round's claims record — the members that had not answered, and whether the kept
 // volume was still the round's — and the end clears it, so a later sweep finishes the record from
@@ -1263,9 +1264,17 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if !read.clean() {
 		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
 	}
+	// The bound's line comes before the finish: the replacement is made, and a retry of a refused
+	// finish (finishReplacements) carries no reading of the bound, so this is the line's one chance.
+	if bounded {
+		s.log.Info("supervise pod update replaced at the bound",
+			append([]any{"issue", issue, "round", round, "pod", pod,
+				"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working},
+				ended.background.attributes()...)...)
+	}
 	// The round is over only once its replacement's record is finished, in the transaction that
 	// queues the architect's notice: a store that refuses that notice leaves the round open, and
-	// each later sweep tries again, so the lines that say the round is over come once, after the
+	// each later sweep tries again, so the line that says the round is over comes once, after the
 	// finish commits.
 	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, "", reason, "round", round) {
 		s.log.Info("supervise: the pod of this update round is replaced, and the round stays open: the store refused to finish the replacement's record and to queue the architect's workspace-taken notice with it; a later sweep finishes it",
@@ -1273,12 +1282,6 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 		return false
 	}
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over", append(line, read.attrs()...)...)
-	if bounded {
-		s.log.Info("supervise pod update replaced at the bound",
-			append([]any{"issue", issue, "round", round, "pod", pod,
-				"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working},
-				ended.background.attributes()...)...)
-	}
 	s.endPodUpdates(issue, members, round)
 	return true
 }
@@ -1772,8 +1775,10 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // bound it holds the round, so it is told to the operator's side once, as a refused ReplacePod is
 // (tellLateRound, failedReplacementReason).
 //
-// A replacement made ends the round as a replacement the round made (endPodUpdates), and the
-// runtime's nil for a pod it found no longer there ends it the same way, as ReplacePod's does.
+// A replacement made ends the round as a replacement the round made (endPodUpdates), and so does
+// the runtime's nil for a pod it found no longer there, as ReplacePod's does, but where a launch
+// replaced the pod as the round's own replacement while the call waited: the call took nothing,
+// its record goes, and the round ends as the launch's (overtakenByLaunch).
 // Before the call, and outside the pod's launch turn, the pod's launcher reads the issue's
 // workspace (readPodWorkspace, R7 of #5285), since no role process runs in the
 // pod to read through. The read decides the replacement as the replacement through a process

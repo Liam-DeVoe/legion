@@ -17,8 +17,9 @@ package daemon
 // store refused: the sweep has
 // the runtime read whether the act was made, under the pod's launch turn and from the cluster's API
 // (runtime.ActReader), and finishes a replacement whose suspension landed from the read made
-// before it, never from a new read, and never as a keep, or forgets one whose pod still runs
-// (finishReplacements).
+// before it, never from a new read, and never as a keep, or forgets one whose target is still in
+// use: a pod that still runs as the issue's own, or a Sandbox of the volume that runs a live pod on
+// it (finishReplacements).
 
 import (
 	"context"
