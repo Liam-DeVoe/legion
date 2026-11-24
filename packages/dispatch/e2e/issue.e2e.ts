@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
 import { watchWrites } from "./keyed-writes";
@@ -269,7 +270,7 @@ test("issue header copies its key and persists its title, status, and route", as
     await issueTitle.fill("First decision revised");
     await issueTitle.press("Enter");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: "First decision revised" });
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(listTrigger(page.getByTestId("issue-header"), "Status"), "Todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await page.getByLabel("Message route").fill("role:legion-controller-core");
@@ -765,7 +766,7 @@ test("issue header keeps every control in a shared row on a phone and the whose-
 
     // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
     // details line with the indicator — nothing but the title sits on a row of its own.
-    const stateRow = await top(page.getByLabel("Status"));
+    const stateRow = await top(listTrigger(header, "Status"));
     // `Priority of <KEY>` is the issue's own grade; the control that adds a priority the issue
     // advances is on the rail below and names that word too.
     expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);

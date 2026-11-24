@@ -535,8 +535,8 @@ registerText("decision pill: med", BADGE_MED_TEXT, ASK_BLOCK_PILL_MED_BG);
 registerText("danger text on danger callout", DANGER_TEXT, CALLOUT_DANGER_BG);
 registerText("danger text on warning callout", DANGER_TEXT, CALLOUT_WARNING_BG);
 registerText("danger text on surface-recessed", DANGER_TEXT, SURFACE_RECESSED);
-/** The issue-status select is a neutral control: its solid dot carries the state signal while
- * its label remains readable without requiring users to distinguish hues. */
+/** The issue header's Status pick is a neutral control: its solid dot carries the state signal
+ * while its label remains readable without requiring users to distinguish hues. */
 export const STATUS_PILL_BG = pair(P.SLATE_100, P.SLATE_800);
 export const STATUS_PILL_TEXT = pair(P.SLATE_800, P.SLATE_200);
 export const statusPill = {

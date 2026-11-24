@@ -37,7 +37,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await openIssue(page, issue.key, "Keyboard issue");
     const header = page.getByTestId("issue-header");
     const priority = listTrigger(page, `Priority of ${issue.key}`);
-    const status = page.getByRole("combobox", { name: "Status" });
+    const status = listTrigger(header, "Status");
 
     // p and s reach their own control: two assertions, so a p that focused Status fails.
     await page.keyboard.press("p");
@@ -237,8 +237,8 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Type-ahead");
-    // Every PATCH this page sends, so a status the select's own type-ahead picked is caught
-    // even though the pill would show it for only as long as the reader stayed.
+    // Every PATCH this page sends, so a status a list picked is caught even though the pill would
+    // show it for only as long as the reader stayed.
     const patched: string[] = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -246,11 +246,11 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
       }
     });
 
-    // Three of the status labels begin with `t` (Triage, Todo, Testing), so a `t` that reached
-    // the Status select would write one of them, and a `t` on the priority list's trigger would
-    // open that list, instead of starting the tab chord.
+    // Three of the status labels begin with `t` (Triage, Todo, Testing), and a `t` on the status's
+    // or the priority's list trigger would open that list with `t` in its text box, instead of
+    // starting the tab chord.
     for (const [key, control] of [
-      ["s", page.getByRole("combobox", { name: "Status" })],
+      ["s", listTrigger(page.getByTestId("issue-header"), "Status")],
       ["p", listTrigger(page, `Priority of ${issue.key}`)],
     ] as const) {
       await page.keyboard.press(key);

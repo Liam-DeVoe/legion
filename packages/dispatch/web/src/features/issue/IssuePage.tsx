@@ -35,7 +35,7 @@ import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
-import { IssueHeader } from "./IssueHeader";
+import { IssueHeader, STATUS_TRIGGER_SELECTOR } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
@@ -106,14 +106,13 @@ function ItemLandingFailure({
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const STATUS_SELECT = 'select[aria-label="Status"]';
 const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input: disabled
- *  (the status on a closed issue or while a save is in flight), or held with `aria-disabled`
- *  (the priority's trigger then, the labels' trigger while their save is out, `IssueLabels`). It
- *  is the one fact both the key's `run` and the `when` that offers it read, so a shortcut is
- *  listed exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input: disabled,
+ *  or held with `aria-disabled` (the status's and the priority's triggers on a closed issue or
+ *  while a save is in flight, the labels' trigger while their save is out, `IssueLabels`). It is
+ *  the one fact both the key's `run` and the `when` that offers it read, so a shortcut is listed
+ *  exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
@@ -121,7 +120,7 @@ function usableControl(selector: string): HTMLElement | null {
   }
   const refused =
     node.getAttribute("aria-disabled") === "true" ||
-    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled);
+    (node instanceof HTMLButtonElement && node.disabled);
   return refused ? null : node;
 }
 
@@ -273,8 +272,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => usableControl(STATUS_TRIGGER_SELECTOR)?.focus(),
+      when: () => usableControl(STATUS_TRIGGER_SELECTOR) !== null,
     },
     {
       id: "priority",
@@ -315,13 +314,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     {
-      // `s` puts the focus in a native select and `p` on the priority list's trigger. There every
-      // single-key binding is suspended, and the next keystroke is the control's own: the
-      // select's type-ahead, or the list's search, which a character typed on its closed trigger
-      // opens. So `t` picks Todo or Testing, or opens the priority list, rather than start the
-      // tab chord. Escape is the way back out, as it is on the Inbox rows, the board's cards and
-      // the architecture rows. The priority's trigger keeps the focus while it is held
-      // (`aria-disabled`), so Escape leaves it then too.
+      // `s` and `p` put the focus on an option list's trigger, the status's or the priority's.
+      // There every single-key binding is suspended, and the next keystroke is the control's own:
+      // the list's search, which a character typed on its closed trigger opens. So `t` opens the
+      // list with `t` in its text box rather than start the tab chord. Escape is the way back
+      // out, as it is on the Inbox rows, the board's cards and the architecture rows. Each
+      // trigger keeps the focus while it is held (`aria-disabled`), so Escape leaves it then too.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -329,9 +327,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
+        const header = document.querySelector(HEADER);
         return (
-          active === usableControl(STATUS_SELECT) ||
-          active === document.querySelector(HEADER)?.querySelector(PRIORITY_TRIGGER_SELECTOR)
+          active === header?.querySelector(STATUS_TRIGGER_SELECTOR) ||
+          active === header?.querySelector(PRIORITY_TRIGGER_SELECTOR)
         );
       },
     },
