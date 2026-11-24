@@ -1,7 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -61,9 +64,11 @@ func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.R
 // names X; its first names none. The checker, of the type testing, in the same plan form, is told
 // no commit. A completion whose commit is not spelled as a head is (reviewround.IsHead), a short
 // SHA here, writes no commit, as a review footer's head of that spelling names none
-// (intake.PullRequestReview.LegionHead): the critic's second task names none. The control, which
-// stays in the suite: with the commit the critic's phases row holds cleared between the rounds,
-// the critic's second task names none, so the commit comes from that row alone.
+// (intake.PullRequestReview.LegionHead): the critic's second task names none, and the daemon logs
+// one line that names the issue, the role, the step and the commit it refused, so an operator sees
+// why the next run reads the whole change; no other row logs one. The control, which stays in the
+// suite: with the commit the critic's phases row holds cleared between the rounds, the critic's
+// second task names none, so the commit comes from that row alone.
 func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -72,15 +77,18 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 		read    string
 		cleared bool
 		names   bool
+		refused bool
 	}{
-		{"the critic, of the type review", "critic", "review", stepCommitX, false, true},
-		{"the checker, of the type testing", "checker", "testing", stepCommitX, false, false},
-		{"the critic, whose completion names a short SHA", "critic", "review", stepCommitX[:7], false, false},
-		{"the control: the critic with its step's commit cleared between the rounds", "critic", "review", stepCommitX, true, false},
+		{"the critic, of the type review", "critic", "review", stepCommitX, false, true, false},
+		{"the checker, of the type testing", "checker", "testing", stepCommitX, false, false, false},
+		{"the critic, whose completion names a short SHA", "critic", "review", stepCommitX[:7], false, false, true},
+		{"the control: the critic with its step's commit cleared between the rounds", "critic", "review", stepCommitX, true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := deploymentEngine()
+			var logged bytes.Buffer
+			engine.log = slog.New(slog.NewJSONHandler(&logged, nil))
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", string(tc.role))
 			if _, err := pool.Exec(t.Context(), "update plan_steps set type = $2 where issue = $1 and task = 'a' and position = 2", root.Key, tc.typ); err != nil {
@@ -90,6 +98,24 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 			reportsAtEntry(t, pool, engine, "impl-1", root.Key, root.Generation, claim.RoleImplementer, "", stepCommitW, 0)
 			first := roleRowOf(t, pool, engine, root.Key, tc.role)
 			reportsAtEntry(t, pool, engine, "fail-1", root.Key, root.Generation, tc.role, "fail", tc.read, first.Entry)
+			var refusals []map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+				var entry map[string]any
+				if json.Unmarshal([]byte(line), &entry) != nil {
+					continue
+				}
+				if msg, _ := entry["msg"].(string); strings.HasPrefix(msg, stepCommitStaysLog) {
+					refusals = append(refusals, entry)
+				}
+			}
+			if !tc.refused && len(refusals) != 0 {
+				t.Fatalf("the engine logged %v, want no line that the %s's completion moves no reviewed commit", refusals, tc.role)
+			}
+			if tc.refused && (len(refusals) != 1 || refusals[0]["issue"] != root.Key || refusals[0]["role"] != string(tc.role) ||
+				refusals[0]["step"] != float64(2) || refusals[0]["commit"] != tc.read) {
+				t.Fatalf("the engine logged %v, want one line that the completion moves no reviewed commit, naming %s, the %s, step 2 and %q",
+					refusals, root.Key, tc.role, tc.read)
+			}
 			if tc.cleared {
 				if _, err := pool.Exec(t.Context(), "update phases set reviewed_head = '' where issue = $1 and role = $2", root.Key, string(tc.role)); err != nil {
 					t.Fatalf("clear the step's commit: %v", err)
