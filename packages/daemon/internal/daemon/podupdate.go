@@ -1790,7 +1790,7 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // process can read the issue's workspace before the replacement, so the round makes no read
 // (processlessRead), and what may go with the pod is named instead: every member of the round
 // that had not answered it, with a session or with none (lostClaims), read unmasked from the same
-// read that the pod's keep is decided from masked (noticeGroup says why), as a gone pod's end reads
+// read that the pod's keep is decided from masked (masked says why), as a gone pod's end reads
 // them (endRoundOverAGonePod). The replacement's line names them as the members that had not
 // answered (unansweredMembers), says that the replacement was by issue and why no read was made,
 // and one message on the issue names each of them and says that no process could read the
@@ -2163,14 +2163,9 @@ func (s *supervision) liveGroup(group []supervise.Claim) (told, live []supervise
 	return told, masked(told, deciding)
 }
 
-// noticeGroup is the group as its claims hold their answers: liveGroup's told alone. It is what
-// every reader that decides no deletion of a disk reads — the round's post and ask (unaskedClaims
-// says why the ask), the operator's notices, the read of the workspace before a replacement, which
-// stops nothing in the pod (readRoundWorkspace), and the names on the lines and messages of a
-// round's end — because the mask is a decision the replacement makes (masked), not a fact about a
-// claim. The controller's notice, for one, marks each claim the round asks with whether it
-// answered (record.UpdateWaiting.Answered), and a masked claim would read there as one that said
-// nothing although it answered.
+// noticeGroup is the group as its claims hold their answers: liveGroup's told alone, one fresh read
+// of each claim's machine, unmasked. masked says which readers take this view and which take the
+// masked one, and why.
 func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 	read, _ := s.roundGroup(group)
 	return read
@@ -2249,7 +2244,14 @@ func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Clai
 // (replacePodForRound, replacementDue, issuePodKept). The launch hook may delete a disk and masks
 // nothing (roundPodEndsAtLaunch says why).
 //
-// Every other reader takes the answer as the claim holds it (noticeGroup names them).
+// Every other reader takes the answer as the claim holds it (noticeGroup, or liveGroup's told):
+// the round's post and its ask (unaskedClaims says why the ask), the operator's notices, the read
+// of the workspace before a replacement, which stops nothing in the pod (readRoundWorkspace), and
+// the names on the lines and messages of a round's end. The mask is a decision the replacement
+// makes, not a fact about a claim: the controller's notice, for one, marks each claim the round
+// asks with whether it answered (record.UpdateWaiting.Answered), and a masked claim would read
+// there as one that said nothing although it answered. The launch hook reads noticeGroup too,
+// though it may delete a disk, for the reason its own doc gives.
 //
 // Where no machine was deciding, masked is read itself, so no reader of either may write it;
 // otherwise it is a copy.

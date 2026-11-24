@@ -1160,9 +1160,6 @@ func TestPodUpdateWalkWaitsWhileAnAnsweredRolesMachineDecides(t *testing.T) {
 	if waiting := fmt.Sprint(lines[0]["waiting"]); waiting != fmt.Sprintf("[%s]", claim.RoleTester) {
 		t.Fatalf("the walk's wait names %s, want the tester alone, whose machine was deciding", waiting)
 	}
-	if lines := loggedLines(t, rig.logs.String(), podUpdateRereadWaitsLine); len(lines) != 0 {
-		t.Fatalf("the replacement's read again logged %+v, want nothing: the walk hands no replacement on", lines)
-	}
 	rig.awaitReplacement(1, "once the tester's machine has decided")
 }
 
@@ -1212,37 +1209,46 @@ func TestPodUpdateReadsTheWorkspaceOverAnAnswerReadWhileItsMachineDecides(t *tes
 	}
 }
 
-// An ask of a round reaches a role's agent only while its claim holds no answer of that round,
-// read under the claim's own lock where the ask is published (supervise's
-// Machine.PublishUpdateAsk). The sweep reads the claims before the ask is published, so a role
-// that answers in between is told nothing. A role asked first and answering after is told once.
-func TestPodUpdateAskReachesNoRoleThatAnsweredBeforeItsPublish(t *testing.T) {
+// The replacement's read again, before it asks the runtime, reads a role whose machine is deciding
+// as one that has not answered (masked), as the walk does. The sweep walks every issue first and
+// makes their replacements after (reconcilePodUpdates), so a role of the second issue can go into
+// a decision while the first issue's pod is replaced (fake's HoldReplacePod). Both issues' roles
+// have answered before the bound, and the walk hands both replacements on. While the first pod is
+// replaced, the second issue's architect is held in a decision. The second replacement's read
+// again then waits, its line names that architect, and the runtime is not asked to replace the
+// second pod; once the hold ends, a later sweep replaces it. Given the answers as given, the read
+// again would ask the runtime, and only the last word under the pod's launch turn would stop it.
+func TestPodUpdateReplacementReadsAgainOverAnAnsweredRoleWhoseMachineDecides(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name        string
-		answerFirst bool
-		want        int
-	}{
-		{name: "the answer, then the ask", answerFirst: true, want: 0},
-		{name: "the ask, then the answer", answerFirst: false, want: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-			rig.drifts(podUpdateDrift)
-			rig.tick()
-			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
-			if tc.answerFirst {
-				rig.signal(claim.RoleImplementer, "a1b2c3d")
-			}
-			rig.runAsk(row)
-			if !tc.answerFirst {
-				rig.signal(claim.RoleImplementer, "a1b2c3d")
-			}
-			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.want {
-				t.Fatalf("the implementer's topic was delivered %d asks of the round, want %d", n, tc.want)
-			}
-		})
+	const first, second = "LEGION-1", "LEGION-2"
+	rig := newLimitRig(t, first, second)
+	logs := &syncBuffer{}
+	rig.s.log = jsonLogger(logs)
+	rig.tick()
+	rig.awaitRounds("the first sweep", first, second)
+	rig.answer(first)
+	rig.answer(second)
+	var release func()
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		release = rig.holdInDecision(second, claim.RoleArchitect)
+	})
+	rig.tick()
+	if release == nil {
+		t.Fatal("the sweep made no replacement: the walk handed neither issue on")
 	}
+	release()
+	if n := len(rig.replacementsOf(rig.pods[first])); n != 1 {
+		t.Fatalf("the pod of %s was replaced %d times, want once", first, n)
+	}
+	if refused, made := len(rig.rt.CallsOf("ReplacePodNotDue")), len(rig.replacementsOf(rig.pods[second])); refused != 0 || made != 0 {
+		t.Fatalf("the runtime refused %d replacements and replaced the pod of %s %d times, want neither: its read again must not ask the runtime while its architect's machine decides", refused, second, made)
+	}
+	lines := loggedLines(t, logs.String(), podUpdateRereadWaitsLine)
+	if len(lines) != 1 || lines[0]["issue"] != second || fmt.Sprint(lines[0]["waiting"]) != fmt.Sprintf("[%s]", claim.RoleArchitect) {
+		t.Fatalf("the read-again lines are %+v, want one of %s naming its architect alone, whose machine was deciding", lines, second)
+	}
+	rig.sweepUntilReplaced(second)
 }
 
 // A claim whose agent has not said it is ready holds no live session on its role's topic, so the

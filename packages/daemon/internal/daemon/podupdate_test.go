@@ -2669,17 +2669,29 @@ func (r *podUpdateRig) settleAll() {
 // its cleanup, ahead of the supervisor's stop, which waits for the held decision.
 func (r *podUpdateRig) holdInDecision(role claim.Role) (release func()) {
 	r.t.Helper()
-	token := r.tokens[role]
-	m, ok := r.sup.Machine(token)
+	m, ok := r.sup.Machine(r.tokens[role])
 	if !ok {
 		r.t.Fatalf("%s is not supervised", role)
 	}
+	return holdMachineInDecision(r.t, r.ctx, r.rt, m, r.tokens[role], "the "+string(role))
+}
+
+// holdInDecision is podUpdateRig.holdInDecision on the machine of issue's role.
+func (r *fleetRig) holdInDecision(issue string, role claim.Role) (release func()) {
+	r.t.Helper()
+	return holdMachineInDecision(r.t, r.ctx, r.rt, r.machineOf(issue, role), r.token(issue, role), issue+"'s "+string(role))
+}
+
+// holdMachineInDecision is the hold of podUpdateRig.holdInDecision on m, the machine of token,
+// over the fake runtime rt; who names the claim in a failure.
+func holdMachineInDecision(t *testing.T, ctx context.Context, rt *fake.Runtime, m *supervise.Machine, token claim.Token, who string) (release func()) {
+	t.Helper()
 	inside, held := make(chan struct{}), make(chan struct{})
-	r.rt.HoldProbe(func(loc runtime.Locator) {
+	rt.HoldProbe(func(loc runtime.Locator) {
 		if loc.Claim != token {
 			return
 		}
-		r.rt.HoldProbe(nil)
+		rt.HoldProbe(nil)
 		close(inside)
 		<-held
 	})
@@ -2687,14 +2699,14 @@ func (r *podUpdateRig) holdInDecision(role claim.Role) (release func()) {
 	release = sync.OnceFunc(func() {
 		close(held)
 		if err := <-decided; err != nil {
-			r.t.Errorf("the %s's held decision ended with %v, want nil: the probe found the process alive", role, err)
+			t.Errorf("%s's held decision ended with %v, want nil: the probe found the process alive", who, err)
 		}
 	})
-	r.t.Cleanup(release)
-	go func() { decided <- m.Handle(r.ctx, supervise.StreamClosed{Claim: token}) }()
-	testwait.Receive(r.t, fmt.Sprintf("the %s's probe to wait inside the runtime", role), inside)
+	t.Cleanup(release)
+	go func() { decided <- m.Handle(ctx, supervise.StreamClosed{Claim: token}) }()
+	testwait.Receive(t, fmt.Sprintf("%s's probe to wait inside the runtime", who), inside)
 	if m.Deciding() == nil {
-		r.t.Fatalf("the %s's machine is deciding nothing while its probe waits, want the closed connection's decision", role)
+		t.Fatalf("%s's machine is deciding nothing while its probe waits, want the closed connection's decision", who)
 	}
 	return release
 }

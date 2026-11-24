@@ -2058,7 +2058,11 @@ const (
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder. A claim the daemon suspended
+//     order they run in and whichever of them finds a holder. A claim that holds an answer of
+//     round (UpdateSignalledAt) is published nothing, and the call answers UpdateAskAnswered: the
+//     sweep reads the claims before the row runs, so a role can answer in between, and its agent
+//     is not asked what it has done. That check comes before the next one, so a claim that
+//     answered and was then suspended answers UpdateAskAnswered too. A claim the daemon suspended
 //     (PassedOverByRound) is published nothing either, and the call answers UpdateAskSuspended:
 //     the round does not ask such a claim (dispatch://INFRA-4109 R1). The sweep can enqueue a
 //     row before the suspension and the row can run after it, an idle release's included. Its
