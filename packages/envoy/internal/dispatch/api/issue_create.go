@@ -594,15 +594,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
 	// own when the write-advice read failed. An answered ask it offers carries the display tree
 	// of that answer where this request asked for the trees, which its reader fills before the
-	// response is written.
+	// response is written. Its embedding holds no admission unit and takes it back never refused
+	// (embedAfterWrite): the issue is written, and a 429 would have its caller write it again.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
-		project: input.Project,
-		text:    input.Title + "\n" + markdown,
-		title:   input.Title,
-		source:  suggestionSource{kind: "issue", issueKey: key, actor: actor},
-		record:  true,
-		trees:   trees,
+		project:   input.Project,
+		text:      input.Title + "\n" + markdown,
+		title:     input.Title,
+		source:    suggestionSource{kind: "issue", issueKey: key, actor: actor},
+		record:    true,
+		embedAway: embedAfterWrite(r.Context()),
+		trees:     trees,
 	})
 	trees.resolve()
 	suggestions.TitleMatches = outcome.TitleMatches

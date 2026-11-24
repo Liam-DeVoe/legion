@@ -161,7 +161,17 @@ func (s *server) sendResolvedDelivery(
 		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
 	)
 	input.Role = routeRole(route)
-	send, err := s.deps.Envoy.Send(ctx, input)
+	// The send changes the listener's state, and its outcome is written after it: the request
+	// that makes it holds no admission unit while the listener answers and takes its unit back
+	// never refused (awayOnNetworkNeverRefused), so a send the listener took is never answered 429
+	// and a keyed repeat finds it made. A take-back cut short by the request's end is this send's
+	// failure, and the settle after it, on that ended context, writes nothing: the attempt stays
+	// pending for the delivery sweep, whose send under the same key the listener drops as a repeat.
+	var send dispatchenvoy.SendResult
+	err := awayOnNetworkNeverRefused(ctx, func(ctx context.Context) (err error) {
+		send, err = s.deps.Envoy.Send(ctx, input)
+		return err
+	})
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
 	}
@@ -684,7 +694,7 @@ func (s *server) mentionResolutionFor(
 	ctx context.Context, target ResolvedMention, pending *model.CommentDelivery,
 ) (ResolvedMention, *string) {
 	if pending == nil || (pending.SessionID == nil && pending.ResolveError == nil) {
-		resolved := s.resolveMentionTarget(ctx, target.Target, target.Delivery, 0)
+		resolved := s.resolveMentionTargetAway(ctx, target.Target, target.Delivery)
 		if resolved.ResolveError == "" {
 			return resolved, nil
 		}
@@ -695,13 +705,36 @@ func (s *server) mentionResolutionFor(
 		resumed.ResolveError = *pending.ResolveError
 	}
 	if pending.SessionID != nil {
-		recheck := s.resolveMentionTarget(ctx, "session:"+*pending.SessionID, pending.Delivery, 0)
+		recheck := s.resolveMentionTargetAway(ctx, "session:"+*pending.SessionID, pending.Delivery)
 		resumed.SessionID = recheck.SessionID
 		resumed.ResolveError = recheck.ResolveError
 		resumed.attemptSessionID = recheck.attemptSessionID
 		resumed.title = recheck.title
 	}
 	return resumed, pending.ResolveError
+}
+
+// resolveMentionTargetAway is a delivery's own resolution of target (resolveMentionTarget,
+// bounded by the listener client's window alone), holding no admission unit of the request that
+// makes it while the listener answers. Every caller is a delivery whose attempt's claim, or whose
+// message, committed before, so the take-back after it is never refused
+// (awayOnNetworkNeverRefused). Only the request's own goroutine makes it: a broadcast's workers,
+// the mention lanes and the delivery sweep run on contexts that carry no ticket, and there it
+// gives nothing back and takes nothing. A lookup the pool's guard kept from running (the caller
+// held a connection) resolves to that refusal, which the attempt records; a take-back the request's
+// end cut short keeps what the listener answered, and the statements after it fail on that ended
+// context.
+func (s *server) resolveMentionTargetAway(ctx context.Context, target, delivery string) ResolvedMention {
+	resolved := ResolvedMention{Target: target, Delivery: delivery}
+	looked := false
+	err := awayOnNetworkNeverRefused(ctx, func(ctx context.Context) error {
+		resolved, looked = s.resolveMentionTarget(ctx, target, delivery, 0), true
+		return nil
+	})
+	if err != nil && !looked {
+		resolved.ResolveError = deliveryErrorText(err)
+	}
+	return resolved
 }
 
 // recordCommentDeliveryResolution writes onto the claimed attempt row, before a send, the
@@ -880,10 +913,16 @@ func (s *server) deliverResolvedCommentMention(
 	// take-over's (retryableDeliveryFailure).
 	var heldBy *model.MentionCopyHolder
 	var orderErr error
-	send := func() string {
+	// ready reads, under the unit, whether the session must take an earlier event first; call is
+	// the send, which runs with the backoff after it and the next resolution in one wait holding
+	// no unit (takeoverRetry.retry).
+	ready := func() string {
 		if heldBy, orderErr = s.mentionCopyHolder(ctx, created, target); heldBy != nil || orderErr != nil {
 			return mentionWaitsFailure
 		}
+		return ""
+	}
+	call := func(ctx context.Context) string {
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
 		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false)
@@ -891,21 +930,30 @@ func (s *server) deliverResolvedCommentMention(
 	}
 	if decided && claimed.pending.SessionID == nil {
 		// The resolution the comment's routes were decided on reached no session; its resolve
-		// error is this attempt's outcome, with nothing to try again.
-		send()
+		// error is this attempt's outcome, with nothing to try again (and nothing asked of the
+		// listener: sendResolvedDelivery answers the resolve error itself).
+		if ready() == "" {
+			call(ctx)
+		}
 	} else {
-		err = takeover.retry(ctx, send, func() (bool, error) {
-			// A pinned row is rechecked; with no session pinned yet the recipient is still the
-			// mention's target, resolved afresh rather than sent the resolve error the row holds.
-			var pinned *model.CommentDelivery
-			if recorded.SessionID != nil {
-				pinned = &recorded
-			}
-			var renewed bool
-			var err error
-			target, resolveError = s.mentionResolutionFor(ctx, target, pinned)
-			recorded, held, renewed, err = s.recordCommentDeliveryResolution(ctx, stored, target, held, resolveError)
-			return renewed, err
+		err = takeover.retry(ctx, awayOnNetworkNeverRefused, takeoverTries{
+			ready: ready,
+			call:  call,
+			resolve: func(ctx context.Context) {
+				// A pinned row is rechecked; with no session pinned yet the recipient is still the
+				// mention's target, resolved afresh rather than sent the resolve error the row holds.
+				var pinned *model.CommentDelivery
+				if recorded.SessionID != nil {
+					pinned = &recorded
+				}
+				target, resolveError = s.mentionResolutionFor(ctx, target, pinned)
+			},
+			record: func() (bool, error) {
+				var renewed bool
+				var err error
+				recorded, held, renewed, err = s.recordCommentDeliveryResolution(ctx, stored, target, held, resolveError)
+				return renewed, err
+			},
 		})
 		if err != nil {
 			return model.CommentDelivery{}, nil, err
@@ -1017,14 +1065,20 @@ func (s *server) mentionCopyHolderFor(
 // holds the role: unreachable, timed out within mentionLookupTimeout, a status the listener did
 // not explain or chose for another reason - a 500 for a claim record it cannot read - an answer
 // that does not decode, and an answer that names no holder. A deployment with no listener reaches
-// no session, so it answers no.
+// no session, so it answers no. The lookup holds no admission unit of a request that makes it
+// (awayOnNetworkNeverRefused): the delivery's claim has committed by then. A take-back cut short by
+// the request's end holds the send, as a lookup that failed does.
 func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bool {
 	if s.deps.Envoy == nil {
 		return false
 	}
-	lookup, cancel := context.WithTimeout(ctx, mentionLookupTimeout)
-	defer cancel()
-	holder, err := s.deps.Envoy.Role(lookup, role)
+	var holder dispatchenvoy.Session
+	err := awayOnNetworkNeverRefused(ctx, func(ctx context.Context) (err error) {
+		lookup, cancel := context.WithTimeout(ctx, mentionLookupTimeout)
+		defer cancel()
+		holder, err = s.deps.Envoy.Role(lookup, role)
+		return err
+	})
 	switch {
 	case errors.Is(err, dispatchenvoy.ErrNoRoleHolder):
 		return false
@@ -1249,7 +1303,10 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	resolved := ResolvedMention{Target: target, Delivery: input.Delivery}
 	// The send outlives the request's connection, as createStoredMessage's does: the attempt is
 	// committed before the listener call, a cut connection must not strand it, and one a process
-	// death strands the delivery sweep resumes.
+	// death strands the delivery sweep resumes. It runs on this request's own goroutine and keeps
+	// its ticket, so every listener call of it gives the request's unit back for its wait and takes
+	// it back after, never refused once the attempt's claim has committed
+	// (awayOnNetworkNeverRefused).
 	attempt, held, err := s.deliverResolvedCommentMention(
 		context.WithoutCancel(r.Context()), comment, created, resolved, actor, attemptClaim{}, s.newTakeoverRetry(),
 	)
@@ -1262,7 +1319,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		// attempt is pending, and the mention sender's lane for that session sends it once the
 		// outbox has sent that event. The answer is the pending attempt, as a send still on its
 		// way is.
-		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
+		s.mentions.enqueue(detachedFromRequest(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
 }

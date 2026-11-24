@@ -404,11 +404,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The check's own reader: an answered ask it offers carries the tree of that answer where
 	// this request asked for the trees, as every other answer of this response does
-	// (newShapedAsk). It is resolved before the response is written.
+	// (newShapedAsk). It is resolved before the response is written. The check's embedding holds
+	// no admission unit and takes it back never refused (embedAfterWrite): the ask is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
 		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
-		trees: trees,
+		embedAway: embedAfterWrite(r.Context()), trees: trees,
 	})
 	trees.resolve()
 	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions, nil))

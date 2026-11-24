@@ -392,6 +392,23 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
+	// A route's architecture sync imports on the background pool, with a GitHub client whose
+	// rate-limit ledger is read and recorded there: the route gives its admission unit back while
+	// it waits on the import's flight (syncArchitectureSource), which waits on GitHub for up to its
+	// sync bound, so none of the flight's statements may run where admission counts the requests'
+	// connections. cmd/dispatch derives the ticker's importer from this one (Importer.On), so a
+	// Refresh and a tick of one source still share one flight.
+	architectureStore, architectureGitHub := input.Store, github
+	if input.Store != nil && input.Store.Pool != nil {
+		background, err := input.Store.Pool.Background()
+		if err != nil {
+			return Deps{}, fmt.Errorf("open the background pool for the architecture import: %w", err)
+		}
+		architectureStore = &store.Store{Pool: background}
+		if architectureGitHub, err = githubapp.New(input.App, input.GitHubAPIBase, githubapp.WithLimits(ratelimit.New(background))); err != nil {
+			return Deps{}, err
+		}
+	}
 	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
 		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
@@ -413,7 +430,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
-		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Architecture:           architecture.NewImporter(architectureStore, architectureGitHub, input.Events),
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,

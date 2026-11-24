@@ -357,10 +357,13 @@ func issueClaimSession(claim *model.IssueClaim) string {
 }
 
 // judgeHolder is the pre-lock half: read who holds the issue on a pooled connection, release
-// that connection, and take the liveness snapshot with nothing held — but only when the taking
-// rule says it needs one, which it establishes by asking that rule about what it just read
-// rather than by re-deriving when a holder must be judged. It decides nothing; claimBlockedBy
-// does, under the lock, against the row as it stands then.
+// that connection, and take the liveness snapshot with nothing held — no connection, and no
+// admission unit either, which the request gives back while the listener answers and takes back
+// after (awayOnNetwork), so a take-back refused is the write's answer, 429 OVERLOADED, before
+// anything was written — but only when the taking rule says it needs one, which it establishes by
+// asking that rule about what it just read rather than by re-deriving when a holder must be
+// judged. It decides nothing; claimBlockedBy does, under the lock, against the row as it stands
+// then.
 func (s *server) judgeHolder(
 	ctx context.Context, key string, actor model.Actor, rule personRule,
 ) (judgement, error) {
@@ -372,8 +375,10 @@ func (s *server) judgeHolder(
 	if !errors.Is(claimBlockedBy(holder, actor, rule, judged, time.Now()), errHolderUnjudged) {
 		return judged, nil
 	}
-	judged.live, err = s.fetchHolderLiveness(ctx, *holder)
-	if err != nil {
+	if err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
+		judged.live, err = s.fetchHolderLiveness(ctx, *holder)
+		return err
+	}); err != nil {
 		return judgement{}, err
 	}
 	return judged, nil

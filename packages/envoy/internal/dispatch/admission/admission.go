@@ -426,7 +426,7 @@ func (a *Arrival) admitted() *Ticket {
 // runs out, and ctx's error when ctx ends first. The caller releases the Ticket once it is done.
 // An arrival is admitted once, by Admit or AdmitNow.
 func (a *Arrival) Admit(ctx context.Context) (*Ticket, error) {
-	if err := a.limiter.acquire(ctx, a); err != nil {
+	if err := a.limiter.acquire(ctx, a, true); err != nil {
 		return nil, err
 	}
 	return a.admitted(), nil
@@ -556,7 +556,12 @@ func (t *Ticket) park() bool {
 // wait the queue costs it, and returns Admit's refusal or ctx's error when it cannot; the ticket
 // then stays parked, and its holder answers the refusal as a refused request. Resuming a ticket
 // that is not parked does nothing.
-func (t *Ticket) Resume(ctx context.Context) error {
+func (t *Ticket) Resume(ctx context.Context) error { return t.resume(ctx, true) }
+
+// resume is Resume, refusing as admission refuses where refusable is set and never refusing where
+// it is not: a resume that cannot be refused queues past the queue's bound and waits for its units
+// for as long as ctx lives (Away.TakeBackNeverRefused), and its one error is ctx's own.
+func (t *Ticket) resume(ctx context.Context, refusable bool) error {
 	if t == nil {
 		return nil
 	}
@@ -566,7 +571,7 @@ func (t *Ticket) Resume(ctx context.Context) error {
 	if !parked {
 		return nil
 	}
-	if err := t.arrival.limiter.acquire(ctx, t.arrival); err != nil {
+	if err := t.arrival.limiter.acquire(ctx, t.arrival, refusable); err != nil {
 		return err
 	}
 	t.mu.Lock()
@@ -750,6 +755,30 @@ func (a Away) TakeBack(ctx context.Context) error {
 		}
 		return err
 	}
+	return a.retakePlace(ctx)
+}
+
+// TakeBackNeverRefused is TakeBack for a request that must not be refused once its wait is over:
+// one whose wait changed another server's state - the listener's Send or Unsubscribe, a publish on
+// the message bus - or that committed writes of its own before it, with work of Dispatch's own
+// still to do after it. Refused then, 429 OVERLOADED would tell its client that nothing of the
+// request ran when something did, and the client's repeat would make it twice, a keyed repeat's
+// send among it. Its units come back as TakeBack's do, at the place the request arrived, ahead of
+// every request that arrived after it, but past the queue's bound and with no bound on the wait:
+// it waits for them for as long as ctx lives and is never refused, records no refusal and puts
+// none on the request's store mark. Its one error is ctx's own, where ctx ends first, and the
+// ticket then stays parked, holding nothing, so the request's statements after it fail on that
+// same ended context. A place comes back as TakeBack takes one: only a document socket's admission
+// and a heartbeat check hold one, and neither makes such a call.
+func (a Away) TakeBackNeverRefused(ctx context.Context) error {
+	if err := a.ticket.resume(ctx, false); err != nil {
+		return err
+	}
+	return a.retakePlace(ctx)
+}
+
+// retakePlace takes back the place GiveBack gave, for TakeBack and TakeBackNeverRefused.
+func (a Away) retakePlace(ctx context.Context) error {
 	if err := a.place.Retake(ctx); err != nil {
 		var refusal *OutsideRefusal
 		if errors.As(err, &refusal) {
@@ -834,8 +863,10 @@ func (l *Limiter) acquireNow(a *Arrival) bool {
 
 // acquire takes a's units, waiting in its class's queue at the place a arrived for what is left
 // of that class's wait (g.wait): a request that queues more than once - it parked its units and
-// asked for them again (Ticket.Resume) - waits one wait over all of its asks.
-func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
+// asked for them again (Ticket.Resume) - waits one wait over all of its asks. An acquire that is
+// not refusable - a take-back that must not be refused (Away.TakeBackNeverRefused) - queues past
+// the queue's bound and waits with no bound but ctx's, so its one error is ctx's own.
+func (l *Limiter) acquire(ctx context.Context, a *Arrival, refusable bool) error {
 	g := l.classes[a.class]
 	l.mu.Lock()
 	if g.waiters.Len() == 0 && l.fits(g, a.units) {
@@ -847,7 +878,7 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 	// The queue holds its burst cap while it absorbs a burst and queueFactor times the class's
 	// limit once it stands (gate.queueBound).
 	now := time.Now()
-	if g.waiters.Len() >= g.queueBound(now) {
+	if refusable && g.waiters.Len() >= g.queueBound(now) {
 		l.mu.Unlock()
 		g.queueFull.Add(1)
 		return &Refusal{Class: a.class, Reason: QueueFull}
@@ -864,7 +895,11 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 	}
 	l.mu.Unlock()
 
-	granted, failure := a.await(ctx, queued.ready, g.wait, &Refusal{Class: a.class, Reason: WaitExceeded})
+	var refusal *Refusal
+	if refusable {
+		refusal = &Refusal{Class: a.class, Reason: WaitExceeded}
+	}
+	granted, failure := a.await(ctx, queued.ready, g.wait, refusal)
 	if granted {
 		return nil
 	}
@@ -902,7 +937,8 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 // wait, and reports whether that place is a's. The wait is wait less what a has already waited,
 // so a request that queues more than once (a heavy read's lane and then its class, a ticket
 // asking its units back) waits one wait over all of its queues, and every arm adds what it
-// waited here to a.waited, so the next queue it joins counts from there.
+// waited here to a.waited, so the next queue it joins counts from there. A nil refusal waits with
+// no bound but ctx's: a take-back that must not be refused (Away.TakeBackNeverRefused).
 //
 // A false answer carries why: refusal, the caller's own, when the wait ran out, and ctx's error
 // when the caller's context ended. Either way the place may have been granted in the moment the
@@ -911,8 +947,12 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 // arrival, which only its goroutine touches.
 func (a *Arrival) await(ctx context.Context, ready <-chan struct{}, wait time.Duration, refusal *Refusal) (bool, error) {
 	queuedAt := time.Now()
-	timer := time.NewTimer(max(wait-a.waited, 0))
-	defer timer.Stop()
+	var expired <-chan time.Time
+	if refusal != nil {
+		timer := time.NewTimer(max(wait-a.waited, 0))
+		defer timer.Stop()
+		expired = timer.C
+	}
 	select {
 	case <-ready:
 		a.waited += time.Since(queuedAt)
@@ -920,7 +960,7 @@ func (a *Arrival) await(ctx context.Context, ready <-chan struct{}, wait time.Du
 	case <-ctx.Done():
 		a.waited += time.Since(queuedAt)
 		return false, ctx.Err()
-	case fired := <-timer.C:
+	case fired := <-expired:
 		a.waited += fired.Sub(queuedAt)
 		return false, refusal
 	}

@@ -302,32 +302,60 @@ type IssuePullRequestAttributionEventPayload struct {
 func appendAttributionChange(
 	ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead, left *string,
 ) ([]model.Event, error) {
-	payload := IssuePullRequestAttributionEventPayload{
-		Repo: head.Repo, Number: head.Number, URL: head.URL,
-		From: left, To: head.IssueKey, Source: head.AttributionSource,
+	return appendAttributionChanges(ctx, tx, broker, []attributionMove{{head: head, left: left}})
+}
+
+// attributionMove is one head a write moved: the head as written, and the issue its row credited
+// before, nil for nobody.
+type attributionMove struct {
+	head PullRequestHead
+	left *string
+}
+
+// appendAttributionChanges is appendAttributionChange for every move of one transaction - a
+// read-through writes several heads in one (writeReadThroughHeads) - with the owners of all of
+// them locked in one call before the first append, for the reason that function's comment gives.
+func appendAttributionChanges(ctx context.Context, tx pgx.Tx, broker *events.Broker, moves []attributionMove) ([]model.Event, error) {
+	if len(moves) == 0 {
+		return nil, nil
 	}
-	var moved []model.Event
-	for _, issue := range []*string{left, head.IssueKey} {
-		if issue == nil {
-			continue
+	var pending []model.Event
+	for _, move := range moves {
+		payload := IssuePullRequestAttributionEventPayload{
+			Repo: move.head.Repo, Number: move.head.Number, URL: move.head.URL,
+			From: move.left, To: move.head.IssueKey, Source: move.head.AttributionSource,
 		}
-		key := *issue
-		moved = append(moved, model.Event{
-			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
-		})
+		for _, issue := range []*string{move.left, move.head.IssueKey} {
+			if issue == nil {
+				continue
+			}
+			key := *issue
+			pending = append(pending, model.Event{
+				IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
+			})
+		}
 	}
-	if err := broker.LockOwners(ctx, tx, moved...); err != nil {
-		return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+	if err := broker.LockOwners(ctx, tx, pending...); err != nil {
+		return nil, fmt.Errorf("record the attribution of %s: %w", movedHeads(moves), err)
 	}
-	appended := make([]model.Event, 0, len(moved))
-	for _, event := range moved {
+	appended := make([]model.Event, 0, len(pending))
+	for _, event := range pending {
 		written, err := broker.Append(ctx, tx, event)
 		if err != nil {
-			return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+			return nil, fmt.Errorf("record the attribution of %s: %w", movedHeads(moves), err)
 		}
 		appended = append(appended, written)
 	}
 	return appended, nil
+}
+
+// movedHeads names the pull requests of moves, as "owner/repo#1, owner/repo#2", for an error.
+func movedHeads(moves []attributionMove) string {
+	names := make([]string, 0, len(moves))
+	for _, move := range moves {
+		names = append(names, fmt.Sprintf("%s#%d", move.head.Repo, move.head.Number))
+	}
+	return strings.Join(names, ", ")
 }
 
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
@@ -1110,11 +1138,15 @@ func RepositoryUnreadable(err error) bool {
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
 // written with no event.
 //
-// The token and the commit's pull requests are one stretch of GitHub calls, and each commit
-// message read the attribution makes another (attributeHead): each runs through the caller's
-// GitHubWait (onGitHub), and every read and write of Dispatch's tables, the head's write
-// transaction among them, runs between them. A stretch whose wait failed ends the read-through
-// with that failure, writing nothing more.
+// It reads GitHub first and writes after: the token and the commit's pull requests are one
+// stretch of GitHub calls, and each commit message read the attribution makes another
+// (attributeHead), each run through the caller's GitHubWait (onGitHub), with the attribution's
+// reads of Dispatch's tables between them on pooled connections each read gives back; only once
+// every pull request is attributed are the heads written, all in one transaction
+// (writeReadThroughHeads). So no transaction and no connection is held while GitHub answers, and a
+// request that gives its admission unit back for a stretch holds nothing the count does not see.
+// A stretch whose wait failed, and an attribution that failed, end the read-through with that
+// failure, writing nothing; a write that failed writes none of the heads (ErrHeadNotStored).
 func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
@@ -1134,24 +1166,93 @@ func (a *Attributor) ReadThroughCommitPulls(
 	if read != nil {
 		return 0, false, read
 	}
+	heads := make([]PullRequestHead, 0, len(pulls))
 	for _, pull := range pulls {
 		if pull.Head.SHA == sha {
 			atHead = true
 		}
 		attributed, err := a.attributePayload(ctx, pool, client, token, canonical, pull)
 		if err != nil {
-			return written, atHead, err
+			return 0, atHead, err
 		}
 		var checkedAt *time.Time
 		if attributed.complete {
 			checkedAt = &now
 		}
-		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
-			return written, atHead, err
-		}
-		written++
+		heads = append(heads, headRow(canonical, pull, attributed, checkedAt))
 	}
-	return written, atHead, nil
+	if err := writeReadThroughHeads(ctx, pool, broker, heads, repoFull); err != nil {
+		return 0, atHead, err
+	}
+	return len(heads), atHead, nil
+}
+
+// writeReadThroughHeads writes a read-through's heads, each keyed by the canonical name of its
+// repository, in one transaction, as UpsertPullRequestHead writes one, dropping the row the same
+// pull request is stored under as storedUnder where that is another name
+// (upsertHeadUnderCanonicalName): first every row - under its own lock where the write may move its
+// attribution (headIssueBefore), with a merge's branch seed beside it (writeBranchCommit) and the
+// old name's row dropped after it - and then the events of every head the write moved
+// (appendAttributionChanges), their owners locked in one call before the first append, so the
+// transaction takes the rows before any owner and the owners in one order. The events are
+// published once it commits. No heads writes nothing. Every error is ErrHeadNotStored: nothing of
+// any head was written, and the caller may write them all again.
+func writeReadThroughHeads(ctx context.Context, pool *store.Pool, broker *events.Broker, heads []PullRequestHead, storedUnder string) error {
+	if len(heads) == 0 {
+		return nil
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: open the write of the heads of %s: %w", ErrHeadNotStored, heads[0].Repo, err)
+	}
+	// On a context of its own, as UpsertPullRequestHead's rollback runs, and for its reason.
+	defer func() {
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+		defer cancel()
+		_ = tx.Rollback(rollback)
+	}()
+	var moves []attributionMove
+	for _, head := range heads {
+		records := broker != nil && head.AttributionComplete
+		var left *string
+		if records {
+			if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
+				return err
+			}
+		}
+		applied, err := upsertHeadRow(ctx, tx, head)
+		if err != nil {
+			return err
+		}
+		if records && applied && !sameIssue(left, head.IssueKey) {
+			moves = append(moves, attributionMove{head: head, left: left})
+		}
+		if head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != "" {
+			if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+				return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+			}
+		}
+		if !strings.EqualFold(storedUnder, head.Repo) {
+			var drop store.WriteBatch
+			drop.QueueWithinBound("", `
+				delete from pull_request_heads where repo = $1 and number = $2
+			`, storedUnder, head.Number)
+			if err := drop.Send(ctx, tx); err != nil {
+				return fmt.Errorf("%w: drop the head of %s#%d, now %s#%d: %w", ErrHeadNotStored, storedUnder, head.Number, head.Repo, head.Number, err)
+			}
+		}
+	}
+	moved, err := appendAttributionChanges(ctx, tx, broker, moves)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w: store the heads of %s: %w", ErrHeadNotStored, heads[0].Repo, err)
+	}
+	for _, event := range moved {
+		broker.Publish(event)
+	}
+	return nil
 }
 
 // recordPullRequestHead writes the head row one `pull_request` envelope reports, whatever its

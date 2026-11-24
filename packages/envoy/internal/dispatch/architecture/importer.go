@@ -94,8 +94,7 @@ type loadedSource struct {
 // across a GitHub call, and two sources — of one project or of two — never
 // wait on each other here; the source row still orders what every process
 // writes. An importer On derives shares those flights, so the ticker's
-// importer on the background pool and the routes' on the request pool join
-// one flight per source rather than one each.
+// importer and the routes' join one flight per source rather than one each.
 type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
@@ -178,7 +177,9 @@ func NewImporter(database *store.Store, github *githubapp.Client, broker *events
 // either importer joins the other's instead of making its own set of GitHub calls, and one Close
 // ends both. cmd/dispatch runs the ticker and the imports a push starts on the background pool's
 // store this way, with a GitHub client whose shared rate limits are read and recorded on that pool
-// too, while the routes sync on the request pool's store and client.
+// too. The routes' importer is built on the background pool as well, with a client of its own
+// (api's NewDeps): a sync route waits on its flight holding no admission unit, so none of the
+// flight's statements may take a request-pool connection.
 func (i *Importer) On(database *store.Store, github *githubapp.Client) *Importer {
 	derived := *i
 	derived.store = database

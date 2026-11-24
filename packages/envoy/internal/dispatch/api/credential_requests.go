@@ -104,6 +104,22 @@ func (s *server) relayBrokerRead(w http.ResponseWriter, r *http.Request, read fu
 	relayBrokerResponse(w, body, err)
 }
 
+// relayBrokerDecision relays the broker's answer to call (relayBrokerResponse), a POST of the
+// broker that changes its state - a machine login's approve or deny, a lookup, a dismissal, a
+// revoke - and the request's last work: Dispatch writes no event for it (the broker records the
+// decision) and reads and writes nothing of its own after it. So the request gives its admission
+// unit back for good before the call (awayOnNetworkForGood): it holds none while the broker
+// answers, takes none back, and so has nothing left to refuse, and a decision the broker made is
+// never answered 429 OVERLOADED, which would ask its caller to make it again.
+func (s *server) relayBrokerDecision(w http.ResponseWriter, r *http.Request, call func(context.Context) (json.RawMessage, error)) {
+	var body json.RawMessage
+	err := awayOnNetworkForGood(r.Context(), func(ctx context.Context) (err error) {
+		body, err = call(ctx)
+		return err
+	})
+	relayBrokerResponse(w, body, err)
+}
+
 // resolveApproverMe reads ?approver=, which the UI only ever sends as the literal string "me" —
 // it asks for the viewer's own list, never a login it names itself — and resolves it to the
 // caller's canonical login. Anything else is refused before it ever reaches the broker.
@@ -204,8 +220,9 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Approve(ctx, r.PathValue("id"), decision)
+	})
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -222,8 +239,9 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Deny(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Deny(ctx, r.PathValue("id"), decision)
+	})
 }
 
 func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request) {
@@ -240,8 +258,9 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.MachineLookup(r.Context(), relayBody)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.MachineLookup(ctx, relayBody)
+	})
 }
 
 // --- POST .../{id}/dismiss ---
@@ -262,8 +281,9 @@ func (s *server) dismissCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.Dismiss(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Dismiss(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/credential-grants, POST .../{id}/revoke ---
@@ -301,8 +321,9 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeByApprover(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---
@@ -342,8 +363,9 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeMachineLogin(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeMachineLogin(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/signins, POST .../{id}/revoke ---
@@ -381,8 +403,9 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeSignIn(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeSignIn(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/credentials/capabilities ---

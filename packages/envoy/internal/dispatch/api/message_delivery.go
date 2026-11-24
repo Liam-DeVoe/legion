@@ -818,13 +818,17 @@ func (s *server) deliverMessageResuming(
 	replyThread *messageReplyThread,
 	resumeAttempt int,
 ) (model.MessageDelivery, error) {
+	// Every listener call of the delivery holds no admission unit of the request that makes it,
+	// and takes the unit back never refused, since a direct message's own send comes after the
+	// message committed (resolveMentionTargetAway, sendResolvedDelivery, queueForUnknownSession);
+	// none runs inside a transaction.
 	pending, err := resolveThenLock(ctx,
 		func(ctx context.Context) (ResolvedMention, error) {
 			route, err := s.messageDeliveryRoute(ctx, message, resumeAttempt)
 			if err != nil {
 				return ResolvedMention{}, err
 			}
-			return s.resolveMentionTarget(ctx, route, delivery, 0), nil
+			return s.resolveMentionTargetAway(ctx, route, delivery), nil
 		},
 		func(ctx context.Context, resolved ResolvedMention) (pendingMessageDelivery, error) {
 			return s.recordPendingMessageDelivery(ctx, message, actor, resolved, replyThread, resumeAttempt)
@@ -854,22 +858,28 @@ func (s *server) deliverMessageResuming(
 	// found the attempt answered or taken meanwhile ends them holding nothing, and then nothing is
 	// queued: the settle below reads what the row holds now.
 	held := true
-	err = takeover.retry(ctx,
-		func() string {
+	// renewal is the recipient resolved again after a take-over's failure, inside the stretch of
+	// listener waits that holds no unit (takeoverRetry.retry), which the claim's renewal records.
+	var renewal ResolvedMention
+	err = takeover.retry(ctx, awayOnNetworkNeverRefused, takeoverTries{
+		call: func(ctx context.Context) string {
 			outcome = s.sendResolvedDelivery(
 				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
-		func() (bool, error) {
-			renewed, stillHeld, err := s.renewMessageDeliveryClaim(ctx, message, pending)
+		resolve: func(ctx context.Context) {
+			renewal = s.resolveMentionTargetAway(ctx, messageRenewalRoute(message, pending), pending.resolved.Delivery)
+		},
+		record: func() (bool, error) {
+			renewed, stillHeld, err := s.renewMessageDeliveryClaim(ctx, message, pending, renewal)
 			if stillHeld {
 				pending = renewed
 			}
 			held = stillHeld
 			return stillHeld, err
 		},
-	)
+	})
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
@@ -879,27 +889,32 @@ func (s *server) deliverMessageResuming(
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }
 
-// renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a
-// listener take-over failed: it resolves again only the recipient the attempt names - the session
-// its row is pinned to, or, for a row still unpinned, the message's own target, which is written
-// once - and renews the claim, pinning an unpinned row to the session that resolution found, in
-// one statement scoped to the claim held, as every settle statement is, in a transaction of its
-// own, as every write a keyed request makes is (markRequestKeyCommitted). It answers the attempt
-// as the next try sends and settles it, and held = false, with pending unchanged, when the claim
-// is no longer this sender's: the attempt was answered or taken meanwhile, and the settle that
-// follows reads which.
-func (s *server) renewMessageDeliveryClaim(
-	ctx context.Context, message model.Message, pending pendingMessageDelivery,
-) (pendingMessageDelivery, bool, error) {
-	route := messageTarget(message.Target)
+// messageRenewalRoute is the route a try after a take-over's failure resolves again: only the
+// recipient the attempt names - the session its row is pinned to, or, for a row still unpinned,
+// the message's own target, which is written once. Unbounded, as the message's own resolution is:
+// only a comment's creation bounds its lookups at mentionLookupTimeout, because it answers without
+// them. A read cut short here would leave the attempt unanswered with no resolve error, and this
+// sender settles it.
+func messageRenewalRoute(message model.Message, pending pendingMessageDelivery) string {
 	if pending.resolved.attemptSessionID != "" {
-		route = "session:" + pending.resolved.attemptSessionID
+		return "session:" + pending.resolved.attemptSessionID
 	}
+	return messageTarget(message.Target)
+}
+
+// renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a
+// listener take-over failed, with resolved, the recipient resolved again (messageRenewalRoute,
+// with the listener, before this): it renews the claim, pinning an unpinned row to the session
+// that resolution found, in one statement scoped to the claim held, as every settle statement is,
+// in a transaction of its own, as every write a keyed request makes is (markRequestKeyCommitted).
+// It answers the attempt as the next try sends and settles it, and held = false, with pending
+// unchanged, when the claim is no longer this sender's: the attempt was answered or taken
+// meanwhile, and the settle that follows reads which.
+func (s *server) renewMessageDeliveryClaim(
+	ctx context.Context, message model.Message, pending pendingMessageDelivery, resolved ResolvedMention,
+) (pendingMessageDelivery, bool, error) {
 	renewed := pending
-	// Unbounded, as the message's own resolution above is: only a comment's creation bounds its
-	// lookups at mentionLookupTimeout, because it answers without them. A read cut short here
-	// would leave the attempt unanswered with no resolve error, and this sender settles it.
-	renewed.resolved = s.resolveMentionTarget(ctx, route, pending.resolved.Delivery, 0)
+	renewed.resolved = resolved
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return pending, false, err

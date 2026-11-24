@@ -114,7 +114,17 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
+	// Each GitHub read here holds no admission unit (awayOnNetwork), and the linked list read
+	// between them runs under the unit taken back. A take-back refused is the record's answer,
+	// 429 OVERLOADED, before anything is written; the read's own error stays the read's.
+	var held bool
+	var err error
+	if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+		held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
+		return nil
+	}); stop != nil {
+		return nil, stop
+	}
 	if err == nil && held {
 		return nil, nil
 	}
@@ -136,8 +146,10 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	var failedRepo string
 	reads := linkedReads{left: linkedPullRequestReads}
 	for _, link := range links {
-		counts, held, err := s.linkedRepositoryHolds(ctx, link, sha, &reads)
+		counts, held, err, stop := s.linkedRepositoryHolds(ctx, link, sha, &reads)
 		switch {
+		case stop != nil:
+			return nil, stop
 		case err != nil:
 			slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
 				"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
@@ -382,22 +394,31 @@ func (s *server) linkedRepositories(ctx context.Context, q refs.Queryer, issueKe
 //
 // The error is a read that did not answer — a rate limit, a 5xx, a transport failure — about the
 // commit, or about a pull request's state where no other pull request of the repository is open
-// or merged, which refuseUnknownCommit refuses the record for, to be made again.
-func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err error) {
+// or merged, which refuseUnknownCommit refuses the record for, to be made again. Each read holds no
+// admission unit (awayOnNetwork), and stop is a take-back refused after one, or the request's end:
+// the record's answer, with nothing else read.
+func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err, stop error) {
 	for index, number := range link.numbers {
 		if reads.left == 0 {
 			reads.unread += len(link.numbers) - index
-			return false, false, err
+			return false, false, err, nil
 		}
 		reads.left--
-		open, readErr := delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
+		var open bool
+		var readErr error
+		if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+			open, readErr = delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
+			return nil
+		}); stop != nil {
+			return false, false, nil, stop
+		}
 		switch {
 		case errors.Is(readErr, refs.ErrNotGitHubRepo):
 			reads.misnamedRepository(link)
-			return false, false, nil
+			return false, false, nil, nil
 		case delivery.RepositoryUnreadable(readErr):
 			reads.cannotRead(link)
-			return false, false, nil
+			return false, false, nil, nil
 		case errors.Is(readErr, delivery.ErrPullRequestNotFound):
 			// No such pull request: it counts for nothing, and the next one is read.
 		case readErr != nil:
@@ -405,15 +426,20 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 				err = readErr
 			}
 		case open:
-			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
+			if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+				held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
+				return nil
+			}); stop != nil {
+				return false, false, nil, stop
+			}
 			if delivery.RepositoryUnreadable(err) {
 				reads.cannotReadCommit(link, number)
-				return false, false, nil
+				return false, false, nil, nil
 			}
-			return true, held, err
+			return true, held, err, nil
 		}
 	}
-	return false, false, err
+	return false, false, err, nil
 }
 
 // commitRepository is whose a result's commit is taken to be, as commitRepositoryOf answers it:

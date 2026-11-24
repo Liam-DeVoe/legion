@@ -17,6 +17,18 @@ import (
 // the request's own goroutine, since only that goroutine may park or resume its ticket
 // (admission.Ticket.Waited). A goroutine of its own that waits - a fetch, a stage, a lane - makes
 // no pair: the request waiting on it does.
+//
+// A write holds no database connection or transaction across such a wait either: where it
+// interleaves them, its outbound reads come first and its writes after, in one transaction. A
+// refused take-back answers 429 only while nothing outside the request's own work has changed: a
+// wait that changes another server's state - the listener's Unsubscribe and Send, a publish on
+// the message bus, a broker's decision - runs after the request's database work, and the
+// take-back after it, where database work must still follow, is never refused
+// (awayOnNetworkNeverRefused), nor is one after the request committed writes of its own. A
+// request whose last work is such a call takes nothing back at all (awayOnNetworkForGood). Work
+// that outlives the request - a broadcast's delivery workers, a comment's mention lanes - runs on
+// a context that carries no ticket (detachedFromRequest), so nothing parks or resumes a ticket off
+// the request's own goroutine.
 
 // awayOnNetwork runs wait, a wait on another server, holding nothing of the server's room: it
 // gives ctx's request's unit back (admission.GiveBack, which lets go of its pinned connection
@@ -50,6 +62,50 @@ func awayOnNetwork(ctx context.Context, wait func(context.Context) error) error 
 	return err
 }
 
+// awayOnNetworkNeverRefused is awayOnNetwork for a wait after which the request must not be
+// refused: a call that changes another server's state - the listener's Send or Unsubscribe, a
+// publish on the message bus - with database work of the request's still to follow it, and any
+// wait of a request that has committed writes of its own before it (a message's send after the
+// message committed, a write's related-item check after its write). 429 OVERLOADED then would
+// tell the client nothing ran when something did, and its repeat would make it twice, a keyed
+// repeat's send among it. It gives back as awayOnNetwork does and takes back with
+// admission.Away.TakeBackNeverRefused, which waits for the unit, within ctx and past the queue's
+// bound, for as long as it takes, and never refuses: so it never answers 429. Its own error, ahead
+// of wait's, is only ctx's, where ctx ended first: the request then holds no unit, and every
+// statement it makes after on that ended context fails. ctx is the request's own context, which
+// the take-back waits on, as awayOnNetwork's is; a request that holds a connection is answered
+// ErrNestedAcquire without the wait, as there. Run inside a wait that has given the unit back
+// already - a stretch of a take-over loop (takeoverRetry.retry) around a send or a resolution that
+// makes its own pair - it gives nothing back and takes nothing.
+func awayOnNetworkNeverRefused(ctx context.Context, wait func(context.Context) error) error {
+	away := admission.GiveBack(ctx)
+	waiting, err := store.ForConcurrentRead(ctx)
+	if err == nil {
+		err = wait(waiting)
+	}
+	if back := away.TakeBackNeverRefused(ctx); back != nil {
+		return back
+	}
+	return err
+}
+
+// awayOnNetworkForGood runs call, a request's last work: a call that changes another server's
+// state - the secrets broker's approve, deny, dismissal or revoke - after which the request reads
+// and writes nothing of Dispatch's own and only relays the answer. It gives ctx's request's unit
+// back for good (admission.GiveBack) and takes nothing back, so nothing is left to refuse, and
+// runs call on a context of its own connection mark (store.ForConcurrentRead), answering call's
+// error. A request that holds a connection is answered ErrNestedAcquire without the call, as
+// awayOnNetwork answers it. Nothing of the request may touch the database after it: its unit is
+// gone, and a statement made then would run where admission counts nothing for it.
+func awayOnNetworkForGood(ctx context.Context, call func(context.Context) error) error {
+	admission.GiveBack(ctx)
+	waiting, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		return err
+	}
+	return call(waiting)
+}
+
 // refusedTakeBack is the refusal ctx's request met taking its unit back after a wait on another
 // server (awayOnNetwork), and nil where it met none.
 func refusedTakeBack(ctx context.Context) error {
@@ -57,4 +113,17 @@ func refusedTakeBack(ctx context.Context) error {
 		return refusal
 	}
 	return nil
+}
+
+// detachedFromRequest is ctx for work that outlives its request and runs off the request's own
+// goroutine - a broadcast's delivery workers, the mention sender's lanes and the claims they give
+// back: ctx's values without its cancellation (context.WithoutCancel), and without its admission
+// ticket (admission.WithTicket of nil). Only the request's own goroutine may park or resume its
+// ticket (admission.Ticket.Waited), and such work waits on the listener through the same pairs
+// the request's own sends make (awayOnNetworkNeverRefused): carrying the ticket, one of them could
+// give the request's unit back while the request still runs, or refuse a request that has
+// answered. With none, every give-back the work makes gives nothing and every take-back takes
+// nothing, as for the delivery sweep, which runs from no request at all.
+func detachedFromRequest(ctx context.Context) context.Context {
+	return admission.WithTicket(context.WithoutCancel(ctx), nil)
 }

@@ -61,9 +61,12 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 // answered by that lookup as a lapsed one, and its reply is refused, as any other session's is.
 //
 // It is the resolve half of the reply's listener read (envoy_resolve.go): it runs before the
-// reply's transaction opens, with nothing held, and its answer is compared with the route the
-// locked row names. An attempt pins its session once and never changes it, so a row that named
-// actor when it was read here names actor under the lock too, and no lookup is made for it.
+// reply's transaction opens, with nothing held - no connection, and no admission unit, which the
+// request gives back while the listener answers and takes back after (awayOnNetwork), so a
+// take-back refused is the reply's answer, 429 OVERLOADED, before anything was written - and its
+// answer is compared with the route the locked row names. An attempt pins its session once and
+// never changes it, so a row that named actor when it was read here names actor under the lock
+// too, and no lookup is made for it.
 //
 // A route that is not a role's, an attempt that names actor, and a listener that answers that
 // another session holds the role, or none does, are no holder's reply. A lookup the listener did
@@ -76,7 +79,14 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 	if err != nil || parsed.Kind != "role" || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
 		return verdict, nil
 	}
-	holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
+	var holder dispatchenvoy.Session
+	err = awayOnNetwork(ctx, func(ctx context.Context) (err error) {
+		holder, err = s.deps.Envoy.Role(ctx, parsed.ID)
+		return err
+	})
+	if refused := refusedTakeBack(ctx); refused != nil {
+		return verdict, refused
+	}
 	if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
 			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())

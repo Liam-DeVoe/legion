@@ -372,7 +372,18 @@ func (s *server) unsubscribeSession(
 		return
 	}
 	sessionID := r.PathValue("session_id")
-	interest, err := s.deps.Envoy.Interest(r.Context(), sessionID)
+	// The interest is read before the transaction, holding no unit while the listener answers
+	// (awayOnNetwork); a take-back refused after it is the answer, 429 OVERLOADED, since nothing
+	// of the removal has been written yet.
+	var interest listenerwire.InterestRow
+	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		interest, err = s.deps.Envoy.Interest(ctx, sessionID)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, envoy.ErrNotFound) {
 			s.finishPendingRemoval(w, r, own, sessionID, actor)
@@ -430,7 +441,19 @@ func (s *server) unsubscribeSession(
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if _, err := s.deps.Envoy.Unsubscribe(r.Context(), sessionID, exact); err != nil {
+	// The unsubscribe changes the listener's state, after the removal request committed and with
+	// its completion still to write: the request holds no unit while the listener answers, and
+	// takes it back never refused (awayOnNetworkNeverRefused), so a removal the listener made is
+	// never answered 429. A take-back cut short by the request's end leaves the request pending,
+	// which the next DELETE completes (finishPendingRemoval).
+	if err := awayOnNetworkNeverRefused(r.Context(), func(ctx context.Context) error {
+		_, err := s.deps.Envoy.Unsubscribe(ctx, sessionID, exact)
+		return err
+	}); err != nil {
+		if r.Context().Err() != nil {
+			s.writeHandlerError(w, r, r.Context().Err())
+			return
+		}
 		writeError(w, "ENVOY_UNSUBSCRIBE_FAILED", http.StatusBadGateway, err.Error())
 		return
 	}

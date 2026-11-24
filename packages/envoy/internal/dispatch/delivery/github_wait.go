@@ -3,14 +3,15 @@ package delivery
 import "context"
 
 // A read of this package's that a request makes - the results read of an issue's checks
-// (api/results_comparison.go) - waits on GitHub between its reads and writes of Dispatch's own
+// (api/results_comparison.go), and a recorded result's read-through (api/results.go's
+// readThroughPullRequests) - waits on GitHub between its reads and writes of Dispatch's own
 // tables, and the request must hold no admission unit and no pinned request-pool connection across
 // a wait on another server. So each stretch of GitHub calls runs through the GitHubWait the
 // request's context carries (WithGitHubWait): api's awayOnNetwork gives the unit back for the
-// stretch and takes it back after, on the request's own goroutine, and the table reads and writes
-// around the stretch, a transaction among them, run outside it, under the unit. A caller whose
-// context carries none - the intake, the reconcile, a result's record - runs every stretch on its
-// own context, as before.
+// stretch and takes it back after, on the request's own goroutine - awayOnNetworkNeverRefused for
+// the record, which has committed its result - and the table reads and writes around the stretch,
+// a transaction among them, run outside it, under the unit. A caller whose context carries none -
+// the intake, the reconcile - runs every stretch on its own context, as before.
 
 // GitHubWait runs call, one stretch of GitHub calls, on the context it hands call, and answers
 // its own error where it could not let the request go for the stretch or take it back after.

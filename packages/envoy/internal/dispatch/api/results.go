@@ -1442,6 +1442,12 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.
+//
+// It runs after the result committed, so its GitHub stretches hold no admission unit and take it
+// back never refused (delivery.WithGitHubWait, awayOnNetworkNeverRefused): a result recorded is
+// never answered 429. The read-through reads GitHub first and writes its heads after, in one
+// transaction (delivery.Attributor.ReadThroughCommitPulls), so no connection is held across a
+// stretch.
 func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha string, repo *string) {
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
@@ -1454,8 +1460,9 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
+	reading := delivery.WithGitHubWait(ctx, awayOnNetworkNeverRefused)
 	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
-		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
+		reading, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}

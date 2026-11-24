@@ -150,9 +150,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// wait out the deadline for frames nothing was writing.
 	//
 	// On a connection mark of the run's own (store.ForConcurrentRead) and never the request's,
-	// which context.WithoutCancel keeps: the run outlives this handler, and its first search
-	// holds one of the pool's connections while its cursor is open (store.Pool.Query). This
-	// request's own mark is still in use at that moment - keyedWrites settles the
+	// which context.WithoutCancel keeps, and carrying no admission ticket (detachedFromRequest):
+	// the run outlives this handler, its searches wait on the embedder through the request's pairs
+	// (runSearch's awayOnNetwork), and only the request's own goroutine may park or resume its
+	// ticket. Its first search holds one of the pool's connections while its cursor is open
+	// (store.Pool.Query). This request's own mark is still in use at that moment - keyedWrites
+	// settles the
 	// Idempotency-Key with an Exec on it the moment this handler returns - and the pool refuses
 	// a second connection taken under a held mark (store.ErrNestedAcquire), so a shared mark
 	// would lose that settle to the run's first search and the key would store no answer: a
@@ -163,7 +166,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// its refusal (comment_create.go): a run that cannot be detached is a run nothing would
 	// answer, so recording the question first would leave the caller a 201 and a stream that
 	// only runs out its deadline.
-	answering, err := store.ForConcurrentRead(context.WithoutCancel(r.Context()))
+	answering, err := store.ForConcurrentRead(detachedFromRequest(r.Context()))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

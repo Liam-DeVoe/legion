@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -100,8 +101,17 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The access check runs before any write: a failed re-PUT leaves the stored settings
-	// untouched, matching putArchitectureSource's own ordering.
-	if _, err := s.deps.GitHub.CheckSource(r.Context(), repoOwner, repoName); err != nil {
+	// untouched, matching putArchitectureSource's own ordering. Its GitHub calls hold no admission
+	// unit (awayOnNetwork), and a take-back refused after them is the answer, 429 OVERLOADED.
+	err = awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		_, err := s.deps.GitHub.CheckSource(ctx, repoOwner, repoName)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
+	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
 			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
 			return

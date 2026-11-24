@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -98,9 +97,10 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 // answerRelated runs the check both forms share against the path's project, recording nothing:
 // it has no source to record, and a reader trying words out must not count as a write's check.
 // question says the form asks a person a question, which the two forms do not do alike
-// (postRelated and getRelated say why). The GET form's check embeds the text first, holding no
-// admission unit while the embedder answers (relatedInput.embedFirst), and a take-back refused
-// after it is the answer, 429 OVERLOADED, in place of the check's.
+// (postRelated and getRelated say why). Both forms' checks embed the text first, holding no
+// admission unit while the embedder answers (relatedInput.embedAway), and a take-back refused
+// after it is the answer, 429 OVERLOADED, in place of the check's: neither form writes anything,
+// the POST form being in the write class for its body alone.
 func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
@@ -141,7 +141,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		excludeIssues: excluded,
 		keywordsOnly:  request.KeywordsOnly,
 		question:      question,
-		embedFirst:    admission.Reads(r.Method),
+		embedAway:     awayOnNetwork,
 		trees:         reader,
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {

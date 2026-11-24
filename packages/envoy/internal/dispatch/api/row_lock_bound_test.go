@@ -360,7 +360,7 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 				return heldRowRequest{
 					database: database, hold: heldDirectAttemptRow, holdArgs: []any{root.ID},
 					call: func(ctx context.Context) error {
-						_, held, err := served.renewMessageDeliveryClaim(ctx, root, pending)
+						_, held, err := served.renewMessageDeliveryClaim(ctx, root, pending, pending.resolved)
 						if err == nil && !held {
 							return errors.New("the renewal found the attempt no longer held by its claim")
 						}

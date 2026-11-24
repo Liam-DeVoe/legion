@@ -181,7 +181,19 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// A per-session read asks the store the question the exclusion claims to answer, and the
 	// selection is the sender's, not a set the list has to be scanned for, so there is nothing
 	// a single list read buys that is worth that.
-	sessions, err := s.resolveBroadcastSessions(r.Context(), requested)
+	//
+	// The reads hold no admission unit: the request gives its unit back before their workers
+	// start and takes it back once every one has answered, on its own goroutine (awayOnNetwork),
+	// and a take-back refused is the answer, 429 OVERLOADED, before anything was written.
+	var sessions map[string]dispatchenvoy.Session
+	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		sessions, err = s.resolveBroadcastSessions(ctx, requested)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if err != nil {
 		// Nothing is written when a read did not answer, or the budget ended before every
 		// selected session was read, not even the recipients whose reads answered:
@@ -234,14 +246,16 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// http.Server.Shutdown drains, so a delivery bound to the lifetime was cut off by a deploy
 	// with recipients it had not reached. A deploy that kills the process before they all settle
 	// leaves owed recipients the delivery sweep resumes (resumeOwedDeliveries), and a repeat under
-	// the key resumes them too (replayBroadcast).
+	// the key resumes them too (replayBroadcast). The context carries no admission ticket
+	// (detachedFromRequest): the workers start before this request has answered, and each send's
+	// pairs would otherwise give this request's unit back from a worker's goroutine.
 	sends := make([]broadcastSend, 0, len(created.Recipients))
 	for _, recipient := range created.Recipients {
 		// The write opened each recipient's first attempt, unclaimed, so every worker is bound
 		// to that attempt rather than opening one of its own.
 		sends = append(sends, broadcastSend{message: recipient.Message.Message, attempt: 1})
 	}
-	sending := context.WithoutCancel(r.Context())
+	sending := detachedFromRequest(r.Context())
 	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, input.Delivery, actor) })
 	// The send's own answer carries the body it has just stored the tree of, so it is read where
 	// it stands rather than from the table.
@@ -625,8 +639,9 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 		}
 	}
 	// Detached from the request and counted in the server's background wait, as the original
-	// send's delivery is; the listener client's receipt timeout bounds each recipient's send.
-	sending := context.WithoutCancel(ctx)
+	// send's delivery is, carrying no admission ticket (detachedFromRequest); the listener client's
+	// receipt timeout bounds each recipient's send.
+	sending := detachedFromRequest(ctx)
 	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, read.Delivery, read.Author) })
 	return nil
 }

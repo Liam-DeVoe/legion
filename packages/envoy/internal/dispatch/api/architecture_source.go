@@ -133,8 +133,17 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	// The access check, of the repository and of the branch, runs before any write: a value that
 	// is not exactly the name of a branch the repository has (a commit SHA, a relative ref such as
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
-	// stored source untouched.
-	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, branch)
+	// stored source untouched. Its GitHub calls hold no admission unit (awayOnNetwork), and a
+	// take-back refused after them is the answer, 429 OVERLOADED, as nothing was written yet.
+	var installationID int64
+	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		installationID, err = s.checkArchitectureSource(ctx, owner, name, branch)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) || errors.Is(err, githubapp.ErrNoBranch) {
 			writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
@@ -292,7 +301,11 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 // model or upstream failure is a 200 whose row carries last_error: the HTTP call itself succeeded
 // and the source's previous projection is still up. Only a credential- or configuration-shaped
 // failure — no App key, no installation, no Contents: read, no such branch — is a 409 the caller
-// must act on.
+// must act on. The import runs on the background pool, on a context and a connection mark of its
+// own (NewDeps' importer, architecture's flight), and the request holds no admission unit while it
+// waits on it, up to the import's sync bound (awayOnNetwork). A take-back refused after it is the
+// answer, 429 OVERLOADED: the import is the importer's, shared by every caller of the source, and a
+// repeat of the route asks for it again, which costs at most one more set of GitHub calls.
 func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -304,7 +317,15 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	repo := owner + "/" + name
-	source, err := s.deps.Architecture.Sync(r.Context(), key, repo)
+	var source model.ArchitectureSource
+	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		source, err = s.deps.Architecture.Sync(ctx, key, repo)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	switch {
 	case err == nil:
 		WriteJSON(w, http.StatusOK, source)
@@ -368,10 +389,19 @@ func (s *server) syncSingularArchitectureSource(w http.ResponseWriter, r *http.R
 // syncProjectSources imports every source of the request's project and answers the rows in id
 // order, at least one. When there is nothing to answer it writes the error itself and reports
 // false: 404 SOURCE_NOT_FOUND for a project with no source, and the handler error for a failure
-// that could not be recorded on its row.
+// that could not be recorded on its row. The imports run on the background pool and the request
+// holds no admission unit while it waits on them, as syncArchitectureSource's.
 func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]model.ArchitectureSource, bool) {
 	key := r.PathValue("key")
-	results, err := s.deps.Architecture.SyncProject(r.Context(), key)
+	var results []architecture.SyncResult
+	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		results, err = s.deps.Architecture.SyncProject(ctx, key)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return nil, false
+	}
 	if errors.Is(err, architecture.ErrNoSource) || (err == nil && len(results) == 0) {
 		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+key)
 		return nil, false

@@ -206,7 +206,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 			s.writeHandlerError(w, r, err)
 			return
 		}
-		sending := context.WithoutCancel(ctx)
+		sending := detachedFromRequest(ctx)
 		for _, mention := range owed {
 			item := mentionSend{
 				comment: comment, created: created, mention: mention, actor: comment.Author, attempt: 1,
@@ -518,9 +518,13 @@ type commentWrite struct {
 // attempts the commit made durable, resolving the mention again. Every lookup runs at once, so a
 // comment waits about one take-over window however many mentions it carries
 // (validateCommentMentions allows ten).
-// The lookups share the request's tracking mark because they call only the listener and never
-// take a pooled connection; one that read the database would need a mark of its own, as each
-// send on the mention sender's lanes takes (store.WithTransactionTracking in sendCommentMention).
+// The lookups hold no admission unit: the request gives its unit back once the routes are read and
+// before the lookups start, and takes it back once every one has answered, on its own goroutine
+// (awayOnNetwork), so a take-back refused is the comment's answer, 429 OVERLOADED, before anything
+// was written. They run on a connection mark split from the request's (store.ForConcurrentRead)
+// and share it, because they call only the listener and never take a pooled connection; one that
+// read the database would need a mark of its own, as each send on the mention sender's lanes takes
+// (store.WithTransactionTracking in sendCommentMention).
 func (s *server) resolveCommentDeliveries(
 	ctx context.Context, owner owner, input commentInput, targets []string, delivery string,
 ) (commentResolution, error) {
@@ -540,16 +544,21 @@ func (s *server) resolveCommentDeliveries(
 	}
 	mentioned := slices.Index(targets, route.route)
 	var routeResolution ResolvedMention
-	var lookups sync.WaitGroup
-	for index, target := range targets {
-		lookups.Go(func() {
-			resolved.mentions[index], resolved.takeovers[index] = s.resolveThroughTakeover(ctx, target, delivery, wait)
-		})
+	if err := awayOnNetwork(ctx, func(ctx context.Context) error {
+		var lookups sync.WaitGroup
+		for index, target := range targets {
+			lookups.Go(func() {
+				resolved.mentions[index], resolved.takeovers[index] = s.resolveThroughTakeover(ctx, target, delivery, wait)
+			})
+		}
+		if route.route != "" && mentioned < 0 {
+			lookups.Go(func() { routeResolution, _ = s.resolveThroughTakeover(ctx, route.route, "steer", wait) })
+		}
+		lookups.Wait()
+		return nil
+	}); err != nil {
+		return commentResolution{}, err
 	}
-	if route.route != "" && mentioned < 0 {
-		lookups.Go(func() { routeResolution, _ = s.resolveThroughTakeover(ctx, route.route, "steer", wait) })
-	}
-	lookups.Wait()
 	switch {
 	case route.route == "":
 	case mentioned >= 0:
@@ -1225,14 +1234,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	start.release()
 	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
 	// On a context the client's going away does not cancel: a send this sender refuses gives its
-	// attempt's claim back, which must not be left undone because the caller hung up.
+	// attempt's claim back, which must not be left undone because the caller hung up. It carries
+	// no admission ticket (detachedFromRequest): the lanes send on the sender's own context, and
+	// nothing handed to them for later may park or resume this request's ticket.
 	//
 	// Each send carries the take-over pacing its mention's resolution started
 	// (resolveCommentDeliveries), so a comment waits about one listener take-over window in all,
 	// here as it did when the request itself sent: a resolution that already waited that window
 	// out settles with its outcome on the lane's first try. A send that waits on a held lane
 	// first starts a window of its own at its delivery (mentionSend.takeover).
-	sending := context.WithoutCancel(r.Context())
+	sending := detachedFromRequest(r.Context())
 	for i, mention := range resolvedMentions {
 		s.mentions.enqueue(sending, mentionSend{
 			comment: comment, created: *event, mention: mention, actor: actor, attempt: 1,
