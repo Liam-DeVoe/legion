@@ -128,17 +128,21 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 	}
 }
 
-// Dispatch's document limit lets an owner write a plan of 10,000 tasks in a ring, or of 300 tasks
-// each needing all the others, and register_plan checks it before the fact lock. So the check of
-// cycles takes work linear in the plan: one pass finds the sets of tasks that need each other,
-// and one breadth-first search inside each set that holds a cycle names it. Each plan below is
-// checked in at most 2 × (tasks + needs) steps, counted as the check's own loops count them
-// (cycles), and with its refusals: the ring's one cycle through every task, the complete graph's
-// shortest cycle from its first task, and one cycle for each task that needs itself. The fault is
-// a search from every need or task of a set, which named the shortest cycle through each one:
-// planted as cycleFrom called from every task of a set, the ring takes about 10⁸ steps and fails.
-// The count is the check's work and no time, so a loaded machine changes nothing.
-func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
+// Dispatch takes an owner's plan of 10,000 tasks in a ring, or of 300 tasks each needing all the
+// others, and a search from every need of a set, which named the shortest cycle through each one,
+// followed about 10⁸ needs on that ring. So the check of cycles takes time linear in the plan: one
+// pass finds the sets of tasks that need each other (components), and one breadth-first search
+// from the first task of each set that holds a cycle names it (cycleFrom). Each plan below gives
+// its cycles: the ring's one cycle through every task, the complete graph's shortest cycle from
+// its first task, and one cycle for each task that needs itself. And its searches follow at most
+// the plan's needs, as cycles counts them: a task joins at most one search, so each need is
+// followed at most once. The ring's one search follows each of its 10,000 needs, the bound
+// itself, so a search from a second task of a set fails the bound there. The fault is a search
+// from every task of a set; planted, the ring follows 100,000,000 needs and the complete graph
+// 134,551 of its 89,700. The count sees only the needs cycleFrom follows: not components' loop,
+// not cycles' own loops over the tasks, and not work done inside one follow or once for each set,
+// such as a reset of every mark in parent before each search. It counts work and reads no clock.
+func TestTheCheckOfCyclesFollowsEachNeedAtMostOnce(t *testing.T) {
 	ring := make([]Task, 10_000)
 	ringCycle := make([]string, len(ring))
 	for i := range ring {
