@@ -1,23 +1,25 @@
 # Acceptance, the merge and the close
 
 Read the section for your step of `skill://legion-architect`, sections 4 to 7.
-Where it says to ask a person, a child's own architect sends the question to the architect above it.
+Where it says to ask a person, a child's own architect asks on that child's issue.
 
 ## Accepting
 
 A step `acceptance:owner` enters `accepting` as yours, and `acceptance` with no key as a fresh agent's, which ends it by its verdict.
 Read, against the goal, every check and every requirement:
 
-1. where the task has a tester step before yours, the handoff of each: `dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one;
+1. where the task has a tester step before yours, the handoff of each: `dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one.
 
-2. `dispatch results --issue <issue> --at <head>`: whether a pass stands for each check at the head the steps before yours passed;
+2. `dispatch results --issue <issue> --at <head>`: whether a pass stands for each check at the head the steps before yours passed.
 
-3. where the task has a reviewer step before yours, each one's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), or its verdict with no pull request or at `reviewer:owner`, and each claim of its prose against the code at that head;
+3. where the task has a reviewer step before yours, each one's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`).
+   With no pull request or at `reviewer:owner`, read its verdict instead.
+   Read each claim of its prose against the code at that head.
 
 4. where the issue has a pull request, `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 
-- `sign_off`, or `complete_step` with `pass`, works only in `accepting`, where the Dispatch status reads `needs_review`;
-  your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
+- `sign_off`, or `complete_step` with `pass`, works only in `accepting`, where the Dispatch status reads `needs_review`.
+  Your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: its `phase-finished` may not have reached you.
 
@@ -46,11 +48,15 @@ Never downgrade it.
 Then, in one turn:
 
 1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
+
    "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
+
    With no tester step, the implementation step's evidence for those checks at the merge head is the full round.
 
-2. `request_backward_move` to the step that opened the pull request, with the reason "Last round:
-   merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
+2. `request_backward_move` to the step that opened the pull request, with the reason:
+
+   "Last round: merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
+
    Never hard-code `main`.
 
 A child's merge while the parent waits needs no move of its own:
@@ -66,8 +72,9 @@ Once the children close:
 
 ## After your sign-off
 
-The task's next step runs, or retro where yours was its last step;
-then, with a pull request, the merger merges its head under the repository's own rules; you start none of it.
+The task's next step runs, or retro where yours was its last step.
+Then, with a pull request, the merger merges its head under the repository's own rules.
+You start none of it.
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 
@@ -79,21 +86,23 @@ When the merger reports:
 - a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
   Do not wait for a reviewer phase the task does not have;
 
-- a squash into a base other than the default branch:
-  tell the implementer step's agent of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in that round.
+- a squash into a base other than the default branch: find each open pull request of the tree built on it.
+  Where its issue is yours and still in `implementing`, tell its implementer step's agent to merge that base forward in that round.
   Past `implementing`, the daemon asks for that merge itself (*A conflicting head*, below).
 
 ## A conflicting head
 
 A head that conflicts with its base keeps the issue in its phase.
 The daemon asks for the merge forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
-A conflict it does not act on yet is recorded:
-the task's steps go on at that head, a reviewer step's approval of it (your verdict, at `reviewer:owner`) ends its review round, and the daemon acts on the move into `accepting`, `retro` or `merging`.
+A conflict it does not act on yet is recorded: the task's steps go on at that head.
+A reviewer step's approval of it (your verdict, at `reviewer:owner`) ends its review round.
+The daemon acts on the move into `accepting`, `retro` or `merging`.
 When it asks away from the task's implementation step, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; at that step no notice comes.
 You start nothing for the merge.
 
-Where a reviewer step already ran, the daemon asks its agent (you, where it was `reviewer:owner`) to read the merge and approve the new head by its SHA, or request changes;
-a reviewer step still to come reviews the head when it runs.
+Where a reviewer step ran, the daemon asks its agent to read the merge and approve the new head by its SHA, or request changes.
+At `reviewer:owner`, that agent is you.
+A reviewer step still to come reviews the head when it runs.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when it requests changes.
 A task with no reviewer step has no review to await.
 
@@ -113,8 +122,9 @@ A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 
-A root a person closed that stays `done` through its linger hands each child still in the workflow, one that never started included, to Legion as a root of its own;
-only a finished, parked or unreleased child stays.
+When a root a person closed stays `done` through its linger, it hands each child still in the workflow to Legion as a root.
+One that never started goes too.
+Only a finished, parked or unreleased child stays.
 Ask the person whether a child's work must end with the root.
 A parked root hands over only a child in `merging` whose pull request is open.
 Your role prompt says what a `handed_over` catch-up asks of you.

@@ -538,8 +538,10 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and complete_step, and the
-    // controller's operations. tools.test.ts pins stop_task's, sign_off's and complete_step's text
-    // by their terms, and the text after complete_step's exactly.
+    // controller's operations. tools.test.ts pins only stop_task's and sign_off's terms
+    // (STOP_TASK_TERMS, SIGN_OFF_TERMS: each part's opening, its refusal codes, and stop_task's hold
+    // and first-step words). The other checks on this text are that it names envoy_publish and
+    // lacks two retired phrases. No test pins its sentences.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -552,10 +554,10 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
-        "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
-        "is a step you do yourself, `acceptance` with no key is a fresh agent of the role acceptance, and the steps of one key run as one " +
-        "agent in one claim and one session, as `implementer:a tester:a`); a task that names none runs the " +
+        "steps its task runs, in any order and with no role required. A step names one of Legion's roles planner, implementer, tester, " +
+        "reviewer and acceptance, or a role of the deployment or of the plan. It may carry a key after a colon that names its agent. " +
+        "`implementer:owner` is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance. The steps " +
+        "of one key run as one agent in one claim and one session, as `implementer:a tester:a`. A task that names none runs the " +
         "project's default steps. A role of the plan is one a `plan_role` block defines: its id, `type`, `model` and text are the " +
         "role's name, type, model and prompt. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
         "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
@@ -579,33 +581,35 @@ export function createLegionTool(deps: {
         "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to the task's next step, or to its retro where the " +
-        "acceptance is the task's last step. It is an architect's operation: this tool refuses it in a phase worker's session, the fresh " +
-        "agent of acceptance's among them. The daemon refuses, changing nothing, a " +
-        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
-        "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
-        "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one of an acceptance step that is not yours, " +
-        "such as a step acceptance with no key, whose agent ends it with its own verdict (SIGNOFF_NOT_THE_OWNERS); it also " +
-        "refuses it while an issue beneath it is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's " +
-        "head proves its children's merged work: run each one to done, and sign off again. " +
+        "sign_off is the architect's acceptance of an issue in accepting. It moves the issue to the task's next step, or to its retro " +
+        "where the acceptance is the task's last step. It is an architect's operation: this tool refuses it in a phase worker's session, " +
+        "the fresh agent of acceptance's among them. The daemon refuses a sign-off of an issue you no longer own (ISSUE_NOT_OWNED, " +
+        "or ISSUE_OUTSIDE_TREE once it left your tree). It refuses one of a run of the issue or of accepting that ended before Legion " +
+        "applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY). After that refusal, read the issue and its evidence again. It " +
+        "refuses one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING), and one of an acceptance step that is not yours " +
+        "(SIGNOFF_NOT_THE_OWNERS). One such step is a step acceptance with no key, whose agent ends it with its own verdict. None of " +
+        "these refusals changes anything. The daemon also refuses a sign-off while an issue beneath it is still in the workflow " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one). That is because a parent's head proves its children's merged work: run each " +
+        "one to done, and sign off again. " +
         "complete_step (issue, step, summary, and the verdict, return_to, plan_rating and plan_reason that step's completion would carry) " +
-        "is your report of a step of your own issue's task whose key is owner, or of the task's retro where the retro is yours, once " +
-        "Legion's owner-step notice gave it to you: step is its place in the task, 1 for the first step, 0 for the retro. It carries " +
-        "the verdict pass or fail of a step that reports one, a review step of yours among them on an issue with a pull request too, " +
-        "return_to with a fail, and the rating of the plan on the retro; it reads the handoff record of a planning, implementing, testing or reviewing step, which " +
-        "you write first with dispatch handoff-write, and the commit, as handoff_complete reads them. Your acceptance step's pass is " +
-        "your sign-off, and its fail sends the task back, to return_to or to the first implementation step before it; a fail that " +
-        "names no return_to where no implementation step stands before it stops the task, and Legion tells you (task-stopped). The daemon " +
-        "refuses, changing nothing, a report from any architect but the issue's own (NOT_THE_OWNER), one of a step that does not run " +
-        "now or is not yours (OWNER_STEP_NOT_RUNNING, naming where the task stands and who works that place), and one that breaks " +
-        "the rules of that step's completion, with the codes handoff_complete gets. " +
+        "is your report of a step. That step is one whose key is owner in your own issue's task, or the task's retro where the retro " +
+        "is yours. You report it once Legion's owner-step notice gave it to you. step is its place in the task, 1 for the first step, " +
+        "0 for the retro. It carries the verdict pass or fail of a step that reports one. A review step of yours is such a step, on an " +
+        "issue with a pull request too. It carries return_to with a fail, and the rating of the plan on the retro. It reads the " +
+        "handoff record of a planning, implementing, testing or reviewing step, and the commit, as handoff_complete reads them. Write " +
+        "that record first with dispatch handoff-write. Your acceptance step's pass is your sign-off, and its fail sends the task " +
+        "back, to return_to or to the first implementation step before it. A fail that names no return_to where no implementation " +
+        "step stands before it stops the task, and Legion tells you (task-stopped). The daemon refuses a report from any architect " +
+        "but the issue's own (NOT_THE_OWNER). It refuses one of a step that does not run now or is not yours " +
+        "(OWNER_STEP_NOT_RUNNING). That refusal names where the task stands and who works that place. It refuses one that breaks " +
+        "the rules of that step's completion, with the codes handoff_complete gets. None of these refusals changes anything. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
         "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since every step of that ancestor's task has passed, and what they " +
-        "passed cannot carry work released under it now: wait for the ancestor to close, then release it. " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor). That is because every step of that ancestor's task has passed, and what " +
+        "they passed cannot carry work released under it now. Wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
@@ -905,13 +909,13 @@ export function createLegionTool(deps: {
             const issue = requiredString(parameters, operation, "issue");
             if (issue !== active.issue) {
               throw new Error(
-                `complete_step reports a step of ${active.issue}, the issue this session is the architect of; ${issue}'s steps are its own architect's`
+                `complete_step reports a step of ${active.issue}, the issue this session is the architect of. ${issue}'s steps are its own architect's`
               );
             }
             const step = parameters.step;
             if (typeof step !== "number" || !Number.isSafeInteger(step) || step < 0) {
               throw new Error(
-                "complete_step's step is a whole number of 0 or more: the place of the step you report in your issue's task, 1 for its first, or 0 for the retro"
+                "complete_step's step is a whole number of 0 or more. It is the place of the step you report in your issue's task, 1 for its first, or 0 for the retro"
               );
             }
             const summary = requiredString(parameters, operation, "summary");
@@ -923,7 +927,7 @@ export function createLegionTool(deps: {
             // (RETURN_TO_NEEDS_FAIL, PLAN_RATING_INPUT).
             if (returnTo !== undefined && verdict !== "fail") {
               throw new Error(
-                "complete_step names return_to without the verdict fail: only the report of a step that failed names the step its task returns to; send it again without return_to"
+                "complete_step names return_to without the verdict fail. Only the report of a step that failed names the step its task returns to. Send it again without return_to"
               );
             }
             const { plan_rating: planRating, plan_reason: planReason } = parameters;
