@@ -788,6 +788,8 @@ It calls the server's own indexers over what it writes
 — and then settles the state those writes leave owed, so a Dispatch server started on the seeded database rewrites nothing:
 the block index, the item blocks, the task counts, the reference excerpts and the event publication are all already done, and the per-owner `last_seq` counters match the seeded events, so the first comment, ask, message, upload or title edit written to a seeded issue does not fail the unique `(issue_key, seq)`.
 Every ask is written with its `ask.opened` event, in the ask's own transaction as the create route writes it, because every read of an ask resolves that event (`events.OpenedEventIDs`) and fails the whole request when the ask has none, which would answer 500 on the ask lists, the ask read, the Inbox and an issue's `open_asks`.
+Some of the `issue.updated` events of each issue record its status moves, each with the payload that the status write of Dispatch gives that event: the issue with its new `status`, and a `changed` list that names `status`.
+The newest move of an issue is into the status that the issue is in now, so the parked fault of `GET /api/v1/priorities` and the listing with `?moved=true` read real moves, and the report counts the moves and the moves into `backlog` or `icebox`, which are the rows of `events_parked_moves`.
 It ends with one full `search_term_stats` build for every project, so no measured related-terms pass is a first-use full build, and with `vacuum (analyze)`, not `analyze`:
 a freshly loaded table has no all-visible pages, so the planner avoids an index-only scan on it however good the statistics are.
 

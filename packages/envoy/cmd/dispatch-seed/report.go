@@ -174,6 +174,16 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			       ' priority work parked=' || (
 			         select count(distinct i.key) from issues i join members m on m.key = i.key
 			         where i.closed_at is null and i.status in (` + priorityParkedStatuses + `))`},
+		{"status moves", `select 'moves=' || count(*) ||
+			       ' into a parked status, the rows of events_parked_moves=' ||
+			       count(*) filter (where e.payload->>'status' in (` + priorityParkedStatuses + `)) ||
+			       ' of them on an issue parked now=' ||
+			       count(*) filter (where e.payload->>'status' in (` + priorityParkedStatuses + `)
+			                          and i.status in (` + priorityParkedStatuses + `)) ||
+			       ' over ' || count(distinct i.key) filter (where i.status in (` + priorityParkedStatuses + `)) ||
+			       ' parked issues'
+			from events e join issues i on i.key = e.issue_key
+			where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`},
 	}
 	for _, item := range readings {
 		rows, err := r.database.Pool.Query(ctx, item.query)

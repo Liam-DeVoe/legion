@@ -68,6 +68,9 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
 		assertAnswersAndDeclinesNameTheirAsks(t, first)
 	})
+	t.Run("every parked issue's newest status move is into the status it stands in", func(t *testing.T) {
+		assertStatusMovesEndInTheStatus(t, first)
+	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
 		var unknown int
 		if err := first.Pool.QueryRow(context.Background(), `
@@ -738,6 +741,114 @@ func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) 
 		if written[kind] == 0 {
 			t.Errorf("the seed wrote no %s event, so this check proves nothing of it", kind)
 		}
+	}
+}
+
+// assertStatusMovesEndInTheStatus holds the seed's status moves to what the parked read (api's
+// parkedMoveLateral) finds of them. A status move is an `issue.updated` event whose payload names
+// `status` in `changed`, which are the lateral's own conditions beside the status. Every issue
+// that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into the
+// status the issue stands in: so the event the lateral stops at is the issue's newest move.
+// Every other issue's newest move, where it has one, is into its status too. At least one parked
+// issue holds newer events after its newest move, so a read that stops at the move reads fewer
+// events than one that reads all of them, and at least one move into a parked status is on an
+// issue that stands elsewhere now. Each move's payload decodes as the payload of the status
+// write (model.IssueEventPayload), with no field the type does not know, and names its issue,
+// its status, the status alone in `changed`, and its own seq as the issue's last_seq.
+func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type issueRow struct {
+		status  string
+		lastSeq int
+	}
+	rows, err := database.Pool.Query(ctx, `select key, status, last_seq from issues`)
+	if err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+	issues := map[string]issueRow{}
+	for rows.Next() {
+		var key string
+		var row issueRow
+		if err := rows.Scan(&key, &row.status, &row.lastSeq); err != nil {
+			t.Fatalf("read the issues: %v", err)
+		}
+		issues[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+
+	type move struct {
+		seq    int
+		status string
+	}
+	newest := map[string]move{}
+	var moves, parkedElsewhere int
+	rows, err = database.Pool.Query(ctx, `
+		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
+		where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb
+		order by e.issue_key, e.seq
+	`)
+	if err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+	for rows.Next() {
+		var key, status, raw string
+		var seq int
+		if err := rows.Scan(&key, &seq, &status, &raw); err != nil {
+			t.Fatalf("read the status moves: %v", err)
+		}
+		moves++
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var payload model.IssueEventPayload
+		switch err := decoder.Decode(&payload); {
+		case err != nil:
+			t.Errorf("the status move of %s at seq %d does not decode as the status write's payload: %v\n%s", key, seq, err, raw)
+		case payload.Key != key || payload.Status != status || payload.LastSeq != seq ||
+			!slices.Equal(payload.Changed, []string{"status"}):
+			t.Errorf("the status move of %s at seq %d names issue %s, status %s, last_seq %d and changed %v",
+				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
+		}
+		if slices.Contains(model.IssueStatusesParked, status) && !slices.Contains(model.IssueStatusesParked, issues[key].status) {
+			parkedElsewhere++
+		}
+		newest[key] = move{seq: seq, status: status}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+
+	var parked, followed int
+	for key, issue := range issues {
+		last, moved := newest[key]
+		if !slices.Contains(model.IssueStatusesParked, issue.status) {
+			if moved && last.status != issue.status {
+				t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+			}
+			continue
+		}
+		parked++
+		switch {
+		case !moved:
+			t.Errorf("%s stands in %s and has no status move", key, issue.status)
+		case last.status != issue.status:
+			t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+		case issue.lastSeq > last.seq:
+			followed++
+		}
+	}
+	t.Logf("%d status moves, %d of them into a parked status on an issue that stands elsewhere; %d parked issues, %d with newer events after their newest move",
+		moves, parkedElsewhere, parked, followed)
+	if parked == 0 {
+		t.Fatal("no seeded issue stands in backlog or icebox, so this check proves nothing")
+	}
+	if followed == 0 {
+		t.Error("no parked issue holds an event newer than its newest status move")
+	}
+	if parkedElsewhere == 0 {
+		t.Error("no move into a parked status is on an issue that stands elsewhere now")
 	}
 }
 
