@@ -3468,7 +3468,7 @@ test("the state golden names each live repository without the webhook App", () =
   const narrowed = repositoriesAt152.parse(
     fixtureBody("state-narrowed-repositories.json").repositories
   );
-  expect(narrowed.withoutWebhookApp).toEqual(gaps);
+  expect(gaps).toEqual(narrowed.withoutWebhookApp);
   const empty = LegionStateResponse.parse(fixture("state-stage3.json")).repositories;
   expect(empty?.live).toEqual([]);
   expect(empty?.withoutWebhookApp).toEqual([]);
