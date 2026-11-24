@@ -545,14 +545,14 @@ What each part is for:
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
-  `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role where the block
-  names none. A launch of a role the list leaves out loads none of this experiment's overlays or
-  instructions, while its unit keeps the arm it drew; the deployment's and the role's own
-  settings, and the arms of any other experiment that reaches the role, still apply. So an
-  experiment that changes how the work is done can leave the roles that judge the work, such as
-  the reviewer, the tester and the architect who signs a merge off, out of its arms, and read
-  their verdicts as its outcome; with every role in the arm, a merge rate or a count of review
-  rounds is partly the treated roles' own verdict.
+  `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role, each role of
+  `roles` included, where the block names none. A launch of a role the list leaves out loads none
+  of this experiment's overlays or instructions, while its unit keeps the arm it drew; the
+  deployment's and the role's own settings, and the arms of any other experiment that reaches the
+  role, still apply. So an experiment that changes how the work is done can leave the roles that
+  judge the work, such as the reviewer, the tester and the architect who signs a merge off, out of
+  its arms, and read their verdicts as its outcome; with every role in the arm, a merge rate or a
+  count of review rounds is partly the treated roles' own verdict.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole

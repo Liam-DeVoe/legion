@@ -554,7 +554,9 @@ The daemon's start reads each role's `prompt_file` and refuses one it cannot rea
 A step of such a role runs at the phase `step`, at the place the task's steps give it.
 Its agent's prompt is `mechanics/headless.md`, its `prompt_file` and the daemon's `worker-common.md`.
 It writes no handoff record: it reports its step with `handoff_complete`, the verdict `pass` or `fail` and the commit its workspace stands on, and a fail may name `return_to`, the place of an earlier step of its task.
-Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's, and under `runtime: kubernetes` every issue pod runs it beside Legion's six, with a Secret, a shim and a state home of its own, whatever the issue's plan names.
+Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's.
+Under `runtime: kubernetes` every issue pod is built for it beside Legion's six, whatever the issue's plan names, with its Secret and its launcher connection.
+The launcher starts its shim, with a state home of its own, only when the daemon starts the role.
 An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod, and until then the role's start waits.
 
 ## Phase workers on Claude Code
@@ -795,9 +797,10 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
-  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
-  issue role where the block names none; a pane of a role the list leaves out loads none of this
-  experiment's overlays or instructions while its unit keeps the arm it drew.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and it may
+  name only Legion's six. Where the block names none, every issue role loads them, each role of
+  `roles` included. A pane of a role the list leaves out loads none of this experiment's overlays
+  or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
