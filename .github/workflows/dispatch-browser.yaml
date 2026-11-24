@@ -517,11 +517,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 1380 + 3416 = 4796 s -> 80 min.
+  # 1260 + 3416 = 4676 s -> 78 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 80
+    timeout-minutes: 78
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -598,25 +598,11 @@ jobs:
           go build -o out/dispatch-e2e-broker/broker ./cmd/cipherd
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
-        id: visual-normal
         # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
         # 57.4 x 1.15 = 66 s -> 2 min, the rule's own floor.
         timeout-minutes: 2
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
-        working-directory: packages/dispatch
-      - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
-        # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
-        if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
-        timeout-minutes: 2
-        run: |
-          # Exported on the command line, as the first step's script exports them, for the reason
-          # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
-          export TMPDIR="$RUNNER_TEMP"
-          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          export DISPATCH_E2E_VISUAL_ORDER=reverse
-          e2e/visual-run.sh --output=e2e/test-results-reverse
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-jobs-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -626,7 +612,6 @@ jobs:
           # why: .github/ci-notes/dispatch-browser.md#why-the-visual-upload-keeps-a-pattern-that-matches-no-file
           path: |
             packages/dispatch/e2e/test-results
-            packages/dispatch/e2e/test-results-reverse
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore

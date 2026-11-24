@@ -1215,8 +1215,8 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is gone:
+the section on the guard that took its place says why.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
@@ -1247,24 +1247,24 @@ took at most 16.6 s outside the two builds, and that figure still held the Postg
 the step before it now makes. So the key holds with all of it counted: (57.4 + 16.6) x 1.15 =
 85 s. `docker run` of a digest the runner already holds pulls nothing (e2e/harness-postgres.ts
 passes no --pull). The rule reads the tests: 57.4 x 1.15 = 66 s -> 2 min, the rule's own floor.
-The reverse-order browser step, main's #4536, runs the same rows on a new stack of the same size
-with a new seed and carries the first browser step's key, 2 minutes, since it finds the stack's
-Postgres copy pulled and its binaries built as the first step does.
+The reverse-order browser step main's #4536 added carried the first browser step's key, 2
+minutes, until main's #5195 removed it: the section on the guard that took its place says why.
 
 The job's first term is the measured half of the rule over its steps as they stand now: the
-browser step's 120 s, the reverse-order browser step's 120 s, the Postgres pull's 180 s and the
-build's 600 s, each that step's own key, plus the same 314 s of every step without one,
-1334 s -> 23 min, so 1380 s. To it the rule adds the arithmetic of its slowest retried step, the
-setup-bun step at 3416 s, above the workspace install's and the module download's
-5 x 180 + 150 = 1050 s each. The two image pulls are no term of it: each is a ghcr.io pull of a
-package this repository publishes, which retries nowhere in this tree
-(.github/scripts/check-download-retry.sh's exception (a)). 1380 + 3416 = 4796 s -> 80 min, which
-stands above the largest step budget of this job. It was 1260 + 3416 = 4676 s, 78 minutes, until
-main's #4536 added the reverse-order browser step; 1200 + 3416 = 4616 s, 77 minutes, until main's
-#4383's 120 s reading raised the Postgres pull's key from 2 minutes to 3; 1200 + 2562 = 3762 s,
-63 minutes, until main's #4214 gave each `ci_tools_fetch` a fourth ladder; 600 + 2562 = 3162 s,
-53 minutes, until round 37 gave the setup steps their own keys; 540 + 2562 = 3102 s, 52 minutes,
-until main's #3516 raised the first term from 9 minutes to 10.
+browser step's 120 s, the Postgres pull's 180 s and the build's 600 s, each that step's own key,
+plus the same 314 s of every step without one, 1214 s -> 21 min, so 1260 s. To it the rule adds
+the arithmetic of its slowest retried step, the setup-bun step at 3416 s, above the workspace
+install's and the module download's 5 x 180 + 150 = 1050 s each. The two image pulls are no
+term of it: each is a ghcr.io pull of a package this repository publishes, which retries nowhere
+in this tree (.github/scripts/check-download-retry.sh's exception (a)). 1260 + 3416 = 4676 s ->
+78 min, which stands above the largest step budget of this job. It was 1380 + 3416 = 4796 s, 80
+minutes, while main's #4536's reverse-order browser step ran, its 120 s in the first term, and
+went back to 78 minutes when main's #5195 removed that step; 1260 + 3416 = 4676 s, 78 minutes,
+until #4536 added it; 1200 + 3416 = 4616 s, 77 minutes, until main's #4383's 120 s reading
+raised the Postgres pull's key from 2 minutes to 3; 1200 + 2562 = 3762 s, 63 minutes, until
+main's #4214 gave each `ci_tools_fetch` a fourth ladder; 600 + 2562 = 3162 s, 53 minutes, until
+round 37 gave the setup steps their own keys; 540 + 2562 = 3102 s, 52 minutes, until main's
+#3516 raised the first term from 9 minutes to 10.
 
 ## Why the visual job restores go-envoy-test
 
@@ -1297,15 +1297,14 @@ repository's own package, so it fails here and says so.
 
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-digest the two browser steps export (the first in .github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+digest the browser step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
+inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
 spent 120 s before the stack's first output, where five green visual jobs (134499880849,
 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
 past its budget at 250 s. Its log does not time the pull apart from the rest of that
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-digest is written three times, here and in the two browser steps (the normal order and
-the reverse), and the three must stay the same: a pull of another digest here leaves the
-browser steps to pull their own inside their budgets again.
+digest is written twice, here and in the browser step's script, and the two must stay the same:
+a pull of another digest here leaves the browser step to pull its own inside its budget again.
 
 Measured inside the browser step, where the `docker run` made this pull: 7-10 s to the stack's
 first listener over the 14 passing runs the browser step's key reads, and 80 s in job
@@ -1316,28 +1315,57 @@ pull rather than measuring it alone: 120 x 1.15 = 138 s -> 3 min. A failed pull 
 this repository's own package, so it fails here and says so (.github/scripts/check-download-retry.sh's
 exception (a)).
 
-## Why the visual job runs its rows again in reverse order
+## Why each visual row stops its page's writes, and runs once
 
-The same rows again in reverse order, on a new stack and a new seed: the phone rows before
-the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
-One seed serves a whole run, so a row whose page reads a write another row made fails one
-of the two runs by its own name, and a baseline that holds another row's write is found
-here rather than as a flake. It runs when the normal run failed too, since that is when its
-answer says most, and not when the normal run never started: a setup step that failed
-leaves nothing for either run to compare. Its budget is the first step's, for the same
-rows on a new stack of the same size.
+One seed serves the whole visual run, so a page that wrote to the corpus as it drew would change
+what every row after it compares, and a baseline would hold another row's write. So no row's page
+may write: e2e/visual-guard.ts, installed on each row's page before it navigates, stops every
+request to `/api/` or to the sign-in routes beside it (`/auth/`) with a write method, every
+document-socket frame that would change a document
+(a Yjs update, or a sync reply whose structs or deletions change it), and every live-socket frame
+that is no subscribe or unsubscribe, and the row then fails with the list of what it stopped, by
+its own name. A read mark passes only exactly as the seed wrote it before any row
+(`markWhatTheShotPagesRead`, e2e/review-seed.ts, which writes the marks into the seed file): a
+reply the seed marked read, the spec's read at the version the seed wrote. Any other version, a
+lower one moving the read back included, is stopped. The editor's own stamps as it loads a
+document - a heading's id, an ordered list item's label, which Milkdown derives from the text and
+no rendering carries - are dropped without failing the row: the guard reads each frame against the
+server's document as the page was sent it and drops one that changes only those
+(`changesOnlyDerived`, web/src/features/doc/derived-attributes.ts, the classifier the editor's own
+pending-edit store reads). The first run of the guard stopped an update of 34 to 54 bytes that each
+of four documents sent as it loaded, with no person typing (job 137537803811).
 
-Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
-passes on), so the normal run's stay in `test-results`, where a reader of a failed run
-looks for the shots, however this run ends.
+What a page cannot stop is a write the server makes while it answers. Three things close that.
+Each row resolves every API read its page made to the GET route the table serves it by (the
+committed OpenAPI document, which openapi_test.go holds to the table, a literal segment over a
+wildcard), and fails on a read of a route, or of no route, on a sign-in read, and on a live view
+kind, that packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The
+Go test TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route
+that list names as the dashboard does, signed in with a session cookie, runs what GET /auth/whoami
+runs (the cookie's identity and the event feed's head, on a server whose event horizon nothing has
+built yet, as the page's first read finds it), and subscribes every view kind it names on GET
+/ws/live; it reads every statement each read, each view and the work they detach run, through the
+tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read may write the
+display-tree cache, the sign-in read nothing, and a live view the event horizon and a deploy run's
+warning record, each a table that test sees written on that channel; any other write fails it by
+the read or view and the table. It opens and closes a document's room as a page does and holds the
+room to writing nothing. And the seed waits, before any row draws, until the document service owes
+no document a settlement, and holds that the corpus records no check result and no pull request's
+head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a page opens the room
+and writes a version the shot would draw, and a result's commit is one the Verification tab's read
+asks GitHub the pull request of, writing what it learns.
+
+This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
+s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's
+shot happened to draw it, and could not say a row passes alone; the guard names the row that
+wrote, whatever any other row draws, and stops the write before any other row can see it.
 
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
 that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
 which is how that file reaches the pull request from a machine with no container. It
-holds both runs: the normal run's results under test-results, the reverse run's under
-test-results-reverse.
+holds the run's results under test-results.
 
 ## Why the visual upload keeps a pattern that matches no file
 
