@@ -408,7 +408,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		if !refused {
 			t.Errorf("%s answers %d %s, want 403 %s naming the node %s", name, response.Code, response.Body.String(), codeStateNotPermitted, address)
 		}
-		if state := nodeStateRead(t, rig.handler, address); state != held {
+		if state := graphEdges(t, rig.handler, url.Values{"to": {address}}).Node.State; state != held {
 			t.Errorf("%s left the node %s at %s, want the %s it held", name, address, state, held)
 		}
 		if after := stateTuples(storeID); after != before {

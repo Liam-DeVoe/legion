@@ -390,16 +390,17 @@ func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, log
 }
 
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,
-// then every reading it took. Both are printed for every path, because a reader has to see the
-// spread a percentile came out of - and for the write paths, whose 20 readings make the p99
-// their maximum, that spread is the whole of what a single swinging reading means.
+// its nearest-rank p50, p95 and p99, then every reading it took. Both are printed for every path,
+// because a reader has to see the spread a percentile came out of - and for the write paths,
+// whose 20 readings make the p99 their maximum, that spread is the whole of what a single
+// swinging reading means.
 func costTableOf(t *testing.T, readings []costReading) {
 	t.Helper()
-	t.Log("reading\tshape\tarm\tp50 ms\tp99 ms\truns")
+	t.Log("reading\tshape\tarm\tp50 ms\tp95 ms\tp99 ms\truns")
 	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%d",
-			reading.operation, costShapeName(reading.shape), reading.arm,
-			costMilliseconds(reading.p50()), costMilliseconds(reading.p99()), len(reading.runs))
+		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
+			reading.operation, costShapeName(reading.shape), reading.arm, costMilliseconds(reading.p50()),
+			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
 	}
 	t.Log("every reading, in the order it was taken, in milliseconds:")
 	for _, reading := range readings {

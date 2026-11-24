@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -853,10 +852,10 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 		child      string
 		parent     string
 	}{
-		{"a project risk under alice's pre-mortem", "/risks", withBody(risk, project), "dispatch://risk/", hidden.Address},
-		{"a project lens on alice's constraint", "/lenses", withBody(map[string]any{"on": constraint.Address, "kind": "botec"}, project), "dispatch://lens/", constraint.Address},
-		{"a project lens on alice's pre-mortem", "/lenses", withBody(map[string]any{"on": hidden.Address, "kind": "botec"}, project), "dispatch://lens/", hidden.Address},
-		{"a project lens on the finding of alice's pre-mortem", "/lenses", withBody(map[string]any{"on": finding, "kind": "botec"}, project), "dispatch://lens/", finding},
+		{"a project risk under alice's pre-mortem", "/risks", withFields(risk, project), "dispatch://risk/", hidden.Address},
+		{"a project lens on alice's constraint", "/lenses", withFields(map[string]any{"on": constraint.Address, "kind": "botec"}, project), "dispatch://lens/", constraint.Address},
+		{"a project lens on alice's pre-mortem", "/lenses", withFields(map[string]any{"on": hidden.Address, "kind": "botec"}, project), "dispatch://lens/", hidden.Address},
+		{"a project lens on the finding of alice's pre-mortem", "/lenses", withFields(map[string]any{"on": finding, "kind": "botec"}, project), "dispatch://lens/", finding},
 	} {
 		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
 		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
@@ -872,11 +871,4 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 				refused.name, risksAfter, lensesAfter, placesAfter, risks, lenses, places)
 		}
 	}
-}
-
-// withBody is body with every field of extra set on a copy of it.
-func withBody(body, extra map[string]any) map[string]any {
-	merged := maps.Clone(body)
-	maps.Copy(merged, extra)
-	return merged
 }

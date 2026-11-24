@@ -256,10 +256,13 @@ func requireNoDeadlockBetweenOppositeOrders(t *testing.T, ctx context.Context, f
 	requireCommitted(t, secondDone, "the write given the upper of "+pair.name+" first")
 }
 
-// writeNodesInOneTransaction is one Write of nodes alone, committed: the bare call the race
-// above puts against itself.
-func writeNodesInOneTransaction(ctx context.Context, pool *store.Pool, nodes []Node) error {
-	tx, err := pool.Begin(ctx)
+// writeNodesInOneTransaction is one Write of nodes alone, in a transaction it begins on db (the
+// pool, or a connection the caller holds) and commits: the bare call the race above puts against
+// itself, and each write requireOneChangedByRunBehindTheNodeRow makes for its run.
+func writeNodesInOneTransaction(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, nodes []Node) error {
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -659,7 +662,7 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 		done := make(chan error, 1)
 		go func() {
 			defer conn.Release()
-			done <- writeOnConnection(store.WithRun(ctx, run), conn, []Node{marked})
+			done <- writeNodesInOneTransaction(store.WithRun(ctx, run), conn, []Node{marked})
 		}()
 		requireQueued(t, holder, conn, done, name)
 		writes = append(writes, done)
@@ -678,19 +681,6 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 		t.Fatalf("two writes of %s/%s for run %s appended %d changed_by_run tuples, want 1: the second reads what the node holds once it holds the node's row",
 			marked.Kind, marked.ID, run, named)
 	}
-}
-
-// writeOnConnection is one Write of nodes on conn, committed, on ctx.
-func writeOnConnection(ctx context.Context, conn *pgxpool.Conn, nodes []Node) error {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }
 
 // --- the written order -------------------------------------------------------------------

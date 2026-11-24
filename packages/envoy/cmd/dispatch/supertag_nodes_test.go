@@ -633,7 +633,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 		if err != nil {
 			t.Fatalf("read the type attribute node %q is tied to: %v", id, err)
 		}
-		if len(ties) == 1 && !isBlockType(file, ties[0].ToID) {
+		if len(ties) == 1 && !servedType(file, ties[0].ToID) {
 			storeOnly = append(storeOnly, storeOnlyNode{node: held[id], tie: ties[0]})
 			continue
 		}
@@ -641,11 +641,6 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 		drift.add(id)
 	}
 	requireStoreOnlyAttributesMatchTheirMigrations(t, file, storeOnly)
-}
-
-// isBlockType reports whether file declares a block type of that name.
-func isBlockType(file pmdoc.BlockSchema, name string) bool {
-	return slices.ContainsFunc(file.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == name })
 }
 
 // storeOnlyNode is one attribute node of a type that declares no block type, with the one
@@ -687,7 +682,7 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, file pmdoc.Blo
 	}
 	for _, migration := range migrations {
 		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(migration.SQL, -1) {
-			if isBlockType(file, match[1]) {
+			if servedType(file, match[1]) {
 				continue
 			}
 			id := match[1] + "/" + match[2]

@@ -421,7 +421,7 @@ func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	waitUntil(t, 30*time.Second, "the sweep's write of the deleted run waiting on its row", func() bool {
 		var waiting bool
 		if err := rig.database.Pool.QueryRow(ctx, `
-			select exists (select 1 from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)))
+			select exists (select 1 from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))
 		`, int64(holder)).Scan(&waiting); err != nil {
 			t.Fatalf("read what waits on the delete: %v", err)
 		}
