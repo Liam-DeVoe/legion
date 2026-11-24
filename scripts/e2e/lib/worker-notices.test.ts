@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { jsonl } from "./omp-session-fixtures";
 import { scriptFunctions } from "./script-functions";
 
 // worker_notices (lib/workflow.sh), the read Stage 3's notices-reach-architects-alone check fails
@@ -58,10 +59,7 @@ function workerNotices(name: string, summaries: string[]): string[] {
       content: `envoy:\n  summary: ${summary}\n`,
     })),
   ];
-  writeFileSync(
-    join(sessions, "worker.jsonl"),
-    `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
-  );
+  writeFileSync(join(sessions, "worker.jsonl"), jsonl(lines));
   const result = Bun.spawnSync(
     [
       "bash",
