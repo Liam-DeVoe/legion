@@ -38,7 +38,13 @@ const LATER_FAIL: readonly RegExp[] = [
 
 const GUIDE_TWO_ROLES: readonly Entry[] = [];
 
-const GUIDE_LATER_FAIL: readonly Entry[] = [];
+const GUIDE_LATER_FAIL: readonly Entry[] = [
+  {
+    file: "skills/legion-controller/references/finding-asks.md",
+    has: "Close an open finding ask that turned moot with `dispatch resolve-ask --kind retracted`",
+    keep: "A finding ask's retraction, not a check result.",
+  },
+];
 
 const ENTRIES_TWO_ROLES: readonly Entry[] = [
   {
