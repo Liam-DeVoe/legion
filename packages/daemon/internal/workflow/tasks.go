@@ -36,6 +36,29 @@ func partsStart(stored *record.StoredPlan, task string) bool {
 	return ok && row.State == record.TaskRunning && row.Place.Kind == record.PlaceParts && row.StepWait == record.StepWaitNone
 }
 
+// mayStart says whether task, a task of stored that waits or is stopped, may start now: each task
+// it needs is done (needsDone), and, for a part, its task runs at its parts and waits for nothing
+// (partsStart). It is the one rule of a task's start, which each door into running asks: the start
+// of each task that waits (startReady), and the start again of a stopped task (startAtFirstStep),
+// which a later version and a person's todo both reach. A task that may not start waits at no act,
+// and startReady starts it once it may.
+func mayStart(stored *record.StoredPlan, task record.PlanTask) bool {
+	return needsDone(stored, task) && (task.PartOf == "" || partsStart(stored, task.PartOf))
+}
+
+// startReadyNow starts each task of the issue keyed key that may start (startReady), on the issue
+// as the store holds it in tx now: what a caller that moved a task, and holds an older copy of the
+// issue, runs once the move may let other tasks start. An issue the store no longer holds starts
+// nothing.
+func (e *Engine) startReadyNow(ctx context.Context, tx pgx.Tx, key string) error {
+	now, err := e.store.Issue(ctx, tx, key)
+	if err != nil || now == nil {
+		return err
+	}
+	_, err = e.startReady(ctx, tx, *now)
+	return err
+}
+
 // lastToFinish says whether the end of s's task ends its issue: each other task of the plan of s's
 // run, as the store holds it in tx, is done or left the workflow (record.TaskLeft). That holds for a
 // plan of one task, and for a run with no plan rows, whose one walk is the issue's own. It is the one
@@ -109,7 +132,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		}
 		var ready []string
 		for _, row := range stored.Tasks {
-			if row.State == record.TaskWaiting && needsDone(stored, row) && (row.PartOf == "" || partsStart(stored, row.PartOf)) {
+			if row.State == record.TaskWaiting && mayStart(stored, row) {
 				ready = append(ready, row.Task)
 			}
 		}

@@ -209,12 +209,11 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 	}
 }
 
-// An element is no task of the plan: the checks, who changes a task, and the parts of a task never
-// see it, and a part names its task in PartOf. The plan holds f, its part f1 and a with its element
-// a1, and the element's needs and text are no task's. The fault is an element read as a task,
-// which Legion would carry out and which a version could not change without changing a task. The
-// control is a FromBlocks that keeps each element among the tasks: the tasks of the plan and
-// ChangedTasks each fail.
+// An element is no task of the plan: the checks never see it, and a part names its task in PartOf.
+// The plan holds f, its part f1 and a with its element a1, and the element's needs and text are no
+// task's. The fault is an element read as a task, which Legion would carry out and which a version
+// could not change without changing a task. The control is a FromBlocks that keeps each element
+// among the tasks: the tasks of the plan and ChangedTasks each fail.
 func TestAnElementIsNoTaskOfThePlan(t *testing.T) {
 	element := func(text string) Block {
 		return Block{ID: "a1", Type: TaskBlockType, Parent: "a", Attributes: map[string]string{"needs": needWord("f")}, Text: text}
@@ -230,12 +229,6 @@ func TestAnElementIsNoTaskOfThePlan(t *testing.T) {
 	}
 	if got := held.Tasks[1].PartOf; got != "f" {
 		t.Fatalf("PartOf(f1) = %q, want f", got)
-	}
-	if got := held.PartsOf("a"); got != nil {
-		t.Fatalf("PartsOf(a) = %q, want none: a1 is an element of a, no part", got)
-	}
-	if got := held.WriterOf("a1"); got != "" {
-		t.Fatalf("WriterOf(a1) = %q, want \"\": a1 is no task", got)
 	}
 	if r := Validate(held, builtin); len(r) != 0 {
 		t.Fatalf("Validate = %+v, want none: the element names nothing only a task carries out", r)

@@ -298,7 +298,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, notice)
 }
 
-// startAtFirstStep starts s's task again at its first step, in the caller's transaction, for
+// startAtFirstStep starts s's task again at the start of its line, in the caller's transaction, for
 // reason, which that step's worker is told, whatever the plan's count of tasks. It runs on a
 // person's todo on a root held for the stopped task (releaseHeldRoot), and for a later version of
 // the plan that changes the stopped task or replaces it with a task of another id, where the work
@@ -309,23 +309,28 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 //
 // Where its work ran (record.TaskPlace.Started) its pass is raised, so a completion of this run
 // takes a key of its own (the completion key names the task and its pass), and no pair, round or
-// hook is counted, since no step failed; a new task keeps its counts of zero. Where a task it needs
-// is not done, it waits at no act, its stop's reason gone, and starts when its needs are done
-// (startReady). Else the hold is cleared, the task runs at step 1 with its stop's reason gone
-// (moveTask), and the issue stands where its tasks then put it (putScope). The Dispatch status of
-// that phase is queued over the status Dispatch shows, not through Engine.status: a hold changes no
-// status, so the record still reads the status of the phase the hold is from (releaseHeldRoot says
-// the same of a release). Step 1's role is started at a raised entry (start), which writes the
-// start of its step, and its entry counts as a move back, since it asks for the work again from the
-// first step. The step the task stood in ended when it stopped (stopTask), so none is ended here.
-// The act is task_restarted, which the log line names: no row of the table moves a held issue.
+// hook is counted, since no step failed; a new task keeps its counts of zero. Where the task may
+// not start (mayStart, the one rule of a task's start: a task it needs is not done, or, for a
+// part, its task does not run at its parts or waits for its join), it waits at no act, its stop's
+// reason gone, and starts once it may (startReady). Else the hold is cleared, the task runs at the
+// place its start puts it (Walk.startPlace: its first step, or the parts of a task with a
+// sub-owner) with its stop's reason gone (moveTask), and the issue stands where its tasks then put
+// it (putScope). The Dispatch status of that phase is queued over the status Dispatch shows, not
+// through Engine.status: a hold changes no status, so the record still reads the status of the
+// phase the hold is from (releaseHeldRoot says the same of a release). The role of that place is
+// started at a raised entry (start), which writes the start of its step, and its entry counts as a
+// move back, since it asks for the work again from the first step; at the parts no step's role
+// works the task, so the start only joins its needs, and the parts that wait start where the task
+// waits for nothing (startReady). The step the task stood in ended when it stopped (stopTask), so
+// none is ended here. The act is task_restarted, which the log line names: no row of the table
+// moves a held issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
 // the same write (endTaskWithLeave, and the merge of an issue that awaits it).
 func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, reason string) error {
-	steps := s.walk.steps()
-	if !s.walk.Stored || len(steps) == 0 {
+	to, first, ok := s.walk.startPlace()
+	if !s.walk.Stored || !ok {
 		return fmt.Errorf("restart task %s of %s: its line %v holds no first step", s.walk.Task, s.issue.Key, s.walk.Line)
 	}
 	row, ok := s.plan.TaskOf(s.walk.Task)
@@ -343,7 +348,7 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 		}
 	}
 	from := record.StandsAt(s.issue)
-	if !needsDone(s.plan, row) {
+	if !mayStart(s.plan, row) {
 		if err := e.moveTask(ctx, tx, &s, phase.Admitted, record.TaskPlace{}, record.TaskWaiting); err != nil {
 			return err
 		}
@@ -354,12 +359,11 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 		if err := e.store.MarkIssueMoved(ctx, tx, s.issue.Key, e.now()); err != nil {
 			return err
 		}
-		e.logOnCommit(ctx, "workflow: a stopped task waits for the tasks it needs", "issue", s.issue.Key, "tree", s.issue.Tree, "task", s.walk.Task,
-			"act", "task_released", "needs", s.walk.Needs, "reason", reason)
+		e.logOnCommit(ctx, "workflow: a stopped task waits until it may start", "issue", s.issue.Key, "tree", s.issue.Tree, "task", s.walk.Task,
+			"act", "task_released", "needs", s.walk.Needs, "partOf", row.PartOf, "reason", reason)
 		return nil
 	}
-	first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
-	if err := e.moveTask(ctx, tx, &s, steps[0], first, record.TaskRunning); err != nil {
+	if err := e.moveTask(ctx, tx, &s, to, first, record.TaskRunning); err != nil {
 		return err
 	}
 	if err := e.store.SetStartReason(ctx, tx, s.issue.Key, s.issue.Generation, s.walk.Task, reason); err != nil {
@@ -384,9 +388,9 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", s.issue.Key, "tree", s.issue.Tree, "task", s.walk.Task,
-		"act", "task_restarted", "from", from, "to", s.issue.Phase, "issuePhase", written.Phase, "reason", reason)
+		"act", "task_restarted", "from", from, "to", s.issue.Phase, "place", placeWords(first), "issuePhase", written.Phase, "reason", reason)
 	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
-	// defines starts that role again.
+	// defines starts that role again. At the parts no step's role works the task.
 	role := s.walk.RoleAt(first)
 	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
 		return err
@@ -396,9 +400,14 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 		return err
 	}
 	issue := s.issue
-	return e.start(ctx, tx, s, role, func(at Standing) string {
+	if err := e.start(ctx, tx, s, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true)
+	}, true); err != nil || first.Kind != record.PlaceParts {
+		return err
+	}
+	// A task started again at its parts lets its parts that wait start, once it waits for nothing
+	// (mayStart): startReady, the start of each task that waits, starts them.
+	return e.startReadyNow(ctx, tx, s.issue.Key)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of
