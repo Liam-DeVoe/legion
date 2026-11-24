@@ -186,8 +186,9 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	})
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
-	// The relay's restart at the ack floor under the new epoch below recreates this consumer.
-	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+	// The relay's restart at the ack floor under the new epoch below finds nothing awaiting an ack, which
+	// awaitConsumerSettled waited for, so it keeps this consumer and sends no delete and no create
+	// (bus.SessionConsumers.RestartAtFloor).
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
@@ -240,8 +241,9 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
-	// The relay's restart at the ack floor under the registration below recreates this consumer.
-	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+	// The relay's restart at the ack floor under the registration below finds nothing awaiting an ack,
+	// which awaitConsumerSettled waited for, so it keeps this consumer and sends no delete and no
+	// create (bus.SessionConsumers.RestartAtFloor).
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration that brings the session back to this listener")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
