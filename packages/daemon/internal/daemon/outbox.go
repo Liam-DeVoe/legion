@@ -196,7 +196,7 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves, a finished issue's
-// drop of that bundle and of the pods that took a release's work, a stop's wait for a stored
+// drop of that bundle and of the record of its pods' disks, a stop's wait for a stored
 // claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume that
 // refuses one, a project pause's stop of a role and which pause stopped a role, and the end of a
 // pause's hold of a pod a deletion took.
@@ -213,7 +213,7 @@ type outboxTrees interface {
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
-	DeleteWorkspaceBundlePods(ctx context.Context, issue string) error
+	DeleteIssuePodDisks(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)

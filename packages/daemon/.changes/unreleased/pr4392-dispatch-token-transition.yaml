@@ -22,8 +22,10 @@ body: |-
   end: not the daemon's replacement, not a refused claim's own next try that replaces the pod
   first, and not the message that the pod went, also where the pod is recreated without the
   identity and refuses the retry again. Where such a role has since started in a new pod and its
-  agent registered there, it is named only at an end of a round over a pod that took an idle
-  release's work, which names every role with a session.
+  agent registered there, it is named only at an end of a round over a pod whose disk holds work
+  from before the pod, an idle release's or a kept volume's, which names every role that had not
+  answered and has a session or a pod in its set, or after a daemon restart, which leaves the set
+  of a stored claim that shows a session unknown.
   The replacement's log line (`waitingOnThePodNotWaitedFor`) names a refused claim that had not
   answered by the same rule, whether or not it records the round.
   Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,

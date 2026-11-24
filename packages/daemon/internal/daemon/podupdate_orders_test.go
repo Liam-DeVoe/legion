@@ -3,8 +3,9 @@ package daemon
 // The ends of an update round over a pod, P, against every kind of member the round can have
 // (dispatch://INFRA-4425). Every end names a member by one fact, read by one predicate
 // (workOnRoundPod): the member had not answered the round, and its unpushed work may be on P's
-// disk, because an agent of it registered a session in P, P took an idle release's work and the
-// member has a session or a pod in its set, or a restart left its set unknown. Each row of the
+// disk, because an agent of it registered a session in P, P's disk holds work from before P (an
+// idle release's, or a kept volume's that an earlier pod mounted) and the member has a session or
+// a pod in its set, or a restart left its set unknown. Each row of the
 // table brings the implementer, as one kind of member, to one end of the round over P, and holds
 // the issue's message and the end's log line to naming the implementer, or to naming nobody.
 //
@@ -57,9 +58,9 @@ package daemon
 // stops as released, and whose resume by rule after the pause is refused for P again, is named at
 // no end, since a pause keeps the pod and saves no bundle, and no agent of it ever ran.
 //
-// Then the four orders of the first finding of review 6030900902, which INFRA-1484's architect
-// ruled (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd), each named at each
-// end it reaches. The operator, or the daemon, takes the released implementer over, and P goes
+// Then four orders that INFRA-1484's architect ruled on
+// (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd), each named at each end it
+// reaches. The operator, or the daemon, takes the released implementer over, and P goes
 // before any resume, or P is recreated and the resume that follows comes up in the pod in P's
 // place or is refused for it. The wake pacing parks the woken implementer's launch, which records
 // no process and waits on no pod, and the sweep replaces P by issue. The woken implementer's own
@@ -71,6 +72,25 @@ package daemon
 // ignores the round's post), so no end names it as a member that lost work (lostClaims), and the
 // table has no row for it; the line of the replacement through a process names a failed claim
 // with a session the round did not wait for (notWaitedFor), and no read is made for it.
+//
+// Then the orders of a kept volume, which INFRA-1484's architect also ruled on
+// (dispatch://INFRA-4425/comment/65c8b607-a452-4d88-9bcd-624fd7ab8b27). A kept volume outlives its
+// pod, and each role's start in a pod of a kept volume records that pod with its volume in the
+// store, as the pod's launcher does (launcherStarts), marked where an earlier pod of the issue
+// recorded the same volume. P0's release saves the work, the tester's wake brings the issue's pod
+// back as the pod between P0 and P, on the volume P0 mounted, which drops the saved copy, and that
+// pod goes and the tester comes back in P on the same volume, which took no release's work itself:
+// the released implementer, whose agents registered in P0 alone, is named. With no release at all,
+// the daemon suspends the implementer after its agent ran in P0, and P0 goes and the tester comes
+// back in P on the volume P0 mounted: the implementer is named. In both, the issue's Sandbox
+// carries a reset mark or a change of its disk's shape by the round's end, so the issue's next
+// launch replaces it with its volume and P's work. And P as the first pod of a new kept volume,
+// recorded at the tester's start in it: the implementer is refused for P with no session and
+// registers in the pod in P's place, the next pod of that volume, which records itself before the
+// round's end reads P, where a launch replaces P or P is recreated; the implementer is named at no
+// end. In the order with no release, an eviction rather than a round of P0's own takes P0, since
+// each row of the table holds one round; the store records the volume's next pod alike whatever
+// took the pod before it.
 //
 // The pairs the table has no row for are of two sorts. These cannot occur, each for the reason
 // given:
@@ -95,18 +115,26 @@ package daemon
 //     round waits for the operator whatever its bound (heldByOperator), so only P's own going ends
 //     it.
 //
-// The others are left out on purpose. A member released through a chain of two releases, or on
-// a kept volume, is held at two ends, the read through the tester's process and P going on its
-// own: it is named by the same case of the predicate as the member released once, whose rows
-// cover every end, and only the way its work came to P's disk differs. A released member whose
-// session is forgotten is held where P goes, on its own or recreated. The sweep's replacement
-// through a waiting claim and a launch's replacement name it on the issue as P's going does
-// (lostClaims), and a launch's line names it too, but the line of the sweep's replacement names a
-// claim the round passed over only where it has a session (notWaitedFor); and the replacement
-// through the tester's process names it nowhere, on its line or on the issue, since it reads only
-// the claims with a session (notWaitedFor, notAskedToPush).
+// The others are left out on purpose. A member the daemon suspended before the release and never
+// resumed (daemonStoppedHeld) is held where P goes, on its own or recreated: a daemon's suspension
+// does not hold the round, so the sweep or a launch can replace P over it, and it is named there by
+// the same case of the predicate as the member released once (releasedRestored), whose rows cover
+// every end. A member released through a chain of two releases, or on a kept volume, whether P
+// dropped the saved copy (releasedKeptVolume) or the pod between P0 and P did
+// (releasedKeptLaterPod), and a member the daemon suspended after its agent ran in an earlier pod
+// of the kept volume P mounts, with no release (daemonStoppedKeptVolume), are held at two ends, the
+// read through the tester's process and P going on its own: each is named by the same case of the
+// predicate as the member released once, whose rows cover every end, since the store marks P at P's
+// own start and every end reads that one mark, and only the way its work came to P's disk differs.
+// A released member whose session is forgotten is held where P goes, on its own or recreated. The
+// sweep's replacement through a waiting claim and a launch's replacement name it on the issue as
+// P's going does (lostClaims), and a launch's line names it too, but the line of the sweep's
+// replacement names a claim the round passed over only where it has a session (notWaitedFor); and
+// the replacement through the tester's process names it nowhere, on its line or on the issue, since
+// it reads only the claims with a session (notWaitedFor, notAskedToPush).
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -213,6 +241,10 @@ const (
 	daemonStoppedRefused
 	operatorStoppedHeld
 	daemonStoppedHeld
+	releasedKeptLaterPod
+	daemonStoppedKeptVolume
+	firstOfVolumeElsewhere
+	wokenSuspendedBeforeAnyPod
 )
 
 func (k memberKind) String() string {
@@ -246,6 +278,10 @@ func (k memberKind) String() string {
 		"the daemon suspended it before an idle release saved its pod's work, and its resume by rule was refused for the pod",
 		"the operator suspended it before an idle release saved its pod's work, and it still holds it",
 		"the daemon suspended it before an idle release saved its pod's work, and it was never resumed",
+		"an idle release suspended it in an earlier pod of the kept volume the pod mounts, a pod between them dropped the saved copy, and the round's end deletes the volume",
+		"the daemon suspended it after its agent ran in an earlier pod of the kept volume the pod mounts, with no release, and the round's end deletes the volume",
+		"it was refused for the first pod of a kept volume with no session, then registered in the next pod of that volume",
+		"an idle release suspended it, its wake was refused for the pod before its agent registered, and the daemon or the operator suspended it before its launch reached any pod",
 	}[k]
 }
 
@@ -253,13 +289,15 @@ func (k memberKind) String() string {
 // round's end, so suspendedTo brings it to its end: an idle release before the round over P
 // opened, whether or not the daemon or the operator takes it over and resumes it while the round
 // runs; a suspension by the daemon or the operator before that release, which then suspends the
-// tester alone; or the daemon's own rule while the round runs.
+// tester alone; the daemon's own suspension in an earlier pod of a kept volume, with no release;
+// or the daemon's own rule while the round runs.
 func (k memberKind) suspended() bool {
 	switch k {
 	case releasedRestored, releasedChain, releasedKeptVolume, wokenRefused, wokenIntoPod,
 		daemonTakeoverRefused, daemonTakeoverIntoPod, operatorTakeoverRefused, operatorTakeoverIntoPod,
 		releasedLostSession, neverRunSuspended, operatorTakeoverPodWent, daemonTakeoverPodWent,
-		wokenParked, wokenReplacesThePod, operatorStoppedRefused, daemonStoppedRefused, operatorStoppedHeld, daemonStoppedHeld:
+		wokenParked, wokenReplacesThePod, operatorStoppedRefused, daemonStoppedRefused, operatorStoppedHeld, daemonStoppedHeld,
+		releasedKeptLaterPod, daemonStoppedKeptVolume:
 		return true
 	}
 	return false
@@ -273,7 +311,8 @@ func (k memberKind) suspended() bool {
 // passed over: it is launching by the round's end.
 func (k memberKind) passedOver() bool {
 	switch k {
-	case releasedRestored, releasedChain, releasedKeptVolume, releasedLostSession, neverRunSuspended:
+	case releasedRestored, releasedChain, releasedKeptVolume, releasedLostSession, neverRunSuspended,
+		releasedKeptLaterPod, daemonStoppedKeptVolume:
 		return true
 	}
 	return false
@@ -400,9 +439,9 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		{endPodGone, operatorTakeoverIntoPod, launching},
 		{endRecreated, operatorTakeoverIntoPod, launching},
 		{endRecreatedRefusing, operatorTakeoverIntoPod, launching},
-		// The four orders of the first finding of review 6030900902: a takeover before any resume,
-		// the parked wake, the woken role's own launch replacing the pod, and a role the release did
-		// not suspend.
+		// The four orders INFRA-1484's architect ruled on: a takeover before any resume, the parked
+		// wake, the woken role's own launch replacing the pod, and a role the release did not
+		// suspend.
 		{endPodGone, operatorTakeoverPodWent, suspended},
 		{endRecreated, operatorTakeoverPodWent, launching},
 		{endRecreatedRefusing, operatorTakeoverPodWent, launching},
@@ -443,6 +482,16 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		{endRecreated, pausedNeverRun, ""},
 		{endRecreatedRefusing, pausedNeverRun, ""},
 		{endAtALaunch, pausedNeverRun, ""},
+		// The orders of a kept volume: a later pod of the volume a release's work was dropped on,
+		// a pod of a volume an earlier pod of the issue mounted with no release, each over an end
+		// that deletes the volume, and the first pod of a new volume, ended after the next pod of
+		// that volume recorded itself.
+		{endThroughAProcess, releasedKeptLaterPod, suspended},
+		{endPodGone, releasedKeptLaterPod, suspended},
+		{endThroughAProcess, daemonStoppedKeptVolume, suspended},
+		{endPodGone, daemonStoppedKeptVolume, suspended},
+		{endRecreated, firstOfVolumeElsewhere, ""},
+		{endAtALaunch, firstOfVolumeElsewhere, ""},
 	} {
 		t.Run(row.end.String()+": "+row.kind.String(), func(t *testing.T) {
 			rig := orderedTo(t, row.end, row.kind)
@@ -455,10 +504,12 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 // and answers the rig once the implementer's machine has taken the end of the round. The
 // implementer is queued with no session at the rig's boot, so its machine knows every pod an agent
 // of it registers in from then on (supervise.Claim.RegisteredPods); where end is
-// endThroughAProcess, the tester runs in P beside it, registered, and answers the round. The
-// restart rows restart the daemon (podUpdateRig.restart) and go on with the rig it answers. A
-// member the daemon suspended before the round's end is brought to its end by suspendedTo. The
-// rig of the member a pause stopped reads a pause flag of its own (podUpdateRigOptions.paused).
+// endThroughAProcess, the tester runs in P beside it, registered, and answers the round, and where
+// P is the first pod of a kept volume (firstOfVolumeElsewhere), the tester starts in P, which
+// records P with its volume, and answers the round. The restart rows restart the daemon
+// (podUpdateRig.restart) and go on with the rig it answers. A member the daemon suspended before
+// the round's end is brought to its end by suspendedTo. The rig of the member a pause stopped
+// reads a pause flag of its own (podUpdateRigOptions.paused).
 func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	t.Helper()
 	if kind.suspended() {
@@ -466,8 +517,11 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	}
 	implementer, tester := claim.RoleImplementer, claim.RoleTester
 	roles := []podUpdateRole{{role: implementer, state: supervise.StateQueued}}
-	if end == endThroughAProcess {
+	switch {
+	case end == endThroughAProcess:
 		roles = append(roles, readyWorker(tester))
+	case kind == firstOfVolumeElsewhere:
+		roles = append(roles, podUpdateRole{role: tester, state: supervise.StateQueued})
 	}
 	var opts podUpdateRigOptions
 	pause := &orderPause{}
@@ -484,6 +538,14 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		rig.startInPod(implementer, podUpdatePod)
 		rig.loseSessionRefused(refusals, implementer, podUpdatePod)
 	case neverInPod, registeredElsewhere, restartEmpty:
+		refusals.refuse(implementer, podUpdatePod)
+		rig.refusedFirstLaunch(implementer)
+	case firstOfVolumeElsewhere:
+		// P is the first pod of a kept volume, made with P's Sandbox: the tester's start records P,
+		// which no earlier pod of the volume precedes. The implementer is refused for P with no
+		// session, as neverInPod is.
+		rig.ownsKeptVolume(roundPodMadeAt)
+		rig.startInPod(tester, podUpdatePod)
 		refusals.refuse(implementer, podUpdatePod)
 		rig.refusedFirstLaunch(implementer)
 	case pausedNeverRun:
@@ -525,7 +587,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 
 	rig.tick()
 	rig.awaitRound(implementer, podUpdateRound)
-	if end == endThroughAProcess {
+	if end == endThroughAProcess || kind == firstOfVolumeElsewhere {
 		rig.awaitAsked(tester, podUpdateRound)
 	}
 	if kind == answeredInPod {
@@ -581,8 +643,15 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		case freshElsewhere:
 			rig.startsFreshInto(implementer, podUpdateReplacementPod, true)
 		default:
+			if kind == firstOfVolumeElsewhere {
+				// The tester answered, and P went: the tester comes back in the pod in P's place,
+				// the next pod of P's volume, whose start records it before the round's end.
+				rig.signal(tester, "c0ffee")
+				rig.displacedInto(tester, podUpdateReplacementPod)
+				rig.rt.ScriptPodDrift(rig.tokens[tester])
+			}
 			pod := rig.retriesInto(refusals, implementer, podUpdateReplacementPod)
-			if kind == registeredElsewhere || kind == restartEmpty {
+			if kind == registeredElsewhere || kind == restartEmpty || kind == firstOfVolumeElsewhere {
 				rig.registerInto(implementer, pod)
 			}
 		}
@@ -602,6 +671,13 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		if waitsWithItsSession {
 			rig.goneRefused(refusals, implementer, podUpdatePod, false)
 		}
+		if kind == firstOfVolumeElsewhere {
+			// The tester answered and the workflow suspended it, so no role process keeps P from
+			// the implementer's launch, which builds the next pod of P's volume in its place and
+			// records it at its start, before the round's end.
+			rig.signal(tester, "c0ffee")
+			rig.suspendBy(tester, supervise.SuspendedByDaemon)
+		}
 		var pod string
 		if kind == freshElsewhere {
 			pod = rig.startsFreshInto(implementer, podUpdatePod, false)
@@ -614,7 +690,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		if pod == podUpdatePod {
 			t.Fatalf("the implementer's launch came up in the round's pod %s, want the pod the launch built in its place", pod)
 		}
-		if kind == registeredElsewhere {
+		if kind == registeredElsewhere || kind == firstOfVolumeElsewhere {
 			rig.registerInto(implementer, pod)
 		}
 	}
@@ -633,7 +709,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 func wantRoundEnd(t *testing.T, rig *podUpdateRig, end roundPodEnd, kind memberKind, named string) {
 	t.Helper()
 	implementer := claim.RoleImplementer
-	answered, kept := kind == answeredInPod, kind == releasedKeptVolume
+	answered, kept := kind == answeredInPod, kind == releasedKeptVolume || kind == firstOfVolumeElsewhere
 	var namedRoles []claim.Role
 	if named != "" {
 		namedRoles = []claim.Role{implementer}
@@ -908,6 +984,7 @@ func (r *podUpdateRig) startsFreshInto(role claim.Role, pod string, displaced bo
 		r.t.Fatalf("the %s started fresh has session %q and process %+v, want no session and a process in a pod other than %s",
 			role, c.Session, c.Locator, podUpdatePod)
 	}
+	r.launcherStarts(podOf(c.Locator))
 	return podOf(c.Locator)
 }
 
@@ -930,6 +1007,7 @@ func (r *podUpdateRig) retriesInto(refusals *launchRefusals, role claim.Role, po
 	refusals.refuse(role, "")
 	r.retryLaunch()
 	c := r.awaitClaim(role, "its retry to record a process", func(c supervise.Claim) bool { return c.Locator != nil })
+	r.launcherStarts(podOf(c.Locator))
 	return podOf(c.Locator)
 }
 
@@ -948,16 +1026,17 @@ func (r *podUpdateRig) resumedRefused(role claim.Role) {
 // The pods of the members an idle release suspended (suspendedTo): releasedPod is P0, the issue's
 // pod before P, in which an agent of the implementer and of the tester registered and whose idle
 // release saved their workspace's unpushed work; chainedPod is the pod between P0 and P, where a
-// second release came before the round (releasedChain).
+// second release came before the round (releasedChain), or, on a kept volume, the pod that
+// dropped the saved copy before P (releasedKeptLaterPod).
 const (
 	releasedPod = "2b6d9e14-7c30-4a85-b1f6-0e9a3c5d7f28"
 	chainedPod  = "6e1f3a8c-9d24-4b07-a5c3-8f2e0b4d6a19"
 )
 
 // The clock of the releases before the round over P opens at podUpdateStart, each before the
-// next: the Sandbox whose kept volume P0 and P mount is made (releasedKeptVolume), P0's release
-// saves its work, the pod between P0 and P is made and its release saves the work again
-// (releasedChain), and P is made.
+// next: the Sandbox whose kept volume P0 and P mount is made (releasedKeptVolume,
+// releasedKeptLaterPod, daemonStoppedKeptVolume), P0's release saves its work, the pod between P0
+// and P is made and its release saves the work again (releasedChain), and P is made.
 var (
 	keptVolumeMadeAt = podUpdateStart.Add(-2 * time.Hour)
 	releasedSavedAt  = podUpdateStart.Add(-40 * time.Minute)
@@ -992,27 +1071,35 @@ func (p *parkingPace) pace() supervise.WakePace {
 //
 // Where kind is neverRunSuspended, the tester registers in P, and the implementer's first launch,
 // with no session, is refused for P, so it waits on P and no agent of it registers anywhere; once
-// the round over P has opened, the daemon suspends the implementer by its own rule. Every other
-// kind is released first. Both start in P0, where an agent of each registers, and P0's idle
-// release saves the work of the workspace they share and suspends both (releases), or, where the
-// daemon or the operator suspended the implementer before it (memberKind.stoppedBeforeRelease),
-// the tester alone. Where kind is releasedChain, the tester's wake brings back the pod between P0
-// and P, which restores that work, and that pod's release saves the work again and suspends the
-// tester; the implementer stays released through both. Then the tester's wake brings the issue's
-// pod back as P, which takes the last release's work, or drops it where P mounts the kept volume
-// that holds it (releasedKeptVolume), and the tester registers in P (wakesInto). The round over P
-// opens and asks the tester. Then the implementer's session is forgotten (releasedLostSession), or
-// a woken implementer is woken, before the tester answers: its launch is refused for P
-// (wokenRefused) or comes up in P (wokenIntoPod), and no agent of it registers, or the wake pacing
-// parks it (wokenParked). A member taken over is suspended again first, by the daemon or by the
-// operator, which takes the released claim over (supervise's suspendedAgain), and is then resumed
-// as that source resumes a claim (resumeOf), its launch refused for P or coming up in P as its
-// woken twin's is (memberKind.woken); a member the daemon or the operator suspended before the
-// release is resumed so too, its launch refused for P. A member taken over whose pod goes first is
-// resumed only once P is recreated, its launch coming up in the pod in P's place or refused for
-// it, and stays suspended where P goes on its own. The tester answers, and the round goes to end
-// as the tester, the one claim whose agent ran in P, and a woken or resumed implementer bring it
-// about; a woken implementer whose own launch replaces P is woken only then (wokenReplacesThePod).
+// the round over P has opened, the daemon suspends the implementer by its own rule. Where kind is
+// daemonStoppedKeptVolume, nothing is released: both start in P0, a pod of the issue's kept
+// volume, the daemon suspends the implementer, and P0 goes and the tester comes back in P on the
+// same volume (displacedInto). Every other kind is released first. Both start in P0, where an
+// agent of each registers, and P0's idle release saves the work of the workspace they share and
+// suspends both (releases), or, where the daemon or the operator suspended the implementer before
+// it (memberKind.stoppedBeforeRelease), the tester alone. Where kind is releasedChain, the
+// tester's wake brings back the pod between P0 and P, which restores that work, and that pod's
+// release saves the work again and suspends the tester; the implementer stays released through
+// both. Then the tester's wake brings the issue's pod back as P, which takes the last release's
+// work, or drops it where P mounts the kept volume that holds it (releasedKeptVolume), and the
+// tester registers in P (wakesInto). Where kind is releasedKeptLaterPod, that wake brings the pod
+// back as the pod between P0 and P on the kept volume, which drops the work, and that pod goes and
+// the tester comes back in P on the same volume. Each start in a pod of a kept volume records the
+// pod with its volume (launcherStarts); where the round's end is to delete the volume
+// (releasedKeptLaterPod, daemonStoppedKeptVolume), the Sandbox is marked so before the round opens
+// (keptVolumeReplaced). The round over P opens and asks the tester. Then the implementer's session
+// is forgotten (releasedLostSession), or a woken implementer is woken, before the tester answers:
+// its launch is refused for P (wokenRefused) or comes up in P (wokenIntoPod), and no agent of it
+// registers, or the wake pacing parks it (wokenParked). A member taken over is suspended again
+// first, by the daemon or by the operator, which takes the released claim over (supervise's
+// suspendedAgain), and is then resumed as that source resumes a claim (resumeOf), its launch
+// refused for P or coming up in P as its woken twin's is (memberKind.woken); a member the daemon
+// or the operator suspended before the release is resumed so too, its launch refused for P. A
+// member taken over whose pod goes first is resumed only once P is recreated, its launch coming up
+// in the pod in P's place or refused for it, and stays suspended where P goes on its own. The
+// tester answers, and the round goes to end as the tester, the one claim whose agent ran in P, and
+// a woken or resumed implementer bring it about; a woken implementer whose own launch replaces P
+// is woken only then (wokenReplacesThePod).
 func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	t.Helper()
 	implementer, tester := claim.RoleImplementer, claim.RoleTester
@@ -1026,13 +1113,25 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	refusals := rig.refuseLaunches()
 
 	// stoodAtTheRound is the source the implementer stands suspended by when the round over P
-	// opens: the release's, or the one that suspended it before the release.
+	// opens: the release's, or the one that suspended it before the release, or the daemon's
+	// where nothing was released.
 	stoodAtTheRound := supervise.SuspendedByReleased
-	if kind == neverRunSuspended {
+	switch kind {
+	case neverRunSuspended:
 		rig.startInPod(tester, podUpdatePod)
 		refusals.refuse(implementer, podUpdatePod)
 		rig.refusedFirstLaunch(implementer)
-	} else {
+	case daemonStoppedKeptVolume:
+		rig.ownsKeptVolume(keptVolumeMadeAt)
+		rig.startInPod(implementer, releasedPod)
+		rig.startInPod(tester, releasedPod)
+		rig.suspendBy(implementer, supervise.SuspendedByDaemon)
+		stoodAtTheRound = supervise.SuspendedByDaemon
+		rig.displacedInto(tester, podUpdatePod)
+	default:
+		if kind == releasedKeptVolume || kind == releasedKeptLaterPod {
+			rig.ownsKeptVolume(keptVolumeMadeAt)
+		}
 		rig.startInPod(implementer, releasedPod)
 		rig.startInPod(tester, releasedPod)
 		released := []claim.Role{implementer, tester}
@@ -1041,16 +1140,20 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 			stoodAtTheRound, released = by, []claim.Role{tester}
 		}
 		rig.releases(releasedPod, 1, releasedSavedAt, released...)
-		var keptSince *time.Time
 		switch kind {
 		case releasedChain:
-			rig.wakesInto(tester, chainedPod, chainedMadeAt, nil)
+			rig.wakesInto(tester, chainedPod, chainedMadeAt)
 			rig.releases(chainedPod, 2, chainedSavedAt, tester)
-		case releasedKeptVolume:
-			rig.rt.ScriptKeptVolume(podUpdateIssue, keptVolumeMadeAt)
-			keptSince = &keptVolumeMadeAt
+			rig.wakesInto(tester, podUpdatePod, roundPodMadeAt)
+		case releasedKeptLaterPod:
+			rig.wakesInto(tester, chainedPod, chainedMadeAt)
+			rig.displacedInto(tester, podUpdatePod)
+		default:
+			rig.wakesInto(tester, podUpdatePod, roundPodMadeAt)
 		}
-		rig.wakesInto(tester, podUpdatePod, roundPodMadeAt, keptSince)
+	}
+	if kind == releasedKeptLaterPod || kind == daemonStoppedKeptVolume {
+		rig.keptVolumeReplaced()
 	}
 	if end == endByIssue {
 		// The issue's Sandbox holds P, which the sweep asks of a round whose claims record no pod
@@ -1249,14 +1352,13 @@ func (r *podUpdateRig) releases(pod string, release int64, savedAt time.Time, ro
 // last release's saved work first (sandbox's launchers.start): a pod made after the save takes the
 // bundle and restores it before the role starts, and its launcher reports the restore done
 // (store.TakeWorkspaceBundleForRestore, DeleteRestoredWorkspaceBundle); a pod whose Sandbox owns
-// the issue's kept volume, made at keptSince before the save, mounts the volume the work was taken
-// off, so the saved copy is dropped (store.DropHeldWorkspaceBundle). keptSince is nil for a pod
-// with no kept volume.
-func (r *podUpdateRig) wakesInto(role claim.Role, pod string, madeAt time.Time, keptSince *time.Time) {
+// the issue's kept volume (podUpdateRig.keptSince), made before the save, mounts the volume the
+// work was taken off, so the saved copy is dropped (launcherStarts).
+func (r *podUpdateRig) wakesInto(role claim.Role, pod string, madeAt time.Time) {
 	r.t.Helper()
-	if keptSince != nil {
-		if _, dropped, err := r.st.DropHeldWorkspaceBundle(r.ctx, podUpdateProject, podUpdateIssue, pod, *keptSince); err != nil || !dropped {
-			r.t.Fatalf("pod %s dropped the saved bundle: %t (%v), want it dropped: its kept volume holds the work", pod, dropped, err)
+	if !r.keptSince.IsZero() {
+		if !r.launcherStarts(pod) {
+			r.t.Fatalf("pod %s dropped no saved bundle, want it dropped: its kept volume holds the work", pod)
 		}
 	} else {
 		saved, take, err := r.st.TakeWorkspaceBundleForRestore(r.ctx, podUpdateProject, podUpdateIssue, pod, madeAt)
@@ -1272,6 +1374,24 @@ func (r *podUpdateRig) wakesInto(role claim.Role, pod string, madeAt time.Time, 
 	r.registerInto(role, pod)
 }
 
+// ownsKeptVolume makes the issue's Sandbox one that owns the issue's kept volume, made at made:
+// the runtime answers that the issue's next launch keeps the volume (runtime.IssueVolumeReader),
+// and each role's start into a pod from then on asks the store what a launcher of a pod of that
+// Sandbox asks (podUpdateRig.keptSince, launcherStarts).
+func (r *podUpdateRig) ownsKeptVolume(made time.Time) {
+	r.rt.ScriptKeptVolume(podUpdateIssue, made)
+	r.keptSince = made
+}
+
+// keptVolumeReplaced is the issue's Sandbox carrying a reset mark, or a change of its disk's shape,
+// by the round's end: the runtime answers that the issue's next launch replaces the Sandbox with
+// its volume, so the round's end deletes the volume and what is on it, and each pod a launch builds
+// from then on is of a new Sandbox, made at the clock's now.
+func (r *podUpdateRig) keptVolumeReplaced() {
+	r.rt.ScriptKeptVolume(podUpdateIssue, time.Time{})
+	r.keptSince = r.clock.Now()
+}
+
 // wakeFor is the resume a wake makes of role's released claim, as the outbox's wake for a
 // delivery the daemon holds for that role makes it (wakeForDelivery).
 func (r *podUpdateRig) wakeFor(role claim.Role) supervise.RequestRuleResume {
@@ -1285,11 +1405,7 @@ func (r *podUpdateRig) wakeFor(role claim.Role) supervise.RequestRuleResume {
 // as the outbox's start of the role's phase makes it; and a wake (wakeFor) of a claim that stands
 // released.
 func (r *podUpdateRig) resumeOf(role claim.Role, kind memberKind) supervise.Event {
-	by := kind.takenOverBy()
-	if by == "" {
-		by = kind.stoppedBeforeRelease()
-	}
-	switch by {
+	switch cmp.Or(kind.takenOverBy(), kind.stoppedBeforeRelease()) {
 	case supervise.SuspendedByOperator:
 		return supervise.RequestResume{Claim: r.tokens[role]}
 	case supervise.SuspendedByDaemon:

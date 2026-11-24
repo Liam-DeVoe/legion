@@ -1,13 +1,13 @@
 package daemon
 
-// The store's record of the pods that took an idle release's work (store.PodTookWorkspaceBundle),
-// which every end of an update round over such a pod reads (workOnRoundPod, roundPodTookRelease):
-// it survives a daemon restart between the take and the round's end, and it stands until the
-// issue's work is over, when the outbox's dropReleasedWork deletes it with the issue's bundle.
+// The store's record of the disks of an issue's pods (store.PodHoldsEarlierWork), whose mark of
+// the round's pod every end of an update round reads (workOnRoundPod, roundPodHoldsEarlierWork):
+// the mark of a pod that took an idle release's work survives a daemon restart between the take
+// and the round's end, and it stands until the issue's work is over, when the outbox's
+// dropReleasedWork deletes it with the issue's bundle.
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +47,7 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	rig.startInPod(tester, releasedPod)
 	rig.startInPod(reviewer, releasedPod)
 	rig.releases(releasedPod, 1, releasedSavedAt, tester, reviewer)
-	rig.wakesInto(tester, podUpdatePod, roundPodMadeAt, nil)
+	rig.wakesInto(tester, podUpdatePod, roundPodMadeAt)
 	refusals.refuse(implementer, podUpdatePod)
 	rig.refusedFirstLaunch(implementer)
 	rig.drifts(podUpdateExchangeDrift)
@@ -59,8 +59,12 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	rig.signal(tester, "c0ffee")
 
 	rig, refusals = rig.restarted()
-	if !rig.s.roundPodTookRelease(rig.ctx, podUpdateIssue, podUpdateRound) {
-		t.Fatalf("the restarted daemon reads that pod %s took no release's work, want the store's record of the take before the restart", podUpdatePod)
+	// The restarted daemon's read answers true on a failed read too, so the store is read itself.
+	if holds, err := rig.st.PodHoldsEarlierWork(rig.ctx, podUpdateIssue, podUpdatePod); err != nil || !holds {
+		t.Fatalf("after the restart the store reads that the disk of pod %s holds work from before it: %t (%v), want the mark of the take before the restart", podUpdatePod, holds, err)
+	}
+	if !rig.s.roundPodHoldsEarlierWork(rig.ctx, podUpdateIssue, podUpdateRound) {
+		t.Fatalf("the restarted daemon reads that the disk of pod %s holds no work from before it, want the store's mark of the take before the restart", podUpdatePod)
 	}
 	if c := rig.claimOf(implementer); c.Session != "" || c.RegisteredPods.Unknown || len(c.RegisteredPods.Pods) != 0 {
 		t.Fatalf("after the restart the implementer has session %q and set %+v, want no session and a known, empty set", c.Session, c.RegisteredPods)
@@ -83,14 +87,7 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	if len(lost) != 1 {
 		t.Fatalf("the round's end was logged %+v, want one line that the members that had not answered lost what they had not pushed", lost)
 	}
-	var named []string
-	for _, role := range lost[0]["lost"].([]any) {
-		named = append(named, role.(string))
-	}
-	slices.Sort(named)
-	if want := []string{string(implementer), string(reviewer)}; !slices.Equal(named, want) {
-		t.Fatalf("the end's line names %v as having lost what they had not pushed, want %v", named, want)
-	}
+	wantField(t, lost[0], "lost", implementer, reviewer)
 	messages := rig.messages()
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written %q, want one message that its pod went", messages)
@@ -105,11 +102,11 @@ func TestARestartBetweenTheTakeAndTheRoundsEndStillNamesTheRoles(t *testing.T) {
 	}
 }
 
-// The record that a pod took an idle release's work stands until the issue's work is over. A
+// The mark of a pod that took an idle release's work stands until the issue's work is over. A
 // park of a role of the issue (a `suspend` row, which takes the role over) keeps it, as it keeps
 // the issue's bundle, since the issue comes back; the issue's close deletes both
 // (dropReleasedWork). The confirmed restore before them deletes the bundle's own row and leaves
-// the record, which is why the record is a table of its own.
+// the mark, which is why the record is a table of its own.
 func TestThePodsThatTookAReleasesWorkGoWithTheIssuesWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -132,9 +129,9 @@ func TestThePodsThatTookAReleasesWorkGoWithTheIssuesWork(t *testing.T) {
 	}
 	took := func(when string, want bool) {
 		t.Helper()
-		got, err := st.PodTookWorkspaceBundle(ctx, pauseIssue, takingPod)
+		got, err := st.PodHoldsEarlierWork(ctx, pauseIssue, takingPod)
 		if err != nil || got != want {
-			t.Fatalf("%s the store reads that pod %s took the release's work: %t (%v), want %t", when, takingPod, got, err, want)
+			t.Fatalf("%s the store reads that the disk of pod %s holds the release's work: %t (%v), want %t", when, takingPod, got, err, want)
 		}
 	}
 	took("after the take,", true)

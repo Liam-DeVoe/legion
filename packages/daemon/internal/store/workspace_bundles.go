@@ -116,11 +116,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
 //
-// A take that sends the bundle records in its own transaction that the pod of podUID took the
-// release's work (workspace_bundle_pods, holdReleasedWork): its disk holds the whole shared
-// workspace's work once the launcher restores it, before any role starts, and the confirmed
-// restore deletes the bundle's row. A take refused as older than the save, and one that found no
-// bundle, record no pod.
+// A take that sends the bundle marks the pod of podUID, in its own transaction, as a pod whose disk
+// holds work from before it (issue_pod_disks, markRestoredPod): its launcher restores the whole
+// shared workspace's work before any role starts, and the confirmed restore deletes the bundle's
+// row. A take refused as older than the save, and one that found no bundle, record no pod.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if err := restoreAsk.check(project, issue, podUID, podCreated); err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
@@ -148,13 +147,11 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		if err != nil {
 			return err
 		}
-		if outcome == "sent" {
-			if err := holdReleasedWork(ctx, tx, issue, podUID, b.Release); err != nil {
-				return err
-			}
-		}
 		found = true
-		return nil
+		if outcome != "sent" {
+			return nil
+		}
+		return markRestoredPod(ctx, tx, issue, podUID)
 	})
 	if !found && err == nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
@@ -200,9 +197,9 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a
 // workspace with nothing unpushed, or the issue's work is over. A cancelled release deletes its
 // own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
-// does not hold is success, so a retried delete finishes. It leaves the record of the pods that
-// took an earlier release's work (DeleteWorkspaceBundlePods): a release that saved nothing
-// unpushed takes none of that work off the pod that holds it.
+// does not hold is success, so a retried delete finishes. It leaves the record of the disks of the
+// issue's pods (DeleteIssuePodDisks): a release that saved nothing unpushed takes no earlier
+// release's work off the pod that holds it.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue)
@@ -214,50 +211,79 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 	return nil
 }
 
-// PodTookWorkspaceBundle is whether the pod of podUID took the work of one of issue's idle
-// releases (workspace_bundle_pods): a take sent it that release's bundle
-// (TakeWorkspaceBundleForRestore), or it mounts the kept volume the work was taken off and the
-// drop deleted the saved copy (DropHeldWorkspaceBundle). The release saved the whole workspace
-// that every role of the issue shares, so that pod's disk holds the unpushed work of every role
-// the release saved, a role that was not running at the release included. internal/daemon's
-// update round reads it at each end of a round over the pod (workOnRoundPod). The record is the
-// store's, so it holds across a daemon restart, and it stands until the issue's work is over
-// (DeleteWorkspaceBundlePods).
-func (s *Store) PodTookWorkspaceBundle(ctx context.Context, issue, podUID string) (bool, error) {
-	var took bool
+// PodHoldsEarlierWork is whether the store marks the pod of podUID of issue as a pod whose disk
+// holds work from before the pod (issue_pod_disks.holds_earlier_work): a take sent it a release's
+// bundle (TakeWorkspaceBundleForRestore), or its drop deleted a bundle that its kept volume holds,
+// or it mounts a kept volume that an earlier pod of the issue mounted (DropHeldWorkspaceBundle). A
+// pod the store does not record is not marked. internal/daemon's update round reads it for whom
+// each end of a round over the pod names (workOnRoundPod). The mark stands until the issue's work
+// is over (DeleteIssuePodDisks).
+func (s *Store) PodHoldsEarlierWork(ctx context.Context, issue, podUID string) (bool, error) {
+	var holds bool
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select exists (select 1 from workspace_bundle_pods where issue = $1 and pod_uid = $2)`,
-			issue, podUID).Scan(&took)
+		return tx.QueryRow(ctx, `select exists (select 1 from issue_pod_disks
+			where issue = $1 and pod_uid = $2 and holds_earlier_work)`, issue, podUID).Scan(&holds)
 	})
 	if err != nil {
-		return false, fmt.Errorf("read whether the pod %s of %s took the work of an idle release: %w", podUID, issue, err)
+		return false, fmt.Errorf("read whether the disk of the pod %s of %s holds work from before the pod: %w", podUID, issue, err)
 	}
-	return took, nil
+	return holds, nil
 }
 
-// DeleteWorkspaceBundlePods drops the record of every pod of issue that took the work of one of
-// its idle releases (PodTookWorkspaceBundle): the issue's work is over, so no round of its pods is
-// left to name a role by it (outbox's dropReleasedWork). Deleting rows the table does not hold is
-// success, so a retried delete finishes.
-func (s *Store) DeleteWorkspaceBundlePods(ctx context.Context, issue string) error {
+// DeleteIssuePodDisks drops the record of the disk of every pod of issue (issue_pod_disks): the
+// issue's work is over, so no round of its pods is left to read it (outbox's dropReleasedWork).
+// Deleting rows the table does not hold is success, so a retried delete finishes.
+func (s *Store) DeleteIssuePodDisks(ctx context.Context, issue string) error {
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `delete from workspace_bundle_pods where issue = $1`, issue)
+		_, err := tx.Exec(ctx, `delete from issue_pod_disks where issue = $1`, issue)
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("delete the pods that took the work of an idle release of %s: %w", issue, err)
+		return fmt.Errorf("delete the record of the disks of the pods of %s: %w", issue, err)
 	}
 	return nil
 }
 
-// holdReleasedWork records, in tx, that the pod of podUID took the work issue's release saved:
-// the take that sent it the bundle or the drop of a bundle its kept volume holds, each in its own
-// transaction (PodTookWorkspaceBundle). It is an upsert on the issue and the pod, so a run of that
-// transaction again finishes, and it keeps the latest release and time.
-func holdReleasedWork(ctx context.Context, tx pgx.Tx, issue, podUID string, release int64) error {
-	_, err := tx.Exec(ctx, `insert into workspace_bundle_pods (issue, pod_uid, release_id, at) values ($1, $2, $3, now())
-		on conflict (issue, pod_uid) do update set release_id = excluded.release_id, at = excluded.at`,
-		issue, podUID, release)
+// markRestoredPod marks, in tx, the pod of podUID of issue as a pod whose disk holds work from
+// before it, in the transaction of the take that sent it a release's bundle
+// (TakeWorkspaceBundleForRestore). A pod the store records already, as a pod of a kept volume
+// (recordKeptPod), keeps its kept_since; any other is written with none.
+func markRestoredPod(ctx context.Context, tx pgx.Tx, issue, podUID string) error {
+	_, err := tx.Exec(ctx, `insert into issue_pod_disks (issue, pod_uid, kept_since, holds_earlier_work) values ($1, $2, null, true)
+		on conflict (issue, pod_uid) do update set holds_earlier_work = true`, issue, podUID)
+	return err
+}
+
+// recordKeptPod records, in tx, the pod of podUID of issue as a pod whose Sandbox owns the issue's
+// kept volume and was made at keptSince (issue_pod_disks.kept_since), in the transaction of the
+// drop (DropHeldWorkspaceBundle). It marks the pod as holding work from before it where dropped,
+// the drop deleted a bundle that the volume holds, or where another pod of the issue has a row with
+// the same keptSince, a pod of the same volume. It writes nothing where project, the token of the
+// daemon whose pod asks, does not record issue (projectRecordsIssue, the take's own test of whose
+// bundle it is): an issue another project records is that project's daemon's on a database the
+// two share, and its pods are that daemon's to record, and an issue no project records is no
+// daemon's. It binds the issue, the pod and the project as bundleOffered sets them, keptSince as
+// $3 and dropped as $5.
+//
+// The mark is decided here, at the write, and not at the update round's read, for two reasons. A
+// Sandbox runs one pod at a time, so at a pod's first record every other row of its volume is a
+// pod that came before it; the round reads a pod at an end that can come after the next pod of the
+// same volume recorded (a launch's replacement, a pod that went), and a mark read then from the
+// rows would take the first pod of a volume, which holds nothing from before it, for a later one.
+// And a drop proves that the volume holds a release's work where no earlier pod has a row, as one
+// that ran before this record shipped. No write clears a mark: the upsert keeps the mark a row
+// has, and a later drop for the same pod, as the next start's after a first start's drop failed,
+// marks it. The upsert leaves a row it would not change as it is, so a later start in a recorded
+// pod writes nothing unless it marks the pod.
+func recordKeptPod(ctx context.Context, tx pgx.Tx, project, issue, podUID string, keptSince time.Time, dropped bool) error {
+	_, err := tx.Exec(ctx, `insert into issue_pod_disks (issue, pod_uid, kept_since, holds_earlier_work)
+		select $1, $2, $3, $5 or exists (select 1 from issue_pod_disks where issue = $1 and pod_uid <> $2 and kept_since = $3)
+		where `+projectRecordsIssue+`
+		on conflict (issue, pod_uid) do update set kept_since = excluded.kept_since,
+			holds_earlier_work = issue_pod_disks.holds_earlier_work or excluded.holds_earlier_work
+		where issue_pod_disks.kept_since is distinct from excluded.kept_since
+			or (excluded.holds_earlier_work and not issue_pod_disks.holds_earlier_work)`,
+		issue, podUID, keptSince, project, dropped)
 	return err
 }
 
@@ -311,10 +337,14 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // own (bundleAsk.check). It runs until one run commits (transactUntilCommitted), as the take does:
 // a run that committed deleted the row, so a second run would answer that nothing was dropped.
 //
-// A drop that deletes the bundle records in its own transaction that the pod of podUID took the
-// release's work (workspace_bundle_pods, holdReleasedWork): the pod mounts the volume the work was
-// taken off, so its disk holds that work as a restored pod's does. A drop that deletes nothing
-// records no pod.
+// Every call whose project records the issue (projectRecordsIssue, the take's own test) records
+// the pod of podUID with its kept volume in the same transaction, whatever it deleted
+// (recordKeptPod): the launcher calls the drop at every role's start in a pod whose Sandbox owns a
+// kept volume (sandbox's launchers.restoreWorkspace), so the store holds each pod of a kept volume
+// of the project's issues in which a role started. The record marks the pod as holding work from
+// before it where the drop deleted the bundle, since the pod mounts the volume the work was taken
+// off, or where an earlier pod of the issue mounted the same volume. A call for an issue that
+// project does not record records nothing.
 func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
 	if err := dropAsk.check(project, issue, podUID, keptSince); err != nil {
 		return runtime.WorkspaceBundle{}, false, err
@@ -329,20 +359,16 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, pod
 			where `+bundleOffered+` and `+saveSecond+` > $3
 			returning release_id, at`,
 			issue, podUID, keptSince, project).Scan(&held.Release, &held.At)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
+		switch {
+		case err == nil:
+			dropped = true
+		case !errors.Is(err, pgx.ErrNoRows):
 			return err
 		}
-		if err := holdReleasedWork(ctx, tx, issue, podUID, held.Release); err != nil {
-			return err
-		}
-		dropped = true
-		return nil
+		return recordKeptPod(ctx, tx, project, issue, podUID, keptSince, dropped)
 	})
 	if err != nil {
-		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds, and record the pod's volume: %w", issue, podUID, err)
 	}
 	if !dropped {
 		return runtime.WorkspaceBundle{}, false, nil
@@ -352,12 +378,17 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, pod
 
 // bundleOffered is the rule of the one attempt that the take keeps (TakeWorkspaceBundleForRestore),
 // as a condition of a statement on workspace_bundles: the row of issue $1, with no attempt yet,
-// that did not come off the pod $2, of an issue that project $4 records. The take and the drop
-// (DropHeldWorkspaceBundle) each read it, so the drop deletes only a row that the take would
-// offer. Each statement binds the issue as $1, the pod as $2 and the project as $4, and keeps $3
-// for its own time.
-const bundleOffered = `issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-			and exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)`
+// that did not come off the pod $2, of an issue that project $4 records (projectRecordsIssue). The
+// take and the drop (DropHeldWorkspaceBundle) each read it, so the drop deletes only a row that the
+// take would offer. Each statement binds the issue as $1, the pod as $2 and the project as $4, and
+// keeps $3 for its own time.
+const bundleOffered = `issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2 and ` + projectRecordsIssue
+
+// projectRecordsIssue is whether project $4 records issue $1 (issues.project, the Dispatch key the
+// project's token lowercases), which is what makes a bundle of the issue, and the record of its
+// pods' disks, that project's daemon's to touch (TakeWorkspaceBundleForRestore, recordKeptPod). It
+// binds as bundleOffered does.
+const projectRecordsIssue = `exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)`
 
 // saveSecond is the time of a bundle's save read to its own second, which is how the take and the
 // drop each compare the save with a time the API server stamped: a creationTimestamp has
