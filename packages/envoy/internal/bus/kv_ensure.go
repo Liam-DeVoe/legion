@@ -365,12 +365,24 @@ func raiseReplicas(ctx context.Context, js nats.JetStreamContext, bucket string,
 	if replicas <= 1 {
 		return 0, nil
 	}
+	info, err := readBucketStream(ctx, js, bucket)
+	if err != nil {
+		return 0, err
+	}
+	return raiseStream(ctx, js, info, replicas)
+}
+
+// readBucketStream is raiseReplicas's read of the stream of bucket, sent again while the server
+// leaves it unanswered (readAgain), its error naming the raise it was for:
+// `raise KV_<bucket>: ...`. The keeper calls it apart from the raise (keepBuckets), to know which
+// of the raise's two requests an error is the answer to.
+func readBucketStream(ctx context.Context, js nats.JetStreamContext, bucket string) (*nats.StreamInfo, error) {
 	stream := "KV_" + bucket
 	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, err)
+		return nil, fmt.Errorf("raise %s: %w", stream, err)
 	}
-	return raiseStream(ctx, js, info, replicas)
+	return info, nil
 }
 
 // raiseStream raises the stream info describes to replicas copies when it has fewer, and returns

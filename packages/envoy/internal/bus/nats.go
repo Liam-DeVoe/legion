@@ -143,8 +143,9 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 
 // WithReconnectErrClock overrides the clock the bus reads for the time-based parts of its
 // reconnect reporting: the throttle of the warning a failed reconnect attempt logs
-// (reconnectErrThrottle) and the stall HookStall reports, so a test can see a minute pass without
-// waiting one. nil, the default, is time.Now.
+// (reconnectErrThrottle) and the stall HookStall reports; and for the keeper's backoff on a bucket
+// the server refused it for want of a grant (keeperNoGrantBackoff, keepBuckets). So a test can see
+// a minute, or the backoff's ten, pass without waiting it. nil, the default, is time.Now.
 func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
 }
@@ -1018,8 +1019,8 @@ func (c *Client) HookStall() (time.Duration, error) {
 	return max(c.now().Sub(c.hooksDueSince), 0), c.lastHookErr
 }
 
-// now reads the clock the client takes for its reconnect reporting (WithReconnectErrClock),
-// time.Now when it took none.
+// now reads the clock the client takes for its reconnect reporting and for the keeper's no-grant
+// backoff (WithReconnectErrClock, keepBuckets), time.Now when it took none.
 func (c *Client) now() time.Time {
 	if c.reconnectErrClock == nil {
 		return time.Now()
