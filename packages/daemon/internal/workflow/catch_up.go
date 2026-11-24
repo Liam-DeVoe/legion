@@ -213,8 +213,12 @@ func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issu
 	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
 		return nil, err
 	}
-	if asked.Told != nil {
-		if told, err := toldNow(ctx, tx, store, issue, *asked.Told, launch); err != nil || told {
+	// Planted fault, a control of a test, never merged: the told rule the one rule of told replaced.
+	// The mark is the session the ask reached alone, judged against the session the owner's claim
+	// records now; a mark that names no session marks nothing, and the launch is not read.
+	if asked.Told != nil && asked.Told.Session != "" {
+		session, err := store.ClaimSession(ctx, tx, asked.Agent)
+		if err != nil || session == asked.Told.Session {
 			return nil, err
 		}
 	}
