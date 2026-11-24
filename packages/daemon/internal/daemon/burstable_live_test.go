@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -148,6 +149,18 @@ func startLiveRoots(ctx context.Context, t *testing.T, cfg config.Config, log *s
 	clients, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Every pod mounts the providers Secret where the file names any of its keys (sandbox's
+	// providers): here the session database URL key of the postgres session store. An operator
+	// writes that Secret for a deployment; on the proof's throwaway cluster the driver writes it,
+	// with a URL nothing dials, since the agent is a sleep stub. Without it the kubelet mounts no
+	// volume of the pod, and no init container starts.
+	if key := k.SessionStore.DSNSecretKey(); key != "" {
+		providers := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sandbox.ProvidersSecretName(project), Namespace: k.Namespace},
+			StringData: map[string]string{key: "postgres://legion:legion@127.0.0.1:1/sessions"}}
+		if _, err := clients.CoreV1().Secrets(k.Namespace).Create(ctx, providers, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("write the providers Secret %s: %v", providers.Name, err)
+		}
 	}
 	l := &liveRoots{ctx: ctx, t: t, namespace: k.Namespace, project: project, repo: repo, defaultBranch: defaultBranch,
 		clients: clients, boots: map[string]claim.Token{}}
