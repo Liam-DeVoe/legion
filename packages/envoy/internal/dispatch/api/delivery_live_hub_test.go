@@ -559,20 +559,27 @@ func recomputeBegin(cause string) func(deliveryHubNote) bool {
 	}
 }
 
-// fakeLiveConn is a socket as the hub sees it, recording every frame it is sent.
+// fakeLiveConn is a socket as the hub sees it, recording every frame it is sent and when.
 type fakeLiveConn struct {
-	frames chan any
+	frames chan sentFrame
 	full   atomic.Bool
 }
 
-func newFakeLiveConn() *fakeLiveConn { return &fakeLiveConn{frames: make(chan any, 256)} }
+// sentFrame is one frame the hub sent a fakeLiveConn, and the moment Send took it: when the hub
+// sent it, whatever later moment the test reads it at.
+type sentFrame struct {
+	frame any
+	at    time.Time
+}
+
+func newFakeLiveConn() *fakeLiveConn { return &fakeLiveConn{frames: make(chan sentFrame, 256)} }
 
 func (c *fakeLiveConn) Send(frame any) bool {
 	if c.full.Load() {
 		return false
 	}
 	select {
-	case c.frames <- frame:
+	case c.frames <- sentFrame{frame: frame, at: time.Now()}:
 		return true
 	default:
 		return false
@@ -583,22 +590,22 @@ func (c *fakeLiveConn) Send(frame any) bool {
 // (testwait.Receive).
 func (c *fakeLiveConn) next(t *testing.T, what string) any {
 	t.Helper()
-	return testwait.Receive(t, what, c.frames)
+	return testwait.Receive(t, what, c.frames).frame
 }
 
 // eventNext is the next frame the conn is sent once the hub has acted on an event of its feed,
 // which stands behind database's event horizon, so the wait is the horizon's.
 func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
 	t.Helper()
-	return horizontest.WaitInProcess(t, what, c.frames, database)
+	return horizontest.WaitInProcess(t, what, c.frames, database).frame
 }
 
 // none fails when the conn is sent a frame within within.
 func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
 	t.Helper()
 	select {
-	case frame := <-c.frames:
-		raw, _ := json.Marshal(frame)
+	case sent := <-c.frames:
+		raw, _ := json.Marshal(sent.frame)
 		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
 	case <-time.After(within):
 	}
@@ -612,8 +619,8 @@ func (c *fakeLiveConn) none(t *testing.T, within time.Duration, after string) {
 func (c *fakeLiveConn) empty(t *testing.T, after string) {
 	t.Helper()
 	select {
-	case frame := <-c.frames:
-		raw, _ := json.Marshal(frame)
+	case sent := <-c.frames:
+		raw, _ := json.Marshal(sent.frame)
 		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
 	default:
 	}
@@ -632,13 +639,22 @@ func (c *fakeLiveConn) snapshot(t *testing.T, sub string) DeliveryLiveSnapshot {
 
 func (c *fakeLiveConn) delta(t *testing.T, sub string) DeliveryLiveDelta {
 	t.Helper()
-	frame := c.next(t, "a delta of "+sub)
-	delta, ok := frame.(DeliveryLiveDelta)
+	delta, _ := c.deltaSent(t, sub)
+	return delta
+}
+
+// deltaSent is the next frame the conn is sent, which must be a delta of sub, and the moment the
+// hub sent it (sentFrame), for a verdict on how soon the hub sent it rather than on how soon the
+// test got round to reading it.
+func (c *fakeLiveConn) deltaSent(t *testing.T, sub string) (DeliveryLiveDelta, time.Time) {
+	t.Helper()
+	sent := testwait.Receive(t, "a delta of "+sub, c.frames)
+	delta, ok := sent.frame.(DeliveryLiveDelta)
 	if !ok || delta.Sub != sub {
-		raw, _ := json.Marshal(frame)
+		raw, _ := json.Marshal(sent.frame)
 		t.Fatalf("frame = %s, want a delta of %s", raw, sub)
 	}
-	return delta
+	return delta, sent.at
 }
 
 // eventDelta is eventNext, which must be a delta of sub.
@@ -2253,7 +2269,8 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	rig.settle(t)
 	for drained := false; !drained; {
 		select {
-		case frame := <-conn.frames:
+		case sent := <-conn.frames:
+			frame := sent.frame
 			earlier, ok := frame.(DeliveryLiveDelta)
 			if !ok {
 				t.Fatalf("frame before the expiry = %+v, want a delta of a change the snapshot did not hold", frame)

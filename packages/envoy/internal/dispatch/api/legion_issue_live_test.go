@@ -82,17 +82,19 @@ func (p *legionIssuePage) answer(t *testing.T) wireLegionIssue {
 // what names the page in a failure: its issue and its hub.
 func (p *legionIssuePage) what() string { return p.key + " at hub " + p.hub }
 
-// next reads the page's next frame, which must be a delta and must have arrived by deadline, the
-// 5 seconds after its store that the live view promises (R2); requires it to set exactly the
-// members set names and nothing of another issue (L-14), and the body it leaves to be the GET body
-// of the moment; and answers that body. The read itself waits for the frame until the test
-// binary's deadline (fakeLiveConn.delta), so a delta that never comes fails by name, and one that
-// comes late fails here on R2's bound.
+// next reads the page's next frame, which must be a delta that the hub sent by deadline, the 5
+// seconds after its store that the live view promises (R2); requires it to set exactly the members
+// set names and nothing of another issue (L-14), and the body it leaves to be the GET body of the
+// moment; and answers that body. R2 is judged on the moment the hub sent the frame
+// (fakeLiveConn.deltaSent), not on when the test reads it: every row gives all its pages one
+// deadline and reads them in turn, so page B's frame is read only after page A's checks, however
+// long those take. The read itself waits until the test binary's deadline, so a delta that never
+// comes fails by name, and one the hub sent late fails here on R2's bound.
 func (p *legionIssuePage) next(t *testing.T, deadline time.Time, set ...string) wireLegionIssue {
 	t.Helper()
-	delta := p.conn.delta(t, legionIssueSub)
-	if late := time.Since(deadline); late > 0 {
-		t.Fatalf("%s's delta came %v past the 5 s after its store that the live view promises", p.what(), late.Round(time.Millisecond))
+	delta, sent := p.conn.deltaSent(t, legionIssueSub)
+	if late := sent.Sub(deadline); late > 0 {
+		t.Fatalf("hub %s sent %s's delta %v past the 5 s after its store that the live view promises", p.hub, p.key, late.Round(time.Millisecond))
 	}
 	raw, err := json.Marshal(delta)
 	if err != nil {

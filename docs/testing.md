@@ -733,14 +733,16 @@ for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it fail
 with a transaction held 2 s of every 2.5 s; under that same pulse, reading again, it passed 40 of
 40. Those runs were measured while any transaction on the server held the horizon back.
 
-Prove such a test with the horizon held: hold an event write of the test's own database open past
-`referencesSinceWait`, as `holdEventWrite` (`packages/envoy/internal/dispatch/api/event_horizon_helpers_test.go`)
-does. A transaction in another database, such as a `psql` loop that runs
-`select pg_current_xact_id(), pg_sleep(2)`, no longer holds the horizon, so it proves nothing.
-The hold must end before `horizontest.OwnHoldBound`, 5 s: the re-read's wait
-(`horizontest.NewWatchInProcess`) fails on a hold of the test's own database that has stood that
-long, as an own-database hold, and names it. A hold past `referencesSinceWait` that ends inside that
-bound is one the re-read waits out.
+Prove such a test with the horizon held: hold an event write of the test's own database open with
+`holdEventWrite` (`packages/envoy/internal/dispatch/api/event_horizon_helpers_test.go`), and call
+the `release` it returns on a timer longer than `referencesSinceWait` and shorter than
+`horizontest.OwnHoldBound`, 5 s. `holdEventWrite` ends the hold only on that release, at the
+test's first failure or at its end, never on a clock of its own. A transaction in another
+database, such as a `psql` loop that runs `select pg_current_xact_id(), pg_sleep(2)`, no longer
+holds the horizon, so it proves nothing. The re-read's wait (`horizontest.NewWatchInProcess`)
+fails on a hold of the test's own database that has stood `OwnHoldBound`, as an own-database hold,
+and names it; a hold past `referencesSinceWait` that the timer releases inside that bound is one
+the re-read waits out.
 
 ## A test that waits for the event feed's first frame
 

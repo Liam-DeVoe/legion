@@ -100,8 +100,7 @@ func heldRead(t *testing.T, database string, since time.Duration) Warning {
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
 	// A foreign holder: an event write of another database, which a horizon reading that database
-	// reports - another server's in the same process, which Listen hears too - and which is no
-	// defect of this test's, however long it has stood.
+	// reports, and which is no defect of this test's, however long it has stood.
 	foreign := FromLine(stallWarningLine("legion_daemon", 2*OwnHoldBound))
 	// warnStall's other two arms carry no database= field at all.
 	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
