@@ -41,7 +41,7 @@ type SecretRule struct {
 	Hosts   []string `json:"hosts"`
 	Headers []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string   `json:"kind"`    // "", "aws" or "azure"
+	Kind    string   `json:"kind"`    // "", "aws", "azure" or "dpop"
 }
 
 // HeaderNames is the headers this entry's value travels in: the entry's own list, or the one
@@ -59,17 +59,21 @@ func (s SecretRule) HeaderNames() []string {
 	return s.Headers
 }
 
-// KindAWS and KindAzure are the two kinds a rules entry may name (SecretRule.Kind), beside the
-// empty kind of a value a header simply carries. Validate allows no other, and each of them
-// says what the value behind the name is rather than where it may go: an AWS key pair, which
-// the proxy signs a call again with, and an azure-login secret, whose federated token is
-// exchanged for an access token. They are here rather than private to each reader because
-// three packages - the proxy's aws.go and azure.go and the broker's own release
-// (internal/cipher/requests) - each held a constant of the same string, and a kind is one
-// wire word for all of them.
+// KindAWS, KindAzure and KindDPoP are the three kinds a rules entry may name (SecretRule.Kind),
+// beside the empty kind of a value a header simply carries. Validate allows no other, and each
+// of them says what the value behind the name is rather than where it may go: an AWS key pair,
+// which the proxy signs a call again with; an azure-login secret, whose federated token is
+// exchanged for an access token; and a capability the broker mints for a grant of its own and
+// holds. They are here rather than private to each reader because three packages - the proxy's
+// aws.go and azure.go and the broker's own release (internal/cipher/requests) - each held a
+// constant of the same string, and a kind is one wire word for all of them.
 const (
 	KindAWS   = "aws"
 	KindAzure = "azure"
+	// KindDPoP is a capability the broker mints for a grant of its own and holds; the proxy swaps
+	// it in, signs a DPoP proof of the pod's key, and takes a request to its host only with the
+	// placeholder.
+	KindDPoP = "dpop"
 )
 
 // Rules is the whole airlock.json file.
@@ -101,9 +105,9 @@ type Request struct {
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, a kind
-// other than "", "aws" or "azure", an entry that names no host, or a host that binds the secret
-// nowhere (HostShapeOK). An entry is a proxy block, and one that binds its value to no host would
-// hold the value back and carry it nowhere, so it is refused here (theorem T4 of the model)
+// other than "", "aws", "azure" or "dpop", an entry that names no host, or a host that binds the
+// secret nowhere (HostShapeOK). An entry is a proxy block, and one that binds its value to no host
+// would hold the value back and carry it nowhere, so it is refused here (theorem T4 of the model)
 // rather than left to Decide, which still refuses every proxy request for one ("secret not
 // behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
 // new refusal here is a new refusal there.
@@ -113,8 +117,8 @@ func Validate(rules Rules) error {
 		switch {
 		case seen[s.Name]:
 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
-		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
-			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		case s.Kind != "" && s.Kind != KindAWS && s.Kind != KindAzure && s.Kind != KindDPoP:
+			return fmt.Errorf("%s: kind %q is not %q, %q, %q or %q", entry(i, s), s.Kind, "", KindAWS, KindAzure, KindDPoP)
 		case len(s.Hosts) == 0:
 			return fmt.Errorf("%s: the entry names no host", entry(i, s))
 		}

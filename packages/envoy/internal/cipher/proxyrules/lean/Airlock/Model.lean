@@ -30,8 +30,8 @@ structure SecretRule where
   /-- `none` means the default `["authorization"]`. Compared ASCII-case-insensitively. -/
   headers : Option (List String) := none
   allow : Option (List Allow) := none
-  /-- `""`, `"aws"` or `"azure"`. A plain `String`, not an `Option`, because the Go side
-  sends the empty string for an entry with no kind. -/
+  /-- `""`, `"aws"`, `"azure"` or `"dpop"`. A plain `String`, not an `Option`, because the Go
+  side sends the empty string for an entry with no kind. -/
   kind : String := ""
   deriving Repr
 
@@ -224,8 +224,8 @@ def namesUnique : List String → Bool
   | [] => true
   | n :: ns => !ns.contains n && namesUnique ns
 
-/-- The three kinds an entry may name. -/
-def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure"
+/-- The four kinds an entry may name. -/
+def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure" || k == "dpop"
 
 /-- A character a host label may hold: a letter, a digit or a hyphen. -/
 def hostCharOK (c : Char) : Bool :=
@@ -263,12 +263,13 @@ def hostShapeOK (h : String) : Bool :=
   !name.isEmpty && labels.all labelOK && !(labels.getLast?.getD []).all Char.isDigit
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
-the names are distinct, a kind is `""`, `"aws"` or `"azure"`, every entry names a host, and every
-host is one the airlock can bind. An entry is a proxy block, and one that binds its value to no
-host would hold the value back and carry it nowhere, so it is refused here (theorem `T4`);
-`check` still refuses every request for one ("secret not behind airlock"), since a decision does
-not assume a validated file. Who decides a request for a secret is no part of an entry: that is
-the key's own judge tag, which the broker's policy load bounds, not the rules file. -/
+the names are distinct, a kind is `""`, `"aws"`, `"azure"` or `"dpop"`, every entry names a host,
+and every host is one the airlock can bind. An entry is a proxy block, and one that binds its
+value to no host would hold the value back and carry it nowhere, so it is refused here (theorem
+`T4`); `check` still refuses every request for one ("secret not behind airlock"), since a
+decision does not assume a validated file. Who decides a request for a secret is no part of an
+entry: that is the key's own judge tag, which the broker's policy load bounds, not the rules
+file. -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
   rules.secrets.all fun s =>

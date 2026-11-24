@@ -100,6 +100,8 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		{"a judge of null in the proxy block", adminPAT(`{"hosts": ["api.github.com"], "judge": null}`), "proxy.judge", []string{"judge tag"}},
 		{"guidance in the proxy block", adminPAT(`{"hosts": ["api.github.com"], "guidance": "grant it for the release job"}`), "proxy.guidance", []string{"guidance tag", "GITHUB_ADMIN_PAT", "--guidance"}},
 		{"a judge in the proxy block of a profile of another source", `{"name": "GITHUB_ADMIN_READ", "source": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 300}}`, "proxy.judge", []string{"judge tag", "the source, GITHUB_ADMIN_PAT"}},
+		{"a judge in the proxy block of a dpop profile", `{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.example.com"], "kind": "dpop", "judge": 300}}`, "proxy.judge", []string{"kind dpop has no judge", "its kind decides its grant"}},
+		{"guidance in the proxy block of a dpop profile", `{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.example.com"], "kind": "dpop", "guidance": "grant it for the release job"}}`, "proxy.guidance", []string{"kind dpop has no judge", "its kind decides its grant"}},
 		{"a kind the proxy does not know", adminPAT(`{"hosts": ["api.github.com"], "kind": "gcp"}`), "proxy", []string{`kind "gcp"`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

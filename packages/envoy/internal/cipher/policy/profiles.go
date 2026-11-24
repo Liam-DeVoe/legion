@@ -84,7 +84,7 @@ type ProxyBlock struct {
 	Hosts   []string           `json:"hosts"`
 	Headers []string           `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []proxyrules.Allow `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string             `json:"kind"`    // "", "aws" or "azure"
+	Kind    string             `json:"kind"`    // "", "aws", "azure" or "dpop"
 }
 
 // proxyEntry is a proxy block as the file writes it: the block, and the judge and guidance a block
@@ -313,17 +313,48 @@ func (e profileEntry) check(i int, seen map[string]int) error {
 	if err := e.Proxy.judgeFields(cmp.Or(e.Source, e.Name), refuse); err != nil {
 		return err
 	}
-	return e.Proxy.block().check(e.Name, refuse)
+	if err := e.Proxy.block().check(e.Name, refuse); err != nil {
+		return err
+	}
+	return e.checkMinted(refuse)
+}
+
+// checkMinted holds a profile whose proxy block is of kind dpop to a name and that block alone:
+// the broker mints its credential for a grant of its own (requests.MintedKind) and holds it, so it
+// is made from no stored secret and its grant is decided by the kind, not by the tag policy. A
+// field that scopes or limits a stored secret's grant would read as a limit that holds nothing.
+func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
+	if e.Proxy == nil || e.Proxy.Kind != proxyrules.KindDPoP {
+		return nil
+	}
+	for _, f := range []struct {
+		field string
+		set   bool
+	}{
+		{"source", e.Source != ""}, {"tier", e.Tier != ""}, {"requesters", e.Requesters != nil},
+		{"maxGrant", e.MaxGrant != ""}, {"github", e.GitHub != nil}, {"google", e.Google != nil},
+	} {
+		if f.set {
+			return refuse(f.field, "is set on a profile of kind dpop, a capability the broker mints and holds from no stored secret")
+		}
+	}
+	return nil
 }
 
 // judgeFields refuses a proxy block that still sets judge or guidance, a JSON null among them,
 // naming the tag of source, the stored secret the profile is made from, that took its place: a
 // profile's requests are decided as its source's are (Profiles.serve), so the tag goes on the
-// source.
+// source. A block of kind dpop is made from no stored secret and its kind decides its grant
+// (checkMinted), so its refusal names no tag to set.
 func (e *proxyEntry) judgeFields(source string, refuse func(field, why string) error) error {
+	const minted = "is no field of a proxy block, and a profile of kind dpop has no judge: the broker mints and holds its capability, and its kind decides its grant"
 	switch {
 	case e == nil:
 		return nil
+	case e.Judge != nil && e.Kind == proxyrules.KindDPoP:
+		return refuse("proxy.judge", minted)
+	case e.Guidance != nil && e.Kind == proxyrules.KindDPoP:
+		return refuse("proxy.guidance", minted)
 	case e.Judge != nil:
 		return refuse("proxy.judge", fmt.Sprintf("is no field of a proxy block: a key's judge seconds are its own %s tag, so tag the source, %s (agent-secrets secret retag %s --judge <seconds>)", TagJudge, source, source))
 	case e.Guidance != nil:
@@ -476,7 +507,7 @@ func (b *GoogleBlock) check(refuse func(field, why string) error) error {
 // each host in the one grammar a rules host is written in (rulehost.Refusal), whose refusal names
 // the host's reason and repeats no text of it but the form to write; and last proxyrules.Validate's
 // answer for the block as the entry ProxyRules makes of it, which is the Lean model's (a kind
-// other than "", aws or azure). The grammar serves a host only where Validate's
+// other than "", aws, azure or dpop). The grammar serves a host only where Validate's
 // proxyrules.HostShapeOK accepts it, so Validate refuses no host here.
 func (b *ProxyBlock) check(name string, refuse func(field, why string) error) error {
 	if b == nil {
