@@ -38,7 +38,7 @@ func TestTheOwnersSlotHoldsTheAppOfItsStep(t *testing.T) {
 		while  string
 	}{
 		{claim.RoleImplementer, implement, "while its owner does the implementer step"},
-		{"acceptance", review, "while its owner does the accepting step"},
+		{claim.RoleAcceptance, review, "while its owner does the accepting step"},
 		{claim.RoleImplementer, implement, "while its owner does the implementer step again"},
 		{"", review, "once its owner's step ended"},
 	} {
