@@ -1550,10 +1550,9 @@ turns on nothing.
 
 A pull request of 100 changed files or more, or of 10,000 changed lines (additions and
 deletions) or more, runs every slow suite its paths select once before it can enter the merge
-queue: at the head a reviewer approves. Its pushes run what every pull request's pushes run, the
-fast lane and any lane label's suite. Each new approval runs it again; a push after an approval
-runs it again only once the new head is approved. A smaller pull request is not changed, and its
-approval starts no job.
+queue: at the head a trusted reviewer approves. Its pushes run what every pull request's pushes
+run, the fast lane and any lane label's suite. A push after an approval runs it again only once
+the new head is approved. A smaller pull request is not changed, and its approval starts no job.
 
 Why: a pull request's run holds the slow suites back for the queue
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), so a
@@ -1581,42 +1580,73 @@ Three pieces make it:
   fork's pull request is passed over, since its token cannot write a label.
 - .github/workflows/large-pr-lanes.yaml runs on every submitted review. The review is made with
   the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
-  mechanism writes has to start one. Both its jobs run only on an approval of a pull request
-  that is not a draft and carries `large-pr`, an `if:` that reads the event alone, so every other
-  review's run is decided before any runner starts and leaves no check named ci-ok.
-  - `approval` calls this file (ci.yaml's `on.workflow_call`). A called workflow runs under its
-    caller's event, and on pull_request_review the `full-ci` term of every held-back output
-    (`github.event_name != 'pull_request' || …`) is true, so each takes its paths filter's
-    verdict, as on a merge group: the run selects exactly the slow suites the change's paths
-    select, beside every fast job, and skips the two jobs that run on a pull request alone
-    (dispatch-browser-pr, worker-image), as a merge group does. ci-router-outputs.test.sh holds a
-    review run's outputs equal to a merge group's for the same paths verdicts. This file's own
-    ci-ok judges that run as `approval / ci-ok`, a name no ruleset reads.
+  mechanism writes has to start one. Its jobs run only on an approval of a pull request that is
+  not a draft and carries `large-pr`, by a reviewer this repository trusts: author_association
+  OWNER, MEMBER or COLLABORATOR, or the legion-reviewer App by its login. The repository is
+  public, and any signed-in account may approve one of its pull requests, so without that term any
+  account could start these runs, a three-hour hold and every slow suite with this repository's
+  secrets, as often as it liked. The App's approvals carry author_association CONTRIBUTOR, as does
+  any account with one merged commit, so only its login can admit it (167 approvals by
+  legion-reviewer[bot] on pull requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person
+  MEMBER; the hold step prints the association of the approval it runs for). Every other review's
+  run is decided by the `if:`s, from the event alone, before any runner starts, and leaves no
+  check named ci-ok.
+  - `lead` decides whether this approval runs the suites or follows the approval-time run
+    already at this head: the earliest older run of this workflow at the same head whose ci-ok is
+    still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at
+    a time tests a head, and later approvals of it, a third as much as a second, conclude as that
+    run does. Two runs at once would meet in ci.yaml's concurrency group, which on this event is
+    the merge commit (`ci-<sha>`), and in browser-image.yaml's build group, keyed the same way:
+    GitHub keeps one running and one pending run per group, and a third arrival cancels the
+    pending one, whatever cancel-in-progress says, which would leave a failed ci-ok with nothing
+    failed. Keying those two groups per run on this event instead was weighed and not taken:
+    browser-image.yaml is part of the browser image's build recipe (ci_images.py's
+    recipe_sha256), so any edit of it rebuilds the image and moves its row, and following does
+    the same work with no second run of the suites at all.
+  - `approval` calls this file (ci.yaml's `on.workflow_call`) when `lead` says to run. A called
+    workflow runs under its caller's event, and on pull_request_review the `full-ci` term of
+    every held-back output (`github.event_name != 'pull_request' || …`) is true, so each takes its
+    paths filter's verdict, as on a merge group. ci-router-outputs.test.sh holds a review run's
+    outputs equal to a merge group's for the same paths verdicts. This file's own ci-ok judges
+    that run as `approval / ci-ok`, a name no ruleset reads.
   - `ci-ok` is the check main's ruleset reads. GitHub creates the check run of a job with no
     needs when it creates the run, and that of a job with needs only once they have ended: on
     run 45314504563, read at 2026-11-24T02:45:31Z, the `changes` and `pr-title` check runs were
     there from 02:43:54Z while 23 jobs ran, and no ci-ok check run was. So `approval / ci-ok`
     appears only at the run's end, and this job, which needs nothing, holds a pending ci-ok on
-    the head from the run's first seconds, then concludes as `approval / ci-ok` concluded
-    (`.github/scripts/large-pr-lanes.sh hold`). A run that ends with no verdict fails it, so a
-    broken run never holds the head pending until the job's timeout.
+    the head from the run's first seconds, then concludes as `approval / ci-ok` concluded, or as
+    the ci-ok of the run it follows (`.github/scripts/large-pr-lanes.sh hold`). A run that ends
+    with no verdict fails it, and so does a caller that never starts, five minutes after `lead`
+    ended, so a broken or cancelled run never holds the head pending until the job's timeout.
 
-Why a pending ci-ok keeps the pull request out of the queue until the run ends. GitHub reads
-the newest check run of each name, workflow and event on a head
-(docs/solutions/github/a-head-is-green-by-the-newest-run-of-each-check-name-workflow-and-event-INFRA-256.md),
-and the checks of a pull_request_review run are among those it evaluates for a required check
-(docs.github.com, "Troubleshooting required status checks", "Checks from some workflow jobs are
-not evaluated"). pr-title.yaml's header holds the measurement of the same shape for pr-title: a
-review's run that waited for a runner held the required pr-title pending, and the queue took
-the pull request only once it passed (dispatch://INFRA-1825). Legion's merger enqueues with
-`enqueuePullRequest`, which adds a pull request only when it can be added at once, and waits for
-a required check still running (packages/daemon/internal/prompts/roles/merger.md, steps 4 and
-6). What is left is the seconds between the approval and GitHub creating the run. On test pull
-request #5347 that was 4 s and 6 s (reviews 6038732981 and 6039038013: submitted 11:55:46Z and
-12:17:05Z, ci-ok jobs created 11:55:50Z and 12:17:11Z), and the rollup read PENDING 9 s after
-the first. Over the 384 queue entries of the 228 pull requests merged from 2026-11-23 to
-2026-11-24 12:00Z, the shortest time from an approval to the next entry was 7 s, and 2 entries
-came within 10 s of theirs, both enqueued by the coordinator.
+What an approval's run runs beside a merge group's. The jobs and steps of ci.yaml's tree that
+test the event, read at this head: dispatch-two-builds-same runs on both
+(ci-job-dispatch-two-builds.yaml); the daemon API contract step of lint, `pr-title` and
+dispatch-browser-pr run on a pull request and the first two on a merge group too, so on an
+approval's run they are skipped, and each ran at the same head on that head's push run;
+worker-image runs on a pull request alone, as in a merge group; cancel-started, ci-ok's two
+refusal steps and every ci-ok-report post are merge-group mechanics. The tree an approval's run
+tests is the head merged with its base as GitHub last merged it, not with the entries ahead of it
+in the queue.
+
+Why a pending ci-ok keeps the pull request out of the queue until the run ends: GitHub's gate
+alone. A required check that exists and is pending makes GitHub refuse `enqueuePullRequest`: at
+2026-11-24T16:11:03Z the coordinator tried it on #5380 (approved, base main) while its required
+`pr-title` was queued after an edit, and GitHub answered UNPROCESSABLE, "Pull request Required
+status check \"pr-title\" is queued." pr-title.yaml's header holds the same shape from the other
+side: a review's run that waited for a runner held the required pr-title pending, and the queue
+took the pull request only once it passed (dispatch://INFRA-1825). Legion's merger enqueues with
+`enqueuePullRequest` and waits for a required check still running
+(packages/daemon/internal/prompts/roles/merger.md, steps 4 and 6). Legion's own readers do not
+read the same way: cistore keeps one check run per name and GitHubLink.tsx the newest per name,
+workflow and event, where GitHub's rollup reads every one of them, so either can show a head
+green that GitHub holds (dispatch://INFRA-5728). What is left open is the seconds between the
+approval and GitHub creating the run, before the ci-ok check run exists: on test pull request
+#5347 the ci-ok job was created 4 to 7 s after the review's submission (reviews 6038732981,
+6039778587, 6040743425 and 6040755108), and the rollup read PENDING 9 s after it. Over the 384
+queue entries of the 228 pull requests merged from 2026-11-23 to 2026-11-24 12:00Z, the
+shortest time from an approval to the next entry was 7 s, and 2 entries came within 10 s of
+theirs, both enqueued by the coordinator.
 
 Why a run that tests nothing leaves no passing ci-ok. A skipped job's check run is a passing
 required check, so a skipped job named ci-ok on a head whose own ci-ok is red would read as
@@ -1633,13 +1663,13 @@ ways: at 3a30f85f12a a run-level group cancelled the older run (ci-ok check runs
 cancelled, 138438707923 success), and at 9749b52fcd2 a group on the `approval` job cancelled its
 suites (138468630340 failure, 138469054547 success); both heads read FAILURE. A run-level group
 also held the newer run with no job, so with no pending ci-ok, for 39 s while the older run
-cancelled (run 45392143357, created 12:17:56Z, its ci-ok job 12:18:35Z). So each approval's run
-runs to its verdict. A second approval of the same head runs the suites again, and both verdicts
-stand; an approval of a newer head leaves the older head's run to finish. To run an approval-time
-run again after a failure that was not the change's, re-run its failed jobs
-(`gh run rerun <run> --failed`): a later attempt of a job replaces its own check run (the k28
-probe of INFRA-1066, ci-ok-reconcile.sh's header), where another approval would add a second
-verdict and leave the failed one on the head. Every other review's run starts no job.
+cancelled (run 45392143357, created 12:17:56Z, its ci-ok job 12:18:35Z). A later approval of a
+head follows the run already testing it, as `lead` says above; an approval of a newer head leaves
+the older head's run to finish. To run an approval-time run again after a failure that was not
+the change's, re-run its failed jobs (`gh run rerun <run> --failed`): a later attempt of a job
+replaces its own check run (the k28 probe of INFRA-1066, ci-ok-reconcile.sh's header), and the
+runs that follow it read its new ci-ok. Another approval would run the suites anew beside the
+failed verdict, which stays on the head.
 
 What it leaves as it was:
 

@@ -46,6 +46,16 @@
 #      files aside; COMMAND_PLACE below says what counts as a run), or when its `uses:` is an
 #      action of .github/actions, at the checkout's root or under another checkout (`./base/`),
 #      whose steps' `run:` does. A path named in a comment or echoed is no reach.
+#   7. a job that calls a reusable workflow of this repository and grants less than it declares:
+#      for each scope that workflow's own `permissions` or any of its jobs' `permissions` names,
+#      the calling job's `permissions` (the caller workflow's where the job sets none) must grant
+#      it at that level or above (`read` below `write`; `write-all` and `read-all` as GitHub reads
+#      them). GitHub refuses a run whose calling job grants less than the called workflow's jobs
+#      declare, whatever their `if:`, and refuses it at startup, with no job and no check run, so
+#      a scope added to a called workflow alone stops every run of its caller with no signal on the
+#      head: .github/workflows/large-pr-lanes.yaml, which calls ci.yaml on an approval, is the
+#      caller this was written for. A caller with no `permissions` anywhere passes GitHub's
+#      default, which this check cannot read, so it is refused too.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -201,6 +211,81 @@ def local_callee(uses: str) -> Path | None:
     if not uses.startswith("./"):
         return None
     return Path(uses[2:])
+
+
+# Rule 7. The scopes GitHub's `permissions` names, and their levels in order.
+SCOPES = (
+    "actions", "attestations", "checks", "contents", "deployments", "discussions", "id-token",
+    "issues", "models", "packages", "pages", "pull-requests", "repository-projects",
+    "security-events", "statuses",
+)
+LEVELS = {"none": 0, "read": 1, "write": 2}
+
+
+def granted(block: object) -> dict[str, int] | None:
+    """A `permissions` value as {scope: level}: `{}` grants nothing, `read-all` and `write-all`
+    every scope, a mapping what it names. None for a value GitHub would not take."""
+    if isinstance(block, str):
+        level = {"read-all": 1, "write-all": 2}.get(block)
+        return None if level is None else {scope: level for scope in SCOPES}
+    if isinstance(block, dict):
+        levels = {}
+        for scope, level in block.items():
+            if level not in LEVELS:
+                return None
+            levels[str(scope)] = LEVELS[level]
+        return levels
+    return None
+
+
+def check_call_permissions(path: Path) -> None:
+    """Rule 7: each job of `path` that calls a workflow of this repository grants, scope by scope,
+    at least what that workflow's `permissions` and its jobs' `permissions` declare."""
+    try:
+        document = yaml.safe_load(path.read_text())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return  # rule 3 has named it
+    jobs = (document or {}).get("jobs") if isinstance(document, dict) else None
+    if not isinstance(jobs, dict):
+        return
+    for job_id, job in jobs.items():
+        uses = job.get("uses") if isinstance(job, dict) else None
+        callee = local_callee(uses.strip()) if isinstance(uses, str) else None
+        if callee is None or not callee.is_file():
+            continue
+        try:
+            called = yaml.safe_load(callee.read_text())
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            continue  # that file's own read names it
+        if not isinstance(called, dict):
+            continue
+        need: dict[str, int] = {}
+        blocks = [("the workflow's", called.get("permissions"))]
+        blocks += [(f"job '{name}''s", body.get("permissions"))
+                   for name, body in (called.get("jobs") or {}).items() if isinstance(body, dict)]
+        for _, block in blocks:
+            levels = granted(block) if block is not None else {}
+            for scope, level in (levels or {}).items():
+                need[scope] = max(need.get(scope, 0), level)
+        if not any(need.values()):
+            continue
+        names = {v: k for k, v in LEVELS.items()}
+        declared = ", ".join(f"{s}: {names[n]}" for s, n in sorted(need.items()) if n)
+        block = job["permissions"] if "permissions" in job else document.get("permissions")
+        if block is None:
+            problem(path, f"{path}: job '{job_id}' calls {callee}, which declares {declared}, and "
+                          f"names no `permissions`, nor does its workflow, so GitHub hands it the "
+                          f"repository's default, which this check cannot read. Name the scopes "
+                          f"on the job." + limits(path))
+            continue
+        have = granted(block) or {}
+        short = sorted(scope for scope, level in need.items() if have.get(scope, 0) < level)
+        if short:
+            lacking = ", ".join(f"{s}: {names[need[s]]} (granted {names[have.get(s, 0)]})" for s in short)
+            problem(path, f"{path}: job '{job_id}' calls {callee}, and grants less than that "
+                          f"workflow declares: {lacking}. GitHub refuses such a run at startup, "
+                          f"with no job and no check run, so every run of this caller would stop "
+                          f"with no signal on the head." + limits(path))
 
 
 def job_uses(node: object) -> list[str]:
@@ -444,6 +529,7 @@ for path in targets:
             f"single workflow file, counting every tree of nested calls, and a file over that cap "
             f"starts no run." + limits(path),
         )
+    check_call_permissions(path)
 
 if problems:
     for annotation in problems:
@@ -457,7 +543,8 @@ if problems:
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
-    f"at most {CALL_LIMIT} unique reusable workflows, and set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for"
+    f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and grant each workflow they "
+    f"call every scope it declares"
 )
 PY

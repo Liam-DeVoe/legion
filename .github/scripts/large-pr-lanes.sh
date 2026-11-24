@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The two halves of the approval-time run of a large pull request
+# The three halves of the approval-time run of a large pull request
 # (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 #
 # A pull request's run holds the slow suites back (they run in the merge queue), so a defect only
@@ -8,8 +8,7 @@
 # before the queue: at the head a reviewer approves. That run is
 # .github/workflows/large-pr-lanes.yaml, which calls ci.yaml on the approval's pull_request_review
 # event; on that event every `changes` output a pull request holds back takes its paths filter's
-# verdict, as on a merge group, so the run selects exactly the slow suites the change's paths
-# select, beside every fast job.
+# verdict, as on a merge group.
 #
 #   label  large-pr-label.yaml's job on a pull request: reads the pull request's size and puts the
 #          label large-pr on a large pull request, or takes it off one that is no longer large.
@@ -23,28 +22,43 @@
 #          its token cannot write a label, and its change reaches the queue only once a maintainer
 #          takes the branch into this repository, where it is labelled at the next push.
 #
+#   lead   large-pr-lanes.yaml's `lead` job: decides whether this approval runs the suites
+#          (`run=true` in GITHUB_OUTPUT) or follows the approval-time run already at this head
+#          (`run=false`, `follows=<run id>`). It follows the earliest earlier run of that workflow
+#          at HEAD_SHA whose ci-ok job is still open or passed (`target`). So two approval-time
+#          runs never test one head at once: ci.yaml's concurrency group on this event is the
+#          merge commit, and browser-image.yaml's build group too, and GitHub keeps one pending
+#          run per group, cancelling it when a third arrives, which would fail a ci-ok with
+#          nothing failed. A refused read runs the suites, with a warning.
+#
 #   hold   large-pr-lanes.yaml's job named ci-ok. It has no needs, so GitHub creates its check run,
 #          queued, the moment it creates the run, and that pending ci-ok holds the pull request out
-#          of the queue: GitHub reads the newest ci-ok of every workflow and event on the head, this
-#          one among them, and a pending required check is one the queue waits for. The verdict
-#          itself is ci.yaml's own ci-ok job, called as `<CALLER> / ci-ok`, whose check run GitHub
-#          creates only once every job it needs has ended. So this job waits for that job and
-#          concludes as it did: success exits 0, anything else exits 1. A run that ends with no
-#          verdict of this attempt (a job of it listed, none left open, LARGE_PR_HOLD_ENDED_READS
-#          reads in a row) fails too, so a run that never reaches ci.yaml's ci-ok cannot hold the
-#          head pending until this job's timeout; a run whose caller has not started yet (it can
-#          wait in a concurrency group, as ci.yaml's own) is waited for.
+#          of the queue: a required check that exists and is pending makes GitHub refuse the
+#          enqueue. Then:
+#          * when this run's CALLER runs (a job `<CALLER> / …` is listed), it waits for
+#            `<CALLER> / ci-ok`, ci.yaml's own verdict, which GitHub creates only once every job
+#            it needs has ended, and concludes as it did: success exits 0, anything else exits 1.
+#            A run whose CALLER jobs all ended with no verdict of this attempt
+#            (LARGE_PR_HOLD_ENDED_READS reads in a row) fails;
+#          * when CALLER is skipped (`lead` chose to follow), it waits for the ci-ok of `target`'s
+#            run and concludes as that did. When no such run is left (it failed or was cancelled
+#            since `lead` read it), it fails, naming the run to re-run;
+#          * when neither is listed LARGE_PR_HOLD_START_SECONDS after `lead` ended (or after this
+#            job began, with no `lead` listed), it fails, naming why: the caller never started.
 #
 # Its inputs, from the step's env:
 #   label: GH_TOKEN, and GITHUB_EVENT_PATH and GITHUB_REPOSITORY as Actions sets them.
-#   hold:  GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (as Actions sets them),
-#          CALLER (the id of large-pr-lanes.yaml's job that calls ci.yaml),
-#          LARGE_PR_HOLD_POLL_SECONDS (optional, 60 by default; the tests set 0) and
-#          LARGE_PR_HOLD_ENDED_READS (optional, 3 by default).
+#   lead:  GH_TOKEN, HEAD_SHA (the pull request's head), and GITHUB_REPOSITORY, GITHUB_RUN_ID and
+#          GITHUB_OUTPUT as Actions sets them.
+#   hold:  GH_TOKEN, HEAD_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (as Actions
+#          sets them), CALLER (the id of large-pr-lanes.yaml's job that calls ci.yaml),
+#          LARGE_PR_HOLD_POLL_SECONDS (optional, 60 by default; the tests set 0),
+#          LARGE_PR_HOLD_ENDED_READS (optional, 3 by default) and LARGE_PR_HOLD_START_SECONDS
+#          (optional, 300 by default).
 #   GH_RETRY_SECONDS   optional: gh-read.sh's knob, the tests' way to retry without waiting.
 #
-# Run from anywhere: large-pr-lanes.sh label|hold. Its tests are in large-pr-lanes.test.sh, which
-# ci.yaml's test job runs.
+# Run from anywhere: large-pr-lanes.sh label|lead|hold. Its tests are in large-pr-lanes.test.sh,
+# which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -127,52 +141,138 @@ label() {
   esac
 }
 
-# hold: waits for `<CALLER> / ci-ok` and concludes as it did. Each read lists the newest
-# execution of every job of this run (`filter=latest`). A verdict of this attempt decides. One of
-# an earlier attempt decides only when no other job ran in this attempt (a re-run of this job
-# alone): when other jobs re-ran, ci.yaml's ci-ok re-runs after them, and until GitHub creates it
-# the newest one listed is the earlier attempt's.
+# target: the id of the run to follow, or nothing: the earliest run of large-pr-lanes.yaml at
+# HEAD_SHA, older than this one, whose job named ci-ok is still open (it tests, or follows one that
+# does) or concluded success. Returns 1 when GitHub refused a read at every attempt.
+target() {
+  local runs id state
+  runs=$(gh_read gh api --paginate \
+    "repos/$GITHUB_REPOSITORY/actions/runs?event=pull_request_review&head_sha=$HEAD_SHA&per_page=100" \
+    --jq ".workflow_runs[] | select(.path == \"$WORKFLOW_PATH\" and .id < $GITHUB_RUN_ID) | .id") || return 1
+  while read -r id; do
+    [ -n "$id" ] || continue
+    state=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" \
+      --jq '.jobs[] | select(.name == "ci-ok") | "\(.status) \(.conclusion // "-")"') || return 1
+    case $state in
+      "completed success" | queued* | in_progress* | waiting* | pending* | requested*)
+        echo "$id"
+        return 0
+        ;;
+    esac
+  done < <(sort -n <<<"$runs")
+}
+
+lead() {
+  need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID HEAD_SHA GITHUB_OUTPUT
+  local follow
+  if ! follow=$(target); then
+    echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made, so this approval runs the suites itself, beside any run already testing this head"
+    echo "run=true" >>"$GITHUB_OUTPUT"
+    return 0
+  fi
+  if [ -n "$follow" ]; then
+    echo "run $follow, an approval-time run at $HEAD_SHA, is open or passed: this approval follows it and runs no suite of its own"
+    printf 'run=false\nfollows=%s\n' "$follow" >>"$GITHUB_OUTPUT"
+    return 0
+  fi
+  echo "no approval-time run at $HEAD_SHA is open or passed: this approval runs the suites"
+  echo "run=true" >>"$GITHUB_OUTPUT"
+}
+
+# conclude <job name> <conclusion> <url> <what it is>: the hold's verdict, from one ci-ok.
+conclude() {
+  echo "$1 concluded $2: $3"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '%s\n' "This ci-ok is the verdict of the approval-time run of a large pull request: [$1]($3), $4, concluded $2 (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head)." \
+      >>"$GITHUB_STEP_SUMMARY"
+  fi
+  [ "$2" = success ] && return 0
+  echo "::error::$1 concluded $2, so this ci-ok fails: that job's own log names the jobs that failed"
+  return 1
+}
+
+# hold: the three cases of the header. Each read lists the newest execution of every job of this
+# run (`filter=latest`). A verdict of this attempt decides. One of an earlier attempt decides only
+# when no job of CALLER ran in this attempt (a re-run of this job alone): when its jobs re-ran,
+# ci.yaml's ci-ok re-runs after them, and until GitHub creates it the newest one listed is the
+# earlier attempt's.
 hold() {
-  need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT CALLER
+  need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT CALLER HEAD_SHA
   local poll=${LARGE_PR_HOLD_POLL_SECONDS:-60} ended_reads=${LARGE_PR_HOLD_ENDED_READS:-3}
-  local want="$CALLER / ci-ok" ended=0 jobs verdict others listed open
+  local start_limit=${LARGE_PR_HOLD_START_SECONDS:-300}
+  local want="$CALLER / ci-ok" ended=0 started='' followed='' jobs verdict others listed open skipped lead_open
   local route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
-  echo "waiting for $want, the verdict of this approval-time run (attempt $GITHUB_RUN_ATTEMPT)"
+  local status conclusion attempt url
+  echo "waiting for this approval's verdict at $HEAD_SHA (attempt $GITHUB_RUN_ATTEMPT)"
   while true; do
     if jobs=$(gh_read gh api --paginate "$route" \
       --jq '.jobs[] | [.name, .status, (.conclusion // "-"), (.run_attempt | tostring), .html_url] | @tsv'); then
       verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
-      others=$(awk -F'\t' -v attempt="$GITHUB_RUN_ATTEMPT" -v want="$want" \
-        '$1 != "ci-ok" && $1 != want && $4 == attempt' <<<"$jobs" | wc -l)
-      listed=$(awk -F'\t' -v want="$want" '$1 != "ci-ok" && $1 != want' <<<"$jobs" | wc -l)
-      open=$(awk -F'\t' -v want="$want" '$1 != "ci-ok" && $1 != want && $2 != "completed"' <<<"$jobs" | wc -l)
-      if [ -n "$verdict" ]; then
-        local status conclusion attempt url
-        IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
-        if [ "$status" = completed ] && { [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ] || [ "$others" -eq 0 ]; }; then
-          echo "$want concluded $conclusion on attempt $attempt: $url"
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            printf '%s\n' "This ci-ok is the verdict of the approval-time run of a large pull request: [$want]($url) concluded $conclusion. That run ran every fast job and every slow suite this change's paths select (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head)." \
-              >>"$GITHUB_STEP_SUMMARY"
+      others=$(awk -F'\t' -v attempt="$GITHUB_RUN_ATTEMPT" -v caller="$CALLER / " -v want="$want" \
+        'index($1, caller) == 1 && $1 != want && $4 == attempt' <<<"$jobs" | wc -l)
+      listed=$(awk -F'\t' -v caller="$CALLER / " -v want="$want" 'index($1, caller) == 1 && $1 != want' <<<"$jobs" | wc -l)
+      open=$(awk -F'\t' -v caller="$CALLER / " -v want="$want" \
+        'index($1, caller) == 1 && $1 != want && $2 != "completed"' <<<"$jobs" | wc -l)
+      skipped=$(awk -F'\t' -v caller="$CALLER" '$1 == caller && $3 == "skipped"' <<<"$jobs")
+      lead_open=$(awk -F'\t' '$1 == "lead" && $2 != "completed"' <<<"$jobs")
+      if [ "$listed" -gt 0 ] || [ -n "$verdict" ]; then
+        # This approval runs the suites.
+        if [ -n "$verdict" ]; then
+          IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
+          if [ "$status" = completed ] && { [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ] || [ "$others" -eq 0 ]; }; then
+            conclude "$want" "$conclusion" "$url" "which ran every fast job and every slow suite this change's paths select"
+            return
           fi
-          [ "$conclusion" = success ] && return 0
-          echo "::error::$want concluded $conclusion, so this ci-ok fails: that job's own log names the jobs that failed"
-          return 1
         fi
-      fi
-      # No verdict of this attempt yet. GitHub creates ci.yaml's ci-ok only once its needs have
-      # ended, so a moment with every other job completed and no verdict is normal; the same
-      # reading several reads in a row is a run that will not reach one. A run with no job of
-      # CALLER listed yet has not started it: a caller can wait in a concurrency group (ci.yaml's
-      # own, or one a later change adds), and this job waits with it.
-      if [ "$listed" -gt 0 ] && [ "$open" -eq 0 ]; then
-        ended=$((ended + 1))
-        if [ "$ended" -ge "$ended_reads" ]; then
-          echo "::error::no job of this approval-time run is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails"
-          return 1
+        # GitHub creates ci.yaml's ci-ok only once its needs have ended, so a moment with every
+        # job of CALLER completed and no verdict is normal; the same reading several reads in a
+        # row is a run that will not reach one.
+        if [ "$open" -eq 0 ]; then
+          ended=$((ended + 1))
+          if [ "$ended" -ge "$ended_reads" ]; then
+            echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails"
+            return 1
+          fi
+        else
+          ended=0
+        fi
+      elif [ -n "$skipped" ]; then
+        # `lead` chose to follow the approval-time run already at this head. The run followed is
+        # read once and kept, so this job concludes as that run's ci-ok does.
+        if [ -z "$followed" ]; then
+          if ! followed=$(target); then
+            followed=''
+            echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made; reading again in $poll s"
+          elif [ -z "$followed" ]; then
+            echo "::error::$CALLER is skipped, so this approval follows the approval-time run at $HEAD_SHA, and none of that head's runs is open or passed now: the one it followed failed or was cancelled. Re-run that run's failed jobs (gh run rerun <run> --failed), which replaces its ci-ok, and this one's"
+            return 1
+          else
+            echo "following run $followed, the approval-time run at $HEAD_SHA"
+          fi
+        fi
+        if [ -n "$followed" ]; then
+          if verdict=$(gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$followed/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.name == "ci-ok") | [.status, (.conclusion // "-"), .html_url] | @tsv'); then
+            IFS=$'\t' read -r status conclusion url <<<"$verdict"
+            if [ "$status" = completed ]; then
+              conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows"
+              return
+            fi
+          else
+            echo "::warning::GitHub refused run $followed's jobs at every attempt gh-read.sh made; reading again in $poll s"
+          fi
         fi
       else
-        ended=0
+        # Nothing of CALLER yet: `lead` has not ended, or the caller has not started.
+        if [ -n "$lead_open" ]; then
+          started=''
+        else
+          [ -n "$started" ] || started=$SECONDS
+          if [ $((SECONDS - started)) -ge "$start_limit" ]; then
+            echo "::error::no job of $CALLER is listed $start_limit s after lead ended, neither its jobs nor its skip, so the caller never started (cancelled, or held where nothing will release it) and this ci-ok fails"
+            return 1
+          fi
+        fi
       fi
     else
       echo "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made; reading again in $poll s"
@@ -181,12 +281,14 @@ hold() {
   done
 }
 
+WORKFLOW_PATH='.github/workflows/large-pr-lanes.yaml'
 mode=${1:-}
 case $mode in
   label) label ;;
+  lead) lead ;;
   hold) hold ;;
   *)
-    echo "::error::usage: large-pr-lanes.sh label|hold"
+    echo "::error::usage: large-pr-lanes.sh label|lead|hold"
     exit 2
     ;;
 esac

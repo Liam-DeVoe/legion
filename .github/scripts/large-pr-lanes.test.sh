@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `large-pr-lanes.sh`, the two halves of the approval-time run of a large pull request
+# Tests for `large-pr-lanes.sh`, the three halves of the approval-time run of a large pull request
 # (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head):
 #
 #   label  puts large-pr on a pull request of 100 changed files or 10,000 changed lines or more,
@@ -7,12 +7,18 @@
 #          nothing when the label already says the right thing, passes a fork's pull request over,
 #          reads the size from the pull request when the payload leaves it out, and fails the step
 #          when GitHub refuses the label a large pull request needs.
+#   lead   runs the suites unless an older run of the workflow at the same head has a ci-ok
+#          still open or passed, which it follows; a run of another workflow, a newer run and a
+#          failed one are no reason to follow, and a refused read runs the suites.
 #   hold   the job named ci-ok of large-pr-lanes.yaml concludes exactly as `approval / ci-ok`
 #          does, waits while that job is absent or still running, reads an earlier attempt's
-#          verdict only when nothing else re-ran, and fails a run that ends with no verdict.
+#          verdict only when nothing else re-ran, and fails a run that ends with no verdict; when
+#          `approval` is skipped it concludes as the ci-ok of the run it follows, or fails when no
+#          run is left to follow; and it fails when the caller never starts.
 #
-# Each case runs the real script with a stand-in `gh` first on PATH, which answers each read with
-# the lines the script's `--jq` would print and records each write it is sent.
+# Each case runs the real script with a stand-in `gh` first on PATH, which answers each read of
+# the jobs and runs routes from a JSON answer through the script's own `--jq`, as gh does, and
+# records each write it is sent.
 #
 # Run from anywhere: .github/scripts/large-pr-lanes.test.sh
 # CI runs it in ci.yaml's test job.
@@ -31,6 +37,9 @@ cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "\$*" >> "$work/calls"
+filter=.
+args=("\$@")
+for ((i = 0; i < \${#args[@]}; i++)); do [ "\${args[i]}" = --jq ] && filter=\${args[i + 1]}; done
 case "\$*" in
   *"--method POST repos/o/r/issues/7/labels -f labels[]=large-pr"*)
     if [ -e "$work/write-fails" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; fi
@@ -40,20 +49,30 @@ case "\$*" in
     echo removed >> "$work/writes" ;;
   "api repos/o/r/pulls/7 "*)
     cat "$work/pull-size" ;;
-  *"repos/o/r/actions/runs/41/jobs?filter=latest&per_page=100"*)
-    # One file per read, reads/1, reads/2, ...; past the last, the last answers again.
-    n=\$(( \$(cat "$work/read-count" 2>/dev/null || echo 0) + 1 ))
-    echo "\$n" > "$work/read-count"
-    if [ -e "$work/reads/fail.\$n" ]; then echo "HTTP 502" >&2; exit 1; fi
-    last=\$(find "$work/reads" -name '[0-9]*' | wc -l)
+  *"repos/o/r/actions/runs?event=pull_request_review&head_sha=abc&per_page=100"*)
+    if [ -e "$work/runs-fail" ]; then echo "HTTP 502" >&2; exit 1; fi
+    jq -r "\$filter" "$work/head-runs.json" ;;
+  *"repos/o/r/actions/runs/"*"/jobs?filter=latest&per_page=100"*)
+    # One answer per read of each run, reads-<run>/1, /2, ...; past the last, the last again.
+    all="\$*"
+    run=\${all#*actions/runs/}
+    run=\${run%%/jobs*}
+    n=\$(( \$(cat "$work/read-count-\$run" 2>/dev/null || echo 0) + 1 ))
+    echo "\$n" > "$work/read-count-\$run"
+    if [ -e "$work/reads-\$run/fail.\$n" ]; then echo "HTTP 502" >&2; exit 1; fi
+    last=\$(find "$work/reads-\$run" -name '[0-9]*' | wc -l)
     [ "\$n" -le "\$last" ] || n=\$last
-    cat "$work/reads/\$n" ;;
+    jq -r "\$filter" "$work/reads-\$run/\$n" ;;
   *) echo "unexpected gh \$*" >&2; exit 2 ;;
 esac
 GH
 chmod +x "$work/bin/gh"
 
-reset() { rm -rf "$work/calls" "$work/writes" "$work/write-fails" "$work/pull-size" "$work/reads" "$work/read-count"; }
+reset() {
+  rm -rf "$work/calls" "$work/writes" "$work/write-fails" "$work/pull-size" "$work"/reads-* \
+    "$work"/read-count-* "$work/runs-fail" "$work/output"
+  printf '{"workflow_runs": []}\n' > "$work/head-runs.json"
+}
 writes() { [ -e "$work/writes" ] && tr '\n' ' ' < "$work/writes" || echo ""; }
 call_count() { [ -e "$work/calls" ] && wc -l < "$work/calls" | tr -d ' ' || echo 0; }
 
@@ -148,45 +167,107 @@ run_label
 check "fails the step" "$(is "$status" 1)"
 check "says what it reads" "$(contains "$out" 'large-pr-lanes.sh label reads a pull_request event')"
 
-# reads <file>...: the answers of successive job reads, each a list of rows
-# name|status|conclusion|attempt, written as the script's --jq prints them.
-reads() {
-  local n=0 file row name status conclusion attempt
-  mkdir -p "$work/reads"
-  for file in "$@"; do
+# reads_of <run> <answer>...: the answers of successive reads of that run's jobs, each a list of
+# rows name|status|conclusion|attempt separated by `;`, written as the JSON GitHub answers.
+# reads <answer>...: the same for this run, 41.
+reads_of() {
+  local run=$1 n=0 answer row name status conclusion attempt
+  shift
+  mkdir -p "$work/reads-$run"
+  for answer in "$@"; do
     n=$((n + 1))
-    : > "$work/reads/$n"
-    IFS=';' read -ra rows <<<"$file"
+    IFS=';' read -ra rows <<<"$answer"
     for row in "${rows[@]}"; do
       [ -n "$row" ] || continue
       IFS='|' read -r name status conclusion attempt <<<"$row"
-      printf '%s\t%s\t%s\t%s\thttps://github.com/o/r/actions/runs/41/job/%s\n' \
-        "$name" "$status" "$conclusion" "$attempt" "$n" >> "$work/reads/$n"
-    done
+      jq -n --arg name "$name" --arg status "$status" --arg conclusion "$conclusion" \
+        --arg attempt "${attempt:-1}" --arg url "https://github.com/o/r/actions/runs/$run/job/$n" \
+        '{name: $name, status: $status, conclusion: (if $conclusion == "-" then null else $conclusion end),
+          run_attempt: ($attempt | tonumber), html_url: $url}'
+    done | jq -s '{jobs: .}' > "$work/reads-$run/$n"
   done
+}
+reads() { reads_of 41 "$@"; }
+# head_runs <run>[=<path>]...: the runs at the head, as the runs route lists them; a run's path
+# is large-pr-lanes.yaml's unless one is given.
+head_runs() {
+  local spec
+  for spec in "$@"; do
+    if [ "$spec" = "${spec%%=*}" ]; then spec="$spec=.github/workflows/large-pr-lanes.yaml"; fi
+    jq -n --arg id "${spec%%=*}" --arg path "${spec#*=}" '{id: ($id | tonumber), path: $path}'
+  done | jq -s '{workflow_runs: .}' > "$work/head-runs.json"
 }
 
 run_hold() {
   set +e
-  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 HEAD_SHA=abc \
     GITHUB_RUN_ATTEMPT=${1:-1} CALLER=approval LARGE_PR_HOLD_POLL_SECONDS=0 GH_RETRY_SECONDS=0 \
-    timeout 30 "$script_dir/large-pr-lanes.sh" hold 2>&1)
+    LARGE_PR_HOLD_START_SECONDS=${START:-3600} timeout 30 "$script_dir/large-pr-lanes.sh" hold 2>&1)
   status=$?
   set -e
 }
-reads_made() { cat "$work/read-count"; }
+run_lead() {
+  set +e
+  : > "$work/output"
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 HEAD_SHA=abc \
+    GITHUB_OUTPUT="$work/output" GH_RETRY_SECONDS=0 "$script_dir/large-pr-lanes.sh" lead 2>&1)
+  status=$?
+  set -e
+}
+reads_made() { cat "$work/read-count-${1:-41}"; }
+output() { tr '\n' ' ' < "$work/output"; }
+
+echo "case: lead with no earlier approval-time run at the head"
+reset
+run_lead
+check "exits 0" "$(is "$status" 0)"
+check "runs the suites" "$(is "$(output)" "run=true ")"
+
+echo "case: lead with an earlier run whose ci-ok is open"
+reset
+head_runs 40
+reads_of 40 "ci-ok|in_progress|-|1;approval / changes|in_progress|-|1"
+run_lead
+check "follows it" "$(is "$(output)" "run=false follows=40 ")"
+check "says so" "$(contains "$out" '^run 40, an approval-time run at abc, is open or passed: this approval follows it')"
+
+echo "case: lead with an earlier run that passed, after one that failed"
+reset
+head_runs 38 39
+reads_of 38 "ci-ok|completed|failure|1"
+reads_of 39 "ci-ok|completed|success|1"
+run_lead
+check "follows the one that passed" "$(is "$(output)" "run=false follows=39 ")"
+
+echo "case: lead with only a failed earlier run, a newer run and another workflow's run"
+reset
+head_runs 38 42 37=.github/workflows/ci.yaml
+reads_of 38 "ci-ok|completed|failure|1"
+reads_of 42 "ci-ok|in_progress|-|1"
+reads_of 37 "ci-ok|in_progress|-|1"
+run_lead
+check "runs the suites" "$(is "$(output)" "run=true ")"
+check "and read no run but 38" "$(is "$(grep -c -e 'actions/runs/37/' -e 'actions/runs/42/' "$work/calls")" 0)"
+
+echo "case: lead whose read GitHub refuses"
+reset
+touch "$work/runs-fail"
+run_lead
+check "runs the suites rather than follow nothing" "$(is "$(output)" "run=true ")"
+check "and warns" "$(contains "$out" '::warning::GitHub refused the approval-time runs at abc')"
 
 self='ci-ok|in_progress|-|1'
+lead_done='lead|completed|success|1'
 echo "case: the verdict passes after the run's jobs end"
 reset
-reads "$self;approval / changes|in_progress|-|1" \
-  "$self;approval / changes|completed|success|1;approval / pi-legion / pi-legion|in_progress|-|1" \
-  "$self;approval / changes|completed|success|1;approval / pi-legion / pi-legion|completed|success|1;approval / ci-ok|queued|-|1" \
-  "$self;approval / changes|completed|success|1;approval / pi-legion / pi-legion|completed|success|1;approval / ci-ok|completed|success|1"
+reads "$self;$lead_done;approval / changes|in_progress|-|1" \
+  "$self;$lead_done;approval / changes|completed|success|1;approval / pi-legion / pi-legion|in_progress|-|1" \
+  "$self;$lead_done;approval / changes|completed|success|1;approval / pi-legion / pi-legion|completed|success|1;approval / ci-ok|queued|-|1" \
+  "$self;$lead_done;approval / changes|completed|success|1;approval / pi-legion / pi-legion|completed|success|1;approval / ci-ok|completed|success|1"
 run_hold
 check "exits 0" "$(is "$status" 0)"
 check "waited through the absent and the queued verdict" "$(is "$(reads_made)" 4)"
-check "names the verdict" "$(contains "$out" '^approval / ci-ok concluded success on attempt 1: https://github.com/o/r/actions/runs/41/job/4$')"
+check "names the verdict" "$(contains "$out" '^approval / ci-ok concluded success: https://github.com/o/r/actions/runs/41/job/4$')"
 
 echo "case: the verdict fails"
 reset
@@ -230,17 +311,7 @@ reads "$self;approval / changes|completed|failure|1;approval / lint / lint|compl
 run_hold
 check "fails rather than hold the head pending to its timeout" "$(is "$status" 1)"
 check "after three reads in a row" "$(is "$(reads_made)" 3)"
-check "says why" "$(contains "$out" 'no job of this approval-time run is open and approval / ci-ok has not concluded on attempt 1, 3 reads in a row')"
-
-echo "case: the caller has not started, waiting in a concurrency group"
-# Test pull request #5347: a second approval's run (45392143357) listed no job of the caller for
-# 39 s while a run-level group held it behind the first.
-reset
-reads "$self" "$self" "$self" "$self" "$self;approval / changes|in_progress|-|1" \
-  "$self;approval / changes|completed|success|1;approval / ci-ok|completed|success|1"
-run_hold
-check "is waited for, not read as a run that ended" "$(is "$status" 0)"
-check "through every read" "$(is "$(reads_made)" 6)"
+check "says why" "$(contains "$out" 'no job of approval is open and approval / ci-ok has not concluded on attempt 1, 3 reads in a row')"
 
 echo "case: a moment with every job ended and the verdict not yet created"
 reset
@@ -249,10 +320,58 @@ reads "$self;approval / changes|completed|success|1" "$self;approval / changes|c
 run_hold
 check "is waited through" "$(is "$status" 0)"
 
+echo "case: lead still open, then the caller starts"
+reset
+reads "$self;lead|queued|-|1" "$self;lead|in_progress|-|1" "$self;$lead_done" \
+  "$self;$lead_done;approval / changes|completed|success|1;approval / ci-ok|completed|success|1"
+START=1 run_hold
+check "is waited for: the start clock runs only once lead has ended" "$(is "$status" 0)"
+check "through every read" "$(is "$(reads_made)" 4)"
+
+echo "case: the caller never starts"
+# A caller held where nothing releases it, or cancelled before it listed a job, lists neither its
+# jobs nor its skip: GitHub keeps one pending run per concurrency group and cancels the rest.
+reset
+reads "$self;$lead_done"
+START=0 run_hold
+check "fails at once rather than hold the head pending to its timeout" "$(is "$status" 1)"
+check "says why" "$(contains "$out" '::error::no job of approval is listed 0 s after lead ended, neither its jobs nor its skip, so the caller never started')"
+
+follower="$self;$lead_done;approval|completed|skipped|1"
+echo "case: the caller is skipped, and the run it follows passes"
+reset
+head_runs 39 40
+reads_of 39 "ci-ok|completed|failure|1"
+reads_of 40 "ci-ok|in_progress|-|1" "ci-ok|in_progress|-|1" "ci-ok|completed|success|1"
+reads "$follower"
+run_hold
+check "exits 0" "$(is "$status" 0)"
+check "follows the one open, not the one that failed" "$(contains "$out" '^following run 40, the approval-time run at abc$')"
+check "and concludes as its ci-ok" "$(contains "$out" '^the ci-ok of run 40 concluded success: https://github.com/o/r/actions/runs/40/job/3$')"
+check "reading the run it chose, not choosing again" "$(is "$(reads_made 40)" 3)"
+
+echo "case: the caller is skipped, and the run it follows fails"
+reset
+head_runs 40
+reads_of 40 "ci-ok|in_progress|-|1" "ci-ok|completed|failure|1"
+reads "$follower"
+run_hold
+check "fails" "$(is "$status" 1)"
+check "naming the run" "$(contains "$out" '::error::the ci-ok of run 40 concluded failure, so this ci-ok fails')"
+
+echo "case: the caller is skipped, and no run at the head is open or passed any more"
+reset
+head_runs 40
+reads_of 40 "ci-ok|completed|cancelled|1"
+reads "$follower"
+run_hold
+check "fails" "$(is "$status" 1)"
+check "says what to re-run" "$(contains "$out" 'none of that head.s runs is open or passed now: the one it followed failed or was cancelled. Re-run that run.s failed jobs')"
+
 echo "case: GitHub refuses a read"
 reset
 reads "$self;approval / ci-ok|completed|success|1"
-touch "$work/reads/fail.1" "$work/reads/fail.2" "$work/reads/fail.3"
+touch "$work/reads-41/fail.1" "$work/reads-41/fail.2" "$work/reads-41/fail.3"
 run_hold
 check "warns and reads again" "$(contains "$out" "::warning::GitHub refused this run's jobs at every attempt gh-read.sh made")"
 check "then concludes" "$(is "$status" 0)"
@@ -260,7 +379,7 @@ check "then concludes" "$(is "$status" 0)"
 echo "case: an input the step did not set"
 reset
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=1 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=1 HEAD_SHA=abc \
   "$script_dir/large-pr-lanes.sh" hold 2>&1)
 status=$?
 set -e
@@ -274,4 +393,4 @@ status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
 
-summary "large-pr-lanes.sh labels a large pull request and holds ci-ok to its approval-time run's verdict"
+summary "large-pr-lanes.sh labels a large pull request, runs or follows its approval-time run, and holds ci-ok to that run's verdict"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
 # parses as YAML, repeats no mapping key after upper-casing, calls at most 46 unique reusable
-# workflows, and sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
-# stand for.
+# workflows, sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand
+# for, and grants each workflow it calls of this repository every scope that workflow declares.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -312,7 +312,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 47 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 46 unique reusable workflows, and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for$')"
+  "$(contains "$out" 'call at most 46 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and grant each workflow they call every scope it declares$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -572,5 +572,84 @@ check "names the step whose script sources gh-read.sh by its bare name" \
   "$(contains "$out" "line=17::.github/workflows/ci.yaml:17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
 check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
 check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a caller that grants every scope its callee's jobs declare, by its own block or its workflow's"
+root=$(fixture call-scopes-held)
+cat > "$root/.github/workflows/called.yaml" <<'YAML'
+name: Called
+on: workflow_call
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - run: echo one
+YAML
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Caller
+on: push
+permissions:
+  contents: write
+  checks: write
+jobs:
+  own:
+    permissions:
+      contents: read
+      checks: write
+      issues: read
+    uses: ./.github/workflows/called.yaml
+  inherited:
+    uses: ./.github/workflows/called.yaml
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a caller that grants less than its callee's jobs declare, or names no permissions at all"
+root=$(fixture call-scopes-short)
+cat > "$root/.github/workflows/called.yaml" <<'YAML'
+name: Called
+on: workflow_call
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      id-token: write
+    steps:
+      - run: echo one
+  quiet:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo two
+YAML
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Caller
+on: push
+jobs:
+  short:
+    permissions:
+      contents: read
+      checks: read
+    uses: ./.github/workflows/called.yaml
+  unnamed:
+    uses: ./.github/workflows/called.yaml
+  everything:
+    permissions: write-all
+    uses: ./.github/workflows/called.yaml
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job, the callee and each scope it lacks, with the level it grants" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml: job 'short' calls .github/workflows/called.yaml, and grants less than that workflow declares: checks: write (granted read), id-token: write (granted none)")"
+check "and the job that names no permissions, nor its workflow" \
+  "$(contains "$out" "job 'unnamed' calls .github/workflows/called.yaml, which declares checks: write, contents: read, id-token: write, and names no \`permissions\`, nor does its workflow")"
+check "not the job that grants write-all" "$(is "$(contains "$out" "job 'everything'")" false)"
+check "refuses those two and nothing else" "$(contains "$out" '^2 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
 summary "check-workflow-files.sh"
