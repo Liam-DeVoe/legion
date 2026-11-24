@@ -4,11 +4,11 @@
 // visual-guard.ts). What a page cannot stop is a write the server makes while it answers, so this
 // test sends each API read, each sign-in read and each live view those pages make
 // (testdata/visual-shot-reads.json, which a visual row fails without), and reads every statement
-// the pool runs while each one is answered, through the tracer
-// TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with (markedStatements, writesOf)
-// and a watch beside it. A write to any table its channel does not allow fails the test, by the
-// read or view and the table. It opens and closes a document's room as a page does too, and holds
-// the room to writing nothing.
+// the pool runs while each one is answered: its tracer (shotStatements) records every statement
+// the pool runs while its watch is on, and writesOf (read_only_token_test.go) reads their writes.
+// A write to any table its channel does not allow fails the test, by the read or view and the
+// table. It opens and closes a document's room as a page does too, and holds the room to writing
+// nothing.
 package api
 
 import (
@@ -106,13 +106,12 @@ func visualShotReads(t *testing.T) visualShotList {
 	return list
 }
 
-// shotStatements is markedStatements, the tracer a traced store runs its hooks through, with a
-// watch beside it that records every statement the pool runs while it is on. Every channel is read
+// shotStatements is the tracer a traced store runs its hooks through: it records every statement
+// the pool runs while its watch is on, and writesOf reads their writes. Every channel is read
 // through the watch, since each reaches statements no request marks: a document room loads and
 // settles on contexts of the server's own, and the event horizon a read waits on writes what it
 // proved on its observer's goroutine after the read has its answer (events.Horizon.writePersisted).
 type shotStatements struct {
-	markedStatements
 	watching atomic.Bool
 	mu       sync.Mutex
 	watched  []string
@@ -127,20 +126,29 @@ func (s *shotStatements) observe(statement string) {
 	s.watched = append(s.watched, statement)
 }
 
-func (s *shotStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (s *shotStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	s.observe(data.SQL)
-	return s.markedStatements.TraceQueryStart(ctx, conn, data)
+	return ctx
 }
 
-func (s *shotStatements) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	s.observe(data.SQL)
-	s.markedStatements.TraceBatchQuery(ctx, conn, data)
+func (s *shotStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (s *shotStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
 }
 
-func (s *shotStatements) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+func (s *shotStatements) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	s.observe(data.SQL)
+}
+
+func (s *shotStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (s *shotStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
 	s.observe("insert into " + data.TableName.Sanitize() + " (copy from)")
-	return s.markedStatements.TraceCopyFromStart(ctx, conn, data)
+	return ctx
 }
+
+func (s *shotStatements) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {}
 
 // watch starts recording every statement, and stop ends it and answers what it recorded.
 func (s *shotStatements) watch() {

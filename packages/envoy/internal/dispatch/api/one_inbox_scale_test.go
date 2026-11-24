@@ -135,9 +135,7 @@ func TestOneInboxParticipantSetOfTheCorpus(t *testing.T) {
 //
 // The database runs with jit = off, set before the base build boots over it (turnJITOff) and read
 // back on a new session before the first reading, which the first measurement-two: line prints with
-// pg_jit_available. Production's Postgres, Cloud SQL, runs no JIT, and compiling a plan inflates a
-// reading: in a builds Job, whose Postgres compiles by default, JIT took 129 ms in a references
-// read whose median run was 122.5 ms, a read of 25.7 ms at p50 with jit = off.
+// pg_jit_available (turnJITOff says why).
 func TestOneInboxWriteBaseline(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {

@@ -156,10 +156,7 @@ type dismissedScaleShape struct {
 // holds each operation to the two bounds above.
 //
 // Every shape's database runs with jit = off (jitOffStore), read back on a new session of each
-// before the first reading and printed above the table. Production's Postgres, Cloud SQL, runs no
-// JIT, and compiling a plan inflates a reading: in a builds Job, whose Postgres compiles by
-// default, JIT took 129 ms in a references read whose median run was 122.5 ms, a read of 25.7 ms
-// at p50 with jit = off.
+// before the first reading and printed above the table (turnJITOff says why).
 //
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
@@ -585,6 +582,10 @@ func msOf(taken time.Duration) float64 {
 // whoever opens it: a pool of this process, or a build's own process given only the URL. A session
 // already open keeps the value it opened with, so a measurement turns JIT off before any pool or
 // process it times opens one.
+//
+// Production's Postgres, Cloud SQL, runs no JIT, and compiling a plan inflates a reading: in a
+// builds Job, whose Postgres compiles by default, JIT took 129 ms in a references read whose
+// median run was 122.5 ms, a read of 25.7 ms at p50 with jit = off.
 func turnJITOff(t *testing.T, what, databaseURL string) {
 	t.Helper()
 	ctx := context.Background()

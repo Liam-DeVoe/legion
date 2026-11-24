@@ -54,10 +54,7 @@ import (
 //
 // Both databases run with jit = off, set on each before any measured session opens on it
 // (turnJITOff, jitOffStore) and read back on a new session of each before the first reading, which
-// the first c-p99: line prints with pg_jit_available. Production's Postgres, Cloud SQL, runs no
-// JIT, and compiling a plan inflates a reading: in a builds Job, whose Postgres compiles by
-// default, JIT took 129 ms in a references read whose median run was 122.5 ms, a read of 25.7 ms
-// at p50 with jit = off.
+// the first c-p99: line prints with pg_jit_available (turnJITOff says why).
 //
 // Before any timing it runs `vacuum analyze` and then `explain (analyze)` on the one read of each
 // reader below as the dashboard's request of it ran through this build's handler: the read's
