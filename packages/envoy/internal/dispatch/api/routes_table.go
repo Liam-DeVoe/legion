@@ -400,6 +400,7 @@ var idRoutes = map[string]idRoute{
 	// document that does not exist and resolve no prefix: a short id written at one of them
 	// reaches the hook as the caller wrote it, as every other value does.
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":            {Reason: "a test hook's document id, naming a live room rather than a stored document"},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":               {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":                {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}":    {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}":    {Reason: "a test hook's document id, naming a live room rather than a stored document"},
@@ -901,6 +902,7 @@ func (s *server) routes() []apiRoute {
 			routeRow{http.MethodPost, "/api/v1/artifacts/{id}/_test/newer-content", authAny, "Test hook: append an element no build knows, so the document holds newer content.", s.injectArtifactNewerContent},
 			routeRow{http.MethodPost, "/api/v1/agents/{session_id}/stream/_test/publish", authAny, "Test hook: publish one frame to a session's conversation viewers on every process.", s.publishAgentStreamFrame},
 			routeRow{http.MethodGet, "/api/v1/artifacts/_test/rooms", authAny, "Test hook: list the documents this process holds a room of.", s.listResidentRooms},
+			routeRow{http.MethodGet, "/api/v1/artifacts/{id}/_test/ask-attributes", authAny, "Test hook: read the attributes each ask block of a document holds in this process's live tree.", s.getLiveAskAttributes},
 			routeRow{http.MethodGet, "/api/v1/artifacts/{id}/_test/room-counters", authAny, "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now.", s.getRoomCounters},
 			routeRow{http.MethodPost, "/api/v1/artifacts/{id}/_test/hold-persistence", authAny, "Test hook: hold this process's appends of a document's browser updates for a duration.", s.holdRoomPersistence},
 			routeRow{http.MethodPut, "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}", authAny, "Test hook: park the document's next live write at a point (after-first-append, after-commit).", s.armLiveWritePause},

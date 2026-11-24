@@ -44,10 +44,15 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	if parents := schema.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
 	}
+	// decision and reading are read from version 6 and created from version 7: this build reads a
+	// store the slice that gives them nodes wrote, and refuses to create them before it.
 	for _, typ := range schema.Types[5:] {
-		if typ.Since != 6 || typ.CreatableSince != 6 {
-			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read and created from version 6", typ.Name, typ.Since, typ.CreatableSince)
+		if typ.Since != 6 || typ.CreatableSince != 7 {
+			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read from version 6 and created from version 7", typ.Name, typ.Since, typ.CreatableSince)
 		}
+	}
+	if shaped, declared := schema.Types[1].Attributes.Lookup("shaped"); !declared || shaped.Since != 6 || shaped.CreatableSince != 7 {
+		t.Fatalf("ask attribute shaped = %+v (declared %v), want it read from version 6 and created from version 7", shaped, declared)
 	}
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
