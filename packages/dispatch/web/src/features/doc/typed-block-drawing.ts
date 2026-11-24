@@ -1,4 +1,4 @@
-import { askOpenerLines, parseBlockPointerValue, typedBlockIdAttribute } from "@legion/contracts";
+import { askOpenerLines, askOpeners, parseBlockPointerValue } from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
@@ -353,15 +353,6 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&lt;": "<",
 };
 
-/** What starts a line that opens the ask block `blockId` past its containers' markers
- *  (`askOpenerLines`): the directive's colons and the block's id as the renderer writes it
- *  (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold), ended by a
- *  space or the closing brace. */
-function askOpenerPattern(blockId: string): RegExp {
-  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^:{3,}ask\\{${id}[ }]`);
-}
-
 /**
  * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
  * /api/v1/artifacts/{id}/text`) from a Dispatch of the release before, renders it on the block's
@@ -369,17 +360,15 @@ function askOpenerPattern(blockId: string): RegExp {
  * the block's own ask, or of the ask on another document of the owner the block is a copy of,
  * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
  * release writes none of them into the text and answers them in its `asks` (`liveAskOf`). Only a
- * real opener counts, as the CLI reads one (`askOpenerLines`): a line that quotes the opener in
- * fenced code or in front matter is the document's own text. Undefined where the text renders the
- * block no state, or holds no real opener of it, or more than one.
+ * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`): a line
+ * that quotes the opener in fenced code or in front matter is the document's own text. Undefined
+ * where the text renders the block no state, or holds no real opener of it, or more than one.
  */
 export function renderedAskOf(
   markdown: string | undefined,
   blockId: string
 ): ServedAsk | undefined {
-  const opener = askOpenerPattern(blockId);
-  const openers =
-    markdown === undefined ? [] : askOpenerLines(markdown).filter((line) => opener.test(line));
+  const openers = markdown === undefined ? [] : askOpeners(askOpenerLines(markdown), blockId);
   if (openers.length !== 1) {
     return undefined;
   }
