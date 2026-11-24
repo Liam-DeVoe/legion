@@ -90,9 +90,10 @@ export interface PartWords {
    *  of its own or a spread of one), with `satisfies PartWords` or without it. An `add` with a
    *  wide type (`object`, `Record<string, …>`) passes the type check. The case "each key a
    *  part's file adds under add names a table that takes a part's keys" of `page-words.test.ts`
-   *  refuses a closed table's key, and a key that names no table, in any part's file whatever the
-   *  type of its `add`, and names the key and the file. It is the only guard for an `add` with a
-   *  wide type. A key spread from a wide type passes the `satisfies` of a literal on `main` too. */
+   *  refuses a closed table's key, and a key for a table that `page-words.ts` does not declare,
+   *  in any part's file whatever the type of its `add`, and names the file and the table. It is
+   *  the only guard for an `add` with a wide type. A key spread from a wide type passes the
+   *  `satisfies` of a literal on `main` too. */
   readonly add: { readonly [Name in Exclude<TableName, ClosedTableName>]?: object } & {
     readonly [Name in ClosedTableName]?: never;
   };

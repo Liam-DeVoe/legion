@@ -991,8 +991,8 @@ from any pull request. TypeScript reads the keys of a table where the table is d
 type of a part's `add` gives each of them the type `never`, so the type check refuses words for
 one of them in a part's file whose `add` has a literal type, with or without `satisfies PartWords`.
 A case of `page-words.test.ts` refuses such a key, and a key for a table that `page-words.ts` does
-not declare, in any part's file whatever the type of its `add` (`page-words-parts.ts`,
-`PartWords.add`).
+not declare, in any part's file whatever the type of its `add`, and names the file and the table
+(`page-words-parts.ts`, `PartWords.add`).
 
 A change to a word is made in place, in the file that holds it: `page-words.ts` or a part's file.
 Every other new word of a pull request that is not an open part goes in `page-words.ts`. The four
