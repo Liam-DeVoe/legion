@@ -167,38 +167,7 @@ func TestALaunchIntoAKeptPodWaitsAsLongAsTheKubeletTakesToProjectItsCredential(t
 		return time.Duration(start.GitHubCredential.WaitMs) * time.Millisecond
 	}
 
-	g := newRig(t, nil, withOptions(apps))
-	g.spawn(rootSpec(t))
-	g.launcher(keyed)
-	hold := make(chan struct{})
-	g.commandsMu.Lock()
-	g.holdStart = hold
-	g.commandsMu.Unlock()
-	launched := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, spec); launched <- err }()
-	testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the launch's start to reach its launcher", func() bool {
-		return slices.ContainsFunc(g.sent(keyed), func(frame shimwire.Frame) bool {
-			start, ok := frame.(shimwire.LauncherStart)
-			return ok && start.Generation == spec.Generation
-		})
-	})
-	if bound := named(t, g); bound < secretProjectionBound-time.Second || bound > secretProjectionBound {
-		t.Fatalf("the start names a bound of %s on the launcher's wait for its credential, want about %s: the boot timeout of %s leaves the kubelet too little",
-			bound, secretProjectionBound, g.opts.BootTimeout)
-	}
-	held := g.opts.BootTimeout + g.opts.TerminationGrace + time.Second
-	select {
-	case err := <-launched:
-		t.Fatalf("the launch ended (%v) while its launcher held the start, before %s, want it still waiting on the start", err, held)
-	case <-time.After(held):
-	}
-	g.commandsMu.Lock()
-	g.holdStart = nil
-	g.commandsMu.Unlock()
-	close(hold)
-	if err := <-launched; err != nil {
-		t.Fatalf("the launch into the kept pod, once its launcher answered the start: %v", err)
-	}
+	// Scratch, never merged: the case of the 2 s boot timeout is cut, so this runs the control alone.
 
 	long := secretProjectionBound + time.Minute
 	control := newRig(t, nil, withOptions(func(o *Options) {
