@@ -9,6 +9,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -78,7 +80,9 @@ const machineLoginSettleAfter = wire.RequestDeadline + wire.RequestWriteMargin
 // machineLoginSettleAfter after the removal. One the broker does not confirm is logged at ERROR,
 // one whose claim ran out of time, or came too soon to settle, at INFO; each is left owed and tried
 // again brokerRevocationRetry after its claim. It answers when the next pass is due, the zero time
-// when none is owed. A server with no broker pays nothing.
+// when none is owed. A server with no broker pays nothing. Each line names the person by their
+// login's hash and a failure by its kind, never the address or the store's or the broker client's
+// error, each of which quotes it (model.LoginHash, errkind.Of).
 func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 	client := s.deps.AgentSecrets
 	if client == nil || s.deps.Store == nil {
@@ -96,31 +100,32 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 	// claim the row again, brokerRevocationRetry after this claim.
 	sendWithin := brokerRevocationRetry - client.HTTP.Timeout
 	for _, revocation := range owed {
+		person := model.LoginHash(revocation.Email)
 		mayCall := func() (bool, error) { return revocations.Sendable(ctx, revocation, sendWithin) }
 		revoked, err := revokeMachineLoginsOf(ctx, client, revocation, mayCall)
 		if errors.Is(err, errRevocationWindowSpent) {
 			slog.Info("dispatch: a claimed machine-login revocation sent no more calls: its claim is older than a call may start, or a removal recorded it again; the next claim sends what is owed",
-				"email", revocation.Email, "revoked", revoked, "send_within", sendWithin, "retry_in", brokerRevocationRetry)
+				"login_hash", person, "revoked", revoked, "send_within", sendWithin, "retry_in", brokerRevocationRetry)
 			continue
 		}
 		if err != nil {
 			slog.Error("dispatch: the machine logins of a restricted member taken off an access list or reset by a project's owner were not revoked: the secrets broker did not confirm, or the claim could not be read; trying again",
-				"email", revocation.Email, "revoked", revoked, "retry_in", brokerRevocationRetry, "error", err)
+				"login_hash", person, "revoked", revoked, "retry_in", brokerRevocationRetry, "error_kind", errkind.Of(err))
 			continue
 		}
-		settled, err := revocations.Settle(ctx, revocation, machineLoginSettleAfter)
+		settled, err := revocationStoreCall(s, "machine-settle", func() (bool, error) { return revocations.Settle(ctx, revocation, machineLoginSettleAfter) })
 		if err != nil {
 			slog.Error("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner, and the revocation could not be settled; it is paid again",
-				"email", revocation.Email, "error", err)
+				"login_hash", person, "error_kind", errkind.Of(err))
 			continue
 		}
 		if !settled {
 			slog.Info("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner; the revocation stays owed: its claim came less than settle_after after the removal, while the broker may still commit an approve it took before it, or a removal recorded it again; the next claim lists them again",
-				"email", revocation.Email, "machine_logins", revoked, "settle_after", machineLoginSettleAfter, "retry_in", brokerRevocationRetry)
+				"login_hash", person, "machine_logins", revoked, "settle_after", machineLoginSettleAfter, "retry_in", brokerRevocationRetry)
 			continue
 		}
 		slog.Warn("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner",
-			"email", revocation.Email, "machine_logins", revoked)
+			"login_hash", person, "machine_logins", revoked)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
 	return nextPassAt(ctx, wait, due, err, "machine-login revocation")

@@ -12,15 +12,17 @@ body: |-
   sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in,
   the membership pass, a Workspace Directory check under IAP identity and a passkey sign-in or
   ceremony refused, the API's line of a decision, mint or scope change refused because a caller's
-  standing could not be read, the people store's lines of a sign-in (the account binding's
-  catch-up, ended sessions and revoked tokens, a plain refresh token the pool did not revoke, and a
-  stored refresh token that does not open) and the passkey store's lines of an enrollment and of
-  the hourly confirmation's ends name the person as `login_hash` where they named `email`; a
-  refusal's or an end's `reason` gives the refusal's words, never its text, and names the address a
-  refreshed sign-in carried by its hash. Each failed store or broker call on those lines is named
-  by `error_kind` (`database SQLSTATE <code>`, `broker HTTP <status>`, `deadline exceeded` and
-  others) in place of `error`, whose text quoted the address; the sign-in pool's revoke and the
-  issuer's refresh keep `error`, the issuer's own answer, which carries no login Dispatch put in it.
+  standing could not be read, the broker revocation loop's lines (an account-binding catch-up, a
+  replaced account's broker revocation and a restricted member's machine-login revocation), the
+  people store's lines of a sign-in (the account binding's catch-up, ended sessions and revoked
+  tokens, a plain refresh token the pool did not revoke, and a stored refresh token that does not
+  open) and the passkey store's lines of an enrollment and of the hourly confirmation's ends name
+  the person as `login_hash` where they named `email`; a refusal's or an end's `reason` gives the
+  refusal's words, never its text, and names the address a refreshed sign-in carried by its hash.
+  Each failed store or broker call on those lines is named by `error_kind` (`database SQLSTATE
+  <code>`, `broker HTTP <status>`, `deadline exceeded` and others) in place of `error`, whose text
+  quoted the address; the sign-in pool's revoke and the issuer's refresh keep `error`, the issuer's
+  own answer, which carries no login Dispatch put in it.
   The Dispatch server README's section "A person in the access log and the sign-in lines" gives
   the command that hashes an address and the statement that reads the address a value stands for
   from the people table. A document socket's answer before its upgrade is now sent as `text/plain`
