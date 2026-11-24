@@ -884,6 +884,25 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 		}
 		return done
 	}
+	// The boot reserves the roots' turns before their launches reach the gate (launchUnfinished,
+	// supervise.RequestSpawn.Turn), so a root's relaunch can be delayed after the drive has read
+	// the queue while holding a turn earlier than every wake that read held. Advancing the clock
+	// past that turn would fire it in the instant of a later wake, a pile-up the daemon never makes
+	// on a clock that moves on its own; every root's relaunch is therefore delayed or launched
+	// before the first advance. The stale claims reserve at their gates, in the order they are
+	// delayed, so none of them can hold a turn earlier than a wake the drive has read.
+	testwait.Eventually(t, "every root's relaunch to be delayed to its turn or launched", func() bool {
+		delayed := map[claim.Token]bool{}
+		for _, wake := range waitingWakes(t, d) {
+			delayed[wake.Claim] = true
+		}
+		for _, root := range roots {
+			if !delayed[root] && rt.launchesOf(root) == 0 {
+				return false
+			}
+		}
+		return true
+	})
 	for round := 1; round <= refreshWaveRounds && launched() < len(wave); round++ {
 		waiting := waitingWakes(t, d)
 		if len(waiting) == 0 {

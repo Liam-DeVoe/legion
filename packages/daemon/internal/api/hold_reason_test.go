@@ -244,10 +244,10 @@ const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
 // (withoutUnadmittedHeldWords). The plugins the deployments run (152, 178 and 188) state no
 // contract: each is a caller in a pod whose claims record its contract, which is below
 // shapedAnswersContract, so the claims are counted (podContracts counts no claim at or above that
-// contract for a caller that states none). The base's plugin (220) states its contract in
+// contract for a caller that states none). The base's plugin (228) states its contract in
 // `Legion-Plugin-Contract`. A caller at this daemon's contract is served the word, held by the
 // root. With LEGION_STATE_ANSWER_OUT naming a directory, each answer is written there:
-// `pod-152.json`, `pod-178.json`, `pod-188.json`, `220.json`, and `<this daemon's contract>.json`.
+// `pod-152.json`, `pod-178.json`, `pod-188.json`, `228.json`, and `<this daemon's contract>.json`.
 func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := populatedState(t)
@@ -285,7 +285,7 @@ func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T)
 	for _, contract := range []int{152, 178, 188} {
 		below = append(below, answer{"pod-" + strconv.Itoa(contract), stateFrom(t, state, statePodAddr+":41000", podClaims(contract))})
 	}
-	below = append(below, answer{strconv.Itoa(assignmentPlanContract), stateStating(t, handler, remote, assignmentPlanContract)})
+	below = append(below, answer{strconv.Itoa(intakeGiveUpsContract), stateStating(t, handler, remote, intakeGiveUpsContract)})
 	for _, served := range below {
 		write(served.name, served.body)
 		rows := heldRowsServed(t, served.body)
