@@ -43,7 +43,7 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 		t.Fatalf("%s is %s once a recovery that listed the edit ended, want it unrecorded while GitHub does not answer for orbit/gadgets",
 			key, recordedAs(t, h.w, key))
 	}
-	h.installs.setFailing(nil, "implement orbit/gadgets")
+	h.installs.setFailing(nil, "orbit/gadgets")
 	testwait.Eventually(t, key+" recorded once GitHub answers for orbit/gadgets", func() bool { return recordedIssue(t, h.w, key) != nil })
 	if got := recordedIssue(t, h.w, key); got.Repo != "orbit/gadgets" || got.LastDispatchSeq != 2 || repoNoteOf(t, h.w, key) != nil {
 		t.Fatalf("%s is %s, want it recorded on orbit/gadgets at sequence 2, the edit, with no repository note", key, recordedAs(t, h.w, key))
@@ -77,7 +77,7 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools", "orbit/gadgets")
 	w, client, installs, _ := repositoryRigWith(t, installs)
 	const key = "LEGION-1801"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
@@ -108,7 +108,7 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	refresher := &heldRefresher{gate: make(chan struct{})}
 	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
 	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
@@ -121,7 +121,7 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	// again, which moves it among the repositories to recover, and the pass that recovers it holds
 	// the next listing, read before the two events below.
 	refresher.park(t, w)
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	release := client.holdListing()
 	t.Cleanup(release)
 	refresher.release(t, w)
@@ -163,7 +163,7 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	t.Helper()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools", "orbit/gadgets")
 	w, client, installs, _ := repositoryRigWith(t, installs)
 	// No repository is unread before the event's preparation leaves zeta/tools so, which is what
 	// wakes the recovery, and deliver shows the issue before it prepares the event: the held listing
@@ -192,7 +192,7 @@ func (h heldEditRecovery) edit(t *testing.T, key, repo string, seq int64) {
 // pass has ended: the refresher runs one pass at a time, and a later one has listed.
 func (h heldEditRecovery) letGo(t *testing.T) {
 	t.Helper()
-	h.installs.setFailing(nil, "implement zeta/tools")
+	h.installs.setFailing(nil, "zeta/tools")
 	listed := h.client.listingCount()
 	h.release()
 	testwait.Eventually(t, "the held recovery ended", func() bool { return h.client.listingCount() > listed })
