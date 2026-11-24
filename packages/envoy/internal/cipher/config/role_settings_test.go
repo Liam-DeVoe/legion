@@ -93,6 +93,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SECRETS_KMS_KEY_ARN":      givesNone("a KMS key"),
 	"BROKER_SIGNIN_WORKSPACE_DOMAINS": givesNone("the Workspace's domains"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES":   givesNone("address ranges"),
+	"BROKER_PROXY_PRIVATE_UPSTREAM":   givesNone("a host and a URL"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
