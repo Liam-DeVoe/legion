@@ -22,8 +22,8 @@ import (
 // names none is seen to drop them. A value the switch does not know, the zero value and one past
 // the last included, is a server error that names the value, and the session is left as it was:
 // no project scope, no projects and no scope granted. No path through decide can hand it such a
-// value today (ExchangeConfig.Policy is a concrete *exchange.Set, every decision of which sets
-// one of the three), so this test is the only thing that reaches the refusal, and it is what
+// value today (every identity provider's decision and exchange.Set.Machine set one of the
+// three), so this test is the only thing that reaches the refusal, and it is what
 // stops it from falling back to the person scope as the switch did before the none scope
 // existed.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {

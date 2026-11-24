@@ -81,8 +81,8 @@ var errPersonWithoutMachines = errors.New("oauth: a broker that accepts a person
 // entry with no service, half a pin (a Compute Engine project and no instance pattern, or the
 // other way round), an instance pattern that is not a pattern, half a grant (a person and no
 // project, or the other way round), and an account listed twice. A session name two entries fix
-// is refused where the registry composes every provider's listings (exchange.NewListingSet), with
-// the same words.
+// is refused where the registry composes every provider's listings (exchange.NewSet), with the
+// same words.
 func New(c Config) (*Provider, error) {
 	if c.PersonAudience != "" && c.Audience == "" {
 		return nil, errPersonWithoutMachines

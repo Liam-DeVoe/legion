@@ -25,8 +25,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
@@ -455,33 +457,27 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 	if err != nil {
 		t.Fatalf("OAuth secret: %v", err)
 	}
-	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{
+	// The rig's identity settings, built as cmd/cipherd builds them: its one stand-in issuer is
+	// both the cluster and GitHub, and it lists no machine, so there is no box a person could have
+	// signed in on and no domain to hold one to.
+	identities, err := identityboot.Open(context.Background(), config.Config{
+		K8sOIDCIssuer: issuer.URL(), ExchangeK8sAudience: ExchangeAudience,
+		ExchangeGitHubIssuer: issuer.URL(), ExchangeGitHubAudience: githubAudience,
+		ExchangeAccounts: []exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
 		},
-		nil,
-		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
-		"",
-	)
+		ExchangeWorkflows: []exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+	}, func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
 	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
-	}
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-	if err != nil {
-		t.Fatalf("oidc.NewKeys: %v", err)
+		t.Fatalf("identityboot.Open: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
-			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
-			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
-			Projects:   access,
+			Registry: identities.Registry,
+			Projects: access,
 		},
 	}, oauthStore)
 	if err != nil {

@@ -56,7 +56,7 @@ var _ identity.PodProvider = (*Provider)(nil)
 // that is not a service account's subject, an entry missing what it must name, an account listed
 // twice, and an account both an account entry and a read entry list. A session name two entries
 // fix is refused where the registry composes every provider's listings
-// (exchange.NewListingSet), with the same words.
+// (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
 	p := &Provider{
 		config:   c,

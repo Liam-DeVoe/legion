@@ -155,12 +155,12 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	for _, account := range accounts {
 		entries = append(entries, exchange.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson})
 	}
-	policy, err := exchange.NewSet(entries, nil, nil, nil, "")
+	registry, err := kubernetesRegistry(entries)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	return withProvider(t, func(config *oauth.Config) {
-		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+		config.Exchange = oauth.ExchangeConfig{Registry: registry}
 	})
 }
 

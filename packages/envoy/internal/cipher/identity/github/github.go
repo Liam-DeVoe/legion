@@ -48,7 +48,7 @@ var _ identity.Provider = (*Provider)(nil)
 // that is not <owner>/<name>, an entry missing what it must name, a workflow listed twice, and two
 // workflows whose principals spell alike, since the two could not be told apart as holders of a
 // session name. A session name two entries fix is refused where the registry composes every
-// provider's listings (exchange.NewListingSet), with the same words.
+// provider's listings (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
 	p := &Provider{config: c, workflows: make(map[workflowKey]exchange.WorkflowEntry, len(c.Workflows))}
 	spelledBy := map[string]string{}
