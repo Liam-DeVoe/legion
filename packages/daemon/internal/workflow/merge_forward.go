@@ -21,11 +21,14 @@ import (
 // implementation work where it stands (implementationAgent: the task's last step of the type
 // implementation before the place the issue stands at, whatever its role is called; the owner,
 // where that step's key is owner; the implementer, for a run with no plan rows) is asked, on its
-// claim's topic, to merge the base forward onto the head and push (record.MergeForwardAsk). Away
+// claim's topic, to merge the base forward onto the head and push (record.MergeForwardAsk), and the
+// record keeps the claim it asked (record.MergeForward.Agent), which says whose ask it is. Away
 // from that step it also tells the worker of the step the task stands at, when that is the tester,
 // the reviewer, the merger or a role the deployment or the plan defines, to stop writing the
-// workspace the roles share while the merge runs (record.MergeForwardHold), unless that worker is
-// the agent asked, and the architect that owns the issue one checks-red notice whose phase is the
+// workspace the roles share while the merge runs (record.MergeForwardHold), addressed by that
+// step's role (record.Issue.StepWorkerRole), so the owner at its own step is told as a fresh
+// worker of it is, unless that worker is the agent asked, and the architect that owns the issue one
+// checks-red notice whose phase is the
 // phase the issue stays in and whose reason names the head, the base, why and that the issue stays
 // in its phase; the outbox routes that notice to the owning architect, as every notice of the issue
 // but an owner-step is routed. At that step itself (Walk.atImplementation: implementing on today's
@@ -82,7 +85,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if named {
 		recipients = append(recipients, asked)
 	}
-	if worker := issue.RoleAt(at); !own && record.MergeForwardReaches(record.MergeForwardHold, worker) {
+	if worker, held := record.MergeForwardWorker(record.MergeForwardHold, issue, at); !own && held {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
@@ -106,7 +109,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 			return err
 		}
 	}
-	next := &record.MergeForward{Head: pr.HeadSHA, Base: pr.Base, Phase: at, Own: own, Why: why, AskedAt: e.now()}
+	next := &record.MergeForward{Head: pr.HeadSHA, Base: pr.Base, Phase: at, Own: own, Agent: asked.claim, Why: why, AskedAt: e.now()}
 	if before := pr.MergeForward; before != nil {
 		next.Earlier = before.Earlier
 		if before.Landed != "" {
@@ -187,6 +190,7 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 //
 // The worker of the step the task stands at, when the landed reaches it - the tester, the
 // reviewer, the merger or a role the deployment or the plan defines (record.MergeForwardReaches) -
+// addressed by that step's role (record.Issue.StepWorkerRole), the owner at its own step among them,
 // is told the old head and the new one and to read what the merge changed before it goes on
 // (record.MergeForwardLanded), unless that worker is the agent of the task's implementation step
 // (implementationAgent, by its claim): that agent was asked for the merge and pushed it, at its own
@@ -221,7 +225,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	var recipients []roleRecipient
-	if worker := issue.RoleAt(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
+	if worker, told := record.MergeForwardWorker(record.MergeForwardLanded, issue, at); told {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	if review {
@@ -313,7 +317,7 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 		return "the record holds no merge forward"
 	case pr.MergeForward.Head != head:
 		return fmt.Sprintf("the merge forward the record holds is of head %s", pr.MergeForward.Head)
-	case (step == record.MergeForwardAsk || step == record.MergeForwardHold) && pr.MergeForward.Landed != "":
+	case (step == record.MergeForwardAsk || step == record.MergeForwardHold) && !pr.MergeForwardOpen():
 		return fmt.Sprintf("the merge forward landed at head %s", pr.MergeForward.Landed)
 	}
 	return ""
@@ -361,9 +365,13 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // request stands at, since no hold told its role not to complete there. The retro's agent (the
 // agent of the task's last step of the type implementation, or the owner), whose completion of
 // retro is fenced, is sent no hold, since a hold goes only to the tester, the reviewer or the
-// merger of the phase; and an ask made at the implementation step (record.MergeForward.Own) sends
+// merger of the phase; an ask made at the implementation step (record.MergeForward.Own) sends
 // none, and stands into the next step when the move there does not ask again (mergeForwardOnEntry),
-// as at a head the record no longer holds in a confirmed conflict.
+// as at a head the record no longer holds in a confirmed conflict; and the claim the ask reached
+// (record.MergeForward.Agent), by, the claim that completes, is sent the ask in place of the hold
+// (addressRoles names each claim once) and no landed, since it pushed the merge itself: an owner
+// that does both the task's implementation step and the step that completes, or one keyed agent
+// that does both.
 //
 // A phase that ends with a handoff record is told to write it again, with its `head` set to the
 // head the role is told to complete at, since a completion naming the record it already named is
@@ -379,7 +387,7 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // move, at the head it reviewed, and the review a landed merge forward then asks of it is made
 // with no completion (record.MergeForwardReview), so a refusal would lose that report for good.
 // It answers false where it does not refuse.
-func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
+func mergedForwardRefusal(issue record.Issue, role claim.Role, by claim.Token, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
 	case phase.Testing, phase.Reviewing, phase.Retro:
 	default:
@@ -416,7 +424,8 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
 			issue.Key, word)
 	}
-	pending := asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role)
+	pending := asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role) &&
+		(asked.Agent == "" || by != asked.Agent)
 	var next string
 	if pending {
 		next = awaitedMergeForward(pr, again)

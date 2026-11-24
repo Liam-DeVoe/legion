@@ -2002,7 +2002,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// An owner's step or retro is told once the owner's slot holds the App of the role it is done
 	// as, so the owner's gh acts as that App when it is told, and keeps it until the act ends, unless
 	// a merge forward asked of the owner holds the slot on the implement App meanwhile
-	// (ownerSlotHolds, record.OwnerActsAs). The owner's claim is read
+	// (ownerSlotHolds, ownerSlotRole). The owner's claim is read
 	// before the publish, and the publish answers the session the listener forwarded it to; which
 	// of the two the step's run records is ownerStepTold's.
 	var told supervise.Claim
@@ -2072,28 +2072,26 @@ const ownerStepStaleLine = "outbox owner-step finished undelivered: its step no 
 // answers true once the notice's run still runs and owner's slot holds the gh credential of the
 // App of the role the notice's step or retro is done as, so the owner's gh acts as that App when
 // the notice reaches it. A merge forward asked of the owner later in the step or the retro gives the
-// slot the implement App until that ask ends (record.OwnerActsAs). A step is done as its own role,
+// slot the implement App until that ask ends (ownerSlotRole). A step is done as its own role,
 // the notice's Role. The retro, whose Role is "", is done
 // as the role of the task's last step of the type implementation, the owner's own where it has none
 // (retroActsAs): so the owner's retro of its own implementation step acts as the App that opened
 // the pull request, the one App GitHub lets resolve its review threads.
 //
-// The run first (ownerStepRuns): a notice names the run it tells (record.Notice.OwnerStep), and a
-// run that ended — the retro over, the owner's report in, the earlier of a role's two steps — makes
-// the notice stale, and so does a hold of the issue, under which the owner does no step or retro
-// (complete_step refuses its report, record.RunsAt) and whose retry tells it again (workflow's
-// restart). A stale notice finishes undelivered with one log line (false, nil), as a stale notice
-// of any kind does, and the line names no slot, since none was read. Then the role of the place
-// the owner works now (readOwnerActing's place, record.OwnerActsAs over the record now), and where
-// it is not the role the notice's step or retro is done as, the step no longer runs either, the one
-// test of a row that names no run; that line names the roles it read.
+// The run first (ownerStepRuns): every owner-step names the run it tells (record.Notice.OwnerStep),
+// and a run that ended — the retro over, the owner's report in, the earlier of a role's two steps —
+// makes the notice stale, and so does a hold of the issue, under which the owner does no step or
+// retro (complete_step refuses its report, record.RunsAt) and whose retry tells it again
+// (workflow's restart). A stale notice finishes undelivered with one log line (false, nil), as a
+// stale notice of any kind does, and nothing of the slot is read or asked.
 //
-// Then the act the slot is held for. A merge forward asked of the owner that has not ended is an
-// act as the implementer, which the slot holds the implement App for whatever step runs
-// (readOwnerActing's slot). A step or a retro of another App waits through it as a notice held for
-// its architect (errNoticeWaits), with no write and no ask of the runtime: the owner's review step
-// and its acceptance are not told while its gh acts as the pull request's author, whose approval
-// GitHub refuses, and each is told once the merge forward ended and the slot holds its App again.
+// Then the act the slot is held for, the gate every act told to the owner passes (ownerSlotFor). A
+// merge forward asked of the owner that has not ended is an act as the implementer, which the slot
+// holds the implement App for whatever step runs (ownerSlotRole). A step or a retro of another App
+// waits through it as a notice held for its architect (errNoticeWaits), with no write and no ask of
+// the runtime: the owner's review step and its acceptance are not told while its gh acts as the
+// pull request's author, whose approval GitHub refuses, and each is told once the merge forward
+// ended and the slot holds its App again.
 //
 // A step whose App is the App of the owner's own role (ownApp: the review App, which the owner's
 // acceptance and the retro it does as itself act as, and a step of each role whose App it is, the
@@ -2102,13 +2100,12 @@ const ownerStepStaleLine = "outbox owner-step finished undelivered: its step no 
 // notice to the owner publishes (slotWritePending). Each step is told once the slot's gh files hold
 // its App (slotHoldsApp).
 func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, payload record.Notice, owner claim.Token) (bool, error) {
-	runs, err := r.ownerStepRuns(ctx, row.Issue, payload.OwnerStep)
+	runs, err := r.ownerStepRuns(ctx, row.Issue, *payload.OwnerStep)
 	if err != nil {
 		return false, err
 	}
-	attributes := []any{"row", row.ID, "issue", row.Issue, "owner", owner, "role", payload.Role, "phase", payload.Phase, "run", payload.OwnerStep}
 	if !runs {
-		r.log.Info(ownerStepStaleLine, attributes...)
+		r.log.Info(ownerStepStaleLine, "row", row.ID, "issue", row.Issue, "owner", owner, "role", payload.Role, "phase", payload.Phase, "run", payload.OwnerStep)
 		return false, nil
 	}
 	step := payload.Role
@@ -2117,19 +2114,28 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 			return false, err
 		}
 	}
-	place, slot, err := r.ownerRoles(ctx, owner)
+	return r.ownerSlotFor(ctx, row, owner, step, errNoticeWaits, "notice row")
+}
+
+// ownerSlotFor is the one gate of an act told to owner, an issue's own architect, as role: an
+// owner-step (ownerSlotHolds) and a merge-forward message that asks an act (ownerSlotActs). It
+// answers true once the role the owner's slot acts as now (ownerSlotRole, the owner's own where it
+// does no act of another role) shares role's App (sameApp) and the slot's gh files hold that App
+// (slotHoldsApp). While the slot acts as an App of another role, the act waits, with no write and
+// no ask of the runtime: the row is held on its backoff, wrapped in waits, the wait of its kind,
+// and what names the row in it.
+func (r *outbox) ownerSlotFor(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) (bool, error) {
+	slot, acts, err := ownerSlotRole(ctx, r.pool, r.records, owner)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read the role %s's slot acts as: %w", owner, err)
 	}
-	if place != step {
-		r.log.Info(ownerStepStaleLine, append(attributes, "place", place, "slot", slot)...)
-		return false, nil
+	if !acts {
+		slot = claim.RoleArchitect
 	}
-	if !r.sameApp(ctx, row.Issue, slot, step) {
-		return false, fmt.Errorf("%w: %s's notice row %d waits for the merge forward asked of it to end: its slot acts as %s, and the step or retro it tells is done as %s",
-			errNoticeWaits, owner, row.ID, slot, step)
+	if !r.sameApp(ctx, row.Issue, slot, role) {
+		return false, fmt.Errorf("%w: %s's %s %d of %s waits for its slot to act as %s, and it acts as %s", waits, owner, what, row.ID, row.Issue, role, slot)
 	}
-	return r.slotHoldsApp(ctx, row, owner, step, errNoticeWaits, "notice row")
+	return r.slotHoldsApp(ctx, row, owner, role, waits, what)
 }
 
 // slotHoldsApp answers true once owner's slot's gh files hold the credential of the App of role,
@@ -2172,25 +2178,6 @@ func (r *outbox) slotHoldsApp(ctx context.Context, row record.OutboxRow, owner c
 	return true, nil
 }
 
-// ownerRoles is what the record says owner does now (readOwnerActing), as runtime.SlotRole names
-// it for the architect's claim: place, the role of the step or the retro the owner does, and slot,
-// the role its slot acts as, the implementer while a merge forward asked of it has not ended. Each
-// is the architect, the owner's own role, where the owner does no such act.
-func (r *outbox) ownerRoles(ctx context.Context, owner claim.Token) (place, slot claim.Role, err error) {
-	acting, err := readOwnerActing(ctx, r.pool, r.records, owner)
-	if err != nil {
-		return "", "", fmt.Errorf("read what %s does now: %w", owner, err)
-	}
-	place, slot = claim.RoleArchitect, claim.RoleArchitect
-	if acting.placeActs {
-		place = acting.place
-	}
-	if acting.slotActs {
-		slot = acting.slot
-	}
-	return place, slot, nil
-}
-
 // retroActsAs is the role the retro of issue's task is done as (record.RetroActsAs), read from the
 // plan rows of its run in a read-only transaction of its own: the role whose App the owner's slot
 // holds before the owner is told its retro (ownerSlotHolds). An issue the daemon does not record,
@@ -2215,23 +2202,17 @@ func (r *outbox) retroActsAs(ctx context.Context, issue string) (claim.Role, err
 	return role, nil
 }
 
-// ownerStepRuns is whether the run an owner-step notice names is still the open run of its place
-// on issue, with issue held by nothing: the place's latest start is the one the notice counted
-// (record.NoticeStep.Starts) and its run has no end. A hold ends what the owner may do, whatever
-// App its step or retro is done as, so a notice of a held issue no longer runs either, and the
-// hold's retry tells its step or retro again (workflow's restart). A notice that names no run (a row
-// written before the notice named one) is judged by the hold here and by the role of the place the
-// owner works (ownerSlotHolds).
-func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step *record.NoticeStep) (bool, error) {
+// ownerStepRuns is whether step, the run an owner-step notice names, is still the open run of its
+// place on issue, with issue held by nothing: the place's latest start is the one the notice
+// counted (record.NoticeStep.Starts) and its run has no end. A hold ends what the owner may do,
+// whatever App its step or retro is done as, so a notice of a held issue no longer runs either, and
+// the hold's retry tells its step or retro again (workflow's restart).
+func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step record.NoticeStep) (bool, error) {
 	var runs bool
 	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		stored, err := r.records.Issue(ctx, tx, issue)
-		if err != nil || stored != nil && stored.Hold != nil {
+		if err != nil || stored == nil || stored.Hold != nil {
 			return err
-		}
-		if step == nil {
-			runs = true
-			return nil
 		}
 		start, err := r.records.StepStarts(ctx, tx, issue, step.StepPlace())
 		runs = err == nil && start.Run == record.RunOpen && start.Starts == step.Starts
@@ -4510,16 +4491,17 @@ func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, made string) 
 		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, made, role)
 }
 
-// enqueueNotice writes one controller notice of issue in a transaction of its own on the pool, as
-// designGateClosed reads its gates, waking its lane as it commits.
-func (r *outbox) enqueueNotice(ctx context.Context, issue string, notice record.ControllerNotice) error {
+// enqueueNotice writes one notice of issue, a controller's (record.ControllerNotice) or one its
+// architect is told (record.Notice), in a transaction of its own on the pool, as designGateClosed
+// reads its gates, waking its lane as it commits.
+func (r *outbox) enqueueNotice(ctx context.Context, issue string, notice record.OutboxPayload) error {
 	row, err := record.NewOutboxRow(issue, notice, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+		return fmt.Errorf("queue a notice of %s: %w", issue, err)
 	}
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, row) }); err != nil {
-		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+		return fmt.Errorf("queue a notice of %s: %w", issue, err)
 	}
 	committed()
 	return nil

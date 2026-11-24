@@ -25,8 +25,8 @@ func phaseRowsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseRow
 }
 
 // askedAtReview is LEGION-208 at the reviewer's step of words, the steps of task a, with the merge
-// forward of its pull request #42 asked in reviewing and not landed: the implementer's phases row
-// names the claim of the agent that did step 1, the claim the ask reached (record.WorkerClaim).
+// forward of its pull request #42 asked in reviewing and not landed, of the claim the implementer's
+// phases row names, the agent that did step 1 (record.MergeForward.Agent).
 func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, record.Issue) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -44,7 +44,11 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 	pr := recordedPR(t, pool, root.Key)
-	pr.MergeForward = &record.MergeForward{Head: pr.HeadSHA, Base: "main", Phase: phase.Reviewing, Why: record.ConflictCheckNotGreen, AskedAt: stepClock}
+	agent := record.PhaseRowOf(phaseRowsOf(t, pool, root.Key), claim.RoleImplementer).Claim
+	if agent == "" {
+		t.Fatalf("%s holds no implementer's phases row to name the agent asked: this fixture proves nothing", root.Key)
+	}
+	pr.MergeForward = &record.MergeForward{Head: pr.HeadSHA, Base: "main", Phase: phase.Reviewing, Agent: agent, Why: record.ConflictCheckNotGreen, AskedAt: stepClock}
 	seedPR(t, pool, pr)
 	return pool, engine, issueOf(t, pool, engine, root.Key)
 }
@@ -52,8 +56,9 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 // Every end of a merge forward asked of the owner that the workflow writes queues the write of the
 // owner's slot back to its own App, so no path leaves the slot on the implement App the ask gave it
 // once no other act of that App holds it there (record.OwnersMergeForward names the ends, and the
-// daemon's ActsAs reads them; a tree's linger, the one end that writes no slot, is not among those
-// below). On `implementer:owner reviewer` at the reviewer's step,
+// daemon's ActsAs reads them). A new generation of the issue is an end too, which this test does
+// not drive. A tree's linger and the rename pass's delete of a pull request record write no slot:
+// the owner's next launch writes its App. On `implementer:owner reviewer` at the reviewer's step,
 // with the ask open, each end queues one supervise slot_credential of the owner's claim: the merge
 // forward's landing, the move back into implementing that clears the ask, the close and the merge of
 // the pull request, the owner's stop of the task, the hold a failed reviewer's claim leaves, and the
@@ -115,7 +120,7 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 				t.Fatalf("%s before %s stands in %s with the pull request %+v, want an open ask: this case proves nothing", issue.Key, tc.end, issue.Phase, pr)
 			}
 			ends[tc.end](t, pool, engine, issue)
-			if pr := recordedPR(t, pool, issue.Key); record.OwnersMergeForward(issueOf(t, pool, engine, issue.Key), false, &pr, phaseRowsOf(t, pool, issue.Key)) {
+			if pr := recordedPR(t, pool, issue.Key); record.OwnersMergeForward(issueOf(t, pool, engine, issue.Key), &pr) {
 				t.Fatalf("%s left the merge forward %+v open, want it ended: this case proves nothing", tc.end, pr.MergeForward)
 			}
 			rows := superviseRowsOf(t, pool, issue.Key, "slot_credential")
@@ -181,7 +186,7 @@ func TestARetriedHoldAsksTheOwnerAgainForTheMergeForwardItsPullRequestHolds(t *t
 				t.Fatalf("%s stands in %s after the retry, want it released from its hold: this case proves nothing", issue.Key, retried.Phase)
 			}
 			reopened := recordedPR(t, pool, issue.Key)
-			if owns := record.OwnersMergeForward(retried, false, &reopened, phaseRowsOf(t, pool, issue.Key)); owns != (tc.steps[0] == "implementer:owner") {
+			if owns := record.OwnersMergeForward(retried, &reopened); owns != (tc.steps[0] == "implementer:owner") {
 				t.Fatalf("after the retry the owner's merge forward is open: %t, with the pull request's %+v: this case proves nothing", owns, reopened.MergeForward)
 			}
 			messages := mergeForwardMessages(t, pool)

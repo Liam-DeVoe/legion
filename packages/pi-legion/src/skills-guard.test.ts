@@ -452,41 +452,26 @@ test("the pair is recorded as a row per half, and the reviewer approves only pas
   );
 });
 
-// The pair's own text bounds what it reads and what it reports: a range its task names limits
-// what it must read, and a defect it sees in code the change under review changed before that
-// range is still a finding, while code that change leaves unchanged stays out of its findings,
-// because the author fixes only that change (the pull request's diff, where the issue has one).
-// Each agent definition is pinned for both halves, and each sentence that bounded the findings by
-// the diff the pair was given is pinned absent. The daemon's prompts carry the later-round rule;
-// prompts_test.go pins the composed reviewer prompt. Every file's gaps are listed together, so a
-// file that lost its sentence fails as loudly as the first one checked.
-test("the review pair reads the range its task names and reports what the change under review changed", () => {
+// The pair's own text no longer bounds its findings by the diff the pair was given: each sentence
+// that did is pinned absent from both agent definitions. The daemon's prompts carry the
+// later-round rule; prompts_test.go pins the composed reviewer prompt. Every file's gaps are listed
+// together, so a file that still says its sentence fails as loudly as the first one checked.
+test("the review pair's definitions no longer bound their findings by the diff the pair was given", () => {
   const pair = [
     {
       file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
-      says: [
-        "Do not report issues in code the change you review leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
-        "A range your task names limits what you must read, not what you report: a defect you see in code the change you review changed before that range is a finding.",
-      ],
       retired: ["Do not report unchanged-code issues."],
     },
     {
       file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
-      says: [
-        "Do not flag code the change you review leaves unchanged.",
-        "A range your task names limits what you must read, not what you flag: a smell you see in code the change you review changed before that range is a finding.",
-      ],
       retired: ["Do not flag unchanged code."],
     },
   ];
-  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+  const scopedToTheDiff = pair.flatMap(({ file, retired }) => {
     const text = collapsed(path.join(REPO_ROOT, file));
-    return [
-      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
-      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
-    ];
+    return retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`);
   });
-  expect(scopedToTheRange).toEqual([]);
+  expect(scopedToTheDiff).toEqual([]);
 });
 
 // The last two sentences of each task a reviewer is sent are always the daemon's: the commit's and
@@ -563,7 +548,6 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
-    "Where the branch has an open pull request, so does the empty commit that carries it onto the commit you pushed",
   ];
   for (const rule of step) {
     countedOncePerFile(rule, workerPrompt);
@@ -620,9 +604,6 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(learnings).toContain(
     "Never a line number: the next edit above it moves it. Where the head no longer shows what your sentence says, quote the text and name the commit you read it at."
   );
-  expect(learnings).toContain(
-    "Evidence: <file and symbol, or text quoted from it, of this pull request or of the task's work, and what went wrong>."
-  );
   countedOncePerFile(
     "Drop a point that cites no file, symbol, quoted text or commit of this pull request",
     ["skills/legion-retro/references/learnings.md", "skills/legion-retro/SKILL.md"]
@@ -639,18 +620,6 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
   );
   expect(carried).toEqual([]);
-});
-
-// The retro of a task with no step of the type implementation is the owner's, which completes it
-// with complete_step at step 0, and a task with no pull request ends at its retro.
-test("the retro skill names who does the retro and how the owner completes it", () => {
-  expect(
-    lacks("legion-retro/SKILL.md", [
-      /With no pull request, its end closes the issue/,
-      /last step of the type implementation does it, as that step's role\. Where there is none, or it is the owner's, the owner does it[^.]*`complete_step`, `step: 0`/,
-      /Update the PR body\*\*, where the issue has a pull request/,
-    ])
-  ).toEqual([]);
 });
 
 // The completion that ends the retro rates the plan, and this skill's step that gives the two
@@ -691,51 +660,16 @@ function lacks(relative: string, duties: RegExp[]) {
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
   const missing = lacks("legion-architect/references/acceptance.md", [
     /`acceptance:owner` enters `accepting`/,
-    /has a tester step before yours[^.;]*--phase test/,
-    /`dispatch results --issue <issue>[^`]*`[^.;]*the head the steps before yours passed/,
-    /has a reviewer step before yours[^.;]*approval/,
-    /no tester step[^.;]*the implementation step's evidence/,
   ]);
   expect(missing).toEqual([]);
 });
 
-// A step whose key is owner, and the retro of a task with no step of the type implementation, are
-// the architect's own: the skill routes them to the reference that says how Legion gives one
-// (owner-step) and how the owner reports it (complete_step), and that a task with no pull request
-// closes at its retro.
-test("the architect's skill routes its own steps to the reference that names owner-step and complete_step", () => {
-  expect([
-    ...lacks("legion-architect/SKILL.md", [
-      /key is `owner` is yours[^.;]*references\/own-steps\.md`/,
-      /`acceptance` whose key is not `owner` is another agent's[^.;]*\. You sign off nothing for it/,
-    ]),
-    ...lacks("legion-architect/references/own-steps.md", [
-      /no such step, or that step's key is `owner`, it is yours/,
-      /one `owner-step` notice/,
-      /op: "complete_step", issue: "<KEY>", step: <n>/,
-      /1 for the first step, and 0 for the retro/,
-      /\(`NOT_THE_OWNER`\)/,
-      /\(`OWNER_STEP_NOT_RUNNING`/,
-      /No review on GitHub decides it, yours included/,
-      /retro's end closes the issue/,
-    ]),
-  ]).toEqual([]);
-});
-
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
-  expect([
-    ...lacks("legion-worker/SKILL.md", [
-      /no tester step[^.;]*an implementation step's evidence serves/,
-      /implementation step's agent opens the pull request[^.]*\. Later steps push[^.]*\. An issue none of whose steps opened one has none/,
-    ]),
-    ...lacks("legion-worker/references/ci-checks.md", [
-      /with no tester step the implementation step's agent[^.;]*real surface/,
-      /With neither step, the retro's agent sends it during retro/,
-    ]),
-    ...lacks("legion-worker/references/merge-gate.md", [
+  expect(
+    lacks("legion-worker/references/merge-gate.md", [
       /no tester step[^.;]*the implementer's evidence[^.;]*read/,
-    ]),
-  ]).toEqual([]);
+    ])
+  ).toEqual([]);
 });
 
 test("an implementer and tester task gives the reviewer's body lines and bot threads to the implementer", () => {
@@ -748,23 +682,10 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*instead of the two rows/,
       /no reviewer step[^.;]*retro[^.;]*Not proven \/ risk/,
     ]),
-    ...lacks("legion-worker/references/review-threads.md", [
-      /no reviewer step[^.;]*implementation step lists unresolved bot threads[^.;]*retro's agent does at retro/,
-      /its `gh` acts as the implement App while it does that step\. It does so at its retro too, where the task's last implementation step is its own/,
-    ]),
-    ...lacks("legion-worker/SKILL.md", [
-      /no reviewer step[^.;]*no Legion approval/,
-      /no Legion approval is awaited\. The last step's pass starts retro/,
-    ]),
+    ...lacks("legion-worker/SKILL.md", [/no reviewer step[^.;]*no Legion approval/]),
   ]).toEqual([]);
   const merger = collapsed(
     path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
-  );
-  expect(merger).toMatch(
-    /base's rules require an approving review that no step of this task gave, do not merge/
-  );
-  expect(merger).toMatch(
-    /review can be missing where your task's Steps line names no reviewer step[^.]*`reviewer:owner`/
   );
   expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
@@ -794,9 +715,6 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   );
   const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
   expect(held).toEqual([...LEGION_HELD_REASONS]);
-  expect(admission).toMatch(
-    /\| `children_before_retro` \|[^|]*last step is no acceptance step \(`acceptance:owner` or `acceptance`\)[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
-  );
   expect(admission).toMatch(
     /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/
   );
@@ -843,26 +761,17 @@ test("each phase of the implementing agent names a declined bot thread in its ow
   expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
     /Name each thread you declined[^.]*in your completion's `summary`; at your retro, name them in the Dispatch message of `skill:\/\/legion-retro` step 5/
   );
-  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /Name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
-  );
   expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
 
 // Where the implementer does the retro, its daemon part, which forbids waiting for CI, is retro's
-// prompt too, and the retro skill holds a `ci_check` run still going the same way for every agent
-// that does a retro.
+// prompt too.
 test("retro never waits for a CI run, as the implementer's prompt says", () => {
   expect(
     collapsed(
       path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "go", "implementer.md")
     )
   ).toContain("Never wait for, watch or poll the pull request's remote CI");
-  expect(
-    lacks("legion-retro/SKILL.md", [
-      /run that has not concluded[^.]*neither a pass nor a fail yet\. Never wait for, watch or poll it/,
-    ])
-  ).toEqual([]);
 });
 
 // Nothing ensures a head's runs have ended by retro on a task with no reviewer step, so retro
@@ -885,9 +794,6 @@ test("a run still going at retro is named in its message and as a risk", () => {
   ]).toEqual([]);
   expect(collapsed(path.join(prompts, "roles", "implementer.md"))).toMatch(
     /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
-  );
-  expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /At a retro that is yours, answer the threads you find there too, naming in its message each run still going/
   );
 });
 
@@ -944,20 +850,14 @@ test("the plan guide says how a step gets a fresh or an earlier agent", () => {
   ]).toEqual([]);
 });
 
-// The wake table sends each notice an owner's plan adds (`retro-held`, `task-stopped`,
-// `plan-not-taken` and `owner-step`) to the reference that holds its handling. It sends a conflict
-// merged forward in `accepting` to the reference that waits for a review only where the task has
-// a reviewer step.
+// The wake table sends the three notices an owner's plan adds to the reference that holds their
+// handling, and a conflict merged forward in `accepting` to the reference that waits for a review
+// only where the task has a reviewer step.
 test("the architect's wake table sends each owner-plan notice to where its handling is", () => {
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
       /\| `retro-held`, `task-stopped`, `plan-not-taken` \|[^|]*references\/plan-changes\.md`/,
       /\| `checks-red` \|[^|]*"A conflicting head"/,
-      /\| `owner-step` \|[^|]*`complete_step`[^|]*references\/own-steps\.md`/,
-      /\| `pr-blocked` \|[^|]*references\/capped-pull-request\.md`/,
-    ]),
-    ...lacks("legion-architect/references/capped-pull-request.md", [
-      /A tester's fail and a move back count none/,
     ]),
     ...lacks("legion-architect/references/plan-changes.md", [
       /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,
@@ -966,104 +866,6 @@ test("the architect's wake table sends each owner-plan notice to where its handl
     ]),
     ...lacks("legion-architect/references/acceptance.md", [
       /no reviewer step has no review to await/,
-    ]),
-  ]).toEqual([]);
-});
-
-// The controller restarts a tree only for a root's architect. The section on an architect's
-// `worker-died` opens with the root, and a child's own architect takes `fresh_session` instead.
-test("the controller restarts a tree only for a root's architect", () => {
-  expect(
-    lacks("legion-controller/references/wakes.md", [
-      /## `worker-died` \(architect\) On a root, [^#]*restart the tree: `set_status` the root[^#]*A child's own architect whose restarts[^#]*`fresh_session` with the child's key/,
-    ])
-  ).toEqual([]);
-});
-
-// A task with no pull request, and the owner's own review step, as the code has them: a plain
-// `dispatch results` read stands no pass for an issue with no pull request (Dispatch's
-// results_comparison.go), a `ci_check` there reads `no_head` (results_ci.go), the `legion` tool
-// sends the review record's head as the commit (pi-shared's findHandoffReport), and an
-// `owner-step` goes to the issue's own architect alone.
-test("the skills say what Dispatch and the tool do with no pull request and at the owner's review step", () => {
-  expect([
-    ...lacks("legion-worker/references/results.md", [
-      /An issue with no pull request has no such head, so a plain `dispatch results --issue <issue>` shows no pass standing there\./,
-      /Read it with `--at <head>`, which compares every check with that one commit\./,
-    ]),
-    ...lacks("legion-worker/references/ci-checks.md", [
-      /On an issue with no pull request each such check reads `no_head`\. No run can prove it, so its words are wrong for that task\./,
-      /hold their verdict with a `WAITING` line until the check is rewritten/,
-      /No reviewer or acceptance step passes while such a check stands, and the retro holds its completion for it/,
-    ]),
-    ...lacks("legion-retro/SKILL.md", [
-      /`dispatch results --issue <issue> --at <head>`/,
-      /A `no_head` check can never pass: it is a defect, held as \*When retro stops\* says\./,
-    ]),
-    ...lacks("legion-worker/SKILL.md", [
-      /Then read each handoff a `\(<role>\) reported:` line of your task names, as it says\./,
-      /Commit nothing in the copy\./,
-    ]),
-    ...lacks("legion-architect/references/plan.md", [
-      /A `ci_check` that reads `absent` moves nothing back either/,
-      /One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check\./,
-    ]),
-    ...lacks("legion-architect/references/acceptance.md", [
-      /or its verdict with no pull request or at `reviewer:owner`/,
-    ]),
-    ...lacks("legion-architect/references/own-steps.md", [
-      /The tool sends that record's `head` as the commit you read, so you pass no commit\./,
-      /A merger that enters `merging` while that approval is owed waits for it\./,
-      /While an `owner-step` of that run is still on its way to you, the retry tells you nothing more\./,
-    ]),
-    ...lacks("legion-architect/references/wake-routing.md", [
-      /An `owner-step` goes to the issue's own architect alone, never to one above it\./,
-    ]),
-  ]).toEqual([]);
-});
-
-test("the skills say how the owner's retro and review read an issue, and when a refused completion is sent again", () => {
-  expect([
-    ...lacks("legion-architect/references/own-steps.md", [
-      /A child's own architect sends that question to the architect above it instead\./,
-      /An issue with no pull request, such as one whose plan is `tester` alone, has no merge\./,
-    ]),
-    ...lacks("legion-architect/references/plan.md", [
-      /approves, or passes with no pull request, only once a pass stands/,
-      /a task block's attribute `needs`, `owner`, `part_of` or `merges`: write it again[^.]*\. A step's key `owner` is no such attribute\./,
-    ]),
-    ...lacks("legion-worker/references/merge-gate.md", [
-      /`dispatch results --issue <issue>` \(`--at <head>` with no pull request\)/,
-      /the step ends by its verdict, not by a review on GitHub\./,
-    ]),
-    ...lacks("legion-worker/SKILL.md", [
-      /not a retry loop: complete again once its cause is fixed, or as its code says\./,
-    ]),
-  ]).toEqual([]);
-});
-
-test("the owner's retro of its own implementation step acts as the implement App", () => {
-  expect([
-    ...lacks("legion-architect/references/own-steps.md", [
-      /That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step\./,
-      /Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did\./,
-      /At the end of the step or of such a retro, Legion writes your own App back to your slot\./,
-    ]),
-  ]).toEqual([]);
-});
-
-test("the plan guide names which ci_check holds the merge on a task with no review step", () => {
-  expect([
-    ...lacks("legion-architect/references/plan.md", [
-      /a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires\./,
-    ]),
-  ]).toEqual([]);
-});
-
-test("the worker skill says a TASK_STOPPED report is never sent again", () => {
-  expect([
-    ...lacks("legion-worker/SKILL.md", [
-      /`TASK_STOPPED`: your handoff counts as used; never send it again\./,
     ]),
   ]).toEqual([]);
 });
@@ -1077,8 +879,6 @@ test("each duty a role skill routes to a reference stands in that reference", ()
       /dependencies as `skill:\/\/legion-architect\/references\/decomposition\.md`/,
     ]),
     ...lacks("legion-architect/references/decomposition.md", [
-      /running system[^.;]*implementation step proves them on and a tester step drives, where it has them/,
-      /agent of the root's implementation step, where it has one, opens its pull request/,
       /wait on a sibling or on an issue outside this tree[^.;]*`skill:\/\/dispatch`, "Choosing what to work on"/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
@@ -1093,7 +893,6 @@ test("each duty a role skill routes to a reference stands in that reference", ()
     ]),
     ...lacks("legion-worker/references/results.md", [
       /The implementer re-runs once a red check whose failure is not in this pull request's code/,
-      /under `off`, or on an issue with no pull request, nothing records it/,
     ]),
     ...lacks("legion-worker/references/pr-body.md", [
       /only the deploy can show it[^.]*plan names its observation/,

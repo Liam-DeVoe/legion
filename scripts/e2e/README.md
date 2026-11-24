@@ -2271,6 +2271,7 @@ LEGION_E2E_PROJECT=S4B2 LEGION_E2E_DAEMON_PORT=13370 LEGION_E2E_WORKER_STREAM_PO
   bash scripts/e2e/stage4b-sandbox-tree.sh        # a second lane beside a default-identity run; S4B2 is created if missing
 ```
 
+**Devbox only, against the production cluster; CI does not run this script.**
 The repository names no production service.
 `LEGION_E2E_MODEL_GATEWAY_URL` is the model gateway's Anthropic endpoint (checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), which the run writes into its copy of the operator fixture's `models.yml` and the controller's profile.
 `LEGION_E2E_DISPATCH_URL`, `LEGION_E2E_ENVOY_URL` and `LEGION_E2E_NATS_URL` are production Dispatch, the production Envoy listener and production NATS, by the operator's fully-qualified names for them.
@@ -7110,6 +7111,7 @@ The vocabulary of a stage proof that drives Dispatch issues through the Go daemo
 Dispatch, the daemon's state, each phase's worker, the smoke repository's pull request under the proof human, the handoffs the daemon accepted, the notices, and the negative controls.
 Stage 3, Stage 4b, the 4b.13b acceptance and the Claude Code backend proof source it after [`lib/rig.sh`](#librigsh).
 None of those proofs gives a plan, so each issue runs the project's default steps, `planner implementer tester reviewer acceptance:owner`, and a helper below that names a phase's worker, the implementer's pull request and its rounds, the reviewer's review on GitHub, the architect's acceptance, the implementer's retro or the merge names a step of that plan.
+CI runs none of those proofs.
 
 ```sh
 . "$root/scripts/e2e/lib/workflow.sh"     # sourced, never run

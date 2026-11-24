@@ -504,6 +504,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward ask naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
+		{name: "an owner-step notice that names no run", payload: Notice{Kind: OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner."}, reason: "an owner-step names the run it tells"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
@@ -1110,7 +1111,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
 		{Kind: OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
-			Reason: "LEGION-208 implementing. Task: a. Step 1 of 2: implementer:owner. Steps: 1 implementer:owner, 2 reviewer, then Legion's retro, and its merge where the issue has a pull request."},
+			Reason:    "LEGION-208 implementing. Task: a. Step 1 of 2: implementer:owner. Steps: 1 implementer:owner, 2 reviewer, then Legion's retro, and its merge where the issue has a pull request.",
+			OwnerStep: &NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

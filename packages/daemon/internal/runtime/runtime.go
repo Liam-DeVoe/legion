@@ -861,11 +861,11 @@ func (id GitIdentity) Env() map[string]string {
 }
 
 // ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
-// other work than its stored role's, and false where it gives none: the owner's step is such work,
-// and so are the owner's retro of a task whose last implementation step was its own and a merge
-// forward asked of the owner, an act as the implementer, which the daemon's owner function decides.
-// A runtime is given one in its options (nil by default), and
-// SlotRole, the one function that answers a slot's App role, reads it.
+// other work than its stored role's, and false where it gives none. The daemon's owner function
+// decides it (internal/daemon's ownerActsAs, which lists the owner's acts): a merge forward asked of
+// the owner, which it does as the implementer, a step of the owner's own plan, and the owner's
+// retro of a task whose last implementation step was its own. A runtime is given one in its options
+// (nil by default), and SlotRole, the one function that answers a slot's App role, reads it.
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
 // SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
@@ -891,9 +891,8 @@ func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.
 }
 
 // SlotCredentials writes and reads the gh credential of a slot, which the daemon asks of a runtime
-// before it tells an owner a step, a retro or a merge-forward act whose App the owner's slot must
-// hold, and at the end of each.
-// Both runtimes answer it.
+// before it tells an owner an act whose App the owner's slot must hold (a merge forward asked of
+// it, a step or a retro: ActsAs), and at that act's end. Both runtimes answer it.
 type SlotCredentials interface {
 	// WriteSlotCredential brings the slot of token to the gh credential of the App of the role
 	// SlotRole answers for it now, where the slot does not hold it already. The runtime decides that

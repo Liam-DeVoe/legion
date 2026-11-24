@@ -108,11 +108,11 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 
 // A merge forward is an act as the implementer, so the daemon's ActsAs answers the implementer for
 // the owner while the record holds a merge forward asked of the owner that has not ended. LEGION-7
-// stands at the reviewer's step of `implementer:owner reviewer`, another agent's: its implementer's
-// phases row names the owner's claim, the claim the ask reached (record.WorkerClaim), and its pull
-// request holds an ask that has not landed, so its owner acts as the implementer. Once the ask
-// landed, the owner acts as nothing again. The control: LEGION-8, the same with `implementer
-// reviewer`, whose ask went to the implementer's own claim, leaves the owner acting as nothing.
+// stands at the reviewer's step of `implementer:owner reviewer`, another agent's: the ask reached
+// the owner's claim (record.MergeForward.Agent), and its pull request holds the ask, not landed, so
+// its owner acts as the implementer. Once the ask landed, the owner acts as nothing again. The
+// control: LEGION-8, the same with `implementer reviewer`, whose ask went to the implementer's own
+// claim, leaves the owner acting as nothing.
 func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -148,7 +148,7 @@ func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *test
 		}
 		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key,
 			State: record.PullRequestOpen, HeadSHA: "c0de", Failing: []string{},
-			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Reviewing, Why: record.ConflictCheckNotGreen, AskedAt: now}})
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Reviewing, Agent: implementer, Why: record.ConflictCheckNotGreen, AskedAt: now}})
 	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := seed(tx, "LEGION-7", "implementer:owner", "reviewer"); err != nil {

@@ -426,11 +426,9 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // writeIssueOn is WriteIssue's check and write on w, the walk of issue's run as the caller holds
 // it: WriteIssue's own read, or a workflow move, which read w and moved its task on it (moveTask),
 // so w is where the store holds the task: moveTask writes the place and the state it sets on w,
-// in the same transaction. A write that holds the issue or takes it out of the workflow ends a
-// merge forward asked of its owner, whose slot it gives its own App back
-// (issueEndsOwnersMergeForward), and a write that releases a hold while the pull request still
-// holds that ask asks the owner again (issueReopensOwnersMergeForward), each read before the write
-// replaces the record it reads.
+// in the same transaction. A write that holds the issue, releases its hold or takes it out of the
+// workflow ends or opens again a merge forward asked of its owner (issueWritten), read before the
+// write replaces the record it reads.
 func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
 		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
@@ -443,10 +441,7 @@ func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue
 				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
 		}
 	}
-	if err := e.issueEndsOwnersMergeForward(ctx, tx, issue); err != nil {
-		return err
-	}
-	if err := e.issueReopensOwnersMergeForward(ctx, tx, issue); err != nil {
+	if err := e.issueWritten(ctx, tx, issue); err != nil {
 		return err
 	}
 	return e.store.PutIssue(ctx, tx, issue)

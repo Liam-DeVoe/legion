@@ -135,16 +135,13 @@ func staleLines(t *testing.T, logged string) []map[string]any {
 	return lines
 }
 
-// staleUnread fails the test unless logged holds one line of a stale owner-step, and that line
-// names no slot: the executor decided the step no longer runs before it read the slot's role.
+// staleUnread fails the test unless logged holds one line of a stale owner-step: the executor
+// decided the step no longer runs. What the slot was asked is each test's own check (slotCalls),
+// so no attribute of the line that depends on the order of the executor's reads is asserted.
 func staleUnread(t *testing.T, logged, of string) {
 	t.Helper()
-	lines := staleLines(t, logged)
-	if len(lines) != 1 {
+	if lines := staleLines(t, logged); len(lines) != 1 {
 		t.Fatalf("the log holds %d lines of %s, want one:\n%s", len(lines), of, logged)
-	}
-	if slot, read := lines[0]["slot"]; read {
-		t.Fatalf("the line of %s names the slot %q, which the executor never read:\n%s", of, slot, logged)
 	}
 }
 
@@ -484,7 +481,12 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 	// step or retro then: complete_step refuses its report. So the retro's owner-step run during the
 	// hold finishes undelivered, writing and asking nothing, as a held step's does. Once the hold's
 	// retry puts the issue back in the retro, the retry tells the retro again (workflow's restart,
-	// an owner-step of the same run), which is told once the slot holds the implement App.
+	// an owner-step of the same run), which is told once the slot holds the implement App. While the
+	// executor compared the role of the owner's place with the retro's, this case finished undelivered
+	// by that comparison alone (the retro is done as the implementer, and the held issue's owner acts
+	// as nothing), so the acceptance:owner twin below, whose retro is done as the owner's own App, was
+	// the case that showed the hold check; with that comparison gone, both finish undelivered by the
+	// hold check alone.
 	t.Run("implementer:owner reviewer, its retro held, then retried", func(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer:owner", "reviewer")
 		r.started(t, "step", 1, true)

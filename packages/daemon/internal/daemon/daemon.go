@@ -1375,11 +1375,9 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// reads the roles' Apps the runtime's walks hold (opts.RoleApps), one reader for
 			// both.
 			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, opts.RoleApps, log), gh
-			// While an owner acts as another role, its pane holds that role's App (ownerActsAs): at a
-			// step it does itself, the step's; at its retro of its own implementation step, that step's;
-			// and while a merge forward asked of it has not ended, the implementer's. It holds its own
-			// role's App again after each, and every write of a pane's gh files, the refresh's and a
-			// spawn's, asks it through runtime.SlotRole.
+			// While an owner acts as another role, its pane holds that role's App: ownerActsAs
+			// answers which, for each of the owner's acts it lists, and every write of a pane's gh
+			// files, the refresh's and a spawn's, asks it through runtime.SlotRole.
 			opts.ActsAs = ownerActsAs(st.Pool(), record.NewStore())
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)

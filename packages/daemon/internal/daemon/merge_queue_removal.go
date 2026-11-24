@@ -162,6 +162,19 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // the message waits for once the role's session runs and before it is published: the owner's slot
 // holding the App of the role the message asks an act as (mergeForwardMessage's ownerSlotActs). It
 // answers nil once the message may be published, and a wait or an error that the row answers.
+//
+// What a claim that failed or retired does to the row is the message's own. outlives says the row
+// waits through it for the claim's next start (a failed or retired claim is started again by the
+// next start the workflow queues for it, supervise.RequestRetry, or by an operator's retry), which
+// a message to the issue's owner does: the owner's own steps wait on it, and the owner's next start
+// comes with its child's next phase start (the workflow's reviveArchitect). Otherwise the row
+// finishes undelivered, and ended, where it is set, is run first with the claim's state: what tells
+// the issue's architect of an ask that will not reach its agent (mergeForwardMessage).
+//
+// told, where it is set, records whom the message reached once it is published: the claim as it
+// was read before the publish and the session the listener says it forwarded to ("" where it names
+// none). A merge-forward ask to the owner records it (mergeForwardTold), so the owner's catch-up
+// at a later launch names the ask to a fresh session and not to the one told.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -172,6 +185,9 @@ type heldMessage struct {
 	claimEnded string
 	delivered  string
 	holds      func(ctx context.Context) error
+	outlives   bool
+	ended      func(ctx context.Context, state supervise.ClaimState) error
+	told       func(ctx context.Context, before supervise.Claim, recipient string) error
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -185,19 +201,28 @@ type heldMessage struct {
 // (notify.ErrHolderUnresponsive). A role with no claim yet, its start still owed, is no end
 // either: the row waits for it.
 //
-// It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
-// m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
-// role again. While the root's design gate is closed (designGateClosed) a released role is neither
-// woken nor told, and the row waits for the gate to open: a role the gate holds may not know the
-// gate closed, and woken by this message it would work against the gate. A role whose session
-// holds it is told at once, gate or none, and m.delivered is logged. The three other answers of
-// the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a holder that
-// did not confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
+// It reads, in this order, what ends or holds the row. Once the role's claim has failed or
+// retired, a message that outlives it waits for the claim's next start, and every other row
+// finishes undelivered, logging m.claimEnded once m.ended has run. While the root's design gate is
+// closed (designGateClosed) a released role is neither woken nor told, and the row waits for the
+// gate to open: a role the gate holds may not know the gate closed, and woken by this message it
+// would work against the gate. A role whose session holds it is told at once, gate or none, and
+// m.delivered is logged. The three other answers of the confirmed publish route keep the ordinary
+// retry, as they do for a hook prompt: a holder that did not confirm in time
+// (notify.ErrNotDelivered), one that does not advertise the delivery mode
 // (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+		if m.outlives {
+			return wait.Errorf("%s waits for its %s's claim, which has %s, to be started again", m.what, m.role, held.State)
+		}
+		if m.ended != nil {
+			if err := m.ended(ctx, held.State); err != nil {
+				return err
+			}
+		}
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}
@@ -229,9 +254,24 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 			return err
 		}
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	// A message whose telling is recorded (m.told) takes the session the listener forwarded it to
+	// (publishTo), beside the claim as it was read before the publish, as an owner-step does.
+	before := r.supervisedClaim(m.token).Claim
+	var recipient string
+	var published error
+	topic := notify.RoleTopicPrefix + string(m.token)
+	if m.told != nil {
+		recipient, published = r.publishTo(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
+	} else {
+		published = r.publish(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
+	}
 	switch {
 	case published == nil:
+		if m.told != nil {
+			if err := m.told(ctx, before, recipient); err != nil {
+				return err
+			}
+		}
 		r.log.Info(m.delivered, m.attributes...)
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):

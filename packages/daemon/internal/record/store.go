@@ -2381,16 +2381,14 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 }
 
 // OwnerStepPending reads whether issue's outbox still holds an unpublished owner-step of the run
-// step names, or one that names no run. Such a row was written before notices named one, and the
-// executor judges it by the role the owner's slot acts as alone. A published row is finished and
-// deleted, so any such row is one still to publish. An owner-step of another run of the place, or
-// of another place, is not that telling: the executor finishes it undelivered when it runs (the
-// daemon's ownerStepRuns).
+// step names. A published row is finished and deleted, so any such row is one still to publish. An
+// owner-step of another run of the place, or of another place, is not that telling: the executor
+// finishes it undelivered when it runs (the daemon's ownerStepRuns).
 func (s *Postgres) OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3
-		and (payload->'ownerStep' is null or (payload->'ownerStep'->>'task' = $4 and payload->'ownerStep'->>'kind' = $5
-		and (payload->'ownerStep'->>'place')::int = $6 and (payload->'ownerStep'->>'starts')::bigint = $7)))`,
+		and payload->'ownerStep'->>'task' = $4 and payload->'ownerStep'->>'kind' = $5
+		and (payload->'ownerStep'->>'place')::int = $6 and (payload->'ownerStep'->>'starts')::bigint = $7)`,
 		string(OutboxKindNotice), issue, string(OwnerStepNotice), step.Task, step.Kind, step.Place, step.Starts).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has an owner-step of %s/%s/%d run %d pending: %w", issue, step.Task, step.Kind, step.Place, step.Starts, err)
 	}
@@ -2420,6 +2418,20 @@ func (s *Postgres) MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue 
 		return false, fmt.Errorf("read whether %s has a merge-forward ask of %s to %s pending: %w", issue, head, token, err)
 	}
 	return pending, nil
+}
+
+// MarkMergeForwardTold writes session as the session the record's merge-forward ask of issue was
+// told in (MergeForward.Told), where that ask is of head, reached agent and has not landed: an ask
+// a newer one replaced, or one that landed, is left as it is. It writes the jsonb in place, which
+// changes nothing of whether the ask is open or whose it is, so no write of the pull request's
+// record through the workflow is made for it.
+func (s *Postgres) MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, session string) error {
+	if _, err := tx.Exec(ctx, `update pull_requests set merge_forward = jsonb_set(merge_forward, '{told}', to_jsonb($4::text))
+		where issue = $1 and merge_forward->>'head' = $2 and merge_forward->>'agent' = $3 and coalesce(merge_forward->>'landed', '') = ''`,
+		issue, head, string(agent), session); err != nil {
+		return fmt.Errorf("record the session the merge-forward ask of %s at %s was told in: %w", issue, head, err)
+	}
+	return nil
 }
 
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {

@@ -55,7 +55,7 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
 	}
-	if err := e.pullRequestEndsOwnersMergeForward(ctx, tx, recorded, pr); err != nil {
+	if err := e.pullRequestWritten(ctx, tx, recorded, pr); err != nil {
 		return err
 	}
 	if recorded != nil && !pullRequestNews(*recorded, pr) {
