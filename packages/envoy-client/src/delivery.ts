@@ -1039,12 +1039,17 @@ function encodeWithin(value: unknown, maxBytes: number): string | undefined {
   return lines.join("\n");
 }
 
-/** The `dispatch` block of a card: where the event is, what it is and who did it, and the rest a
- *  host lays out from the event (`relation`, a compact record or the payload). */
+/** The `dispatch` block of a card, all of which a card shown as text writes: where the event is
+ *  (`owner`), what it is, who did it, why it reached this session (`relation`), and what a host
+ *  lays out from it - the payload, or in its place the fields of a compact ask record
+ *  (CompactDispatchRecord: `question`, `reply`, `state`, `ask` and the rest). */
 type DispatchCardEvent = {
   readonly owner: string;
   readonly type: string;
   readonly actor: DispatchEvent["actor"];
+  readonly relation?: string;
+  readonly payload?: unknown;
+  readonly [compactRecordField: string]: unknown;
 };
 
 /** The card of a Dispatch event whose layout `bound` cannot hold, for `reason`: the event the
