@@ -727,7 +727,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
-  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`, `403 ORIGIN_REFUSED`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
 
 - Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
@@ -4385,7 +4385,8 @@ Each item below names a path with its method and identity, then its purpose.
   Start Google sign-in at the sign-in issuer:
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
-  `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
+  `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read;
+  `500 SIGNIN_START_FAILED` when no state or nonce can be drawn or the state cookie cannot be signed.
 
 - `/auth/callback` (GET; sign-in state)
 
@@ -4394,15 +4395,19 @@ Each item below names a path with its method and identity, then its purpose.
   under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
-  `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
+  `400 AUTH_STATE_INVALID` ("invalid or expired state") when the state cookie is missing, does not verify, has lapsed or names another state;
+  `400 AUTH_PARAMS_INVALID` ("missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
-  `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
+  `502 SIGNIN_FAILED` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
+  `500 SIGNIN_RECORD_FAILED` or `500 SESSION_FAILED` when the person or the session generation cannot be recorded;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
 - `/auth/logout` (POST; cookie or trusted header)
 
   End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  `401 NO_IDENTITY` for a caller who is not signed in; `500 SESSION_FAILED` when the sessions cannot be ended.
+  Like every unsafe request a browser credential carries, from another origin it is `403 ORIGIN_REFUSED` (`enforceCookieOrigin`).
+  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`.
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
