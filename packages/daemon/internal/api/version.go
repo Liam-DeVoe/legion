@@ -3514,7 +3514,35 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 230: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
+// 247: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
 // commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
@@ -3530,11 +3558,14 @@ package api
 // release has no table, and its step does nothing; the reader passes over a field of an identity
 // it does not know, so a field a later release adds turns no step off. No shape of `GET
 // /legion/v1/state` or of a request moves, and this change adds no store migration; its records
-// in contract-shapes.json and request-shapes.json are 228's, written again at 230 by `-update`.
-// (This entry keeps 230, above main's 228: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head of each of the 137 open pull requests of cybermonklabs/legion, of 492 open,
-// whose file list names this file or is cut short, made on 2026-11-24 between 11:04:46Z and
-// 11:06:50Z, found 229 declared by #2230 and none but this change declaring 230. This entry stood
-// at 200, 202, 209, 212, 221 and 225 before. Read the base's own number and every open pull
-// request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 230
+// in contract-shapes.json and request-shapes.json are 232's, written again at 247 by `-update`.
+// (This entry moved from 230 to 247 at the forward merge of 2026-11-24 that brought in acade985,
+// where main carried 232, dispatch://INFRA-4508's entry above: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head of each of the 139 open pull requests of
+// cybermonklabs/legion, of 480 open, whose file list names this file or is cut short, made on
+// 2026-11-24 between 13:30:27Z and 13:32:35Z, found each of 233 to 246 declared by another pull
+// request (246 by #4960) and 247 by none, so 247 is the lowest number above main's 232 that no
+// open pull request declares. This entry stood at 200, 202, 209, 212, 221, 225 and 230 before.
+// Read the base's own number and every open pull request again at the next merge rather than from
+// this line.)
+const DaemonAPIVersion = 247
