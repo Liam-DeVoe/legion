@@ -6387,6 +6387,23 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // (4.52 s, 4.37 s) is under the base's 5 s default.
   }, 120_000);
 
+  // The seven rows below, before the warn-mode row, run the same real `dispatch` subprocesses as
+  // the row above: the gate's dry run, and the post. Main's 30_000 sat inside their loaded cost, so
+  // a correct run timed out at it (the --path form of the edited-file row 15 of 20, the
+  // --body-file form 11 of 20, at 212 busy loops for the 96 rung, in the tester's Job
+  // infra-1580-t25-ge1-d72x8).
+  // Each now takes this file's ceiling, 120_000, as a hang guard, and its comment says how many
+  // times its worst that is. The worst readings are from Jobs of the cluster's `builds` namespace,
+  // two CPUs and 8 GiB, at 0fba4c77 with each row's limit at 250_000, 20 runs a row a rung (40 for
+  // the --body-file post): at the 96 rung, infra-1580-r26-ea-cgqwb (99 busy loops, row A 34.5 s)
+  // and infra-1580-r26-eb-8n6cr (81 busy loops, row A 36.8 s); at the 80 rung,
+  // infra-1580-r26-ea80-8jqwq and infra-1580-r26-ec80-785db (117 busy loops for the 80 rung, row A
+  // 36.1 s and 37.7 s) and infra-1580-r26-eb80-dw9zn (68 busy loops, row A 36.0 s). A run these
+  // rows fail under load is the gate's own ceiling, not a limit: the dry run does not finish inside
+  // DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an `outcome="error"` block,
+  // charged 46 to 48 s, where the row asserts a pass. That is a production budget that no per-test
+  // limit can guard.
+
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`
   // between the subcommand and that key failed, the gate read the failure as an error to let
@@ -6400,7 +6417,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     ]);
     expect(result?.block).toBe(true);
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
-  }, 30_000);
+    // A hang guard (the block above): worst 40 593 ms, at the 96 rung; 120_000 is 3.0 times that.
+  }, 120_000);
 
   test("a reviewed --body-file posts the text the model reviewed, once", async () => {
     fs.writeFileSync(path.join(work, "note.md"), NOTE);
@@ -6412,7 +6430,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toMatchObject([
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
-  }, 30_000);
+    // A hang guard (the block above): worst 48 900 ms, at the 80 rung; 120_000 is 2.5 times that.
+  }, 120_000);
 
   for (const [form, file, command] of [
     ["--body-file", "note.md", "dispatch comment --issue DSP-1 --body-file note.md"],
@@ -6431,7 +6450,9 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
         "Send the call again in a later message than the one that changes the file."
       );
       expect(posted.sent).toEqual([]);
-    }, 30_000);
+      // A hang guard (the block above): worst 47 900 ms, the --path form at the 96 rung; 120_000 is
+      // 2.5 times that.
+    }, 120_000);
 
   // A session on another provider than the gate's: the gate reviews nothing, so a file that a call
   // later in the same message changes posts as the CLI reads it, with no refusal naming a review.
@@ -6455,7 +6476,9 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect(posted.stdout).not.toContain(CHANGED);
       expect(posted.code).toBe(0);
       expect(posted.sent).toMatchObject([{ body: form === "--path" ? edited : { body: edited } }]);
-    }, 30_000);
+      // A hang guard (the block above): worst 47 700 ms, the --body-file form at the 80 rung;
+      // 120_000 is 2.5 times that.
+    }, 120_000);
 
   test("a file a call earlier in the same message writes is refused with what to do, then posts when sent again", async () => {
     const file = path.join(work, "later.md");
@@ -6473,7 +6496,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     const posted = await post(command, g.store);
     expect(posted.code).toBe(0);
     expect(posted.sent).toMatchObject([{ body: { body: NOTE } }]);
-  }, 30_000);
+    // A hang guard (the block above): worst 49 900 ms, at the 80 rung; 120_000 is 2.4 times that.
+  }, 120_000);
 
   test("in warn mode a file that is missing when the gate runs passes unreviewed, with the same text as its note", async () => {
     fs.rmSync(path.join(work, "missing.md"), { force: true });
