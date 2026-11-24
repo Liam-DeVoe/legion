@@ -1,11 +1,6 @@
 kind: Changed
 body: |-
-  `dispatch issue-update` sends `advances_revision` only when `--advances-revision <n>` names
-  it. Before, a call with `--advance` or `--clear-advances` and no revision sent the revision of
-  the command's own read of the issue, so its whole set could retract a priority that another
-  writer added after the caller read the issue. With no revision, Dispatch adds or removes one
-  priority at a time and refuses a change of two or more with 409 ADVANCES_REVISION, which names
-  the issue's revision. The command's error then says what to do: read the issue with
-  `dispatch read --issue <KEY>`, then send the whole set you mean with
-  `--advances-revision <n>`, n being the revision the refusal names. A refusal with any other
-  code reads as before.
+  When Dispatch refuses a `dispatch issue-update` with 409 ADVANCES_REVISION, the command's error
+  tells the caller what to do: read the issue with `dispatch read --issue <KEY>`, then send the
+  whole set with `--advances-revision <n>`, n being the revision the refusal names. A refusal with
+  any other code reads as before.

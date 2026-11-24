@@ -35,14 +35,14 @@ afterEach(() => {
  * the server answered with, `tree` the reading the server sent of it and `exact` whether it said
  * its parser takes the text whole (`description_tree_exact`), which `rerender` moves, and every
  * write lands in `onSave`, with the server's text the editor last took in, unanswered unless a
- * test gives `onSave` answers of its own; `built` holds, for each write, the text the editor held
- * as its edit began (`onSave`'s `on`). `imports` is the length of each text the editor took
- * in as markdown (`setMarkdown`), its own parse of a text, which the browser spec counts as a
- * parse of the page (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the
- * editor cannot take in: `setMarkdown` throws for it, as for a text holding what it may not create
- * yet. `beforeEffects` runs a step in the next commit `rerender` makes, before the editor's effects
- * take in what it drew. Queries are scoped to this render's container, since bun runs every test
- * file in one document.
+ * test gives `onSave` answers of its own; `madeOn` holds the text each write's edit was made on
+ * (`onSave`'s `on`). `imports` is the length of each text the editor took in as markdown
+ * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
+ * (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the editor cannot take in:
+ * `setMarkdown` throws for it, as for a text holding what it may not create yet. `beforeEffects`
+ * runs a step in the next commit `rerender` makes, before the editor's effects take in what it
+ * drew. Queries are scoped to this render's container, since bun runs every test file in one
+ * document.
  */
 function described(description: string, canWrite = true, tree?: DisplayTree, exact?: boolean) {
   const editors = recordedEditors();
@@ -63,7 +63,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
   const onSave = mock(
     (_next: string, _from: string): Promise<boolean> => new Promise<boolean>(() => {})
   );
-  const built: string[] = [];
+  const madeOn: string[] = [];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   // What runs in the next commit `rerender` makes: after the editor's render, before its effects
@@ -85,7 +85,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
             descriptionTreeExact={readingExact}
             label="Description of P1"
             onSave={(next, from, on) => {
-              built.push(on);
+              madeOn.push(on);
               return onSave(next, from);
             }}
           />
@@ -116,10 +116,10 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
         });
     },
     beforeEffects,
-    built,
     /** The editor once it holds the description, and its handle. */
     editor: () => editors.named("Description of P1", view.container),
     imports,
+    madeOn,
     onSave,
     rerender: (text: string, writer = canWrite, reading?: DisplayTree, readingExact?: boolean) =>
       view.rerender(page(text, writer, reading, readingExact)),
@@ -217,7 +217,7 @@ test("closing the editor while a write waits for the typing to rest writes it", 
 });
 
 test("the server's text replaces the editor's; under the reader's unwritten change it is shown, and theirs kept beside it until they use it", async () => {
-  const { built, editor, onSave, rerender, scope } = described("Speedruns run again.");
+  const { editor, madeOn, onSave, rerender, scope } = described("Speedruns run again.");
   const { box, handle } = await editor();
   rerender("Written elsewhere.");
   await waitFor(() => expect(box.textContent).toBe("Written elsewhere."));
@@ -243,7 +243,7 @@ test("the server's text replaces the editor's; under the reader's unwritten chan
     "Written elsewhere. Mine.\n",
     "Written elsewhere, again."
   );
-  expect(built).toEqual(["Written elsewhere, again.\n"]);
+  expect(madeOn).toEqual(["Written elsewhere, again.\n"]);
   expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   // The round trip of that write answers with what the editor wrote, which it holds already.
   rerender("Written elsewhere. Mine.\n");
@@ -317,7 +317,7 @@ test("the answer to an earlier write of the same text leaves Use my text's write
 // the second; over the first, Dispatch would refuse it each time it is used. No editor holds
 // anything of the reader's then, so the write is made on that text too.
 test("Use my text with no editor drawn names the newest text the server sent, though the editor could draw neither", async () => {
-  const { built, editor, onSave, rerender, scope, undrawable } = described("Speedruns run again.");
+  const { editor, madeOn, onSave, rerender, scope, undrawable } = described("Speedruns run again.");
   undrawable.add("Written elsewhere.").add("Written elsewhere, again.");
   const { handle } = await editor();
   handle.view.focus();
@@ -334,7 +334,7 @@ test("Use my text with no editor drawn names the newest text the server sent, th
   expect(onSave.mock.calls).toEqual([
     ["Speedruns run again. Mine.\n", "Written elsewhere, again."],
   ]);
-  expect(built).toEqual(["Written elsewhere, again."]);
+  expect(madeOn).toEqual(["Written elsewhere, again."]);
 });
 
 // Each write hands on the text the editor held as its edit began (`onSave`'s `on`), in the
@@ -343,7 +343,7 @@ test("Use my text with no editor drawn names the newest text the server sent, th
 // other person's text it took in; and for Use my text that writes the editor's last write again,
 // the text that write was made on, since it is that same edit.
 test("each write hands on the text the editor held as its edit began, in the form it writes", async () => {
-  const { answering, built, editor, onSave, rerender, scope } = described("Speedruns run again.");
+  const { answering, editor, madeOn, onSave, rerender, scope } = described("Speedruns run again.");
   const answer = answering();
   const { handle } = await editor();
   const writeAndLeave = (text: string) => {
@@ -366,7 +366,7 @@ test("each write hands on the text the editor held as its edit began, in the for
     "Written elsewhere. Mine.\n",
     "Written elsewhere. Mine.\n",
   ]);
-  expect(built).toEqual([
+  expect(madeOn).toEqual([
     "Speedruns run again.\n",
     "Speedruns run again. More.\n",
     "Written elsewhere.\n",
@@ -381,7 +381,7 @@ test("each write hands on the text the editor held as its edit began, in the for
 // waits: the editor compares with " A" from then on, but her typing was made on " B", and its
 // write says so.
 test("a read that answers an earlier write while the reader's typing waits leaves that typing made on the text it began on", async () => {
-  const { answering, built, editor, onSave, rerender } = described("Speedruns run again.");
+  const { answering, editor, madeOn, onSave, rerender } = described("Speedruns run again.");
   const answer = answering();
   const { handle } = await editor();
   handle.view.focus();
@@ -401,7 +401,7 @@ test("a read that answers an earlier write while the reader's typing waits leave
     "Speedruns run again. A B\n",
     "Speedruns run again. A B C\n",
   ]);
-  expect(built).toEqual([
+  expect(madeOn).toEqual([
     "Speedruns run again.\n",
     "Speedruns run again. A\n",
     "Speedruns run again. A B\n",
@@ -839,7 +839,12 @@ test("a writer's write answered after the editor drew another person's reading i
 // from the reading is: the editor does not take the kept text in, and its own write (`write`) is
 // never made. The kept text is the writer's own write again, so it is made on what that was.
 test("Use my text beside an editor the reader does not write in, drawn from the server's reading, writes the kept text as it is, and nothing drawn from the reading", async () => {
-  const { built, editor, onSave, rerender, scope } = described(PLAN, true, displayTree(PLAN), true);
+  const { editor, madeOn, onSave, rerender, scope } = described(
+    PLAN,
+    true,
+    displayTree(PLAN),
+    true
+  );
   const { box, handle } = await editor();
   handle.view.focus();
   await onFakeClock(async () => {
@@ -858,8 +863,8 @@ test("Use my text beside an editor the reader does not write in, drawn from the 
     [PLAN_WRITTEN, PLAN],
     [PLAN_WRITTEN, ELSEWHERE],
   ]);
-  const [first] = built;
-  expect(built).toEqual([first, first]);
+  const [first] = madeOn;
+  expect(madeOn).toEqual([first, first]);
 });
 
 // No reader's sequence changes an editor that holds the server's reading: it is read-only, and it

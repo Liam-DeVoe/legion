@@ -3759,7 +3759,7 @@ READS = (
      "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
     ("dispatch_browser", "packages/contracts/fixtures/priority-ids.json",
-     "packages/dispatch/e2e/priorities.e2e.ts:47"),
+     "packages/dispatch/e2e/priorities.e2e.ts:51"),
 )
 
 # Every JSON file a test of one of these packages imports from outside the package by a

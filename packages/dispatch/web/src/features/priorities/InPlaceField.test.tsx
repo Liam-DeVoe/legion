@@ -106,27 +106,27 @@ test("a text changed after the typing rested is written when the field is left",
 
 /** The field as a page holds it while another person's write lands: every write the field sends
  *  is kept in `writes`, in `froms`, where given, the server's text the field last took in, which a
- *  priority's page names to Dispatch (`expected`), and in `builts`, where given, the text the
- *  field held as the write's edit began. Where `answers` is given, the page answers each write
- *  with whether it landed, as a title's page does, once the test calls that write's answer there;
- *  else it answers none, as the owner's page does. The field is drawn with `start`, and
+ *  priority's page names to Dispatch (`expected`), and in `madeOn`, where given, the text each
+ *  write's edit was made on (`onSave`'s `on`). Where `answers` is given, the page answers each
+ *  write with whether it landed, as a title's page does, once the test calls that write's answer
+ *  there; else it answers none, as the owner's page does. The field is drawn with `start`, and
  *  `land.write` stands for the server's answer moving `value` under the field, as a refresh of the
  *  row does, without taking the focus from it; `step`, where given, runs in the commit that draws
  *  it, after the field's render and before its effects (`BeforeEffects`). */
 function HeldField({
   answers,
-  builts,
   froms,
   land,
+  madeOn,
   required,
   start = "Old name",
   step,
   writes,
 }: {
   answers?: ((landed: boolean) => void)[];
-  builts?: string[];
   froms?: string[];
   land: { write?: (text: string) => void };
+  madeOn?: string[];
   required?: boolean;
   start?: string;
   step?: StepBeforeEffects;
@@ -141,7 +141,7 @@ function HeldField({
         onSave={(next, from, on) => {
           writes.push(next);
           froms?.push(from);
-          builts?.push(on);
+          madeOn?.push(on);
           if (answers === undefined) return;
           const answer = Promise.withResolvers<boolean>();
           answers.push(answer.resolve);
@@ -727,11 +727,11 @@ test("a write that ended without landing is not written again once a read shows 
 test("each write hands on the text the field held as its edit began, and a field drawn again starts from the server's", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
-  const builts: string[] = [];
+  const madeOn: string[] = [];
   const answers: ((landed: boolean) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const held = (
-    <HeldField answers={answers} builts={builts} land={land} start="Old" writes={writes} />
+    <HeldField answers={answers} land={land} madeOn={madeOn} start="Old" writes={writes} />
   );
   const view = render(held);
   const field = () => within(view.container).getByRole("textbox", { name: "Title" });
@@ -768,7 +768,7 @@ test("each write hands on the text the field held as its edit began, and a field
   });
   again.unmount();
   expect(writes).toEqual(["A", "AB", "Bob, C", "Bob, C", "OldD"]);
-  expect(builts).toEqual(["Old", "A", "Bob", "Bob", "Old"]);
+  expect(madeOn).toEqual(["Old", "A", "Bob", "Bob", "Old"]);
 });
 
 // Use my text of typing the field never wrote is a new edit, made on the text the field held as
@@ -776,9 +776,9 @@ test("each write hands on the text the field held as its edit began, and a field
 test("Use my text of typing the field never wrote is made on the text the field took in", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
-  const builts: string[] = [];
+  const madeOn: string[] = [];
   const land: { write?: (text: string) => void } = {};
-  const view = render(<HeldField builts={builts} land={land} start="Old" writes={writes} />);
+  const view = render(<HeldField land={land} madeOn={madeOn} start="Old" writes={writes} />);
   await onFakeClock(async () => {
     await user.type(within(view.container).getByRole("textbox", { name: "Title" }), ", mine");
     act(() => land.write?.("Bob"));
@@ -789,7 +789,7 @@ test("Use my text of typing the field never wrote is made on the text the field 
   await user.click(within(notice).getByRole("button", { name: "Use my text" }));
   view.unmount();
   expect(writes).toEqual(["Old, mine"]);
-  expect(builts).toEqual(["Bob"]);
+  expect(madeOn).toEqual(["Bob"]);
 });
 
 // The text an edit was made on is the field's own, apart from what it compares the reader's text
@@ -800,11 +800,11 @@ test("Use my text of typing the field never wrote is made on the text the field 
 test("a read that answers an earlier write while the reader's typing waits leaves that typing made on the text it began on", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
-  const builts: string[] = [];
+  const madeOn: string[] = [];
   const answers: ((landed: boolean) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const view = render(
-    <HeldField answers={answers} builts={builts} land={land} start="Old" writes={writes} />
+    <HeldField answers={answers} land={land} madeOn={madeOn} start="Old" writes={writes} />
   );
   const field = within(view.container).getByRole("textbox", { name: "Title" });
   await onFakeClock(async () => {
@@ -825,5 +825,5 @@ test("a read that answers an earlier write while the reader's typing waits leave
   });
   view.unmount();
   expect(writes).toEqual(["A", "AB", "ABC"]);
-  expect(builts).toEqual(["Old", "A", "AB"]);
+  expect(madeOn).toEqual(["Old", "A", "AB"]);
 });

@@ -2058,7 +2058,7 @@ def browser_gate(filter, job):
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
         # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
-        (f"{FIX}/priority-ids.json", "packages/dispatch/e2e/priorities.e2e.ts:47 reads the shared list of the priority "
+        (f"{FIX}/priority-ids.json", "packages/dispatch/e2e/priorities.e2e.ts:51 reads the shared list of the priority "
                                      "id rule's cases by path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json",

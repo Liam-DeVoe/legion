@@ -3895,9 +3895,7 @@ const tableCells: {
       const held = await holdTableWrites(cell);
       await typeAndLeave(cell, " two-a");
       await expect.poll(held.held).toBe(1);
-      const field = await openTableField(cell);
-      await cell.page.keyboard.type(" two-b");
-      await field.blur();
+      await typeAndLeave(cell, " two-b");
       held.release();
       await checkClean(cell, " two-a two-b");
     },
@@ -4181,11 +4179,11 @@ const tableCells: {
       await busy.stop();
       // The description's write lands; it is of another field, so it makes nothing of the
       // stopped title needless.
-      const editor = cell.page.getByRole("textbox", { exact: true, name: "Description" });
-      await editor.click();
-      await cell.page.keyboard.press("ControlOrMeta+End");
-      await cell.page.keyboard.type(" eight-y");
-      await editor.blur();
+      await typeAndLeave(
+        cell,
+        " eight-y",
+        cell.page.getByRole("textbox", { exact: true, name: "Description" })
+      );
       await expect
         .poll(
           async () =>

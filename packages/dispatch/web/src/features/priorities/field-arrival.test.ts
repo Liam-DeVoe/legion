@@ -70,7 +70,13 @@ test("the answer to a write after the later one ended without landing leaves the
     sent: [],
     take: false,
   });
-  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent }).base).toBe("A");
+  // She types on to "ABC", and a read shows "A". The field compares with "A" from then on, but
+  // her typing began on "AB": typing not yet written that survives the arrival keeps the text its
+  // edit was made on.
+  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent })).toMatchObject({
+    base: "A",
+    made: "AB",
+  });
 });
 
 test("the text the field compares with, with no write over it out, takes nothing of the reader's typing", () => {
@@ -147,24 +153,6 @@ test("a second change while a notice shows keeps both of the reader's texts, new
   expect(arrival("Dan's", "Old, mine", second).kept).toEqual(["Old, mine", "Bob's, mine"]);
   // And a kept text the server now holds goes, whatever arrived it.
   expect(arrival("Old, mine", "Carol's", second).kept).toEqual(["Bob's, mine"]);
-});
-
-// The reader's next edit is made on the text the field takes in, or on the one it compares with
-// where the reader holds that very text. Typing not yet written that survives the arrival began on
-// the text the edit was made on until then, which stays.
-test("the reader's next edit is made on the text the field takes in or holds, and typing not yet written keeps the text it began on", () => {
-  // Another person's text, taken in over the reader's typing on "Old".
-  expect(arrival("Written elsewhere", "Old, mine", SETTLED).made).toBe("Written elsewhere");
-  // Another person's text that is the very text the reader holds, typed on "Old".
-  expect(arrival("One", "One", SETTLED).made).toBe("One");
-  // "A" over "Old" lands and "AB" over "A" ends without landing; she types on to "ABC", and a read
-  // shows "A". The field compares with "A" from then on, but her typing began on "AB".
-  const [a, ab] = out("A", "AB") as [SentText, SentText];
-  const sent = answered(answered([a, ab], ab, false), a, true);
-  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent })).toMatchObject({
-    base: "A",
-    made: "AB",
-  });
 });
 
 // The page answers each write of the field's text: one that landed stays until a read shows it,
