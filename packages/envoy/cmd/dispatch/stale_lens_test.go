@@ -279,7 +279,7 @@ func (r *staleLensRoll) stopEarlierBuilds(t *testing.T) {
 // the lease gives it back as it ends, before its connections close.
 func (r *staleLensRoll) holdTheLease(t *testing.T) func() {
 	t.Helper()
-	release := holdBlockIndexLease(t, "this build", r.pool, r.current)
+	release := holdBlockIndexLease(t, r.pool.Acquire, "this build", costLeaseWait, r.current.Output.String)
 	var once sync.Once
 	free := func() { once.Do(release) }
 	t.Cleanup(free)

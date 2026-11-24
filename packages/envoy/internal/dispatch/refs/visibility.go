@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Every read of the graph answers only the nodes the acting person may see. A node carries that
@@ -161,7 +162,9 @@ var credentialComparedKinds []string
 
 // registrySQL is the SQL the predicates over a node whose kind is a column splice from the
 // registry's own lists, rendered once the registry is built (deriveRegistryLists) rather than on
-// every call of those predicates, which every read of the graph makes.
+// every call of those predicates, which every read of the graph makes. Every kind this package
+// writes into a statement as a literal (store.QuoteLiterals), here and in every other read, is a
+// constant of this build, never a value a request carried.
 var registrySQL struct {
 	// kinds is every kind the registry holds a predicate for, as the literals of an `in` list
 	// (VisibleNode).
@@ -249,8 +252,8 @@ func deriveRegistryLists() {
 			rewrites.WriteString(` when '` + kind + `' then '` + stored + `'`)
 		}
 	}
-	registrySQL.kinds = quotedKinds(VisibilityKinds())
-	registrySQL.credentialCompared = quotedKinds(credentialComparedKinds)
+	registrySQL.kinds = store.QuoteLiterals(VisibilityKinds())
+	registrySQL.credentialCompared = store.QuoteLiterals(credentialComparedKinds)
 	registrySQL.storedRewrites = rewrites.String()
 }
 
@@ -650,14 +653,4 @@ func authorIsOfRow(alias, param string) string {
 	}
 	return `(case when ` + graphstore.AddressKindSQL(alias+`.kind`, alias+`.id`) + ` in (` + registrySQL.credentialCompared + `) then ` +
 		graphstore.AuthorCredentialIsSQL(alias+`.made_by`, param) + ` else ` + proved + ` end)`
-}
-
-// quotedKinds is kinds as the SQL literals of an `in` list. Every kind is a constant of this
-// build, never a value a request carried.
-func quotedKinds(kinds []string) string {
-	quoted := make([]string, len(kinds))
-	for index, kind := range kinds {
-		quoted[index] = `'` + kind + `'`
-	}
-	return strings.Join(quoted, ", ")
 }

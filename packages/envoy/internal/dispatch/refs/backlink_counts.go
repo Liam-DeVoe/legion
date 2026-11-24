@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
@@ -486,7 +487,7 @@ func (a backlinkArm) storedSQL(target backlinkTarget) string {
 	}
 	return `select ` + counted + ` from graph_tuples tuple` + join +
 		` where tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.kind +
-		`' and tuple.from_kind in (` + quotedKinds(stored) + `) and ` + addressed + ` in (` + quotedKinds(a.storedFrom) + `)` +
+		`' and tuple.from_kind in (` + store.QuoteLiterals(stored) + `) and ` + addressed + ` in (` + store.QuoteLiterals(a.storedFrom) + `)` +
 		` and ` + keyed + ` and ` + currentTuple("tuple") +
 		` and ` + liveVisibleNodeOf(`tuple.from_kind`, `tuple.from_id`)
 }

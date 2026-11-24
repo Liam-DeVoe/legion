@@ -100,7 +100,7 @@ func blockKindList(kinds ...string) string {
 	for _, item := range itemKinds {
 		listed = append(listed, item.BlockKind())
 	}
-	return `(` + quotedKinds(listed) + `)`
+	return `(` + store.QuoteLiterals(listed) + `)`
 }
 
 // heldByABlock is true of a document's, comment's, message's or ask's mention edge (graph_edges
@@ -291,9 +291,9 @@ func keyedTupleArm(blockKind string) string {
 // and storeArmPlacements and authored_by only out of a node of the store's own kinds or a finding.
 func keyedStoreArm(blockKind string) string {
 	finding := `t.from_kind = '` + BlockNodeKind + `' and ` + graphstore.FindingIDSQL(`t.from_id`)
-	pointers := quotedKinds(storeArmPointers)
-	placements := quotedKinds(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy}))
-	sources := quotedKinds([]string{graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint})
+	pointers := store.QuoteLiterals(storeArmPointers)
+	placements := store.QuoteLiterals(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy}))
+	sources := store.QuoteLiterals([]string{graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint})
 	return `select ` + graphstore.AddressKindSQL(`newest.from_kind`, `newest.from_id`) + `,
 				       newest.from_id, newest.kind, newest.to_kind, newest.to_id, newest.at, newest.legacy_source_seq
 				from (` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`,

@@ -904,7 +904,7 @@ type heldLink struct{ kind, toKind, toID string }
 // TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
 // (graphcensus's blockRefKinds and tieKinds).
 func heldLinkKinds(blockRefKinds string) string {
-	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + store.QuoteLiterals(typedKinds) + `))`
 }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
