@@ -19,7 +19,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1453,4091, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
+    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1452,4148, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
     (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
     (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:969 (PLUGIN_REPORT :854)"),
     ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts:83 names packages/dispatch/e2e/run-server.sh in the checkout it builds, and seed.ts:111, which that test names at :112, imports packages/dispatch/e2e/api.ts"),
