@@ -1843,7 +1843,7 @@ func StrandedClaimsOf(stranded []supervise.Claim) []StrandedClaim {
 	return claims
 }
 
-// StrandedByMove is each stranded claim by its name (StrandedClaim.Name), grouped by its Move under
+// StrandedByMove is each stranded claim by its name (ClaimName), grouped by its Move under
 // suspended, which it reads by the claim's token, so two claims of one role on one issue each take
 // their own move; each group is in stranded's order, and every move has a group, empty when no
 // claim takes it.
@@ -1854,14 +1854,9 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	}
 	for _, c := range stranded {
 		move := c.Move(suspended.Of(c))
-		grouped[move] = append(grouped[move], c.Name())
+		grouped[move] = append(grouped[move], ClaimName(c.Issue, c.Role, c.Token))
 	}
 	return grouped
-}
-
-// Name is the claim as the boot's line and `legion state` name it (ClaimName).
-func (c StrandedClaim) Name() string {
-	return ClaimName(c.Issue, c.Role, c.Token)
 }
 
 // ClaimName is a claim of issue on role whose token is token as the boot's line and `legion state`

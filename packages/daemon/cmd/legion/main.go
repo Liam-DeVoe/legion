@@ -1325,7 +1325,7 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
+// and each by its name (api.ClaimName: its issue and role, and its token beside them for
 // the claim of an agent not named for its role) under the move that brings it back
 // (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
 // move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
