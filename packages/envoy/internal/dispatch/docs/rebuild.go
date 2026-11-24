@@ -139,7 +139,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
-	if err := retiredWriteRefusal(artifactID, owner); err != nil {
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	latest, err := latestVersion(ctx, tx, artifactID)
@@ -210,6 +210,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	var closedStates *issueAskStateWrites
 	if !open {
 		// kept for one release: roll-window-attributes
+		// kept for one release: stored-ask-state
 		twoBuilds, err := anotherBuildServes(ctx, tx)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
@@ -336,11 +337,14 @@ func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next 
 		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
-// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
-// names: a rebuild discards every edit made after it.
-func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+// savedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
+// refused rebuild names, since a rebuild discards every edit made after it, and the one a refused
+// write into a retired document names (RetiredDocumentError). A retired document takes no new
+// version, so its number stays the latest, and the version's own address
+// (GET /api/v1/artifacts/{id}/versions/{number}) answers a read of it.
+func savedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
 	var number int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
 	`, artifactID).Scan(&number); err != nil {
 		return 0, fmt.Errorf("read latest document version number: %w", err)

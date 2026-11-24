@@ -1400,21 +1400,37 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		roster = `(select row(stored.*) from (` + bindFragment(routeRosterQuery, slots.known) + `) stored)`
 	}
 	// The first entry's row carries what was read once for the page, as one record, and a page of
-	// no entry its one row; every other row carries none of it.
+	// no entry its one row; every other row carries none of it. The entries are sorted before that
+	// record and the columns every row repeats - the read's moment, the roster and the two counts,
+	// each read once - are put beside them, so the sort holds the entries alone: sorted with the
+	// record, which holds every row the page draws, c-p99's heavy history (4,003 entries) spilled
+	// to disk (external merge, 3,984 kB; INFRA-4948). The outer `order by` names the inner one's
+	// keys as columns of the sorted rows (meInboxOrder.keys), so the planner takes the inner sort's
+	// order for its own and sorts nothing again.
 	const carries = `(entry.ord is null or entry.ord = 1)`
+	keys := order.keys("entry")
+	keyColumns, sortedBy := make([]string, len(keys)), make([]string, len(keys))
+	for index, key := range keys {
+		column := `key_` + strconv.Itoa(index)
+		keyColumns[index] = key + ` as ` + column
+		sortedBy[index] = `sorted.` + column + ` desc`
+	}
 	statement.WriteString(`
-	select head.as_of, head.roster, head.total, head.remaining, ` + carries + `,
-	       case when ` + carries + ` then row(` + strings.Join(reads.columns, `,
+	select now(), ` + roster + `, coalesce(` + total + `, 0),
+	       coalesce((select r.remaining from remaining r limit 1), 0), sorted.carries,
+	       case when sorted.carries then row(` + strings.Join(reads.columns, `,
 	         `) + `) end,
-	       entry.node_kind, entry.node_id, entry.moment, entry.kinds, entry.directions, entry.ats,
-	       entry.page, entry.agent
+	       sorted.node_kind, sorted.node_id, sorted.moment, sorted.kinds, sorted.directions, sorted.ats,
+	       sorted.page, sorted.agent
 	from (
-		select now() as as_of, ` + roster + ` as roster,
-		       coalesce(` + total + `, 0) as total,
-		       coalesce((select r.remaining from remaining r limit 1), 0) as remaining
-	) head
-	left join paged entry on true
-	order by ` + order.by("entry"))
+		select ` + carries + ` as carries,
+		       entry.node_kind, entry.node_id, entry.moment, entry.kinds, entry.directions, entry.ats,
+		       entry.page, entry.agent, ` + strings.Join(keyColumns, `, `) + `
+		from (values (true)) as one (present)
+		left join paged entry on true
+		order by ` + order.by("entry") + `
+	) sorted
+	order by ` + strings.Join(sortedBy, `, `))
 	return statement.String(), args.values[slots.first:], nil
 }
 
@@ -1619,12 +1635,18 @@ func (order meInboxOrder) after(row string) string {
 		meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)`
 }
 
+// keys are this order's keys over the entry rows row names, each an expression its `order by`
+// sorts on, newest first (by).
+func (order meInboxOrder) keys(row string) []string {
+	if order.byID {
+		return []string{row + `.moment`, row + `.node_id::uuid`}
+	}
+	return []string{row + `.moment`, row + `.node_kind`, row + `.node_id`}
+}
+
 // by is this order over the entry rows row names, for an `order by`.
 func (order meInboxOrder) by(row string) string {
-	if order.byID {
-		return row + `.moment desc, ` + row + `.node_id::uuid desc`
-	}
-	return row + `.moment desc, ` + row + `.node_kind desc, ` + row + `.node_id desc`
+	return strings.Join(order.keys(row), ` desc, `) + ` desc`
 }
 
 // meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's

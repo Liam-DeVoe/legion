@@ -141,8 +141,9 @@ export async function refuseOpenDecisionBlocks(
       }
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    // A copy, judged by its source, which is read off the block's own opening line alone: a line
-    // that quotes it (in code or front matter, say) names no ask Dispatch recorded.
+    // A copy, judged by its source, which is read off the block's own opening line alone
+    // (liveTextAsks): a line that quotes it (in code, a fence opened on a footnote's label line
+    // included, or in front matter) names no ask Dispatch recorded.
     const text = await liveText();
     if (!text.served && recordsSettled) return undefined;
     if (!text.served && recordsOpen) {

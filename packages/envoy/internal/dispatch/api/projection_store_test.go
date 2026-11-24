@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // projectedTables are the tables whose every row names the node it is the projection of, written
@@ -1065,7 +1066,7 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 			t.Fatalf("read migration %s: %v", entry.Name(), err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(string(body))) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(string(body))) {
 			if !clause.held {
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
 				continue
@@ -1091,18 +1092,6 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 var migrationsBeforeTheirColumnWasStated = map[string]string{
 	"0043_comment_reply_ask_id.up.sql":      "before 20261116124447 made its pointers tuples, and the backfill states them",
 	"0044_comment_reply_ask_id_redo.up.sql": "before 20261116124447 made its pointers tuples, and the backfill states them",
-}
-
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1257,7 +1246,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(body)) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(body)) {
 			if !clause.held {
 				t.Logf("%s: %s: no column it sets is one a tuple projects", name, clause.text)
 				continue
@@ -1308,10 +1297,10 @@ var markerTests = map[string][]string{
 	"user_agent_thread_dismissed_clear": {"if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then return null; end if;"},
 }
 
-// normalizedSQLBody is a stored function's body as markerTests spells it: its line comments
-// dropped, lower-cased, and every run of white space one space.
+// normalizedSQLBody is a stored function's body as markerTests spells it: its comments dropped
+// (pgmigrate.WithoutComments), lower-cased, and every run of white space one space.
 func normalizedSQLBody(body string) string {
-	return strings.Join(strings.Fields(strings.ToLower(withoutSQLComments(body))), " ")
+	return strings.Join(strings.Fields(strings.ToLower(pgmigrate.WithoutComments(body))), " ")
 }
 
 // requireTheExemptionWritesUnderTheMarkerTest reads the catalogue for the one exemption the one

@@ -133,12 +133,17 @@ func TestOneInboxParticipantSetOfTheCorpus(t *testing.T) {
 // $ISSUE_P99_DATABASE_URL, which it migrates; the corpus seeded into that database once the
 // migration has run, through its pool and through the base build's API; and every write path R11
 // names timed against it, 200 readings each.
+//
+// The database runs with jit = off, set before the base build boots over it (turnJITOff) and read
+// back on a new session before the first reading, which the first measurement-two: line prints with
+// pg_jit_available (turnJITOff says why).
 func TestOneInboxWriteBaseline(t *testing.T) {
 	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take the one-inbox write baseline", dismissedScaleEnv)
 	}
 	databaseURL := baselineDatabaseURL(t, oneInboxDatabaseEnv, oneInboxDatabase)
+	turnJITOff(t, "the base build's database", databaseURL)
 	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, oneInboxWorktree), oneInboxWorktree))
 	server := bootBaseline(t, binary, databaseURL)
 	ctx := context.Background()
@@ -152,9 +157,10 @@ func TestOneInboxWriteBaseline(t *testing.T) {
 	base.corpus = seedOneInboxCorpus(t, database, server)
 	settleOneInbox(t, base, oneInboxOwedWork)
 	analyzeOneInbox(t, base)
+	jit := requireJITOff(t, "the base build's database", databaseURL)
 
-	t.Logf("measurement-two: base build %s, %d readings of each write path after one not counted, taken_at=%s",
-		commit, oneInboxReadings, oneInboxNow())
+	t.Logf("measurement-two: base build %s, %d readings of each write path after one not counted, its database read on a new "+
+		"session: %s, taken_at=%s", commit, oneInboxReadings, jit, oneInboxNow())
 	for _, path := range oneInboxWritePaths() {
 		measureOneInboxPath(t, path, base)
 	}

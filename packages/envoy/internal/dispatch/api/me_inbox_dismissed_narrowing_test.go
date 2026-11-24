@@ -340,7 +340,7 @@ func explainDismissedNarrowing(t *testing.T, shape *dismissedScaleShape, name st
 	}
 	defer connection.Release()
 	customName, genericName := name+" under the custom plan", name+" under the generic plan"
-	custom, customText := explainDismissedScale(t, connection.Conn(), customName, statement, args, meInboxNoJIT)
+	custom, customText := explainDismissedScaleStatement(t, connection.Conn(), customName, statement, args, meInboxNoJIT)
 	generic, genericText := explainDismissedScaleGeneric(t, connection.Conn(), genericName, statement, args, meInboxSettings...)
 	for _, explained := range []struct {
 		name string

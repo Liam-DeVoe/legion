@@ -12,8 +12,12 @@ import { buildDispatchReference } from "../refs/routes";
  * This module is pure: it holds no React and makes no request.
  */
 
-/** The Decisions read as a server of either release answers it: this build's carries `entries`,
- *  and a server of the release before answers no such member (`withEntries`). */
+/**
+ * The Decisions read as a server of either release answers it: this build's carries `entries`,
+ * and a server of the release before answers no such member (`withEntries`).
+ *
+ * kept for one release: compat-objects
+ */
 export type DecisionsRead = Omit<IssueDecisions, "entries"> & {
   readonly entries?: IssueDecisions["entries"];
 };

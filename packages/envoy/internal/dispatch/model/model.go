@@ -3529,7 +3529,8 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
+// its steps in order, each a role or `role:key`.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
@@ -3539,7 +3540,8 @@ type PlanTask struct {
 // run's work started and replaced it at each later version of the owner's plan that Legion took
 // (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
 // and the version of it the plan was read from (both null for the source default, the default
-// steps of an issue whose owner gave none), and its tasks.
+// steps of an issue whose owner gave none, or whose experiment's group takes none from its
+// owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`
@@ -3847,18 +3849,22 @@ type DecisionLink struct {
 // ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
 // sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
 // `entries` and the Keep take their members from it, so it stays when the read's old `decisions`
-// member, which answers it whole for one release, goes.
+// member, which answers it whole for one release, goes. Heading, TextTree and Unsure are that
+// member's alone, and go with it.
 type Decision struct {
 	BlockID string `json:"block_id"`
+	// kept for one release: compat-objects
 	Heading string `json:"heading"`
 	Ref     string `json:"ref"`
 	Text    string `json:"text"`
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`. A view that lays the decision out paragraph by paragraph takes those
 	// paragraphs from this tree's own top-level blocks, so no reader splits the markdown again.
-	TextTree       DisplayTree    `json:"text_tree,omitempty"`
-	TextSHA256     string         `json:"text_sha256"`
-	Kind           string         `json:"kind"`
+	// kept for one release: compat-objects
+	TextTree   DisplayTree `json:"text_tree,omitempty"`
+	TextSHA256 string      `json:"text_sha256"`
+	Kind       string      `json:"kind"`
+	// kept for one release: compat-objects
 	Unsure         bool           `json:"unsure"`
 	Replaced       bool           `json:"replaced"`
 	Asks           []string       `json:"asks"`

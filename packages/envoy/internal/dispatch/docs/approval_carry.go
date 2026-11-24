@@ -285,6 +285,8 @@ func (steps decisionStepCases) any() bool {
 }
 
 // decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
+//
+// kept for one release: decisions-step
 type decisionStepWriteKey struct{}
 
 // withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and

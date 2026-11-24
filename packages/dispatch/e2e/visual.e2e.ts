@@ -24,12 +24,13 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row's
- *  write would be seen by every row after it, so each row signs in and navigates afresh, and the
- *  seed writes first each read mark a page of the shot set writes as it draws - the broadcast
- *  page's read of its replies and the Spec tab's read of the spec (`e2e/review-seed.ts`) - so a
- *  page's own write changes nothing any row compares. The review runs its rows in normal and in
- *  reverse order (`e2e/visual-order.ts`) so that a row reading another row's write fails by name.
+ *  baseline was taken against is the one the host wrote once. What that asks of a row is that its
+ *  page write nothing, since a write would be seen by every row after it, so each row signs in and
+ *  navigates afresh, and the seed writes first each read mark a page of the shot set writes as it
+ *  draws - the broadcast page's read of its replies and the Spec tab's read of the spec
+ *  (`e2e/review-seed.ts`) - so a page's own write changes nothing any row compares. Every other
+ *  write a row's page tries, to the API or on a document socket, is stopped before it reaches the
+ *  corpus and fails that row by name (`guardSharedCorpus`, `e2e/visual-guard.ts`).
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -70,13 +71,7 @@
  *    measured).
  */
 import { readFileSync } from "node:fs";
-import {
-  expect,
-  type Page,
-  type PlaywrightWorkerArgs,
-  type PlaywrightWorkerOptions,
-  test,
-} from "@playwright/test";
+import { type Browser, expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import {
@@ -84,13 +79,20 @@ import {
   type ReviewedRoute,
   type ReviewSeed,
   railInboxLink,
+  type SeededReadMarks,
   shotRoutes,
   topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
-import { inVisualOrder, visualOrder } from "./visual-order";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -124,10 +126,13 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
+  // needs, which the checks below hold.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -135,58 +140,28 @@ function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
-}
-
-/** The fixtures a row launches its own browser from: the project's engine (`browserName`) and
- *  its `launchOptions`, which are what the worker's `browser` fixture launches from too, and the
- *  `playwright` module that holds each engine's launcher. */
-type BrowserLaunch = Pick<
-  PlaywrightWorkerArgs & PlaywrightWorkerOptions,
-  "browserName" | "launchOptions" | "playwright"
->;
-
-/** `withAlice` in a browser launched for this row alone and closed when the row ends. A row must
- *  not draw what an earlier row left behind, and a browser the rows share is state they share, as
- *  the seed is: the reverse order exists to catch a row that draws what another row left
- *  (e2e/visual-order.ts). While every row drew in the worker's one `browser` fixture, CI runs
- *  45217963089 and 45240350309 failed `issue-activity` in light in the reverse order alone, by 22
- *  pixels against the bound of 20. About 18 of them were one glyph, the `i` of "Which" in the
- *  activity row `asked “Which sign-in path?”`, drawn one sub-pixel step over with no other glyph
- *  of the page moved; the rest were one step of anti-aliasing at the corners of the issue card.
- *  Nothing that page draws had changed since run 45199996621, which passed it in both orders. The
- *  `person` row had, and it runs before `issue-activity` in the reverse order: its page drew
- *  1280x1618 in all three runs, a full-page shot taller than the viewport, and it failed in run
- *  45199996621 against baselines of 1280x800 and passed in the two later runs against baselines
- *  retaken at 1280x1618. So what changed for `issue-activity` was what a row before it had done in
- *  the browser they shared.
- *
- *  The launch is the one the project configures, because it takes the fixtures `BrowserLaunch`
- *  names. What it costs is one browser launch per row. */
-async function withAliceInOwnBrowser(
-  { browserName, launchOptions, playwright }: BrowserLaunch,
-  check: (page: Page) => Promise<void>
-): Promise<void> {
-  const browser = await playwright[browserName].launch(launchOptions);
-  try {
-    await withAlice(browser, check);
-  } finally {
-    await browser.close();
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
   }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
- *  only difference between them, and it decides the viewport, the browser `withAliceInOwnBrowser`
- *  launches and the directory the baseline is read from. The skip lives here so each of the two
- *  loops below is one call, and it comes before the launch, so a run that skips every row
- *  launches no browser. */
-async function shoot(launch: BrowserLaunch, route: ReviewedRoute): Promise<void> {
+ *  only difference between them, and it decides the viewport and the directory the baseline is
+ *  read from. The skip lives here so the two loops below stay one line each. */
+async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   if (seedPath === undefined) {
     test.skip(true, SKIP_REASON);
     return;
   }
   const seed = readVisualSeed(seedPath);
-  await withAliceInOwnBrowser(launch, async (page) => {
+  await withAlice(browser, async (page) => {
+    // Before the first navigation, so every write the page tries is stopped and named.
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -343,21 +318,21 @@ async function shoot(launch: BrowserLaunch, route: ReviewedRoute): Promise<void>
         maxDiffPixels: 20,
       });
     }
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
+    expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }
 
-// The rows of each project in the order `DISPATCH_E2E_VISUAL_ORDER` asks for (e2e/visual-order.ts
-// says why the review runs in two orders); the config puts the projects in that order too.
-const order = visualOrder();
-
-for (const route of inVisualOrder(shotRoutes, order)) {
+for (const route of shotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
-  test(`${route.name} matches its baseline in light and dark`, async ({
-    browserName,
-    launchOptions,
-    playwright,
-  }) => {
-    await shoot({ browserName, launchOptions, playwright }, route);
+  test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
+    await shoot(browser, route);
   });
 }
 
@@ -366,13 +341,9 @@ for (const route of inVisualOrder(shotRoutes, order)) {
 // The ` @phone` tag is what puts a row in the `visual-phone` project and keeps it out of
 // `visual` (e2e/playwright.config.ts), so the two shots of one page land in two baseline
 // directories under the same file name.
-for (const route of inVisualOrder(phoneShotRoutes, order)) {
+for (const route of phoneShotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
-  test(`${route.name} matches its phone baseline in light and dark @phone`, async ({
-    browserName,
-    launchOptions,
-    playwright,
-  }) => {
-    await shoot({ browserName, launchOptions, playwright }, route);
+  test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
+    await shoot(browser, route);
   });
 }

@@ -107,7 +107,7 @@ func TestTheDirectMarksReadTwoProbesASession(t *testing.T) {
 				t.Errorf("the marks read are\n  %v\nwant each session's newest of each kind\n  %v", got, read.want)
 			}
 
-			plan, text := explainDismissedScale(t, connection.Conn(), read.name, statement, read.args)
+			plan, text := explainDismissedScaleStatement(t, connection.Conn(), read.name, statement, read.args)
 			t.Logf("the marks of %s, out of %d:\n%s", read.name, marks, text)
 			if explaintest.SeqScansRelation(t, plan, "graph_tuples") {
 				t.Errorf("the read scans graph_tuples:\n%s", text)
