@@ -1202,47 +1202,59 @@ func roundsSummary(issues map[string]api.Issue) string {
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
 }
 
-// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
-// of the call (api.StepView).
+// claimCall is one claim's open tool call: the issue and role whose claim it is, the claim's name
+// (api.ClaimName), and the record of the call (api.StepView).
 type claimCall struct {
 	issue string
-	role  string
+	role  legionclaim.Role
+	name  string
 	step  api.StepView
 }
 
 // openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// start of and no end of, by issue, then role, then the claim's name, so the role's own claim
+// comes before each other claim of its role. A call open is what claims.go's openCallWord prints a
+// word for and nothing else is, so that is the test here too: openCallsSummary names each of these
+// rows with that word. That is the shape a stalled turn leaves behind: the daemon reads the same
+// record to decide a turn has stopped moving, and this is where an operator reads it. Each claim
+// of an issue is read: its architect, its workers, and its other claims (api.Issue.OtherClaims),
+// where the second claim of a role stands, such as the `implementer-2` a plan that runs the role
+// twice starts beside the role's own agent, or the agent of another role's name that holds the
+// role for a step. A controller's claim is in none of these — internal/projection puts it on no
+// issue — and is read with `legion claims list` instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
-	open := func(issue, role string, view api.ClaimView) {
+	open := func(issue string, role legionclaim.Role, view api.ClaimView) {
 		if openCallWord(view.Step) == "" {
 			return
 		}
-		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
+		name := api.ClaimName(issue, role, view.Token)
+		calls = append(calls, claimCall{issue: issue, role: role, name: name, step: *view.Step})
 	}
 	for key, issue := range issues {
 		if issue.Architect != nil {
-			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
+			open(key, legionclaim.RoleArchitect, *issue.Architect)
 		}
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			open(key, string(role), issue.Workers[role].Claim)
+			open(key, role, issue.Workers[role].Claim)
+		}
+		for _, other := range issue.OtherClaims {
+			open(key, other.Role, other.Claim)
 		}
 	}
 	slices.SortFunc(calls, func(a, b claimCall) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role),
+			cmp.Compare(a.name, b.name))
 	})
 	return calls
 }
 
 // openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
-// many, and each by issue and role with the call its stream named and when that call started
+// many, and each by its claim's name with the call its stream named and when that call started
 // (claims.go's openCallWord, Go-quoted because the tool and the call id are the agent's own
-// word). A call that has been open for hours is this issue's whole shape — the daemon's backstop
+// word). The name is api.ClaimName's: the issue and the role, and the claim's token beside them
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart. A call that has been open for hours is this issue's whole shape — the daemon's backstop
 // ends such a turn, and until it does this line says which agent is in one.
 //
 // The call's arguments are in no column of it: the daemon keeps their length and a fingerprint
@@ -1254,7 +1266,7 @@ func openCallsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(calls))
 	for i, call := range calls {
-		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+		named[i] = call.name + " " + strconv.Quote(openCallWord(&call.step))
 	}
 	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
 }

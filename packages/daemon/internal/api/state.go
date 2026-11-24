@@ -1820,15 +1820,22 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	return grouped
 }
 
-// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the claim
-// of an agent named for its role, whose token the issue and the role spell (and for an entry that
-// names no token), and `<issue> <role> (claim <token>)` for every other claim. Two claims of one
-// issue can hold one role (record.WorkerClaim), and they are then named apart; the token is what
-// `legion claims` takes.
+// Name is the claim as the boot's line and `legion state` name it (ClaimName).
 func (c StrandedClaim) Name() string {
-	named := c.Issue + " " + string(c.Role)
-	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {
-		return named + " (claim " + string(c.Token) + ")"
+	return ClaimName(c.Issue, c.Role, c.Token)
+}
+
+// ClaimName is a claim of issue on role whose token is token as the boot's line and `legion state`
+// name it: `<issue> <role>` for the claim of an agent named for its role, whose token the issue and
+// the role spell (and for an entry that names no token), and `<issue> <role> (claim <token>)` for
+// every other claim: the agent of another role's name that holds the role for a step, or
+// `implementer-2` on an issue whose plan runs the role twice. Two claims of one issue can hold one
+// role (record.WorkerClaim), and they are then named apart; the token is what `legion claims`
+// takes.
+func ClaimName(issue string, role claim.Role, token claim.Token) string {
+	named := issue + " " + string(role)
+	if _, agent, ok := token.Cut(); ok && string(agent) != string(role) {
+		return named + " (claim " + string(token) + ")"
 	}
 	return named
 }
