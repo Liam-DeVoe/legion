@@ -649,7 +649,8 @@ test(
       const answer = await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })
       const elapsed = performance.now() - started
 
-      expect(elapsed).toBeLessThan(OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 1_000)
+      // R7's literal bound, well inside Claude Code's 30 s hook limit, so a raised bound fails.
+      expect(elapsed).toBeLessThan(7_000)
       // The read failed, so the turn ends with no reminder.
       expect(answer).toEqual({})
       expect(inbox).toEqual([])

@@ -2641,7 +2641,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         );
         const elapsed = performance.now() - started;
 
-        expect(elapsed).toBeLessThan(OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 1_000);
+        // R7's literal bound, well inside Oh My Pi's 30 s handler limit, so a raised bound fails.
+        expect(elapsed).toBeLessThan(7_000);
         // The read failed, so the turn ends with no reminder.
         expect(result).toBeUndefined();
         // Each bound aborted the request it cut off, rather than only ending the wait for it.
