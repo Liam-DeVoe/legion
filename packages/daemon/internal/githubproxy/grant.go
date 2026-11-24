@@ -443,7 +443,7 @@ func (k *keeper) ask(ctx context.Context) (*Grant, revocation, error) {
 		err = k.write(grant)
 	}
 	if err != nil {
-		return nil, k.revokeOwned([]string{id}), fmt.Errorf("grant %s: %w", id, err)
+		return nil, k.revokeOwned([]string{id}, revokeBound), fmt.Errorf("grant %s: %w", id, err)
 	}
 	k.mu.Lock()
 	if _, owned := k.held[id]; owned {
@@ -519,35 +519,42 @@ func (k *keeper) keep(ctx context.Context) {
 }
 
 // revokeHeld ends the grants the forwarder owns, at the generation's end, in two passes, each
-// under a time limit of its own (revokeBound), so that neither an ask that hangs nor a log that
-// stalls holds a revocation back. The first pass revokes every grant held now, the current one
-// among them. Then, where an ask was in flight, it waits for that ask to land (ask.landed, within
-// landedBound), and the second pass revokes every grant held then, whether or not the ask landed:
-// the one that ask made, owned as soon as the broker named it, and any the first pass could not
-// end. No ask starts once revokeHeld began (keeper.stopping), so only the ask in flight can add a
-// grant after the first pass. A grant the broker names only after the second pass lives until its
-// own expiry, as a grant of a stop cut short does (see the package doc). Every line revokeHeld
-// writes comes after both passes.
+// under a time limit of its own, so that neither an ask that hangs nor a log that stalls holds a
+// revocation back. The first pass revokes every grant held now, the current one among them, within
+// revokeBound. The second pass runs where an ask was in flight or the first pass left a grant
+// unended: where an ask was in flight, it first waits for that ask to land (ask.landed, within
+// landedBound), then it revokes every grant held then, whether or not the ask landed: the one that
+// ask made, owned as soon as the broker named it, and any the first pass could not end. Its limit
+// is revokeBound, and landedBound too where it waited for no ask, so the stop spends at most
+// stopBound either way and a stop with no ask in flight spends all of it on revocations. No ask
+// starts once revokeHeld began (keeper.stopping), so only the ask in flight can add a grant after
+// the first pass. A grant the broker names only after the second pass lives until its own expiry,
+// as a grant of a stop cut short does (see the package doc). Every line revokeHeld writes comes
+// after both passes.
 func (k *keeper) revokeHeld() {
 	k.mu.Lock()
 	k.stopping = true
 	asking := k.asking
 	first := slices.Sorted(maps.Keys(k.held))
 	k.mu.Unlock()
-	passes := []revocation{k.revokeOwned(first)}
+	passes := []revocation{k.revokeOwned(first, revokeBound)}
 	outlived := false
-	if asking != nil {
-		landed := time.NewTimer(landedBound)
-		select {
-		case <-asking.landed:
-		case <-landed.C:
-			outlived = true
+	if asking != nil || len(passes[0].failed) > 0 || passes[0].openErr != nil {
+		bound := revokeBound + landedBound
+		if asking != nil {
+			bound = revokeBound
+			landed := time.NewTimer(landedBound)
+			select {
+			case <-asking.landed:
+			case <-landed.C:
+				outlived = true
+			}
+			landed.Stop()
 		}
-		landed.Stop()
 		k.mu.Lock()
 		second := slices.Sorted(maps.Keys(k.held))
 		k.mu.Unlock()
-		passes = append(passes, k.revokeOwned(second))
+		passes = append(passes, k.revokeOwned(second, bound))
 	}
 	if outlived {
 		k.log.Warn("forwarder: an ask in flight had not ended when the stop stopped waiting; a grant it is named later lives to its expiry")
@@ -577,12 +584,12 @@ type revocation struct {
 }
 
 // revokeOwned is every revocation the forwarder makes, of a grant an ask could not use as at the
-// stop: it revokes each of ids the keeper still owns, under a time limit of its own (revokeBound),
-// and removes an id from held only once the broker ended it or it expired, so an id the broker
-// would not end stays owned for the stop to try again. An id no longer owned was ended by another
+// stop: it revokes each of ids the keeper still owns, under a time limit of its own (bound), and
+// removes an id from held only once the broker ended it or it expired, so an id the broker would
+// not end stays owned for the stop to try again. An id no longer owned was ended by another
 // revocation and is passed over. It writes no line: its caller does, after the work that must not
 // wait on a log.
-func (k *keeper) revokeOwned(ids []string) revocation {
+func (k *keeper) revokeOwned(ids []string, bound time.Duration) revocation {
 	r := revocation{ids: ids, failed: map[string]error{}}
 	if len(ids) == 0 {
 		return r
@@ -592,7 +599,7 @@ func (k *keeper) revokeOwned(ids []string) revocation {
 		r.openErr = err
 		return r
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), revokeBound)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
 	for _, id := range ids {
 		k.mu.Lock()

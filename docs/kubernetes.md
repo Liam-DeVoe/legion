@@ -9339,7 +9339,8 @@ each issue's pod (every role of it alike) and the image probe's.
     When the broker's proxy answers `407`, as it does for a grant the broker ended early, the forwarder asks for a new grant at once and fails that one connection with `503`, since the client wrote it with the ended grant's placeholder; the role's next call reads the new placeholders.
     Every connection answered `407` while that ask runs joins it, and for 10 seconds after an ask failed none asks again, so a broker that refuses the role's names gets one denied request, not one per call.
     It owns a grant from the moment the broker names it, revokes at once a grant it cannot use (a release that fails or that it refuses), and keeps one the broker would not end for its stop to try again.
-    When the generation stops it revokes every grant it holds, then, once an ask still in flight lands or a second has passed, every grant held by then, each pass under a time limit of its own.
+    When the generation stops it revokes every grant it holds, then, once an ask still in flight lands or a second has passed, every grant held by then; with no ask in flight, a second pass tries again a grant the first could not end.
+    Each pass runs under a time limit of its own, and the stop takes at most 3 seconds.
     A grant it fails to revoke, its stop cut short or its process killed, is not ended by the daemon: the daemon's revocation of the generation's enrollment carries the grant to the session's next enrollment, so it stays live until its own expiry, at most an hour.
     The next generation holds none of its placeholders, since the bundle is the generation's own; its forwarder may be handed that grant back while it is in the first half of its life, and revokes it at its own stop.
 

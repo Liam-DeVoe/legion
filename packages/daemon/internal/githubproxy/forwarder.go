@@ -151,10 +151,12 @@ func (f *Forwarder) Serve(ctx context.Context) error {
 	return failed
 }
 
-// revokeBound bounds each revocation the forwarder makes (keeper.revokeOwned): each of the stop's
-// two passes, and the revocation of a grant an ask could not use, under a time limit of its own,
-// so time one spent is never time another lacks. landedBound bounds the stop's wait for an ask in
-// flight to land, between its two passes. stopBound is the whole stop, both passes and that wait:
+// revokeBound bounds each revocation the forwarder makes (keeper.revokeOwned): the stop's first
+// pass, its second where it waited for an ask in flight, and the revocation of a grant an ask
+// could not use, each under a time limit of its own, so time one spent is never time another
+// lacks. landedBound bounds the stop's wait for an ask in flight to land, between its two passes;
+// a second pass that waited for no ask, a retry of a grant the first pass could not end, has that
+// time too. stopBound is the whole stop, both passes and that wait:
 // inside the four seconds its shim waits for it (internal/shim's forwarderStopWait), within the
 // role's stop grace. A revocation cut short leaves its grant live until its own expiry, at most
 // the hour of Lifetime, the bound the spec gives a missed revocation; the daemon's revocation of
