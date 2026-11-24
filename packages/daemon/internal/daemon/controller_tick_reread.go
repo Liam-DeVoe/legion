@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -80,8 +81,9 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 //
 // parents is every issue whose phases have started (record.StartedParents): one in planning
 // through accepting, held from one of them, owing its worker a start, or waiting in
-// awaiting_children (dispatch://INFRA-3320 R13), and every parent held before its retro
-// (record.RetroHeldParents, R8), which an open Dispatch child holds as well. A child filed under
+// awaiting_children (dispatch://INFRA-3320 R13), and every parent held before its retro (R8), which
+// an open Dispatch child holds as well: the keys of record.LineFacts.RetroHolds, which holds an
+// entry for each such parent (record.RetroHeldParents) whatever holds it. A child filed under
 // such an issue is in no mirror row until a listing shows it, and the admission pass holds the
 // issue's next start, stops the phase under way, or holds its retro, the moment the mirror does,
 // so the turn reads the children of each of them whatever the number of keys (readObserved).
@@ -122,7 +124,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 				add(blocker)
 			}
 		}
-		parents = slices.Concat(record.StartedParents(issues, facts.Owed), record.RetroHeldParents(issues))
+		parents = slices.AppendSeq(record.StartedParents(issues, facts.Owed), maps.Keys(facts.RetroHolds))
 		slices.Sort(parents)
 		parents = slices.Compact(parents)
 		for _, parent := range parents {

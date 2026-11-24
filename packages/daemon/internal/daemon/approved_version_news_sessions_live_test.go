@@ -154,7 +154,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -821,21 +820,16 @@ func (r *sessionsRun) keepTranscripts() []string {
 	return refused
 }
 
-// version2 answers whether artifact has a version 2, and that version as Dispatch answers it.
+// version2 answers whether artifact has a version 2, and that version as Dispatch answers it
+// (dispatchExchange, with the agent bearer).
 func (r *sessionsRun) version2(artifact string) (bool, string) {
 	r.t.Helper()
-	request, err := http.NewRequest(http.MethodGet, r.s.dispatch.base+"/api/v1/artifacts/"+artifact+"/versions/2", nil)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token)
-	response, err := r.s.client.Do(request)
+	status, answer, err := dispatchExchange(r.s.client, r.s.dispatch.base, http.MethodGet, "/api/v1/artifacts/"+artifact+"/versions/2", nil,
+		bearing(r.s.dispatch.token))
 	if err != nil {
 		r.t.Fatalf("read version 2 of %s: %v", artifact, err)
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	return response.StatusCode == http.StatusOK, string(body)
+	return status == http.StatusOK, string(answer)
 }
 
 // approvalAsks is every approval request Dispatch holds on key, as the issue's asks list it.

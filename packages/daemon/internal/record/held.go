@@ -241,19 +241,17 @@ func (h RetroHolds) None() bool {
 	return len(h.Beneath) == 0 && len(h.Resting) == 0 && len(h.Open) == 0
 }
 
-// retroHoldsOf is the RetroHolds of each parent of held, the parents among issues held before
-// their retro (RetroHeldParents), by key: the issues beneath each, read over the records the pass
-// walks its chains over (chainOf: issues, and above, the records above them its read leaves out,
-// LineFacts.Parents), the roots that rest on each (resting, RestingRootsOn) and its open Dispatch
-// children (children, readChildWaits). It builds nothing where no parent is held so.
-func retroHoldsOf(issues []Issue, held []string, above map[string]Issue, children map[string]ChildWait,
-	resting map[string][]RestingRoot,
-) map[string]RetroHolds {
+// retroHoldsOf is the RetroHolds of each parent of held, the parents among the pass's own records
+// held before their retro (RetroHeldParents), by key: the issues beneath each, read over the
+// records the pass walks its chains over (pass, passChain: the pass's own records and the records
+// above them its read leaves out, LineFacts.Parents), the roots that rest on each (resting,
+// RestingRootsOn) and its open Dispatch children (children, readChildWaits). It builds nothing
+// where no parent is held so.
+func retroHoldsOf(pass *passChain, held []string, children map[string]ChildWait, resting map[string][]RestingRoot) map[string]RetroHolds {
 	if len(held) == 0 {
 		return nil
 	}
-	own := byKey(issues)
-	chain := chainOf(own, above)
+	own, chain := pass.own(), pass.chain()
 	holds := make(map[string]RetroHolds, len(held))
 	for _, key := range held {
 		roots := make([]string, len(resting[key]))

@@ -351,6 +351,36 @@ func chainOf(byKey, above map[string]Issue) map[string]Issue {
 	return chain
 }
 
+// passChain is the one chain of an admission pass's reading of its parents' children
+// (ReadLineFacts, and the engine's judgement of one parent's, OpenChildWaits): the pass's own
+// records, issues, by key (own) and the records it walks its parent chains over (chain, chainOf
+// with above, LineFacts.Parents). Each is built the first time a walk reads it and kept for every
+// walk after: the pass walks the chain for the cycle of each child (ChildWaits), for the child left
+// out of the started parents' waits and of the retro-held parents' (withoutHeldUnderAccepted) and
+// for the issues beneath each parent held before its retro (retroHoldsOf), so it builds it once,
+// and not at all where it reads no Dispatch child and holds no parent before its retro.
+type passChain struct {
+	issues         []Issue
+	above          map[string]Issue
+	keyed, chained map[string]Issue
+}
+
+// own is the pass's own records, by key.
+func (p *passChain) own() map[string]Issue {
+	if p.keyed == nil {
+		p.keyed = byKey(p.issues)
+	}
+	return p.keyed
+}
+
+// chain is the records the pass walks its parent chains over (chainOf).
+func (p *passChain) chain() map[string]Issue {
+	if p.chained == nil {
+		p.chained = chainOf(p.own(), p.above)
+	}
+	return p.chained
+}
+
 // AcceptedAncestor is the nearest issue above issue (Ancestors) that the daemon has already
 // accepted (Accepted, which counts an ancestor held from one of those phases), and "" when no
 // ancestor has been.
@@ -844,17 +874,19 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	// crosses the records above the pass's own. The parents held before their retro
 	// (RetroHeldParents) are found once, for that read and for the read of the roots that rest on
 	// them (RestingRootsOn) after it, which reads nothing where no parent is held so, and the three
-	// holds of each are put together from the two reads once (retroHoldsOf).
+	// holds of each are put together from the two reads once (retroHoldsOf). Every walk of the
+	// parent chain those judgements make reads the one chain of the pass (passChain).
 	held := RetroHeldParents(issues)
+	pass := &passChain{issues: issues, above: facts.Parents}
 	var children map[string]ChildWait
-	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, issues, held, facts); err != nil {
+	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, issues, held, facts, pass); err != nil {
 		return LineFacts{}, err
 	}
 	resting, err := RestingRootsOn(ctx, tx, store, held)
 	if err != nil {
 		return LineFacts{}, err
 	}
-	facts.RetroHolds = retroHoldsOf(issues, held, facts.Parents, children, resting)
+	facts.RetroHolds = retroHoldsOf(pass, held, children, resting)
 	return facts, nil
 }
 

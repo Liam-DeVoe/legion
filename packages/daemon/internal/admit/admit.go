@@ -89,12 +89,12 @@ type Admission struct {
 	catchingUp map[string]struct{}
 
 	// retroHeldReads is, for each parent held before its retro (record.HoldForChildren), what the
-	// facts of the last pass that read its release and committed showed of it (retroHeldRead,
-	// readsHeldRetro). It is this daemon run's own memory and nothing durable: a restart reads each
-	// such parent once more, which tells nothing twice, since the told-once marks are durable
-	// (workflow's tellRetroHeld). It holds an entry only for a parent the last pass's facts held
-	// so: each pass first drops every other (forgetRetroHeldReads), a parent whose retro started or
-	// that left the workflow among them.
+	// facts of the last pass that read its release, committed, and whose hook ran before a later
+	// pass began showed of it (retroHeldRead, readsHeldRetro, rememberHeldRetro). It is this daemon
+	// run's own memory and nothing durable: a restart reads each such parent once more, which tells
+	// nothing twice, since the told-once marks are durable (workflow's tellRetroHeld). It holds an
+	// entry only for a parent the last pass's facts held so: each pass first drops every other
+	// (forgetRetroHeldReads), a parent whose retro started or that left the workflow among them.
 	retroHeldReads map[string]retroHeldRead
 	// retroHeldPass counts the passes that read retroHeldReads (forgetRetroHeldReads). It fences
 	// the hooks that write it: a hook writes only while no pass has begun after its own
@@ -1952,16 +1952,17 @@ func (r retroHeldRead) same(other retroHeldRead) bool {
 
 // readsHeldRetro says whether the pass reads the release of key, a parent held before its retro
 // whose facts are read (workflow.Engine.StartHeldRetro). It reads one whose facts show nothing
-// holding it, since its retro may start. It reads one a hold holds where its facts differ from those
-// of the last pass that read it and committed (retroHeldReads), or where no pass of this run has:
-// a hold no settle of its tree reads, a Dispatch child filed or reopened under it or a root
-// registered on its approval, shows as such a change, and its notice may not have been told yet.
-// It does not read one whose facts are the ones that read found: that read told the first hold
-// they show where no notice of the run had named it (workflow's tellRetroHeld), so a read now has
-// nothing new to tell, and a hold still holds it, so no release can start its retro. The movement
-// keeps the run apart: the move that enters a hold and the release that ends it each write it, so a
-// parent held again is read again. A change beneath it is a write of its tree, whose settle reads
-// it already (workflow's releaseHeldParents).
+// holding it, since its retro may start. It reads one a hold holds where its facts differ from
+// those of the last pass that read it, committed, and whose hook ran before a later pass began
+// (retroHeldReads, rememberHeldRetro), or where no pass of this run has: a hold no settle of its
+// tree reads, a Dispatch child filed or reopened under it or a root registered on its approval,
+// shows as such a change, and its notice may not have been told yet. It does not read one whose
+// facts are the ones that read found: that read told the first hold they show where no notice of
+// the run had named it (workflow's tellRetroHeld), so a read now has nothing new to tell, and a
+// hold still holds it, so no release can start its retro. The movement keeps the run apart: the
+// move that enters a hold and the release that ends it each write it, so a parent held again is
+// read again. A change beneath it is a write of its tree, whose settle reads it already
+// (workflow's releaseHeldParents).
 func (a *Admission) readsHeldRetro(key string, read retroHeldRead) bool {
 	if read.holds.None() {
 		return true

@@ -353,7 +353,11 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 	rows := outboxRows(t, pool)
 
 	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.awaitChildren(ctx, tx, first, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
+		w, err := engine.walk(ctx, tx, first)
+		if err != nil {
+			return err
+		}
+		return engine.awaitChildren(ctx, tx, first, w, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
 			Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}, Ended: claim.RoleTester})
 	}); err != nil {
 		t.Fatalf("the second move: %v", err)

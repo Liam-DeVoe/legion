@@ -44,7 +44,7 @@ func heldFactsOf(issues []Issue, facts LineFacts) HeldFacts {
 // records above them facts carries (LineFacts.Parents), with the open Dispatch children and the
 // resting roots a case gives each parent.
 func withRetroHolds(facts LineFacts, issues []Issue, children map[string]ChildWait, resting map[string][]RestingRoot) LineFacts {
-	facts.RetroHolds = retroHoldsOf(issues, RetroHeldParents(issues), facts.Parents, children, resting)
+	facts.RetroHolds = retroHoldsOf(&passChain{issues: issues, above: facts.Parents}, RetroHeldParents(issues), children, resting)
 	return facts
 }
 

@@ -2302,7 +2302,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			if err != nil {
 				return "", err
 			}
-			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, childrenHold{Start: from,
+			return phase.AwaitingChildren, e.awaitChildren(ctx, tx, issue, w, childrenHold{Start: from,
 				Task: task(issue, at, record.PhaseRow{}, pr, reason), Cause: reason, Open: open})
 		}
 	}
@@ -2389,11 +2389,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	// The walk of the issue's run is read once, for the refusal of a parent waiting on its children
+	// (waitingRefusal) and for the table below.
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	// A parent waiting on its children stands in no phase a move back acts on, so the move is
 	// refused with the wait's own code before the table is read, which would only say that no
 	// backward row serves the phase (dispatch://INFRA-3320 R11).
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove, fact.Requester)
+		return e.waitingRefusal(ctx, tx, *issue, w, actBackwardMove, fact.Requester)
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
@@ -2407,10 +2413,6 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	//
 	// The table is the one of the issue's walk, so a move back to a phase its task's line does not
 	// hold is served by no row.
-	w, err := e.walk(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
 	_, served := w.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
@@ -2712,7 +2714,11 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actSignOff, claim.RoleArchitect)
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		return e.waitingRefusal(ctx, tx, *issue, w, actSignOff, claim.RoleArchitect)
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
