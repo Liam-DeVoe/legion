@@ -9392,3 +9392,111 @@ test("the Inbox's Type list draws no count for the thread kinds while the thread
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 25 (the tester's): the panel `+N more` opens lists the chips the line has no
+// room for in a box at most 20rem tall that scrolls what it cannot hold (`MORE_PANEL_CLASS`,
+// web/src/components/ControlRow.tsx:36, over `PANEL_FRAME`, web/src/components/PanelTrigger.tsx:12-13,
+// drawn at ControlRow.tsx:524-552). At 390x664 these eleven narrowings put ten chips in it, 528 px
+// of chips in a box 318 px tall, so the Tab key walks onto chips that start out of sight. Chromium
+// and WebKit scroll each chip the focus lands on wholly into the box. Firefox scrolls the panel to
+// 183 of the 210 px it can go and leaves the last chip, Waiting on you, 19 of its 44 px below the
+// box's bottom, the same 600 ms later (builds Jobs infra-3135-c2-h-wp7ns and infra-3135-c3-h-rjqps
+// at 683f1fdf). A keyboard reader then sees part of the chip Enter takes off, which round 13
+// failed. The row above that walks the same panel by Tab, "a chip of the Inbox's row that has the
+// keyboard focus is shown whole", runs in Chromium alone and reads a chip's clip sideways alone
+// (`shownOf`), so a chip cut at the panel's bottom passes it.
+// SLOW(>=2s): twenty-two seeded questions, eleven narrowings, and their panel walked chip by chip.
+test("each chip the Tab key reaches in the Inbox's +N more panel stands wholly inside the panel's visible box while the panel scrolls, at 390 @firefox @webkit", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  await page.setViewportSize({ height: 664, width: 390 });
+  const row = controlRow(page.getByTestId("main-content"));
+  const more = row.getByRole("button", { name: MORE_FILTERS });
+  // Three priorities, three urgencies, two kinds, the one project, everyone's asks and the
+  // needs-you section, a chip each, over the seventeen questions they keep; the text draws none.
+  await page.goto(
+    "/?section=needs-you&q=Item&assignee=everyone&priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE"
+  );
+  // The eleven chips, the line's and then the ones its `+N more` lists, each named once. Its
+  // Escape leaves the focus on `+N more`, where a reader who reached it by Tab stands.
+  const drawn = await chipsInLineAndPanel(row, 11, "390x664");
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const standing: {
+    name: string;
+    above: number;
+    below: number;
+    left: number;
+    right: number;
+    chip: string;
+    box: string;
+    scrolled: number;
+  }[] = [];
+  for (const [index, name] of drawn.panel.entries()) {
+    const chip = panel.getByRole("button", { exact: true, name });
+    // The panel opens with the focus on its first chip, and each Tab moves it to the next.
+    if (index > 0) await page.keyboard.press("Tab");
+    await expect(
+      chip,
+      `390x664: the Tab key did not bring the focus to "${name}" in the panel of +N more`
+    ).toBeFocused();
+    // The browser scrolls the panel to the chip as the focus moves onto it, so the boxes read
+    // once the chip holds the focus are where they settle: Firefox's stood the same 600 ms later.
+    // The visible box is the panel's padding box, cut by the window.
+    const reading = await chip.evaluate((node) => {
+      const holder = node.closest('[role="dialog"]') ?? document.documentElement;
+      const frame = holder.getBoundingClientRect();
+      const top = Math.max(0, frame.top + holder.clientTop);
+      const left = Math.max(0, frame.left + holder.clientLeft);
+      const bottom = Math.min(innerHeight, frame.top + holder.clientTop + holder.clientHeight);
+      const right = Math.min(innerWidth, frame.left + holder.clientLeft + holder.clientWidth);
+      const own = node.getBoundingClientRect();
+      return {
+        above: Math.max(0, top - own.top),
+        below: Math.max(0, own.bottom - bottom),
+        left: Math.max(0, left - own.left),
+        right: Math.max(0, own.right - right),
+        chip: `${Math.round(own.top)}-${Math.round(own.bottom)} px down, ${Math.round(own.left)}-${Math.round(own.right)} px across`,
+        box: `${Math.round(top)}-${Math.round(bottom)} px down, ${Math.round(left)}-${Math.round(right)} px across`,
+        scrolled: Math.round(holder.scrollTop),
+      };
+    });
+    standing.push({ name, ...reading });
+  }
+  await test.info().attach("the panel of +N more walked by the Tab key at 390x664", {
+    body: standing
+      .map(
+        ({ name, chip, box, scrolled }) => `${name}: ${chip}, box ${box}, scrolled ${scrolled} px`
+      )
+      .join("\n"),
+    contentType: "text/plain",
+  });
+  // The row is about chips that start out of sight, so a panel that never scrolled read none.
+  expect(
+    Math.max(...standing.map(({ scrolled }) => scrolled)),
+    `390x664: the panel of +N more never scrolled while the Tab key walked ${drawn.panel.join(", ")}`
+  ).toBeGreaterThan(0);
+  // A pixel of rounding either way is no cut.
+  const cut = standing.flatMap(({ name, above, below, left, right, chip, box, scrolled }) => {
+    const sides = [
+      [above, "above"],
+      [below, "below"],
+      [left, "left of"],
+      [right, "right of"],
+    ] as const;
+    const out = sides
+      .filter(([pixels]) => pixels > 1)
+      .map(([pixels, side]) => `${Math.round(pixels)}px ${side}`);
+    return out.length === 0
+      ? []
+      : [
+          `390x664: "${name}" holds the focus with ${out.join(" and ")} the panel's visible box (the chip at ${chip}, the box at ${box}, the panel scrolled ${scrolled} px)`,
+        ];
+  });
+  // R1 and the keyboard's own promise in ControlRow.tsx: every chip the line has no room for is
+  // one the panel lists and the Tab key reaches whole, so a keyboard reader sees which narrowing
+  // Enter takes off.
+  expect(cut, cut.join("; ")).toEqual([]);
+});
