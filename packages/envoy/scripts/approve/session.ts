@@ -390,15 +390,26 @@ async function scan(): Promise<void> {
   if (read.length === 0) unknown.push("the scan read no file");
   // The environment of each process of the session: this one's, and every pid named. Each
   // variable reads `NAME=value`, as a shell or an env file writes it.
-  texts.push(
-    Object.entries(env)
-      .map(([name, value]) => `${name}=${value}`)
-      .join("\n")
-  );
+  // Each environment variable read, by name, for the report: the scan names the variables it read
+  // and the ones that hold a minted token, and prints no value of any.
+  const environment = new Map<string, string[]>();
+  const keepEnvironment = (entries: readonly string[]): void => {
+    for (const entry of entries) {
+      const at = entry.indexOf("=");
+      if (at <= 0) continue;
+      const name = entry.slice(0, at);
+      environment.set(name, [...(environment.get(name) ?? []), entry.slice(at + 1)]);
+    }
+  };
+  const own = Object.entries(env).map(([name, value]) => `${name}=${value}`);
+  keepEnvironment(own);
+  texts.push(own.join("\n"));
   let environs = 0;
   for (const pid of pids) {
     try {
-      texts.push(readFileSync(`/proc/${pid}/environ`).toString("latin1").replaceAll("\0", "\n"));
+      const entries = readFileSync(`/proc/${pid}/environ`).toString("latin1").split("\0");
+      keepEnvironment(entries);
+      texts.push(entries.join("\n"));
       environs += 1;
     } catch {
       skipped.push(`/proc/${pid}/environ`);
@@ -481,18 +492,13 @@ async function scan(): Promise<void> {
     const thumbprint = ecThumbprint(key);
     if (thumbprint !== "" && bindings.has(thumbprint)) keyMatches.add(thumbprint);
   }
-  // The diagnostic, which decides nothing: each candidate a matched hash or a DPoP answer names,
-  // and at most 100 others, presented to Dispatch as a broker token under the DPoP scheme with a
-  // proof of a throwaway key. It says how many it presented, and whether that was all of them.
+  // The diagnostic, which decides nothing: each candidate whose SHA-256 is a token the broker
+  // logged minting, presented to Dispatch as a broker token under the DPoP scheme with a proof of
+  // a throwaway key, to say whether that token still acts. No other value leaves the box: an
+  // environment variable, a file's contents or a DPoP answer that is no minted token is another
+  // secret of the session's, which Dispatch has no reason to see.
   const diagnostic: Record<string, number> = {};
-  const presented = new Set<string>([
-    ...answers,
-    ...[...candidates].filter((candidate) => logged.has(sha256(candidate))),
-  ]);
-  for (const candidate of candidates) {
-    if (presented.size >= 100 + answers.size + matched.length) break;
-    presented.add(candidate);
-  }
+  const presented = [...candidates].filter((candidate) => logged.has(sha256(candidate)));
   const throwaway = await newDpopKey();
   const perMatch: Record<string, string> = {};
   for (const candidate of presented) {
@@ -507,8 +513,15 @@ async function scan(): Promise<void> {
     );
     const said = `${answer.status} ${String(answer.code)}`;
     diagnostic[said] = (diagnostic[said] ?? 0) + 1;
-    if (logged.has(sha256(candidate))) perMatch[sha256(candidate)] = said;
+    perMatch[sha256(candidate)] = said;
   }
+  // The environment variables the scan read, by name, and those whose value holds a minted token.
+  const environmentMatches = [...environment]
+    .filter(([, values]) =>
+      values.some((value) => presented.some((token) => value.includes(token)))
+    )
+    .map(([name]) => name)
+    .sort();
   const result =
     unknown.length > 0 ? "UNKNOWN" : matched.length + keyMatches.size > 0 ? "found" : "clean";
   say({
@@ -527,12 +540,10 @@ async function scan(): Promise<void> {
     hash_matches: matched,
     key_matches: [...keyMatches],
     diagnostic,
-    diagnostic_presented: presented.size,
-    diagnostic_capped:
-      presented.size < candidates.size
-        ? `presented ${presented.size} of ${candidates.size} candidates: every DPoP answer and every match, and 100 others`
-        : false,
+    diagnostic_presented: presented.length,
     diagnostic_of_matches: perMatch,
+    environment_names: [...environment.keys()].sort(),
+    environment_matches: environmentMatches,
   });
   // UNKNOWN exits 3 whatever else it found: a match beside it is still in hash_matches or
   // key_matches, for approve-check to call the step a failure.

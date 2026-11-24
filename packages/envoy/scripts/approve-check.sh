@@ -315,10 +315,10 @@ if [[ "$(jq -r .status <<<"$box_comment")" == 2?? ]]; then
 else
   result "1b control: the box's token comments" FAIL "$(jq -c 'del(.body)' <<<"$box_comment")"
 fi
-# The revoke control runs before the scan: the scan's DPoP diagnostic presents up to a hundred
-# candidates to Dispatch from loopback, which spends Dispatch's broker-token rate limit for that
-# address, and the proxy reaches Dispatch from the same address. Run first, it also leaves a
-# revoked grant's minted token among the hashes the scan compares with.
+# The revoke control runs before the scan, so the revoked grant's minted token is among the hashes
+# the scan compares with. (A diagnostic that presented arbitrary candidates once spent Dispatch's
+# broker-token rate limit for loopback, which the proxy shares; it now presents minted tokens
+# alone.)
 REVOKE_COMMAND="psql '$BROKER_DB_URL' -Atqc \"update launcher_credentials set revoked_at = now() where id = (select credential_id from approve_grants order by created_at desc limit 1)\""
 revoked="$(session approve-then-revoked)"
 if [[ "$(jq -r .first.status <<<"$revoked")" == 2?? ]] && [ "$(jq -r .second.status <<<"$revoked")" = 407 ]; then
@@ -332,7 +332,7 @@ run_scan "${scan_paths[@]}"
 if [ "$(jq '(.hash_matches // []) + (.key_matches // []) | length' <<<"$scan")" != 0 ]; then
   result "1e scan" FAIL "$(jq -c . <<<"$scan")"
 elif [ "$scan_exit" = 0 ] && [ "$(jq -r .result <<<"$scan")" = clean ]; then
-  result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, diagnostic_capped}' <<<"$scan")"
+  result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, environment_variables: (.environment_names | length), environment_matches}' <<<"$scan")"
 elif [ "$scan_exit" = 3 ]; then
   result "1e scan" UNKNOWN "$(jq -c '{unknown, files_read, files_skipped, logged_hashes, logged_bindings}' <<<"$scan")"
 else
@@ -428,7 +428,7 @@ planted_control() {
   local keys
   keys="$(jq '(.key_matches // []) | length' <<<"$scan")"
   if [ "$tokens_ok" = true ] && [ "$scan_exit" = 0 ] && [ "$found" = 3 ] && [ "$keys" -ge "$keys_wanted" ]; then
-    result "$step" PASS "the scan of $form found 3 of 3 planted approve tokens by hash (one expired, one revoked at the broker: $revoke_status, one live; the broker introspects them as $active) and $keys planted binding key(s) by thumbprint; Dispatch's diagnostic of the matches, which decides nothing: $(jq -c .diagnostic_of_matches <<<"$scan"), $(jq -c '{diagnostic_presented, diagnostic_capped}' <<<"$scan")"
+    result "$step" PASS "the scan of $form found 3 of 3 planted approve tokens by hash (one expired, one revoked at the broker: $revoke_status, one live; the broker introspects them as $active) and $keys planted binding key(s) by thumbprint; Dispatch's diagnostic of the matches, the only values it is sent, which decides nothing: $(jq -c .diagnostic_of_matches <<<"$scan"), $(jq -c '{diagnostic_presented}' <<<"$scan")"
   else
     result "$step" FAIL "the scan of $form exited $scan_exit and found $found of ${#want[@]} planted tokens and $keys key(s); revoke $revoke_status, broker introspection $active; $(jq -c '{result, unknown, files_read, logged_hashes, hash_matches, key_matches}' <<<"$scan")"
   fi

@@ -25,12 +25,17 @@ const SESSION = join(import.meta.dir, "session.ts");
 
 let dispatch: { readonly port: number | undefined; stop(force?: boolean): void };
 let work: string;
+/** Every Authorization header the stand-in Dispatch was sent, in order: what left the box. */
+const presented: string[] = [];
 
 beforeAll(() => {
   dispatch = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: () => Response.json({ code: "BROKER_TOKEN_NOT_ACTIVE" }, { status: 401 }),
+    fetch: (request) => {
+      presented.push(request.headers.get("Authorization") ?? "");
+      return Response.json({ code: "BROKER_TOKEN_NOT_ACTIVE" }, { status: 401 });
+    },
   });
   work = mkdtempSync(join(tmpdir(), "session-scan-box-"));
 });
@@ -279,4 +284,51 @@ test("control: a token of the broker's shape joined to a run of base64url charac
     true,
     true,
   ]);
+});
+
+test("the diagnostic sends Dispatch no value the broker did not mint, and names the session's environment variables without their values", {
+  timeout: 60_000,
+}, async () => {
+  // Secret-shaped values the broker never minted: one of the broker's shape, one of another
+  // service's, in a named process's environment and in a file and in a DPoP answer on the box.
+  const planted = [brokerShapedToken(), `ghp_${randomBytes(27).toString("base64url")}`];
+  const minted = brokerShapedToken();
+  const session = Bun.spawn(["sleep", "60"], {
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      PLANTED_SECRET: planted[0],
+      OTHER_SERVICE_TOKEN: planted[1],
+      DISPATCH_APPROVE_TOKEN: minted,
+    },
+  });
+  const dir = join(work, "box-no-values");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  writeFileSync(
+    join(dir, "box", "answer.json"),
+    `${JSON.stringify({ access_token: planted[0], token_type: "DPoP" })}\n${planted[1]}\n`
+  );
+  const before = presented.length;
+  try {
+    const { answer, exitCode, stderr } = await scanCase("no-values", "box", {
+      log: mintedLine(sha256(minted), "jkt"),
+      paths: ["box"],
+      pids: String(session.pid),
+    });
+    const sent = presented.slice(before);
+    expect(exitCode, stderr).toBe(0);
+    // Nothing the broker did not mint reached Dispatch; the minted token found on the box did.
+    for (const value of planted) {
+      expect(sent.filter((header) => header.includes(value))).toEqual([]);
+    }
+    expect(sent).toEqual([`DPoP ${minted}`]);
+    // The environment is reported by its variables' names, and the scan prints no value of it.
+    expect(answer["environment_names"]).toEqual(
+      expect.arrayContaining(["PLANTED_SECRET", "OTHER_SERVICE_TOKEN", "DISPATCH_APPROVE_TOKEN"])
+    );
+    expect(answer["environment_matches"]).toEqual(["DISPATCH_APPROVE_TOKEN"]);
+    const printed = JSON.stringify(answer);
+    for (const value of [...planted, minted]) expect(printed).not.toContain(value);
+  } finally {
+    session.kill();
+  }
 });
