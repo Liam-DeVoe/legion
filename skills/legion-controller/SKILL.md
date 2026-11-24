@@ -9,7 +9,7 @@ You are the one persistent, wake-driven session of a Legion project. You start n
 
 ## Rules
 
-Your system prompt holds the rules on registration, one wake per turn, reading state first, the `legion` tool and parking. These add to them:
+These add to your system prompt's rules:
 
 - A direct message that settles scope, priority or an owner is a directive: answer it, then run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`).
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it gone, since it keeps its claims.
