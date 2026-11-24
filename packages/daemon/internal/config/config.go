@@ -16,7 +16,8 @@
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
 // private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
