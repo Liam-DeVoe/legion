@@ -26,17 +26,19 @@ const PRESET_IDS: readonly string[] = SNOOZE_PRESETS.map((preset) => preset.id);
 
 const ROW_SNOOZE_ATTRIBUTE = "data-inbox-snooze";
 const ROW_SNOOZE_MARKS: ListMarks = { trigger: { [ROW_SNOOZE_ATTRIBUTE]: "" } };
-/** The row's own Snooze list's trigger, which the Inbox's `h` finds by it and focuses: the shared
- *  list hands out no element of its own. */
+/** The trigger of each Snooze list this control draws, which the Inbox's `h` finds by it and
+ *  focuses - the row's own, or, with the reading column on, the column head's: the shared list
+ *  hands out no element of its own. */
 export const ROW_SNOOZE_SELECTOR = `[${ROW_SNOOZE_ATTRIBUTE}]`;
 
 /**
  * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single
  * pick (`MultiSelect`) of `snooze.ts`'s presets, and the list's text box narrows them as the
- * reader types. A row's own Snooze (`SnoozeControl`) and the selection bar's (`Inbox.tsx`) are
- * this control. The badge shows `badge` for the eye alone (`aria-hidden`), so the trigger's name
- * is `label` alone, whatever the badge says. A pick hands `onPick` the moment its preset names,
- * computed at the pick, not when the page rendered. While `held` - a write is out that the pick
+ * reader types. A row's own Snooze, the reading column head's and the short row's (each a
+ * `SnoozeControl`), and the selection bar's (`Inbox.tsx`) are this control. The badge shows
+ * `badge` for the eye alone (`aria-hidden`), so the trigger's name is `label` alone, whatever the
+ * badge says. A pick hands `onPick` the moment its preset names, computed at the pick, not when
+ * the page rendered. While `held` - a write is out that the pick
  * would race - the trigger is `aria-disabled`, never `disabled`, so it keeps the reader's focus:
  * a press of it opens no list, and a pick from a list that stood open as the hold began writes
  * nothing.

@@ -528,9 +528,10 @@ function TableHeaderCell<TData>({
  * the one before it, passing over every control that takes typed text, else to the row itself,
  * which takes the focus as the row keys' `focusRow` gives it, each only while the reader can see
  * it, else to the main content's own stop with no scroll (`useFocusPlace`). A row that leaves
- * altogether is no case of this: the selection bar and the page's own hand-offs answer for it.
- * Nor is a focused row the box scrolls out of its drawn window: it goes with the focus, which is
- * left on the page rather than pulling the box back to where the row was.
+ * altogether under the reader's own press walks the focus back from where the row stood in the
+ * main content (`walkBackInRegion`).
+ * A focused row the box scrolls out of its drawn window is no case of a hand-off: it goes with
+ * the focus, which is left on the page rather than pulling the box back to where the row was.
  *
  * The table says how many rows it has (`aria-rowcount`) and each drawn line where it sits among
  * them (`aria-rowindex`), so a screen reader hears the whole page's rows rather than the drawn

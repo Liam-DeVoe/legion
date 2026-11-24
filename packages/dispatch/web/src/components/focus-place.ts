@@ -332,10 +332,11 @@ export function useFocusPlace(
   };
 }
 
-/** A dialog, modal or not - the search bar, the Inbox drawer, every `useDialog` dialog, and the
- *  panel a `PanelTrigger` opens - or any other panel an `AnchoredPanel` draws, which carries the
- *  keymap's `PANEL_ATTRIBUTE`: a `MultiSelect` list's, which has no role of its own. Each is a
- *  region of its own, and a press inside it is a press in it (`PRESS_REGION`). */
+/** An element of role `dialog`, modal or not - the search bar, the Inbox drawer, every `useDialog`
+ *  dialog, the panel a `PanelTrigger` opens, a popover such as `ContextRing`'s - or any other
+ *  panel an `AnchoredPanel` draws, which carries the keymap's `PANEL_ATTRIBUTE`: a `MultiSelect`
+ *  list's, which has no role of its own. Each is a region of its own, and a press inside it is a
+ *  press in it (`PRESS_REGION`). */
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
 /** Whether `element` is a row of a table or list or inside one: whether it or an element around
@@ -446,9 +447,10 @@ function countBefore(controls: readonly Element[], node: Node): number {
  *  focused element or a parent of it is removed (measured: read at once, in a microtask, a task and
  *  a frame); an element hidden or disabled under the focus stays named until the task after the
  *  next frame. The element that has left the page is checked as well, so an engine that names it
- *  until its focus fixup is read the same way. The one check for a removed focus: a list closing
- *  over its own text box (`MultiSelect`) and the Inbox's hand-off of a focus its reading column's
- *  question took with it (`Inbox.tsx`) ask it. */
+ *  until its focus fixup is read the same way. The one check for a removed focus: a list
+ *  (`MultiSelect`), as it closes over its own text box and after a press on one of its rows, and
+ *  the Inbox's hand-off of a focus its reading column's question took with it (`Inbox.tsx`) ask
+ *  it. */
 export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
@@ -675,8 +677,9 @@ function isHeld(element: Element): boolean {
 /** The longest an armed press's action keeps it live, counted from the arm (`armHandOff`): the
  *  app's write deadline (`SEND_DEADLINE_MS`), the longest its control's hold keeps it live, and
  *  then the request deadline (`REQUEST_DEADLINE_MS`), which bounds the hold through the re-read
- *  that answers the write (`useReadBound`). It is the longest a write that lands within its
- *  deadline, and then its re-read, can take. */
+ *  that answers the write (`useReadBound`). It is the longest one write that lands within its
+ *  deadline, and then its re-read, can take, and it bounds every hold over the press the same
+ *  way, counted from the same arm: an action of several writes, as the List's Start next, too. */
 const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
 
 /** The keys that only modify another key: one pressed alone acts on nothing, so it leaves an

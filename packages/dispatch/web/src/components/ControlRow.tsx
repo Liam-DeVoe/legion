@@ -325,13 +325,14 @@ export interface ControlRowProps {
  * no button, so the focus stays on the body), and then moves the focus only if it is on the
  * page's body, so a reader who moved it elsewhere while the chip was going keeps it there.
  *
- * Any other focused control a commit takes out of a slot of the first line while the row stays -
- * a page's own control that removes itself, as the Inbox's **Mark all read** does once nothing
- * is left unread - hands the focus the same way: to the control now at its place in that slot,
- * else to the nearest one before it, passing over every control that takes typed text, else to
- * the trigger, else to the search box, each only while the reader can see it, else to the own
- * stop of the region the row is in - the search bar's dialog, else the main content - with no
- * scroll (`useFocusPlace`).
+ * Any other focused control the reader's own press takes out of a slot of the first line while
+ * the row stays - a page's own control that removes itself, as the Inbox's **Mark all read** does
+ * once nothing is left unread - hands the focus on too: to the control now at its place in that
+ * slot, else to the nearest one before it, passing over every control that takes typed text,
+ * else to the trigger, each only while the reader can see it, else to the own stop of the region
+ * the row is in - the search bar's dialog, else the main content - with no scroll. With nothing
+ * left before it in the slot and no trigger, the focus walks back from the slot's place in that
+ * region instead, since the search box takes typed text (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits. A control of a dialog, a
  * panel or a selection bar a page draws in a slot - the Delivery page's Session groups dialog - is
  * that region's and none of the row's, so the row hands its focus nowhere, and never to a control

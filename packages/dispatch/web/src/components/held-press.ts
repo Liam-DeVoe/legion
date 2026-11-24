@@ -1,3 +1,10 @@
+/**
+ * The hold on a control while the write or the read its press started is out: `aria-disabled` and
+ * a press that does nothing (`heldPress`), a read-only text field (`heldField`), and a hold
+ * through the commit after the write's answer (`useHeldThroughAnswer`). `StepButton`,
+ * `PanelTrigger`, `QueryError`'s Retry and the pages' own pressed controls use it, and
+ * `RefusableButton`'s `busy` holds by the same rule.
+ */
 import { useEffect, useState } from "react";
 
 import { holdHandOff } from "./focus-place";
