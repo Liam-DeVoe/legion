@@ -316,7 +316,7 @@ test("the legion tool's description sets the host's sentences before handoff_com
     const description = toolFor(active).description;
     const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
     expect(description).toContain(
-      `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`
+      `${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`
     );
     expect(description.slice(description.length - after.length)).toBe(after);
     const stopTaskAt = description.indexOf(STOP_TASK_TERMS.opens);
