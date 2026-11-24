@@ -63,6 +63,17 @@ export interface ReviewSeed {
   readonly pipelineAt: string;
   /** The issues the command-bar rows of the visual lane read. */
   readonly bar: BarSeed;
+  /** The read marks the seed wrote before any row (`markWhatTheShotPagesRead`), which the visual
+   *  rows' guard lets a page write again only exactly as they stand (`e2e/visual-guard.ts`). */
+  readonly readMarks: SeededReadMarks;
+}
+
+/** The read marks a seed wrote: each session's replies marked read, by session id, and each
+ *  document's read version, by document id. A page's write of a mark is a repeat that moves
+ *  nothing only when it names replies the seed marked and the version the seed wrote. */
+export interface SeededReadMarks {
+  readonly agents: Readonly<Record<string, readonly string[]>>;
+  readonly documents: Readonly<Record<string, number>>;
 }
 
 /** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
@@ -83,10 +94,14 @@ export interface VisualSeed extends ReviewSeed {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 export function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields the checks
+  // below hold: the moment the pages' rows pin their clock to, and the read marks their guard
+  // reads.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -94,7 +109,14 @@ export function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** Which layer reads an entry: the accessibility scan, the desktop shot, and the phone shot -

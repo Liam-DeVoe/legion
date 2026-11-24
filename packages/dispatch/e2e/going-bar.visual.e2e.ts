@@ -28,9 +28,11 @@
  *  Undo does not take back, and the one issue the filing row files, which no other row reads:
  *  the chart and the table read the seven seeded issues by key, and its words - a weather
  *  station on the roof - match none that another row searches for, so it is no hit of state
- *  1's search or of state 3's search step whichever runs first. So the rows draw the same in the
- *  normal order and in reverse (`e2e/visual-order.ts`), and the pages' rows draw the same
- *  whichever of the three projects runs first.
+ *  1's search or of state 3's search step. So a row draws the same whichever rows ran before it.
+ *  These writes are the states under review, so the guard every page row installs
+ *  (`e2e/visual-guard.ts`), which stops each write its page sends, is not installed here. This
+ *  project runs after both of the pages' instead (`visual-bar` is the last visual project of
+ *  e2e/playwright.config.ts, and the run has one worker), so no page row draws after any of it.
  *
  *  WHAT EACH ROW DOES THAT THE PAGES' ROWS DO NOT. A page row signs in, navigates and waits; a
  *  bar row drives the bar, which is the state under review: it presses Control+K, types, presses
@@ -132,7 +134,6 @@ import {
 } from "./review-routes";
 import { sessionIds } from "./session-ids";
 import { asUser } from "./users";
-import { inVisualOrder, visualOrder } from "./visual-order";
 import { workspaceSessions } from "./workspace";
 
 /** The JSON `e2e/visual-seed.ts` wrote on the host. Unset says this run is not the containerised
@@ -177,7 +178,7 @@ function shortAnswer(issues: BarSeed): ChatReply {
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it, as
 // `e2e/visual.e2e.ts` does and for its reason: the rail these shots draw counts the agents'
-// replies, and in the reverse order this project's rows run before that file's.
+// replies, and a run of this project alone (`--project=visual-bar`) runs no row of that file.
 test.beforeAll(async () => {
   if (seedPath === undefined) return;
   await setLiveSessions(workspaceSessions);
@@ -925,7 +926,7 @@ const barRows: readonly BarRow[] = [
     // State 13. Scripts the decision `dispatch_issue`, so the line on top is File as a new issue,
     // and the new-issue run Enter on it starts: one create of an issue of OPS, which the server
     // files at once. The bar closes, and the notice names the issue it filed. Its words share none
-    // with another row's search, which would list the issue in the reverse order alone.
+    // with another row's search, which would list the issue were that row to run after this one.
     reach: async (page, seed) => {
       const words = "we need a weather station on the roof";
       const { project } = seed.bar;
@@ -993,9 +994,8 @@ async function drawState(browser: Browser, row: BarRow): Promise<void> {
   }
 }
 
-// The rows in the order `DISPATCH_E2E_VISUAL_ORDER` asks for, as `e2e/visual.e2e.ts` runs its
-// own (e2e/visual-order.ts says why the review runs in two orders).
-for (const row of inVisualOrder(barRows, visualOrder())) {
+// The rows once each, in their listed order, as `e2e/visual.e2e.ts` runs its own.
+for (const row of barRows) {
   // SLOW(>=2s): a sign-in, a settled page, the bar driven through runs of the fake models, and
   // a screenshot comparison of each state the row reaches.
   test(`the command bar's state ${row.state}, ${row.shows}, matches its baselines`, async ({

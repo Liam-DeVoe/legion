@@ -14,7 +14,10 @@
  *  type and press keys, which the rule below forbids the rows of this file, and that file's own
  *  header says what holds each of its shots still instead. None of them opens a page of this
  *  file's shot set, and what they write - runs, plans, a filed issue, changes undone again - is
- *  on project OPS and in the names of logins of their own, which no row here draws.
+ *  on project OPS and in the names of logins of their own, which no row here draws. Those writes
+ *  are the states the bar's rows compare, so this file's guard is not on their pages; they run
+ *  after every row here instead, since `visual-bar` is the last of the three projects and the
+ *  run has one worker (e2e/playwright.config.ts).
  *
  *  WHERE IT RUNS. Inside the pinned Playwright image, started by `e2e/visual-run.sh`, and
  *  nowhere else: a baseline a person takes and a baseline CI compares must be the same
@@ -34,12 +37,13 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row's
- *  write would be seen by every row after it, so each row signs in and navigates afresh, and the
- *  seed writes first each read mark a page of the shot set writes as it draws - the broadcast
- *  page's read of its replies and the Spec tab's read of the spec (`e2e/review-seed.ts`) - so a
- *  page's own write changes nothing any row compares. The review runs its rows in normal and in
- *  reverse order (`e2e/visual-order.ts`) so that a row reading another row's write fails by name.
+ *  baseline was taken against is the one the host wrote once. What that asks of a row is that its
+ *  page write nothing, since a write would be seen by every row after it, so each row signs in and
+ *  navigates afresh, and the seed writes first each read mark a page of the shot set writes as it
+ *  draws - the broadcast page's read of its replies and the Spec tab's read of the spec
+ *  (`e2e/review-seed.ts`) - so a page's own write changes nothing any row compares. Every other
+ *  write a row's page tries, to the API or on a document socket, is stopped before it reaches the
+ *  corpus and fails that row by name (`guardSharedCorpus`, `e2e/visual-guard.ts`).
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -92,7 +96,13 @@ import {
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
-import { inVisualOrder, visualOrder } from "./visual-order";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -130,6 +140,8 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   }
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
+    // Before the first navigation, so every write the page tries is stopped and named.
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -286,14 +298,18 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
+    expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }
 
-// The rows of each project in the order `DISPATCH_E2E_VISUAL_ORDER` asks for (e2e/visual-order.ts
-// says why the review runs in two orders); the config puts the projects in that order too.
-const order = visualOrder();
-
-for (const route of inVisualOrder(shotRoutes, order)) {
+for (const route of shotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
     await shoot(browser, route);
@@ -305,7 +321,7 @@ for (const route of inVisualOrder(shotRoutes, order)) {
 // The ` @phone` tag is what puts a row in the `visual-phone` project and keeps it out of
 // `visual` (e2e/playwright.config.ts), so the two shots of one page land in two baseline
 // directories under the same file name.
-for (const route of inVisualOrder(phoneShotRoutes, order)) {
+for (const route of phoneShotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
     await shoot(browser, route);

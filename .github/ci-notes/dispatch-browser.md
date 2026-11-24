@@ -1183,8 +1183,8 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is gone:
+the section on the guard that took its place says why.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
@@ -1193,21 +1193,20 @@ six columns above, the sixth being run 42614920253 (job 129152410516). So the su
 
 The command bar's thirteen rows (the `visual-bar` project) were added later, and no run of this
 job had read them when its budgets were moved for them: their shots are taken in this job's
-container and nowhere else, so the issue pod that wrote them could not time them. The two
-browser steps' budgets are therefore derived, as the embedder job's models step's were
+container and nowhere else, so the issue pod that wrote them could not time them. The browser
+step's budget and the job's are therefore derived, as the embedder job's models step's were
 (.github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets),
 from two readings already in this file: the models lane's 37 rows in 9.9 min on one worker,
 16 s a row, for rows that script the same two fakes and wait on the same runs these do; and
 this job's own slowest browser step above, 183 s for the stack, the seed and the twenty page
 rows the shot set held then, each with a sign-in, a navigation and two shots: about 9 s a
 row, which bounds one shot, with its share of the rest, by about 4 s. The bar's rows then add
-13 x 16 + 25 x 4 = 308 s to each browser step: (183 + 308) x 1.15 = 565 s -> 10 min for the
-normal step and the same for the reverse one, which runs the same rows. The job budget is
-that step's 600 s plus the same 333 s and 120 s: 1,053 s, 17 min 33 s, rounded up to 18
-minutes, and 18 + 10 = 28 minutes with the reverse-order step. That is at most twelve more
-minutes of an ubuntu-24.04 runner on each full-lane run, and none on the pull-request lane,
-which runs no visual job. The first runs that hold the bar's rows give these steps a reading
-of their own, and that reading replaces this derivation, as this file's head requires.
+13 x 16 + 25 x 4 = 308 s to the browser step: (183 + 308) x 1.15 = 565 s -> 10 min. The job
+budget is that step's 600 s plus the same 333 s and 120 s: 1,053 s, 17 min 33 s, rounded up to
+18 minutes. That is at most six more minutes of an ubuntu-24.04 runner on each full-lane run,
+and none on the pull-request lane, which runs no visual job. The first runs that hold the bar's
+rows give the step a reading of its own, and that reading replaces this derivation, as this
+file's head requires.
 
 ## Why the visual job restores go-envoy-test
 
@@ -1240,33 +1239,68 @@ repository's own package, so it fails here and says so.
 
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-digest the two browser steps export (the first in .github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+digest the browser step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
+inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
 spent 120 s before the stack's first output, where five green visual jobs (134499880849,
 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
 past its budget at 250 s. Its log does not time the pull apart from the rest of that
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-digest is written three times, here and in the two browser steps (the normal order and
-the reverse), and the three must stay the same: a pull of another digest here leaves the
-browser steps to pull their own inside their budgets again.
+digest is written twice, here and in the browser step's script, and the two must stay the same:
+a pull of another digest here leaves the browser step to pull its own inside its budget again.
 
-## Why the visual job runs its rows again in reverse order
+## Why each visual row stops its page's writes, and runs once
 
-The same rows again in reverse order, on a new stack and a new seed: the projects last first -
-the command bar's rows, then the phone rows, then the desktop rows - and each project's rows
-last first (packages/dispatch/e2e/visual-order.ts).
-One seed serves a whole run, so a row whose page reads a write another row made fails one
-of the two runs by its own name, and a baseline that holds another row's write is found
-here rather than as a flake. It runs when the normal run failed too, since that is when its
-answer says most, and not when the normal run never started: a setup step that failed
-leaves nothing for either run to compare. Its budget is the first step's, for the same
-rows on a new stack of the same size.
+One seed serves the whole visual run, so a page that wrote to the corpus as it drew would change
+what every row after it compares, and a baseline would hold another row's write. So no row's page
+may write: e2e/visual-guard.ts, installed on each row's page before it navigates, stops every
+request to `/api/` or to the sign-in routes beside it (`/auth/`) with a write method, every
+document-socket frame that would change a document
+(a Yjs update, or a sync reply whose structs or deletions change it), and every live-socket frame
+that is no subscribe or unsubscribe, and the row then fails with the list of what it stopped, by
+its own name. A read mark passes only exactly as the seed wrote it before any row
+(`markWhatTheShotPagesRead`, e2e/review-seed.ts, which writes the marks into the seed file): a
+reply the seed marked read, the spec's read at the version the seed wrote. Any other version, a
+lower one moving the read back included, is stopped. The editor's own stamps as it loads a
+document - a heading's id, an ordered list item's label, which Milkdown derives from the text and
+no rendering carries - are dropped without failing the row: the guard reads each frame against the
+server's document as the page was sent it and drops one that changes only those
+(`changesOnlyDerived`, web/src/features/doc/derived-attributes.ts, the classifier the editor's own
+pending-edit store reads). The first run of the guard stopped an update of 34 to 54 bytes that each
+of four documents sent as it loaded, with no person typing (job 137537803811).
 
-Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
-passes on), so the normal run's stay in `test-results`, where a reader of a failed run
-looks for the shots, however this run ends. A baseline the normal run wrote for a shot no tree
-held (the upload's section below) is on the runner's checkout by then, so this run compares the
-reverse order's shot against it at once.
+What a page cannot stop is a write the server makes while it answers. Three things close that.
+Each row resolves every API read its page made to the GET route the table serves it by (the
+committed OpenAPI document, which openapi_test.go holds to the table, a literal segment over a
+wildcard), and fails on a read of a route, or of no route, on a sign-in read, and on a live view
+kind, that packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The
+Go test TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route
+that list names as the dashboard does, signed in with a session cookie, runs what GET /auth/whoami
+runs (the cookie's identity and the event feed's head, on a server whose event horizon nothing has
+built yet, as the page's first read finds it), and subscribes every view kind it names on GET
+/ws/live; it reads every statement each read, each view and the work they detach run, through the
+tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read may write the
+display-tree cache, the sign-in read nothing, and a live view the event horizon and a deploy run's
+warning record, each a table that test sees written on that channel; any other write fails it by
+the read or view and the table. It opens and closes a document's room as a page does and holds the
+room to writing nothing. And the seed waits, before any row draws, until the document service owes
+no document a settlement, and holds that the corpus records no check result and no pull request's
+head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a page opens the room
+and writes a version the shot would draw, and a result's commit is one the Verification tab's read
+asks GitHub the pull request of, writing what it learns.
+
+The command bar's rows (the `visual-bar` project, e2e/going-bar.visual.e2e.ts) are the one
+exception, and the guard is not on their pages: what they write - a run, a plan applied and
+undone, a filed issue - is the state each row compares, so stopping it would leave nothing to
+draw. They run after every page row instead: the job's run has one worker, which takes the three
+visual projects in the order e2e/playwright.config.ts declares them, `visual-bar` last, so no page
+row draws after any of their writes. Each signs in as a login of its own, writes only on project
+OPS, which no page of the shot set draws, and stops, discards or undoes what it starts; that
+file's header names the little that stays and why no other bar row draws it.
+
+This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
+s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's
+shot happened to draw it, and could not say a row passes alone; the guard names the row that
+wrote, whatever any other row draws, and stops the write before any other row can see it.
 
 ## Why the visual job's upload is always
 
@@ -1280,8 +1314,7 @@ other row runs (`updateSnapshots` is `"default"` when neither the config nor the
 names it, at node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:531,
 and `handleMissing` in lib/matchers/expect.js writes the file and answers a soft error for that
 mode). So the first full-lane run of a change that adds a shot fails this job by design, and its
-artifact holds the new baselines. The upload holds both runs: the normal run's results under
-test-results, the reverse run's under test-results-reverse.
+artifact holds the new baselines. It holds the run's results under test-results.
 
 ## Why the visual upload keeps a pattern that matches no file
 
