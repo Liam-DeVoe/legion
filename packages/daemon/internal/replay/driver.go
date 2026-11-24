@@ -462,7 +462,9 @@ func (d *driver) observe() error {
 			delete(d.inFlight, key)
 			delete(d.started, key)
 			delete(d.childWait, key)
-			d.cancelWork(key)
+			if err := d.cancelWork(key); err != nil {
+				return err
+			}
 			delete(d.waiting, key)
 			tree := line.str("tree")
 			for _, waiting := range slices.Sorted(maps.Keys(d.signOffs)) {

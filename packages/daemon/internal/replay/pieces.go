@@ -267,13 +267,55 @@ func (d *driver) resumePiece(p *piece) error {
 }
 
 // cancelWork cancels every piece of key's work under way (cancelPiece): its issue left the
-// workflow, or its claims were closed, so nothing of that work goes on.
-func (d *driver) cancelWork(key string) {
+// workflow, so nothing of that work goes on. The recorded events of the pieces of the generation it
+// stands in that the replay has not opened enter then too, by their anchors (placeUnrun), as the
+// events of work the replay passed over or cancelled enter: an issue the replay ran ahead of the
+// record, or behind it, can leave before the piece that files a child, writes a document or sets a
+// link opens, and that event must still enter (assumption 17). A piece of a later generation, work
+// the record ran after the issue entered the workflow again, is left to run where the replay enters
+// it again (assumption 16); a piece left unopened stays so, its events entered once.
+func (d *driver) cancelWork(key string) error {
+	boundary, err := d.nextGenerationAt(key)
+	if err != nil {
+		return err
+	}
 	for _, p := range d.script.pieces[key] {
-		if p.state == pieceRunning || p.state == piecePaused {
+		switch p.state {
+		case pieceRunning, piecePaused:
 			d.cancelPiece(p)
+		case pieceWaiting:
+			if boundary.IsZero() || p.start.Before(boundary) {
+				d.placeUnrun(p)
+			}
 		}
 	}
+	return nil
+}
+
+// nextGenerationAt is the record's moment key entered the workflow at a generation after the one
+// its replay record stands at, the first piece of whose work is no work of the generation it
+// stands in; zero where the record shows no later entry.
+func (d *driver) nextGenerationAt(key string) (time.Time, error) {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return time.Time{}, nil
+	}
+	var generation uint64
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := d.records.Issue(ctx, tx, key)
+		if issue != nil {
+			generation = issue.Generation
+		}
+		return err
+	}); err != nil {
+		return time.Time{}, err
+	}
+	for _, entry := range iss.Entries {
+		if entry.Generation > generation {
+			return entry.At, nil
+		}
+	}
+	return time.Time{}, nil
 }
 
 // endPiece ends p at the replay's end of its segment: the turns under way in it end, the task its
