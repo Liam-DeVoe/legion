@@ -1,10 +1,11 @@
 package supervise
 
 // A failure of the claim while a held stop waits for the copy its turn's end started (R1 of
-// dispatch://INFRA-1117). A provider error that holds the issue and a run of refused turns at the
-// launch-failure limit each fail the claim, and a failure ends the claim's process (fail,
-// endProcess): decided while the held stop waits, it would stop the process the copy still asks,
-// as the seven paths of turncopy_replace_test.go and turncopy_prompt_test.go would.
+// dispatch://INFRA-1117). A provider error that holds the issue fails the claim, whether the result
+// of the prompt its turn ran names it or, for a turn that ran no prompt of the daemon's, the turn's
+// report does (providerErrorTurnEnded), and a failure ends the claim's process (fail, endProcess):
+// decided while the held stop waits, it would stop the process the copy still asks, as the seven
+// paths of turncopy_replace_test.go and turncopy_prompt_test.go would.
 
 import "testing"
 
@@ -89,17 +90,31 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
 }
 
-// A run of refused turns at the launch-failure limit fails the claim (turnOutcome). The plugin
-// reports each turn's outcome at its end, so the report that reaches the limit can come while a
-// held stop waits for that turn's copy. Failed there, the claim's process is stopped while the
-// copy still asks its shim. The failure waits for the copy as the held stop does.
+// A turn that ran no prompt of the daemon's — a phase reminder the plugin sent — ends into a held
+// daemon stop, which waits for the turn's copy, and the turn's report comes behind the end, as the
+// plugin sends it at agent_end: refused with a 400, which fails the claim (unpromptedTurnEnded).
+// Failed there, the claim's process is stopped while the copy still asks its shim. The failure
+// waits for the copy as the held stop does, and the answer says the report failed nothing.
 //
-// The negative control is the code at 7e5fbdc9, where turnOutcome fails the claim at once: the
-// process is then stopped at the report, before the copy ends.
-func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
-	h, copies, _ := copyWaiting(t)
+// The control is providerErrorTurnEnded without its turnCopyHolds block: the report then fails the
+// claim at once, and the test fails at its answer.
+func TestAPluginTurnsProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
+	h, copies := copyingHarness(t)
+	h.reach(StateIdle)
+	h.must(copies.copied(t, 0))
+	h.must(StreamTurnStart{Claim: h.token})
+	holdStop(t, h, "LEGION-208 left implementing")
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if started := copies.started(); len(started) != 2 {
+		t.Fatalf("the turns' ends started %d copies, want one each", len(started))
+	}
 
-	refuseTurnsToTheLimit(t, h)
+	answer, err := h.m.HandleTurnOutcome(h.ctx, h.pluginTurnReport(2, true, 400))
+	h.m.Wait()
 
-	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
+	if err != nil || answer.Failed {
+		t.Fatalf("the plugin turn's 400 answered %+v, %v; want it not failed while the held stop waits for the turn's copy", answer, err)
+	}
+	h.wantState(StateIdle)
+	stopsOnceAfterTheCopy(t, h, copies, 1, SuspendedByDaemon)
 }

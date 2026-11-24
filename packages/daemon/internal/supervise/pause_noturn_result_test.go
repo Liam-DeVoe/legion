@@ -32,19 +32,6 @@ func holdingProviderError(h *harness, task string) StreamPromptResult {
 		Error: "prompt is too long", HTTPStatus: 400}
 }
 
-// refuseTurnsToTheLimit reports refused turns of h's claim, one for each sequence up to the
-// launch-failure limit (RequestTurnOutcome), which fails the claim where no copy holds its stop
-// (turnOutcome). What each report was answered is logged rather than failed on.
-func refuseTurnsToTheLimit(t *testing.T, h *harness) {
-	t.Helper()
-	for sequence := uint64(1); sequence <= uint64(h.deps.Limits.LaunchFailures); sequence++ {
-		if err := h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: sequence,
-			Refused: true, Message: "the provider refused the request"}); err != nil {
-			t.Logf("the turn outcome %d answered %v", sequence, err)
-		}
-	}
-}
-
 // registerOnTheOlderContract has the daemon speak a newer plugin contract than h's claim
 // (speaksAnOlderContract), marks the relaunch for that contract as already made
 // (Claim.PluginRelaunchFor), and registers the claim on the contract it speaks: a registration

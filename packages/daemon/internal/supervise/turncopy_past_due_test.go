@@ -4,7 +4,7 @@ package supervise
 // the claim is held for that copy no more (turnCopyHolds): each guard that left the stop to the copy
 // does what it does where no copy is taken. These are the rows past the due in a project pause's
 // window, where the stop still waits for the prompt's answer and arms no bound of its own, of the
-// seven guards whose rows inside the budget are in turncopy_replace_test.go,
+// six guards whose rows inside the budget are in turncopy_replace_test.go,
 // turncopy_pause_fail_test.go and pause_noturn_result_test.go. The stall backstop's and the parked
 // wake's rows past the due are with theirs, in turncopy_replace_test.go.
 
@@ -58,18 +58,13 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 					}
 				})
 			}},
-		// A provider error that holds the issue fails the claim (providerErrored).
+		// A provider error that holds the issue fails the claim (providerErrored,
+		// providerErrorTurnEnded).
 		{name: "AProviderErrorThatHoldsTheIssueFailsTheClaim", act: func(t *testing.T, h *harness, task string) {
 			failsOnceAt(t, h, "the provider error came", func() {
 				if err := h.handle(holdingProviderError(h, task)); err != nil {
 					t.Logf("the prompt's result answered %v", err)
 				}
-			})
-		}},
-		// A run of refused turns at the launch-failure limit fails the claim (turnOutcome).
-		{name: "ARunOfRefusedTurnsAtTheLimitFailsTheClaim", act: func(t *testing.T, h *harness, _ string) {
-			failsOnceAt(t, h, "the run of refused turns reached the limit", func() {
-				refuseTurnsToTheLimit(t, h)
 			})
 		}},
 		// A stale-plugin relaunch replaces the process, which ends the held stop (refreshPlugin,

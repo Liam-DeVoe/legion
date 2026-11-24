@@ -3,11 +3,10 @@ package supervise
 // A failure of the claim while a project pause's stop is held over the copy its turn's end started
 // (R1 of dispatch://INFRA-1117). A pause's stop held for a turn's end waits first for the prompt's
 // answer (stopWaitsForResult), and begins its wait for the copy only at the end of that answer's
-// row (stopAfterAnswer, stopAtResult), so the decisions the result and the turn's report make
-// before it — a provider error that holds the issue, a run of refused turns at the launch-failure
-// limit — meet a stop that is held but not yet waiting. Each would fail the claim and stop the
-// process the copy still asks; each leaves the stop to the copy's end instead (turnCopyHolds), as
-// turncopy_fail_test.go pins for a daemon's stop.
+// row (stopAfterAnswer, stopAtResult), so a decision the result makes before it — a provider error
+// that holds the issue — meets a stop that is held but not yet waiting. It would fail the claim and
+// stop the process the copy still asks; it leaves the stop to the copy's end instead
+// (turnCopyHolds), as turncopy_fail_test.go pins for a daemon's stop.
 
 import (
 	"errors"
@@ -66,26 +65,6 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOve
 	h, task := pauseHeldForTheResult(t, copies, nil)
 
 	if err := h.handle(holdingProviderError(h, task)); err != nil {
-		t.Logf("the prompt's result answered %v", err)
-	}
-
-	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
-}
-
-// The turn's reports reach the launch-failure limit of refused turns before the prompt's result
-// comes, while the pause's stop is held and its wait for the copy not yet begun. The failure
-// leaves the stop to the copy; the result, a provider error the ladder retries, then begins the
-// pause's wait, and the copy's end runs the stop.
-//
-// The control is the guard narrowed to a wait that has begun (turnCopy.stopWaits): the claim is
-// then failed at the last report, its process stopped while the copy is still being taken.
-func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOver(t *testing.T) {
-	copies := &turnEndCopies{}
-	h, task := pauseHeldForTheResult(t, copies, nil)
-
-	refuseTurnsToTheLimit(t, h)
-	if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true,
-		Error: "overloaded_error", HTTPStatus: 529}); err != nil {
 		t.Logf("the prompt's result answered %v", err)
 	}
 

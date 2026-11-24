@@ -123,7 +123,8 @@ func (m *Machine) turnCopyInBudget() bool {
 // asking and leave the turn's end in no copy once the role is stopped. Once it no longer holds,
 // each path does exactly what it does where no copy is being taken. The sites that ask it are a
 // prompt failure at the limit (chargePrompt), a provider error that holds the issue
-// (providerErrored), a run of refused turns at the limit (turnOutcome), the stall backstop
+// (providerErrorTurnEnded), whether a prompt's result names it (providerErrored) or the report of a
+// turn that ran no prompt of the daemon's (unpromptedTurnEnded), the stall backstop
 // (backstopStalledTurn), a stale-plugin relaunch (refreshPlugin), a registration on another plugin
 // contract (staleRegistration), a stale address (judge), the agent's ready said again (reready),
 // and the turn of a wake parked over the process (wakeNow). The registration alone keeps no
@@ -144,7 +145,7 @@ func (m *Machine) turnCopyInBudget() bool {
 //
 // The turn-copy tests of this package (turncopy_*_test.go, pause_noturn_result_test.go) hold each
 // site in a daemon's stop that waits for the copy and in a pause's stop whose wait has not begun,
-// and each site past the due as well: the seven guards of turncopy_past_due_test.go, the stall
+// and each site past the due as well: the six guards of turncopy_past_due_test.go, the stall
 // backstop and the parked wake, besides a new suspension and a pause's stop at the prompt's answer
 // past the due. k9's wait control (dispatch://INFRA-1117) holds the wait.
 func (m *Machine) turnCopyHolds() bool {
