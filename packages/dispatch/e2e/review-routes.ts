@@ -6,11 +6,13 @@
  *  through `e2e/two-builds-routes.ts`: a page the router adds is reviewed or excluded with a
  *  reason, never silently unreviewed.
  *
- *  This module holds data, locators and the one wait built from them. The visual review runs in
- *  a container that carries no `psql` binary, so nothing here may reach `./psql`, `./seed` or
- *  `./delivery-seed`: its only imports are `@playwright/test` - its types and `expect`, which
- *  `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths, and that
- *  module imports nothing at all. */
+ *  This module holds data, locators, the one wait built from them, and the two sources that wait
+ *  reads requests in flight from: `listedRequests`, Playwright's own list, and
+ *  `trackDocumentRequests`, which opens a CDP session on the test's own page. The visual review
+ *  runs in a container that carries no `psql` binary, so nothing here may reach `./psql`,
+ *  `./seed` or `./delivery-seed`: its only imports are `@playwright/test` - its types and
+ *  `expect`, which `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths,
+ *  and that module imports nothing at all. */
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
@@ -603,17 +605,22 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  against it. The accessibility one would otherwise scan that same state: a scan of a
  *  half-resolved page reports findings about a page no reader sees - the contrast of a
  *  skeleton, the name of a chip that is about to be replaced - and misses the findings of the
- *  page a reader does read. */
+ *  page a reader does read.
+ *
+ *  `inFlight` is where the Inbox half reads the requests still waiting for their answer: a page
+ *  answered by a real server reads `listedRequests`, and one answered from routes reads
+ *  `trackDocumentRequests`, which says why. */
 export async function waitForRouteSettled(
   page: Page,
-  route: Pick<ReviewedRoute, "ready">
+  route: Pick<ReviewedRoute, "ready">,
+  inFlight: InFlightRequests
 ): Promise<void> {
   for (const locator of route.ready(page)) {
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
   await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
-  await waitForInboxCountSettled(page);
+  await waitForInboxCountSettled(page, inFlight);
 }
 
 /** How long the Inbox number has to hold one value, with nothing it is read from in flight, before
@@ -640,64 +647,52 @@ function feedsInboxCount(url: string): boolean {
   );
 }
 
-/** The requests a page's documents have in flight, as Chromium itself reports them to a CDP
- *  session of their own (`trackDocumentRequests`): each with the document (`loaderId`) that sent
- *  it, and the document the page's main frame shows now. */
-interface DocumentRequests {
-  shown: string;
-  readonly inFlight: Map<string, { readonly document: string; readonly url: string }>;
+/** The URLs of a page's requests still waiting for their answer, as one source reads them. */
+export type InFlightRequests = () => Promise<readonly string[]>;
+
+/** The requests `page.requests()` lists - the page's latest hundred, which holds every request
+ *  recent enough to still be waiting - that have neither an answer nor a failure. The source of
+ *  a page a real server answers, which answers or fails every request it is sent. */
+export function listedRequests(page: Page): InFlightRequests {
+  return async () =>
+    (await page.requests())
+      .filter((request) => request.existingResponse() === null && request.failure() === null)
+      .map((request) => request.url());
 }
 
-const documentRequests = new WeakMap<Page, DocumentRequests>();
-
-/** Starts reading `page`'s requests by the document that sent them, which the Inbox wait below
- *  then reads instead of `page.requests()`. Call it before the page's first load: a request sent
- *  before it is not seen. Chromium only.
+/** Starts reading `page`'s requests by the document that sent them, and answers the requests in
+ *  flight that the document the page shows now sent. Call it before the page's first load: a
+ *  request sent before it is not seen. Chromium only: it opens a CDP session on the page.
  *
  *  A page whose answers come from routes needs it (the layout rows, `e2e/layout-check.ts`). Such
  *  a page can replace its document on its own after the load - the app reloads when a lazy chunk
  *  fails to download (`features/shell/DeploymentResilience.tsx`), which a network change on a
  *  busy host provokes - and a request a route held when its document went stays in
- *  `page.requests()` for ever, with neither an answer nor a failure, so a wait that read that
- *  list never settled. Traced in dispatch://INFRA-5200's reproduction (the issue-spec-outline row
- *  repeated 80 times while the host's addresses changed every 150 ms): 10 rows failed in the wait,
- *  each with a replaced document's Inbox reads listed as in flight 15 s after the page had loaded
- *  again, some of them sent after the next document's own navigation request had gone out. The
- *  document that sent a request is what tells them apart, and only Chromium's own events carry
- *  it. */
-export async function trackDocumentRequests(page: Page): Promise<void> {
-  if (documentRequests.has(page)) return;
+ *  `page.requests()` for ever, with neither an answer nor a failure, so a wait that read
+ *  `listedRequests` never settled. Traced in dispatch://INFRA-5200's reproduction (the
+ *  issue-spec-outline row repeated 80 times while the host's addresses changed every 150 ms): 10
+ *  rows failed in the wait, each with a replaced document's Inbox reads listed as in flight 15 s
+ *  after the page had loaded again, some of them sent after the next document's own navigation
+ *  request had gone out. The document that sent a request (its `loaderId`) is what tells them
+ *  apart, and only Chromium's own events carry it. */
+export async function trackDocumentRequests(page: Page): Promise<InFlightRequests> {
   const cdp = await page.context().newCDPSession(page);
-  const log: DocumentRequests = { inFlight: new Map(), shown: "" };
+  const inFlight = new Map<string, { readonly document: string; readonly url: string }>();
+  let shown = "";
   cdp.on("Network.requestWillBeSent", (event) => {
-    log.inFlight.set(event.requestId, { document: event.loaderId, url: event.request.url });
+    inFlight.set(event.requestId, { document: event.loaderId, url: event.request.url });
   });
-  cdp.on("Network.loadingFinished", (event) => log.inFlight.delete(event.requestId));
-  cdp.on("Network.loadingFailed", (event) => log.inFlight.delete(event.requestId));
+  cdp.on("Network.loadingFinished", (event) => inFlight.delete(event.requestId));
+  cdp.on("Network.loadingFailed", (event) => inFlight.delete(event.requestId));
   cdp.on("Page.frameNavigated", (event) => {
-    if (event.frame.parentId === undefined) log.shown = event.frame.loaderId;
+    if (event.frame.parentId === undefined) shown = event.frame.loaderId;
   });
   await cdp.send("Network.enable");
   await cdp.send("Page.enable");
-  log.shown = (await cdp.send("Page.getFrameTree")).frameTree.frame.loaderId;
-  documentRequests.set(page, log);
-}
-
-/** Whether a request that feeds the Inbox number is still waiting for its answer: one the shown
- *  document sent, where `trackDocumentRequests` reads the page, else one of `page.requests()`. */
-async function inboxReadInFlight(page: Page): Promise<boolean> {
-  const tracked = documentRequests.get(page);
-  if (tracked !== undefined) {
-    return [...tracked.inFlight.values()].some(
-      (sent) => sent.document === tracked.shown && feedsInboxCount(sent.url)
-    );
-  }
-  return (await page.requests()).some(
-    (request) =>
-      feedsInboxCount(request.url()) &&
-      request.existingResponse() === null &&
-      request.failure() === null
-  );
+  shown = (await cdp.send("Page.getFrameTree")).frameTree.frame.loaderId;
+  const shownInFlight: InFlightRequests = async () =>
+    [...inFlight.values()].filter((sent) => sent.document === shown).map((sent) => sent.url);
+  return shownInFlight;
 }
 
 /** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
@@ -736,17 +731,15 @@ export function topBarInboxBadge(page: Page): Locator {
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
- *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting, or, on a
- *  page whose answers come from routes, from `trackDocumentRequests`, which says why. */
-async function waitForInboxCountSettled(page: Page): Promise<void> {
+ *  and the window restarts whenever either fails. The requests in flight come from `inFlight`. */
+async function waitForInboxCountSettled(page: Page, inFlight: InFlightRequests): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
     .poll(
       async () => {
-        const waiting = await inboxReadInFlight(page);
+        const waiting = (await inFlight()).some(feedsInboxCount);
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;
