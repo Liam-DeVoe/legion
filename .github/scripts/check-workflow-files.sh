@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Every file under .github/workflows stays small enough for GitHub to read it, and plain enough for
-# GitHub's own parser to accept it, and ci.yaml stays within the bounds R9 sets its layout.
+# GitHub's own parser to accept it, and ci.yaml stays within the bounds its layout keeps.
 #
 # A workflow file above GitHub's cap of 500 KB starts no run at all, and it fails silently: the run
 # appears with no jobs in it, no annotation and no error, so the change that crossed the cap reads
@@ -23,14 +23,14 @@
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
 #      composed nodes instead;
 #   5. a file calling more than 10 unique reusable workflows, nested calls included. GitHub allows
-#      50 from a single workflow file, counting every tree of nested calls; R9 holds ci.yaml far
-#      below that, at 10. This check follows only the calls to this repository's own workflows
+#      50 from a single workflow file, counting every tree of nested calls; the layout holds a file
+#      far below that, at 10. This check follows only the calls to this repository's own workflows
 #      (`./.github/workflows/…`) and counts a call to another repository's workflow as one call;
-#   6. ci.yaml routing more than 32 jobs (the keys of its jobs map) besides its carriers, the bound
-#      R9 sets (spec v161: each held part a job of its own, one per job it comes from): a carrier
-#      is a job that only carries the old check-run name of a job split into legs, whose steps are
-#      exactly a sparse checkout of .github, one step and the step that reports to ci-ok
-#      (.github/actions/ci-ok-report). A carrier with any other step is counted as a job;
+#   6. ci.yaml routing more than 32 jobs (the keys of its jobs map) besides its carriers, each held
+#      part a job of its own: a carrier is a job that only carries the old check-run name of a job
+#      split into legs, whose steps are exactly a sparse checkout of .github, one step and the step
+#      that reports to ci-ok (.github/actions/ci-ok-report). A carrier with any other step is
+#      counted as a job;
 #   7. a dorny/paths-filter step whose filter text - its `filters` input inline, or the file that
 #      input names - is 10,000 bytes or more. The filters select jobs by package area, one area a
 #      job, and a filter that lists files one by one, as the deleted filter file did, is what this
@@ -42,11 +42,16 @@
 #      from the job's start and the step's, and GitHub cancels the job at its timeout-minutes, so a
 #      larger number would let the wait outlive the job, and a smaller one would fail by name a wait
 #      the job had time for. The values are compared as written, so an expression must be the same
-#      expression. A job one of whose steps reaches gh-read.sh and that sets no JOB_TIMEOUT_MINUTES
-#      in its env is refused too, since its wait would have no limit to wait within, and a `run:`
-#      body inside a local action that reaches gh-read.sh under a `timeout <N>m` command must set
-#      STEP_TIMEOUT_MINUTES to N in that step's env, since that command is the step's own bound
-#      there (ci.yaml's timed bodies moved into actions keep it, check-ci-layout.sh's rule 31).
+#      expression. A job of ci.yaml one of whose steps reaches gh-read.sh and that sets no
+#      JOB_TIMEOUT_MINUTES in its env is refused too, since its wait would have no limit to wait
+#      within; a job of another workflow is not held to that, since browser-image.yaml's build job
+#      reaches it through its ci-ok-report step and each byte of that file is a byte of the browser
+#      image's recipe (.github/scripts/ci_images.py, recipe_sha256). A `run:` body inside a local
+#      action that reaches gh-read.sh under a `timeout <N>m` command must set STEP_TIMEOUT_MINUTES
+#      to N in that step's env, since that command is the step's own bound there (ci.yaml's timed
+#      bodies moved into actions keep it, check-ci-layout.sh's rule 31), and such a body that runs
+#      two different bounds is refused, since no one number stands for both; a `timeout` in a
+#      comment line is no bound.
 #      Three more ways to give the wait a wrong number are refused with it: either name
 #      in the workflow's own `env:`, which stands for no one job's limit; STEP_TIMEOUT_MINUTES in a
 #      job's `env:`, which stands for no one step's; and a step with a timeout-minutes of its own
@@ -55,7 +60,9 @@
 #      .github/scripts that does, followed through the scripts that run or source each other (test
 #      files aside; COMMAND_PLACE below says what counts as a run), or when its `uses:` is an
 #      action of .github/actions, at the checkout's root or under another checkout (`./base/`),
-#      whose steps' `run:` does. A path named in a comment or echoed is no reach.
+#      whose steps' `run:` does. A path named in a comment or echoed is no reach;
+#   9. ci.yaml, the router, above 63,000 bytes, the bound the layout holds it to beneath every
+#      file's 64,000 (.github/ci-notes/ci.md, the section on the steps every job repeats, names it).
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -68,7 +75,7 @@
 #
 # Run from anywhere: .github/scripts/check-workflow-files.sh
 # CI runs it in ci.yaml's lint job and in .github/workflows/workflow-files.yaml, and its tests in
-# ci.yaml's scripts job.
+# ci.yaml's scripts-held job.
 set -euo pipefail
 
 # The repeated-key test is workflow_paths.repeated_keys, imported from beside this script's own
@@ -97,10 +104,12 @@ GITHUB_CAP = 500_000
 # followed, and a call to another repository's workflow counts as one.
 CALL_LIMIT = 10
 GITHUB_CALL_CAP = 50
-# Faults 6 and 7: the jobs ci.yaml routes besides its carriers, and the bytes of a filter text.
+# Faults 6, 7 and 9: the jobs ci.yaml routes besides its carriers, the bytes of a filter text, and
+# the bytes of ci.yaml itself.
 ROUTER = WORKFLOWS / "ci.yaml"
 JOB_LIMIT = 32
 FILTER_LIMIT = 10_000
+ROUTER_LIMIT = 63_000
 REPORT_ACTION = "./.github/actions/ci-ok-report"
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.
@@ -321,7 +330,26 @@ def runs_any(text: str, names: set[str]) -> list[str]:
     return sorted(found)
 
 
-def helper_reachers() -> tuple[set[str], set[str]]:
+def read_actions() -> dict[Path, tuple[object, object]]:
+    """Each local action of .github/actions, a nested one (go-envoy/held) among them, read once for
+    the two readers below: its composed node tree, which rule 8 reads a body's lines off, and the
+    document yaml.safe_load gives for it, None where that load refuses the tree, which the reach
+    reads. An action that cannot be read or composed is in neither."""
+    found = {}
+    for action in sorted(Path(".github/actions").glob("**/action.y*ml")):
+        try:
+            root = yaml.compose(action.read_text(errors="replace"))
+        except (OSError, yaml.YAMLError):
+            continue
+        try:
+            document = yaml.SafeLoader("").construct_document(root) if root is not None else None
+        except yaml.YAMLError:
+            document = None
+        found[action] = (root, document)
+    return found
+
+
+def helper_reachers(actions_read: dict[Path, tuple[object, object]]) -> tuple[set[str], set[str]]:
     """The basenames of the scripts of .github/scripts that reach HELPER, HELPER itself among
     them, and the names of the actions of .github/actions whose steps' `run:` reaches one: a
     script reaches it when a line of it runs or sources HELPER or a script that does
@@ -344,11 +372,7 @@ def helper_reachers() -> tuple[set[str], set[str]]:
     # Each local action by its path under .github/actions, a nested one (go-envoy/held) among
     # them; one reaches the helper when a step's run: does, or a step uses an action that does.
     steps_of: dict[str, list] = {}
-    for action in Path(".github/actions").glob("**/action.y*ml"):
-        try:
-            doc = yaml.safe_load(action.read_text(errors="replace"))
-        except (OSError, yaml.YAMLError):
-            continue
+    for action, (_, doc) in actions_read.items():
         runs = doc.get("runs") if isinstance(doc, dict) else None
         steps = runs.get("steps") if isinstance(runs, dict) else None
         if isinstance(steps, list):
@@ -371,27 +395,30 @@ def helper_reachers() -> tuple[set[str], set[str]]:
 TIMEOUT_COMMAND = re.compile(r"(?<![\w-])timeout\s+(\d+)m\s")
 
 
-def check_action_bodies(reachers: tuple[set[str], set[str]]) -> None:
+def check_action_bodies(actions_read: dict[Path, tuple[object, object]], reachers: tuple[set[str], set[str]]) -> None:
     """Rule 8 inside the local actions: a step whose run: reaches gh-read.sh under a `timeout
     <N>m` command, the bound a timed body moved out of a workflow keeps, sets STEP_TIMEOUT_MINUTES
-    to N in its env, and one that sets STEP_TIMEOUT_MINUTES sets it to that N."""
+    to N in its env, one that sets STEP_TIMEOUT_MINUTES sets it to that N, and one that reaches it
+    holds one such bound and not two. A bound in a comment line bounds nothing and is not read."""
     scripts, _ = reachers
-    for action in sorted(Path(".github/actions").glob("**/action.y*ml")):
-        try:
-            root = yaml.compose(action.read_text(errors="replace"))
-        except (OSError, yaml.YAMLError):
-            continue
+    for action, (root, _) in actions_read.items():
         steps = mapping_get(mapping_get(root, "runs"), "steps")
         if not isinstance(steps, yaml.SequenceNode):
             continue
         for index, step in enumerate(steps.value, start=1):
             run = scalar(mapping_get(step, "run")) or ""
-            bounds = sorted(set(TIMEOUT_COMMAND.findall(run)))
+            code = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
+            bounds = sorted(set(TIMEOUT_COMMAND.findall(code)), key=int)
             value = mapping_get(mapping_get(step, "env"), "STEP_TIMEOUT_MINUTES")
             if not runs_any(run, scripts):
                 continue
             line = step.start_mark.line + 1
-            if len(bounds) == 1 and (value is None or scalar(value) != bounds[0]):
+            if len(bounds) > 1:
+                problem(action, f"{action}:{line}: step {index} reaches gh-read.sh under {len(bounds)} different "
+                                f"bounds ({', '.join(f'`timeout {bound}m`' for bound in bounds)}), and "
+                                f"STEP_TIMEOUT_MINUTES stands for one: give the body one `timeout <N>m`, or "
+                                f"split it into steps of one bound each.", line=line)
+            elif len(bounds) == 1 and (value is None or scalar(value) != bounds[0]):
                 problem(action, f"{action}:{line}: step {index} reaches gh-read.sh under `timeout {bounds[0]}m`, "
                                 f"its own bound, and sets STEP_TIMEOUT_MINUTES to "
                                 f"{scalar(value) if value is not None else 'nothing'}: set it to {bounds[0]} in "
@@ -424,6 +451,16 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
         line = where.start_mark.line + 1
         problem(path, f"{path}:{line}: {text}", line=line)
 
+    def reach(step: object) -> list[str]:
+        """What a step reaches gh-read.sh through: the scripts its run: runs or sources, and its
+        uses: where that names a local action that reaches it; nothing where it reaches none."""
+        via = runs_any(scalar(mapping_get(step, "run")) or "", scripts)
+        uses = scalar(mapping_get(step, "uses")) or ""
+        local = LOCAL_ACTION.match(uses)
+        if local and local.group(1) in actions:
+            via.append(uses)
+        return via
+
     for name in ("JOB_TIMEOUT_MINUTES", "STEP_TIMEOUT_MINUTES"):
         value = mapping_get(mapping_get(root, "env"), name)
         if value is not None:
@@ -454,15 +491,15 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
         steps = mapping_get(job, "steps")
         if not isinstance(steps, yaml.SequenceNode):
             continue
-        reaching = [scalar(mapping_get(step, "uses")) or "" for step in steps.value
-                    if runs_any(scalar(mapping_get(step, "run")) or "", scripts)
-                    or ((LOCAL_ACTION.match(scalar(mapping_get(step, "uses")) or "") or [None, None])[1] in actions)]
-        if path == ROUTER and reaching and mapping_get(mapping_get(job, "env"), "JOB_TIMEOUT_MINUTES") is None:
-            line = job_name.start_mark.line + 1
-            problem(path, f"{path}:{line}: job {job_id} reaches gh-read.sh (through {reaching[0] or 'a run: step'}) "
-                          f"and its env sets no JOB_TIMEOUT_MINUTES: its wait for a spent API budget would have no "
-                          f"limit to wait within and fail by name. Set it to {job_limit}, its timeout-minutes as "
-                          f"written.", line=line)
+        if path == ROUTER and mapping_get(mapping_get(job, "env"), "JOB_TIMEOUT_MINUTES") is None:
+            reacher = next((step for step in steps.value if reach(step)), None)
+            if reacher is not None:
+                line = job_name.start_mark.line + 1
+                problem(path, f"{path}:{line}: job {job_id} reaches gh-read.sh (through "
+                              f"{scalar(mapping_get(reacher, 'uses')) or 'a run: step'}) and its env sets no "
+                              f"JOB_TIMEOUT_MINUTES: its wait for a spent API budget would have no limit to wait "
+                              f"within and fail by name. Set it to {job_limit}, its timeout-minutes as written.",
+                        line=line)
         for index, step in enumerate(steps.value, start=1):
             env = mapping_get(step, "env")
             own = mapping_get(step, "timeout-minutes")
@@ -473,12 +510,7 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
             if value is None:
                 if own is None:
                     continue
-                run = scalar(mapping_get(step, "run")) or ""
-                uses = scalar(mapping_get(step, "uses")) or ""
-                via = runs_any(run, scripts)
-                local = LOCAL_ACTION.match(uses)
-                if local and local.group(1) in actions:
-                    via.append(uses)
+                via = reach(step)
                 if via:
                     misplaced(own, f"step {index} of job {job_id} sets timeout-minutes {scalar(own)} and "
                                    f"reaches gh-read.sh (through {', '.join(via)}), but sets no "
@@ -494,8 +526,9 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
                        f"its timeout-minutes is {scalar(own)} (line {own.start_mark.line + 1})")
 
 
-REACHERS = helper_reachers()
-check_action_bodies(REACHERS)
+ACTIONS_READ = read_actions()
+REACHERS = helper_reachers(ACTIONS_READ)
+check_action_bodies(ACTIONS_READ, REACHERS)
 
 
 for path in targets:
@@ -515,6 +548,14 @@ for path in targets:
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
             f"far enough below the cap that no edit crosses it unseen. {MOVE}",
+        )
+    elif path == ROUTER and size > ROUTER_LIMIT:
+        problem(
+            path,
+            f"{path} is {size:,} bytes, above the {ROUTER_LIMIT:,} bytes the layout holds the router "
+            f"to, beneath this check's limit of {LIMIT:,} bytes for every workflow file "
+            f"(.github/ci-notes/ci.md#the-steps-and-services-every-job-repeats-are-yaml-anchors). "
+            f"{MOVE}",
         )
 
     node, error = composed(path)
@@ -541,8 +582,8 @@ for path in targets:
             path,
             f"{path} calls {len(called)} unique reusable workflows, above this check's limit of "
             f"{CALL_LIMIT}: {', '.join(sorted(called))}. GitHub allows {GITHUB_CALL_CAP} from a "
-            f"single workflow file, counting every tree of nested calls, and R9 holds a file to "
-            f"{CALL_LIMIT}." + limits(path),
+            f"single workflow file, counting every tree of nested calls, and the layout holds a file "
+            f"to {CALL_LIMIT}." + limits(path),
         )
 
     for job_id, step in filter_steps(path):
@@ -589,6 +630,7 @@ print(
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call at "
     f"most {CALL_LIMIT} unique reusable workflows, read less than {FILTER_LIMIT:,} bytes of "
     f"filter text and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they "
-    f"stand for, and {ROUTER} routes at most {JOB_LIMIT} jobs besides its carriers"
+    f"stand for, and {ROUTER} is within {ROUTER_LIMIT:,} bytes and routes at most {JOB_LIMIT} jobs "
+    f"besides its carriers"
 )
 PY

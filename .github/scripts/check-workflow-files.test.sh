@@ -3,14 +3,14 @@
 # parses as YAML, repeats no mapping key after upper-casing, calls at most 10 unique reusable
 # workflows, nested calls included, reads less than 10,000 bytes of filter text and sets
 # JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and ci.yaml
-# routes at most 30 jobs besides the carriers of a split job's old name; and a refusal of size
-# tells the author where to move text, never into a filter file.
+# is within 63,000 bytes and routes at most 32 jobs besides the carriers of a split job's old
+# name; and a refusal of size tells the author where to move text, never into a filter file.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
 #
 # Run from anywhere: .github/scripts/check-workflow-files.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -306,16 +306,42 @@ check "counts both" \
   "$(contains "$out" '^2 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
 echo "case: exactly 64,000 bytes and exactly 10 unique reusable workflows passes"
+# Another file than ci.yaml, which the next cases hold to 63,000.
 root=$(fixture at-both-limits)
-caller "$root/.github/workflows/ci.yaml" 10 1
+caller "$root/.github/workflows/calls.yaml" 10 1
 callees "$root/.github/workflows" 10 1
-pad_to "$root/.github/workflows/ci.yaml" 64000
+pad_to "$root/.github/workflows/calls.yaml" 64000
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 11 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 10 unique reusable workflows, read less than 10,000 bytes of filter text and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and .github/workflows/ci.yaml routes at most 32 jobs besides its carriers$')"
+  "$(contains "$out" 'call at most 10 unique reusable workflows, read less than 10,000 bytes of filter text and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and .github/workflows/ci.yaml is within 63,000 bytes and routes at most 32 jobs besides its carriers$')"
+
+echo "case: ci.yaml at exactly 63,000 bytes passes, beside another file of 63,001"
+root=$(fixture router-at-limit)
+workflow "$root/.github/workflows/ci.yaml"
+pad_to "$root/.github/workflows/ci.yaml" 63000
+workflow "$root/.github/workflows/other.yaml"
+pad_to "$root/.github/workflows/other.yaml" 63001
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says so" "$(contains "$out" '^all 2 workflow files under .github/workflows are within 64,000 bytes')"
+
+echo "case: ci.yaml one byte above 63,000"
+root=$(fixture router-over-limit)
+workflow "$root/.github/workflows/ci.yaml"
+pad_to "$root/.github/workflows/ci.yaml" 63001
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, its bytes and the router's bound" \
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml is 63,001 bytes, above the 63,000 bytes the layout holds the router to, beneath this check.s limit of 64,000 bytes')"
+check "names the note that says why" \
+  "$(contains "$out" '(\.github/ci-notes/ci\.md#the-steps-and-services-every-job-repeats-are-yaml-anchors)')"
+check "and tells the author where to move text" \
+  "$(contains "$out" 'into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
+check "counts the problem once" \
+  "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -702,6 +728,21 @@ runs:
       run: .github/scripts/reader.sh
     - shell: bash
       run: timeout 4m echo .github/scripts/reader.sh is a script
+    - shell: bash
+      env: {STEP_TIMEOUT_MINUTES: 5}
+      run: |
+        timeout 5m .github/scripts/reader.sh
+        timeout 10m .github/scripts/reader.sh
+    - shell: bash
+      env: {STEP_TIMEOUT_MINUTES: 5}
+      run: |
+        # timeout 9m was this body's bound once
+        timeout 5m .github/scripts/reader.sh
+    - shell: bash
+      env: {STEP_TIMEOUT_MINUTES: 9}
+      run: |
+        # timeout 9m .github/scripts/reader.sh
+        .github/scripts/reader.sh
 YAML
 printf 'name: Build\non: push\njobs: {}\n' > "$root/.github/workflows/ci.yaml"
 run_check "$root"
@@ -712,8 +753,12 @@ check "names the body whose STEP_TIMEOUT_MINUTES is another number" \
   "$(contains "$out" "step 3 reaches gh-read.sh under \`timeout 7m\`, its own bound, and sets STEP_TIMEOUT_MINUTES to 8")"
 check "names the body that sets one with no timeout command" \
   "$(contains "$out" "step 4 sets STEP_TIMEOUT_MINUTES to 9, but its run: carries no \`timeout <N>m\` command")"
-check "and not the body that passes its bound, nor the one that only echoes the path" \
-  "$(is "$(contains "$out" 'step [15] ')" false)"
-check "refuses those three and nothing else" "$(contains "$out" '^3 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+check "names the body that runs two bounds, which no one number stands for" \
+  "$(contains "$out" "step 6 reaches gh-read.sh under 2 different bounds (\`timeout 5m\`, \`timeout 10m\`), and STEP_TIMEOUT_MINUTES stands for one")"
+check "reads no bound in a comment, so a body whose only bound is one carries none" \
+  "$(contains "$out" "step 8 sets STEP_TIMEOUT_MINUTES to 9, but its run: carries no \`timeout <N>m\` command")"
+check "and not the body that passes its bound, the one that only echoes the path, nor the one whose comment names another bound" \
+  "$(is "$(contains "$out" 'step [157] ')" false)"
+check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
 summary "check-workflow-files.sh"
