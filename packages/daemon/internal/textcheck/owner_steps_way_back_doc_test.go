@@ -34,7 +34,7 @@ func TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 // of docs/kubernetes.md alone, under "Rolling back below the release whose owner does a step", since
 // no migration header carries them, and in internal/store's owner_does_a_step_way_back_extract.txt,
 // a copy of that block committed beside the test that runs it
-// (TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRead). That test
+// (TestTheOwnerDoesAStepWayBackLeavesItsProjectOnlyRowsTheReleaseBeforeReads). That test
 // reads the copy and not the guide, so an edit of the guide alone starts this run and not the
 // daemon's Go lane, and this test holds the copy to the guide's block.
 const (
