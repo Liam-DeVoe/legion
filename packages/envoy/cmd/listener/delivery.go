@@ -548,16 +548,16 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
 // whichever holder a copy of the bucket names, and the lane is a core subscription with no
-// redelivery, so a kept copy is how the message waits for a read that answers. So does a claim no
-// read can decode, a message the server wrote under the role's key among them, which a direct get
-// would have read as the claim of whichever session its body names; and so does a role bucket
-// with no leader to answer the read, where a follower's direct get answered before. Every kept copy
-// goes only to a live holder: the handover the keep starts resolves the holder again and forwards
-// the copy where that holder is live, and the kept-role sweep hands every lane over again each
-// pass (sweepKeptRoleLanes). A handover that finds no live holder, the holder lapsed among the
-// cases, forwards nothing (handOverKeptRole), so the copy then waits on the lane, with no delivery
-// exception published for it, until a handover - a claim's, a keep's, the sweep's, that of the
-// registration that makes a holder live again (subscribeHandler), or that of the claim route's
+// redelivery, so a kept copy is how the message waits for a read that answers. A role bucket with
+// no leader to answer the read is such a read. A claim no read can decode keeps the message the
+// same way, a message the server wrote under the role's key among them, which names no holder
+// whatever session its body names. Every kept copy goes only to a live holder: the handover the
+// keep starts resolves the holder again and forwards the copy where that holder is live, and the
+// kept-role sweep hands every lane over again each pass (sweepKeptRoleLanes). A handover that
+// finds no live holder, the holder lapsed among the cases, forwards nothing (handOverKeptRole), so
+// the copy then waits on the lane, with no delivery exception published for it, until a handover
+// - a claim's, a keep's, the sweep's, that of the registration that makes a holder live again
+// (subscribeHandler), or that of the claim route's
 // refresh of a claimant that was not live (roleSetHandler) - finds a live holder: the holder
 // answering again, or a successor that claimed the role. The walk that handover makes forwards
 // the copy while it is inside its hour (roleKeepWindow); once it is older, the first walk that

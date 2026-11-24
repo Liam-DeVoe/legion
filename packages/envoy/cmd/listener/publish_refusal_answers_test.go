@@ -41,9 +41,6 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 }
 
 func (kv stalledRoleKV) NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
-	if !kv.stallGet {
-		return nil, fmt.Errorf("stalledRoleKV reads no stream leader unstalled (key %s)", key)
-	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -53,13 +50,14 @@ func (kv stalledRoleKV) NewestFromLeader(ctx context.Context, key string) (nats.
 }
 
 // A role send through the publish route resolves its role's holder within sendRequestBudget of the
-// request's own context, so a role-bucket call that does not answer - the claim read, which takes
-// no context in nats.go - is reported inside the caller's attempt (the client gives each 5 s,
-// packages/envoy-client/src/transport.ts) rather than after it: the bus-unavailable 503 with
-// Retry-After: 1, naming the call that did not answer. The read never answers (stalledRoleKV), so
-// an answer at all is the budget ending the request, and one before the budget was spent would mean
-// something other than the stalled call ended it. The request carries the caller's attempt as its
-// context (contracts.ListenerCallTimeout, envoy-client's own), and the answer must come while that
+// request's own context, so a claim read that does not answer - the read of the role bucket
+// stream's leader, which takes that context and stalls here until it ends - is reported inside the
+// caller's attempt (the client gives each 5 s, packages/envoy-client/src/transport.ts) rather than
+// after it: the bus-unavailable 503 with Retry-After: 1, naming the call that did not answer. The
+// read never answers (stalledRoleKV), so an answer at all is the budget ending the request, and
+// one before the budget was spent would mean something other than the stalled call ended it. The
+// request carries the caller's attempt as its context (contracts.ListenerCallTimeout,
+// envoy-client's own), and the answer must come while that
 // attempt is still live: a route budgeted at the attempt or past it answers after its caller gave
 // up. That is the one bound on time here, and it is the caller's, 1.5 s past the route's budget, not
 // a margin of the test's. A lookup's same case is

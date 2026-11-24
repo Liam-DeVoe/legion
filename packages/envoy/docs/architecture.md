@@ -305,16 +305,17 @@ with no `Retry-After` (`writeRoleClaimUnreadable`), recorded `role_claim_unreada
 the bus answered, and a retry reads the same record. One resolution is one claim read: neither
 route retries, because a holder that stopped answering keeps its claim and there is no release for
 a second read to see past. The publish route reads the claim from the role bucket stream's leader
-(`store.Registry.RoleClaimFromLeader`), as every reader that decides which session a role's
-message reaches does: the role lane, the kept lane, the relay's check, a controller notice lane's
-read and Dispatch's outbox, all with one decoding (`store.DecodeLeaderRoleClaim`). A message the
-NATS server stored under the role's key on its own, such as a RePublish of another stream, is no
-writer's claim, and a direct get reads its body as the claim of whichever session it names, so on
-the publish route it is the 500 above too, naming `a message the server wrote`. While the role
-bucket has no leader, the publish route answers the 503 where a follower's direct get answered
-before. `GET /v1/roles/<role>` and the soft claim decide no delivery and keep the direct get
-(`RoleClaim`), which `store.Registry` bounds by the caller's context itself, since nats.go's KV
-calls take none.
+(`store.Registry.RoleClaimFromLeader`, whose doc lists every reader that does), as every reader
+that decides which session a role's message reaches does, Dispatch's outbox and its reply check
+among them, all with one decoding (`store.DecodeLeaderRoleClaim`). A message the NATS server
+stored under the role's key on its own, such as a RePublish of another stream, is no writer's
+claim, and a direct get reads its body as the claim of whichever session it names, so on the
+publish route it is the 500 above too, naming `a message the server wrote`. A role bucket with no
+leader answers no such read, and the publish route answers it the 503 above. `GET /v1/roles/<role>`
+and the soft claim keep the direct get (`RoleClaim`), which `store.Registry` bounds by the
+caller's context itself, since nats.go's KV calls take none: neither chooses a delivery on its own,
+since Dispatch's send of a role-routed message carries the role and the send route checks the
+holder again on the leader (`answerRoleSend`).
 
 A send and a publish stamp the envelope's `sender` from the sender's interest record and session
 entry (`senderStamp`, `cmd/listener/api.go`), whose cache misses are read through to their buckets
@@ -711,9 +712,8 @@ event is not told. An `unresponsive` holder's event stays pending and is retried
 failed is, until that session answers or its record passes the gone horizon. A copy kept for it
 would wait one hour at most, and its end would tell nobody. A claim no read can decode, a message
 the server wrote under the role's key among them, stays pending the same way, and so does every
-role-routed event while the role bucket has no leader to answer: its forwards carry no role mark,
-so the relay delivered them in that window when a follower answered the read, and now the event
-is sent once a leader answers. The outbox raises no exception.
+role-routed event while the role bucket has no leader to answer its read: the event is sent once
+a leader answers. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from

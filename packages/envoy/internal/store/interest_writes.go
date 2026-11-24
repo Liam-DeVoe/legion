@@ -519,9 +519,8 @@ type LaneHolders map[string]string
 
 // ReadLaneHolders reads the claim record of the controller role of each controller notice lane
 // the topic sets name, once each however many of the sets name its lane, from the role bucket
-// stream's leader and waiting no longer than ctx (RoleClaimFromLeader, the one leader read of a
-// claim, which the session relay and the kept lane make too), and never the role claim copy
-// (RolesHeldBy); it reads nothing and answers nil when the sets name no lane
+// stream's leader and waiting no longer than ctx (RoleClaimFromLeader), and never the role claim
+// copy (RolesHeldBy); it reads nothing and answers nil when the sets name no lane
 // (bus.NamesControllerNoticeLane). What it answers decides a session's consumer filter, so a copy
 // that lost the controller's claim would drop the lane from its holder's filter, and a copy that
 // still names a session the claim has left would hand that session another controller's notices,

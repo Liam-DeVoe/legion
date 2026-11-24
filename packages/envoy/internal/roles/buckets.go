@@ -16,9 +16,10 @@ import (
 )
 
 // readTimeout bounds one read of Buckets, the bucket's open included, within the caller's own
-// context: nats.go's KV calls take no context and wait out the JetStream MaxWait (10 s), so a
-// session read that has not answered by then is left to finish on its own; a claim read from the
-// stream's leader takes the bound as its context and ends with it.
+// context: the caller is answered once it passes (within). nats.go's KV calls take no context and
+// wait out the JetStream MaxWait (10 s), so a session read that has not answered by then is left
+// to finish on its own, and so is a bucket's open (bucket says why it takes the caller's
+// context); a claim read from the stream's leader takes the bound as its context and ends with it.
 const readTimeout = 2 * time.Second
 
 // JetStream is the client Buckets reads through: its JetStream context on the current connection
@@ -130,9 +131,12 @@ func within[T any](ctx context.Context, what string, read func(bounded context.C
 // wrote under the role's key, whatever its body names, and for a record no claim decodes from; and
 // the claim stamped with the sequence the leader stores it at otherwise. A direct get would read a
 // message the server wrote as the claim of whichever session its body names, and the outbox would
-// forward the role's events to that session.
+// forward the role's events to that session, and the reply check would take its reply for the
+// holder's (Dispatch's api.lookUpRoleHolderReply).
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
 	return within(ctx, "read role "+role+"'s claim", func(bounded context.Context) (store.RoleClaim, error) {
+		// The open takes the caller's ctx, not the bound: an open still waiting when the bound
+		// passes goes on and keeps the handle for the next read (bucket).
 		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil

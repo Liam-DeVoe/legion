@@ -567,8 +567,8 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // not live - is kept for the role's next live holder and answered 202 while keep asks for it, the
 // request's own keep field, true when it set none (roleKeepable), else 404 unclaimed or
 // holder_lapsed (noHolder); and for a resolution that failed the lookup's 503 or 500
-// (unresolved): the 503 while the role bucket has no leader to answer, where a follower's direct
-// get answered before, and the 500 for a message the server wrote. The first attempt forwards to
+// (unresolved): the 503 for a read that did not answer, a role bucket with no leader to answer it
+// among them, and the 500 for a message the server wrote. The first attempt forwards to
 // that holder without reading the claim again; every other attempt resolves the holder again from
 // the leader, so a holder that relaunched under a new session between attempts gets the next one.
 // On those attempts an unclaimed role is answered as the first resolution answers it, since the
