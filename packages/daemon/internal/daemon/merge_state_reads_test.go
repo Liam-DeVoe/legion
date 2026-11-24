@@ -592,6 +592,7 @@ func (rig *readRig) readOnceMovingNothing(t *testing.T, why string) {
 // GitHub answers `unknown` (dispatch://INFRA-4374 R4), so the one read is the merging phase's rule,
 // not the push's or the start read's.
 func TestABasePushOrAStartReadReadsAMergingHeadOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, why string
 		trigger   func(t *testing.T, rig *readRig)
@@ -626,6 +627,7 @@ func TestABasePushOrAStartReadReadsAMergingHeadOnce(t *testing.T) {
 // climb: it is answered by one read more once the climb is over, whose `unknown` asks for nothing
 // after it.
 func TestAClimbOrAFollowOutranksOneReadOfTheSameIssue(t *testing.T) {
+	t.Parallel()
 	// marked waits until the running ladder of CAPTURE-1 holds the request mark reads.
 	marked := func(t *testing.T, rig *readRig, what string, mark func(*mergeStateRun) bool) {
 		t.Helper()

@@ -820,6 +820,7 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 // takes it for where this daemon began, and no other line of the boot for one of the daemon
 // before. A boot that then fails on its port has written it all the same.
 func TestRunLogsTheStartingLineFirstAtBoot(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.listen = nil

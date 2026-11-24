@@ -49,6 +49,7 @@ func (h *taskConfirmations) count() int {
 // The negative control is the event id of the number alone (`task-confirmed:<token>:task-<n>`):
 // the second lifetime's confirmation then comes back a duplicate, and the workflow is told once.
 func TestTaskConfirmationAfterTheRollbackAndASecondFillReachesTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	ctx := context.Background()
 	facts := &taskConfirmations{}
