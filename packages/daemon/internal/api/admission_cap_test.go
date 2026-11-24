@@ -136,6 +136,20 @@ func controllerSessionGrantID(t *testing.T, h *harness) string {
 	return grant.GrantID
 }
 
+// TestAdmissionCapRouteGoldens writes the controller's two answers of the cap as the routes serve
+// them, over the handler chain and a database of their own: a set of 2 at a regulator tick, and the
+// clear after it. `packages/pi-legion/src/tools.test.ts` reads both through the plugin's client.
+func TestAdmissionCapRouteGoldens(t *testing.T) {
+	h := capHarness(t)
+	grant := controllerSessionGrantID(t, h)
+	set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: "the merge queue waits 52 minutes",
+		TickID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
+	golden(t, "admission-cap.json", set)
+	grant = controllerSessionGrantID(t, h)
+	cleared := capOK(t, h, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant, Reason: "the signals are back under their limits"}, nil)
+	golden(t, "admission-cap-clear.json", cleared)
+}
+
 // TestAdmissionCapRoutes is the API half of dispatch://INFRA-5616: the four routes of the cap over
 // the daemon's handler chain and a database of their own.
 func TestAdmissionCapRoutes(t *testing.T) {

@@ -377,6 +377,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly compact: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
+    readonly admissionCap: (body: object) => Promise<unknown>;
+    readonly admissionCapClear: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -453,6 +455,25 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "project-pause.json",
     ],
     ["projectResume", "/legion/v1/project/resume", { grantId: "grant-208" }, "project-resume.json"],
+    // The controller's set and clear of the admission cap name no project either, and each
+    // answers the cap in force as the daemon's golden wrote it.
+    [
+      "admissionCap",
+      "/legion/v1/project/admission-cap",
+      {
+        grantId: "grant-208",
+        cap: 2,
+        reason: "the merge queue waits 52 minutes",
+        tickId: "admission:LEGION:2026-11-24T06:00:00Z",
+      },
+      "admission-cap.json",
+    ],
+    [
+      "admissionCapClear",
+      "/legion/v1/project/admission-cap/clear",
+      { grantId: "grant-208", reason: "the signals are back under their limits" },
+      "admission-cap-clear.json",
+    ],
     [
       "gateRegister",
       "/legion/v1/gates/register",

@@ -602,7 +602,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
-	// The cap in force, the ceiling and the cap set while the daemon runs (contract 244); a state
+	// The cap in force, the ceiling and the cap set while the daemon runs (contract 247); a state
 	// that names no ceiling is one served below that contract, which says nothing of either.
 	if state.Admission.Ceiling != 0 {
 		fmt.Fprintln(stdout, "admission cap: "+admissionCapWords(state.Admission.Cap, state.Admission.Ceiling, state.Admission.Override))

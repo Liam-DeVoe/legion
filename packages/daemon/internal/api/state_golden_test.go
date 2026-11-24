@@ -303,7 +303,7 @@ func populatedState(t *testing.T) State {
 		},
 		Admission: Admission{
 			// The cap in force is the one the controller's regulator set below the deployment's
-			// ceiling of 8 (contract 244): the override names the regulator's tick, and the list
+			// ceiling of 8 (contract 247): the override names the regulator's tick, and the list
 			// of changes carries both shapes of an entry, the set and an earlier clear by the
 			// operator, which names no cap and no tick.
 			Cap:     5,

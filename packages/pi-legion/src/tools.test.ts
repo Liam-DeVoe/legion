@@ -248,6 +248,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "set_admission_cap",
+        "clear_admission_cap",
       ],
     },
     issue: { type: "string" },
@@ -288,7 +290,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and the controller's set_admission_cap's and clear_admission_cap's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -305,6 +307,18 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     role: {
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
+    },
+    cap: {
+      type: "integer",
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+      description:
+        "set_admission_cap's cap: how many issues the daemon may have started at once, from 1 to the deployment's ceiling, admission.ceiling in read_state",
+    },
+    tick_id: {
+      type: "string",
+      description:
+        "set_admission_cap's and clear_admission_cap's regulator tick: the id the tick logs its readings under, left out of a change no tick makes",
     },
   },
   required: ["op"],
@@ -2138,6 +2152,131 @@ test("the controller pauses the project with its reason and resumes it, and each
   }
   expect(posted).toHaveLength(2);
   expect(minted).toHaveLength(2);
+});
+
+// The admission cap set while the daemon runs (dispatch://INFRA-5616). The controller sets the cap
+// with its reason and its regulator's tick and clears it with a reason, and neither names a
+// project: the daemon changes its own. Each goes through the real daemon client, so the answer the
+// controller reads is the golden the daemon's own test wrote, parsed by the contract's schema. A
+// call the tool can tell is wrong is refused before a grant is minted or a request sent.
+test("the controller sets the admission cap with its reason and tick and clears it, and each answer is the daemon's golden", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/project/admission-cap": "admission-cap.json",
+    "/legion/v1/project/admission-cap/clear": "admission-cap-clear.json",
+  });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const reason = "the merge queue waits 52 minutes";
+  const tick = "admission:LEGION:2026-11-24T06:00:00Z";
+
+  const set = await run({ op: "set_admission_cap", cap: 2, reason, tick_id: tick });
+  expect(set.isError).toBeUndefined();
+  expect(set.details).toEqual(daemonFixture("admission-cap.json"));
+  expect(posted).toEqual([
+    [
+      "/legion/v1/project/admission-cap",
+      { grantId: "controller-grant-1", cap: 2, reason, tickId: tick },
+    ],
+  ]);
+  // A person's change names no tick, and the request carries none.
+  await run({ op: "set_admission_cap", cap: 3, reason: "a person asked for 3" });
+  expect(posted.at(-1)).toEqual([
+    "/legion/v1/project/admission-cap",
+    { grantId: "controller-grant-1", cap: 3, reason: "a person asked for 3" },
+  ]);
+
+  const cleared = await run({
+    op: "clear_admission_cap",
+    reason: "the signals are back under their limits",
+  });
+  expect(cleared.isError).toBeUndefined();
+  expect(cleared.details).toEqual(daemonFixture("admission-cap-clear.json"));
+  expect(posted.at(-1)).toEqual([
+    "/legion/v1/project/admission-cap/clear",
+    { grantId: "controller-grant-1", reason: "the signals are back under their limits" },
+  ]);
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+
+  const refusals = [
+    [
+      { op: "set_admission_cap", reason },
+      "set_admission_cap requires cap, a whole number of at least 1",
+    ],
+    [
+      { op: "set_admission_cap", cap: 0, reason },
+      "set_admission_cap requires cap, a whole number of at least 1",
+    ],
+    [
+      { op: "set_admission_cap", cap: 2.5, reason },
+      "set_admission_cap requires cap, a whole number of at least 1",
+    ],
+    [{ op: "set_admission_cap", cap: 2 }, "set_admission_cap requires reason"],
+    [
+      { op: "set_admission_cap", cap: 2, reason, tick_id: " " },
+      "set_admission_cap requires tick_id",
+    ],
+    [
+      { op: "set_admission_cap", cap: 2, reason, issue: "LEGION-208" },
+      'set_admission_cap does not accept field "issue"; it takes cap, reason, tick_id',
+    ],
+    [{ op: "clear_admission_cap" }, "clear_admission_cap requires reason"],
+    [
+      { op: "clear_admission_cap", reason, cap: 2 },
+      'clear_admission_cap does not accept field "cap"; it takes reason, tick_id',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(3);
+  expect(minted).toHaveLength(3);
+});
+
+// The summary names the cap in force with the ceiling, and the cap that stands with who set it,
+// when, why and at which tick; a state with no cap set names the ceiling alone, and one served
+// below the contract that added both names neither.
+test("read_state's summary names the cap in force, the ceiling and the cap that stands", async () => {
+  const base = { issues: {}, admission: { cap: 2, active: [], waiting: [] } };
+  const summaryOf = async (admission: Record<string, unknown>) => {
+    const { daemon } = recordingDaemon({
+      state: { ...base, admission: { ...base.admission, ...admission } },
+    });
+    const tool = controllerTool(daemon, []);
+    const result = await tool.execute(
+      "",
+      { op: "read_state" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    );
+    const [block] = result.content;
+    return block !== undefined && block.type === "text" ? block.text : "";
+  };
+  const set = await summaryOf({
+    ceiling: 6,
+    override: {
+      cap: 2,
+      setBy: { kind: "controller", session: "ses_controller" },
+      setAt: "2026-11-24T06:00:00Z",
+      reason: "the merge queue waits 52 minutes",
+      tickId: "admission:LEGION:2026-11-24T06:00:00Z",
+    },
+    capChanges: [],
+  });
+  expect(set).toContain(
+    "\nadmission cap 2 ceiling 6\ncap set 2 by the controller (session ses_controller) at 2026-11-24T06:00:00Z: " +
+      "the merge queue waits 52 minutes tick admission:LEGION:2026-11-24T06:00:00Z\nactive (none)\n"
+  );
+  const none = await summaryOf({ cap: 6, ceiling: 6, capChanges: [] });
+  expect(none).toContain("\nadmission cap 6 ceiling 6\nactive (none)\n");
+  const older = await summaryOf({});
+  expect(older).toContain("\nadmission cap 2\nactive (none)\n");
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the

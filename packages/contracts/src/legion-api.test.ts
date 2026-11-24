@@ -10,6 +10,7 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
+  LegionAdmissionCapResponse,
   LegionCapabilityReport,
   LegionChildRequest,
   LegionClaimRequest,
@@ -187,6 +188,11 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The admission cap set while the daemon runs (contract 247), each written from what the route
+  // itself answers (internal/api's TestAdmissionCapRouteGoldens): a set at a regulator's tick, and
+  // the clear after it.
+  "admission-cap.json": LegionAdmissionCapResponse,
+  "admission-cap-clear.json": LegionAdmissionCapResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -2764,7 +2770,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
+  // A caller below 247 is served the admission without the three keys 247 added (the daemon's
+  // `withoutAdmissionCap`), and a caller below 202 is below 247.
+  const {
+    ceiling: _ceiling,
+    override: _override,
+    capChanges: _capChanges,
+    ...admission
+  } = z.record(z.string(), z.unknown()).parse(rest.admission);
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource, admission });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

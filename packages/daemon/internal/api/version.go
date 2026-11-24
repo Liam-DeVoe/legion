@@ -3399,7 +3399,7 @@ package api
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
 //
-// 244: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
+// 247: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
 // daemon runs, with no pull request and no restart, up to the deployment's ceiling. Four routes:
 // the controller's `POST /legion/v1/project/admission-cap` (`{grantId, cap, reason, tickId?}`)
 // and `POST /legion/v1/project/admission-cap/clear` (`{grantId, reason, tickId?}`), which take a
@@ -3425,7 +3425,7 @@ package api
 // until fewer issues than it hold a slot. A set of the cap that stands, and a clear where none
 // stands, change nothing: they append no row, and the daemon logs one Debug line for each. The
 // controller's two routes answer `{cap, ceiling, override?}` (`api.AdmissionCapResponse`,
-// answers.go's AnswerAdmissionCap, whose routes arrive with it, so no contract below 244 records
+// answers.go's AnswerAdmissionCap, whose routes arrive with it, so no contract below 247 records
 // either); the operator's answer the same body to the `legion` command, which no plugin parses.
 // `cap` is the cap the passes admit under, `ceiling` the deployment's, and `override`, `{cap,
 // setBy, setAt, reason, tickId?}` with `setBy` a pause's actor view (`{kind: controller,
@@ -3437,16 +3437,19 @@ package api
 // readings are compared with (dispatch://INFRA-979/spec#b-r39), so its names are held as they
 // stand. `admission.cap`, which every reader has typed since before the floor, now says the cap
 // the passes admit under where it said the configured cap, the same number until a cap is set.
-// The records of 244 hold the three keys, and no record below 244 does: a caller whose contract
-// (the one it states, else its pod's) is below 244 is served the admission without them (the band
+// The records of 247 hold the three keys, and no record below 247 does: a caller whose contract
+// (the one it states, else its pod's) is below 247 is served the admission without them (the band
 // of shaping.go's stateNarrowings, `withoutAdmissionCap`). `settings.admission_cap` stays the
 // configured value, the ceiling. No value of an enumerated field moves: the actor's `kind` is a
 // discriminator read with a `z.literal`, as the pause's is.
 // (This entry took 243 at first, the lowest number above main's 220 that no open pull request
 // declared at a reading of the 138 of the 509 open pull requests that change version.go, made
 // between 2026-11-24T04:59:37Z and 05:02:59Z. cybermonklabs/legion#5349 (dispatch://INFRA-5645),
-// opened at about 08:10Z, declares 243, so this entry moved to 244, and dispatch://INFRA-5649's
-// change takes 245. From this entry the last number of answers.go's SupportedContracts is
-// `api.admissionCapContract`, after `assignmentPlanContract`. Read the base's own number and every
-// open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 244
+// opened at about 08:10Z, declares 243, and a reading of all 492 open heads between
+// 2026-11-24T11:05Z and 11:09Z found 244 declared by #3831 (dispatch://INFRA-1117) and 245 by
+// #4960 (dispatch://INFRA-5208); 246 and 248 went to dispatch://INFRA-5649's and
+// dispatch://INFRA-5660's changes, so this entry takes 247. From this entry the last number of
+// answers.go's SupportedContracts is `api.admissionCapContract`, after `assignmentPlanContract`.
+// Read the base's own number and every open pull request again at the next merge rather than from
+// this line.)
+const DaemonAPIVersion = 247

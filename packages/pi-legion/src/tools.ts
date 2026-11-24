@@ -1,4 +1,4 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { GATED_STEPS, LEGION_ROLES, type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -91,6 +91,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "compact",
     "pause",
     "resume",
+    "set_admission_cap",
+    "clear_admission_cap",
   ],
 };
 
@@ -114,6 +116,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  set_admission_cap: ["cap", "reason", "tick_id"],
+  clear_admission_cap: ["reason", "tick_id"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -212,7 +216,9 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
+  "admission cap <cap in force> [free <n>] [ceiling <deployment's cap>]; cap set <cap> by <who> at " +
+  "<time>: <reason> [tick <id>], the cap the controller or the operator set while the daemon runs " +
+  "and that stands, absent where none stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
@@ -248,8 +254,20 @@ function stateSummary(state: LegionState): string {
   const pause = pauseSummary(state);
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
+    const free = admission.free === undefined ? "" : ` free ${admission.free}`;
+    const ceiling = admission.ceiling === undefined ? "" : ` ceiling ${admission.ceiling}`;
+    lines.push(`admission cap ${admission.cap}${free}${ceiling}`);
+    const override = admission.override;
+    if (override !== undefined) {
+      const by = pauseActorWords(
+        override.setBy.kind === "controller" ? override.setBy.session : undefined
+      );
+      const tick = override.tickId === undefined ? "" : ` tick ${override.tickId}`;
+      lines.push(
+        `cap set ${override.cap} by ${by} at ${override.setAt}: ${override.reason}${tick}`
+      );
+    }
     lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
@@ -388,7 +406,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and the controller's set_admission_cap's and clear_admission_cap's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -403,6 +421,20 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    // A whole number of at least 1, built through the contracts' schema API as the phase ops'
+    // numbers are, since the host's zod types its numbers' bounds as optional.
+    cap: zodSchemaApi(z)
+      .number({ int: true, min: 1 })
+      .describe(
+        "set_admission_cap's cap: how many issues the daemon may have started at once, from 1 to the deployment's ceiling, admission.ceiling in read_state"
+      )
+      .optional(),
+    tick_id: z
+      .string()
+      .describe(
+        "set_admission_cap's and clear_admission_cap's regulator tick: the id the tick logs its readings under, left out of a change no tick makes"
+      )
+      .optional(),
   });
 }
 
@@ -632,7 +664,19 @@ export function createLegionTool(deps: {
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-        "since each would start a turn. ",
+        "since each would start a turn. " +
+        "set_admission_cap (cap, reason, tick_id) sets how many issues the daemon may have started at once, from 1 to the " +
+        "deployment's ceiling (admission.ceiling, legion.yaml's admission_cap), and clear_admission_cap (reason, tick_id) " +
+        "returns the project to that ceiling; neither takes an issue. Each is in force from the change's own admission pass " +
+        "on, with no restart: a raise starts the issues waiting for the slots it adds, and a lower cap stops nothing that " +
+        "runs, only starting nothing new until fewer issues hold a slot than it allows. tick_id names the regulator tick " +
+        "that makes the change, the id that tick logs its readings under; leave it out of a change a person asked for. The " +
+        "daemon records each change with who made it, when, why, the tick, and the cap before and after it " +
+        "(admission.capChanges in read_state), and a set of the cap that stands or a clear where none stands records " +
+        "nothing. The answer is the cap in force, the ceiling and the cap set that stands. The daemon refuses a cap below 1 " +
+        "(INVALID_ADMISSION_CAP), a cap above the ceiling (ADMISSION_CAP_ABOVE_CEILING, naming the ceiling: only the " +
+        "operator raises it, in legion.yaml), a change with no reason (ADMISSION_CAP_REASON_REQUIRED) and a daemon with no " +
+        "workflow (ADMISSION_CAP_UNAVAILABLE). ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -696,6 +740,25 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // The cap's set and clear name no issue either, and are validated whole before the
+          // grant is minted; each answer is the daemon's own: the cap in force after the change.
+          if (operation === "set_admission_cap" || operation === "clear_admission_cap") {
+            const reason = requiredString(parameters, operation, "reason");
+            const tick =
+              parameters.tick_id === undefined
+                ? {}
+                : { tickId: requiredString(parameters, operation, "tick_id") };
+            if (operation === "clear_admission_cap") {
+              const { grantId } = await controllerGrant(active.sessionID);
+              return jsonSuccess(await client.admissionCapClear({ grantId, reason, ...tick }));
+            }
+            const cap = parameters.cap;
+            if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 1) {
+              throw new Error("set_admission_cap requires cap, a whole number of at least 1");
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.admissionCap({ grantId, cap, reason, ...tick }));
           }
           // The controller's three writes of one issue: each validated whole before its grant is
           // minted.
