@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // mainListFilteredTerm is the `filtered` term of the four listing statements at the merge base of
@@ -52,35 +53,19 @@ func mainListFilteredTerm(pinned bool) string {
 }
 
 // mainListStatement answers the merge base's text of sent, one of the four listing statements:
-// sent with the terms from `matched` through `filtered`, which ends at the first line after it
-// that closes a term, replaced by mainListFilteredTerm. A text that comes back unchanged would
-// compare a statement with itself, so the test stops on it: at the merge base itself, which has
-// no `matched` term, this is what it does.
+// sent with its terms from `matched` up to the term after `filtered`, the page or the subjects,
+// replaced by mainListFilteredTerm (explaintest.Spliced, which stops the test where the text does
+// not change: at the merge base itself, which has no `matched` term, the comparison stops there).
 func mainListStatement(t *testing.T, sent string) string {
 	t.Helper()
-	pinned := false
-	switch sent {
-	case listIssuesQuery, listIssuesPageQuery:
-	case listPinnedIssuesQuery, listPinnedIssuesPageQuery:
-		pinned = true
-	default:
-		t.Fatalf("the statement sent is none of the four listing texts: %.120s", sent)
+	pinned := sent == listPinnedIssuesQuery || sent == listPinnedIssuesPageQuery
+	closes := ", subjects as ("
+	if sent == listIssuesPageQuery || sent == listPinnedIssuesPageQuery {
+		closes = ", page as ("
 	}
-	const closes = "\n\t)"
-	filtered := strings.Index(sent, "filtered as (")
-	start := strings.Index(sent, "matched as (")
-	if start < 0 {
-		start = filtered
-	}
-	length := strings.Index(sent[max(filtered, 0):], closes)
-	if filtered < 0 || start > filtered || length < 0 {
-		t.Fatalf("the listing text holds no filtered term after its matched term: %.120s", sent)
-	}
-	merged := sent[:start] + mainListFilteredTerm(pinned) + sent[filtered+length+len(closes):]
-	if merged == sent {
-		t.Fatal("the merge base's listing text is the text the server sent, so the comparison would compare a statement with itself")
-	}
-	return merged
+	return explaintest.Spliced(t, sent, explaintest.Part{
+		Name: "the merge base's filtered term", Opens: "matched as (", Closes: closes, Text: mainListFilteredTerm(pinned),
+	})
 }
 
 // TestAPriorityListAnswersAsTheMergeBaseAnswers holds the listing to R2 of dispatch://INFRA-5609:
@@ -99,6 +84,7 @@ func mainListStatement(t *testing.T, sent string) string {
 // was built to must hold there: 598 issues under the largest priority, 7,677 under any and the
 // rest under none.
 func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
+	t.Parallel()
 	corpus := seedListCorpus(t)
 	t.Log(corpus.String())
 	trace := &speedTrace{}
@@ -189,27 +175,7 @@ type listAnswer struct {
 // byte. It answers the merge base's.
 func compareWithMergeBase(t *testing.T, handler http.Handler, trace *speedTrace, mergeBase, generic *server, target string) listAnswer {
 	t.Helper()
-	trace.take()
-	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true), http.MethodGet, target, nil)
-	request.Header.Set("X-Dispatch-User", "alice")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("read %s: status=%d body=%s", target, response.Code, response.Body.String())
-	}
-	sent, _ := trace.take()
-	var listing *speedStatement
-	for index := range sent {
-		if slices.Contains([]string{listIssuesQuery, listPinnedIssuesQuery, listIssuesPageQuery, listPinnedIssuesPageQuery}, sent[index].sql) {
-			if listing != nil {
-				t.Fatalf("%s sent two listing statements", target)
-			}
-			listing = &sent[index]
-		}
-	}
-	if listing == nil {
-		t.Fatalf("%s sent no listing statement the trace saw, of %d statements", target, len(sent))
-	}
+	response, listing := listingRequest(t, handler, trace, target)
 	parsed, err := url.Parse(target)
 	if err != nil {
 		t.Fatalf("parse %s: %v", target, err)

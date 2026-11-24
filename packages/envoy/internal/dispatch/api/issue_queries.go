@@ -46,23 +46,21 @@ var (
 )
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
-// alone, so `total` is a count over `filtered` with no join and the paged text orders and cuts it
-// before anything else is resolved: the six joins then run for the page's rows alone, and a
-// listing of twenty rows costs twenty issues' blockers, specs, open asks, children, components
-// and repository rather than every matching issue's. Both counts come from the one statement,
-// since two statements read two snapshots and can disagree about a table a write is moving.
+// alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
+// row's values, and the paged text orders and cuts it before anything else is resolved: the six
+// joins then run for the page's rows alone, and a listing of twenty rows costs twenty issues'
+// blockers, specs, open asks, children, components and repository rather than every matching
+// issue's. Both counts come from the one statement, since two statements read two snapshots and
+// can disagree about a table a write is moving.
 //
 // `filtered` is the matched issues read back by their places in one array (generate_subscripts)
 // rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
-// generate_subscripts plans, as priorityMemberTerms sizes its seed. pgx prepares every statement,
-// and from a connection's sixth run Postgres may run the generic plan, which estimates one issue
-// through issueListFilters' parameter arms. Sized at one issue, every join that attaches a value
-// to the matched issues was a nested loop that ran its grouped read again for each issue, so the
-// unpaged text's time grew with the square of its issues (dispatch://INFRA-5609). Sized at 1,000,
-// each grouped read runs once and is hashed or merged. The array holds each matched row's address
-// (ctid), which the read takes back in the same statement and so the same snapshot: an element of
-// fixed width is found by its place at once, where finding the n-th of an array of keys reads the
-// n-1 before it, which made the read of 13,298 issues take 0.4 s.
+// generate_subscripts plans, as priorityMemberTerms sizes its seed, rather than at the one issue
+// the generic plan estimates through issueListFilters' arms: each join that attaches a value to
+// the matched issues then reads its grouped term once rather than once for each issue. The array
+// holds each matched row's address (ctid), which the read takes back in the same statement and so
+// under the same snapshot, because Postgres finds an element of fixed width at its place at once
+// and the n-th key of an array of text only by reading the n-1 before it.
 //
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
@@ -146,12 +144,12 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // Each test is an `in` or a `not in` over the term, never a join to it. Postgres plans an
 // uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
 // term is hashed once per execution and each issue costs one probe, whatever the plan expects of
-// the issues. A join leaves that choice to the estimate, and the generic plan a prepared statement
-// settles on after five runs (speedCustomPlans) estimates one issue through the parameter arms
-// above: on production's counts it looped every issue over the whole term, and a priority's page
-// took seconds where the plan made for its arguments took milliseconds (dispatch://INFRA-5609,
-// TestAPriorityListAnswersWithinItsBoundOnEveryPlan). The arms are disjunctions, as the request's
-// union needs, so the planner cannot make a semi-join of them either.
+// the issues. A join leaves that choice to the estimate. pgx prepares every statement, and from a
+// connection's sixth run Postgres may run the generic plan, made with no argument known
+// (speedCustomPlans); every arm above that a parameter can switch off is a guess to that plan,
+// and together they estimate one issue, where a join loops every issue over the whole term. The
+// arms are disjunctions, as the request's union needs, so the planner cannot make a semi-join of
+// them either.
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins), and the parameters after it are the pinned login and the page.

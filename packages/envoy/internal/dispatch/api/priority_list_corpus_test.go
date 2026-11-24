@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,7 +13,8 @@ import (
 )
 
 // How the corpus a priority's issue list is measured and compared over is built
-// (TestAPriorityListAnswersWithinItsBoundOnEveryPlan, TestAPriorityListAnswersAsTheMergeBaseAnswers).
+// (TestAPriorityListAnswersWithinItsBoundOnEveryPlan, TestAPriorityListAnswersAsTheMergeBaseAnswers,
+// TestNoListingRequestReadsMoreOnTheGenericPlan).
 // It is a file of its own for the reason priority_speed_seed_test.go is: none of it is a reading.
 //
 // The corpus holds production's counts as dispatch://INFRA-5609 gives them: 13,298 issues, 13
@@ -124,15 +126,6 @@ func listCorpusStatus(place int, open bool) string {
 		}
 	}
 	panic("the status shares do not reach their total")
-}
-
-// retractedAdvancesTuple is the retraction of an `advances` relation, as prioritystore.Retract
-// appends one: the relation's own row with asserted false. Written after the assertion, it is
-// the newer of the pair, so the relation stands retracted.
-func retractedAdvancesTuple(issueKey, priority string, at time.Time) []any {
-	tuple := seededAdvancesTuple(issueKey, priority, at)
-	tuple[len(tuple)-1] = false
-	return tuple
 }
 
 // seedListCorpus writes the corpus, settles it (settleSpeedCorpus) and holds it to its own counts.
@@ -268,7 +261,7 @@ func seedListCorpus(t *testing.T) listCorpus {
 			"What this priority is for.", "alice", fmt.Sprintf("s%02d", index), at))
 	}
 	gone := seededPriorityNode(t, corpus.gone, "A priority that is gone", "What it was for.", "alice", "z99", at)
-	gone[4] = prioritystore.StateGone
+	gone[slices.Index(seededNodeColumns, "state")] = prioritystore.StateGone
 	priorityRows = append(priorityRows, gone)
 
 	projectRows := make([][]any, 0, listCorpusProjects)
@@ -296,24 +289,13 @@ func seedListCorpus(t *testing.T) listCorpus {
 	}
 	settleSpeedCorpus(t, database)
 
-	for _, counted := range []struct {
-		what  string
-		query string
-		want  int
-	}{
-		{"issues", `select count(*) from issues`, listCorpusIssues},
-		{"done issues", `select count(*) from issues where closed_at is not null`, corpus.done},
-		{"issues with a parent", `select count(*) from issues where parent_key is not null`, corpus.parented},
-		{"live priorities", `select count(*) from priority_nodes where state = 'live'`, listCorpusPriorities},
-		{"advances tuples", `select count(*) from priority_tuples where kind = 'advances'`, len(tuples)},
-	} {
-		got := 0
-		if err := database.Pool.QueryRow(context.Background(), counted.query).Scan(&got); err != nil {
-			t.Fatalf("count the corpus's %s: %v", counted.what, err)
-		}
-		if got != counted.want {
-			t.Fatalf("the corpus holds %d %s, want %d", got, counted.what, counted.want)
-		}
+	// The one count copySeededRows cannot check: that the gone priority's state landed as gone.
+	live := 0
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from priority_nodes where state = 'live'`).Scan(&live); err != nil {
+		t.Fatalf("count the corpus's live priorities: %v", err)
+	}
+	if live != listCorpusPriorities {
+		t.Fatalf("the corpus holds %d live priorities, want %d", live, listCorpusPriorities)
 	}
 	return corpus
 }
