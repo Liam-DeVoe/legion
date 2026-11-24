@@ -107,18 +107,15 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 
 // mergeForwardTold records the session the merge-forward ask of head reached agent, the issue's
 // owner, in (record.Store.MarkMergeForwardTold), in a transaction of its own before the row is
-// finished, as an owner-step's telling is recorded (ownerStepTold): recipient, the session the
-// listener forwarded the publish to, where it names one the claim did not hold before, else the
-// session the owner's claim recorded as it was read before the publish (before). A delivered row is
-// deleted, so this is what the owner's catch-up at a later launch reads to name the ask only to a
-// session that was not told it (workflow's untoldMergeForward). A claim that recorded no session,
-// with no recipient named, records nothing, and the owner's next launch is told the ask in its
-// catch-up: a repeat, never an ask left untold.
+// finished, as an owner-step's telling is recorded (ownerStepTold): toldMark's session, recipient,
+// the session the listener forwarded the publish to, where it names one the claim did not hold
+// before, else the session the owner's claim recorded as it was read before the publish (before).
+// A delivered row is deleted, so this is what the owner's catch-up at a later launch reads to name
+// the ask only to a session that was not told it (workflow's untoldMergeForward). A claim that
+// recorded no session, with no recipient named, records nothing, and the owner's next launch is
+// told the ask in its catch-up: a repeat, never an ask left untold.
 func (r *outbox) mergeForwardTold(ctx context.Context, issue, head string, agent claim.Token, before supervise.Claim, recipient string) error {
-	session := before.Session
-	if recipient != "" && !before.HoldsSession(recipient) {
-		session = recipient
-	}
+	session := toldMark(before, recipient).Session
 	if session == "" {
 		return nil
 	}

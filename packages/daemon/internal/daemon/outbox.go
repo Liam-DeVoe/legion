@@ -2046,10 +2046,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // (workflow's toldThisSession). A claim this daemon does not supervise, with no recipient named,
 // records nothing, and its next ready tells the step again.
 func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim, recipient string) error {
-	mark := record.OwnerTold{Launch: told.Generation, Session: told.Session}
-	if recipient != "" && !told.HoldsSession(recipient) {
-		mark = record.OwnerTold{Session: recipient}
-	}
+	mark := toldMark(told, recipient)
 	if mark.Launch == 0 && mark.Session == "" {
 		return nil
 	}
@@ -2059,6 +2056,17 @@ func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.No
 		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
 	}
 	return nil
+}
+
+// toldMark is whom a publish to an issue's owner reached, as ownerStepTold and mergeForwardTold
+// record it: recipient, the session the listener forwarded the publish to, by its session alone,
+// where it names one that before, the owner's claim as it was read before the publish, does not
+// hold; else before's launch and session.
+func toldMark(before supervise.Claim, recipient string) record.OwnerTold {
+	if recipient != "" && !before.HoldsSession(recipient) {
+		return record.OwnerTold{Session: recipient}
+	}
+	return record.OwnerTold{Launch: before.Generation, Session: before.Session}
 }
 
 // ownerStepStaleLine is the line of an owner-step that finished undelivered (ownerSlotHolds).
