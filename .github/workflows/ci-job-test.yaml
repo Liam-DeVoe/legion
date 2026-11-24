@@ -270,12 +270,8 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: false
-      ci_log_guard_test:
-        description: "ci.yaml's needs.changes.outputs.ci_log_guard_test: ci-log-guard.test.sh and what it tests."
-        type: string
-        required: false
-      check_log_guard_test:
-        description: "ci.yaml's needs.changes.outputs.check_log_guard_test: check-log-guard.test.sh and what it tests."
+      log_guard_test:
+        description: "ci.yaml's needs.changes.outputs.log_guard_test: ci-log-guard.test.sh, check-log-guard.test.sh and what they test."
         type: string
         required: false
       priorities_seed_check_test:
@@ -552,15 +548,14 @@ jobs:
         run: .github/scripts/race_memory.test.sh
 
       # The stop-commands block every guarded network command's output goes through, read by a
-      # parser of the runner's rules, and the copy the release steps that hold credentials define
-      # inline, read out of their workflows.
-      - name: Test the log guard that keeps a server's text from becoming a workflow command
-        if: inputs.changes-result != 'success' || inputs.ci_log_guard_test == 'true'
-        run: .github/scripts/ci-log-guard.test.sh
-
-      - name: Test the check that every network command a step runs is guarded
-        if: inputs.changes-result != 'success' || inputs.check_log_guard_test == 'true'
-        run: .github/scripts/check-log-guard.test.sh
+      # parser of the runner's rules, with the copy the release steps that hold credentials define
+      # inline, read out of their workflows; then the check that every network command a step runs
+      # is guarded. One step for the two, so ci.yaml carries one output and one input for them.
+      - name: Test the log guard and the check that every network command a step runs is guarded
+        if: inputs.changes-result != 'success' || inputs.log_guard_test == 'true'
+        run: |
+          .github/scripts/ci-log-guard.test.sh
+          .github/scripts/check-log-guard.test.sh
 
       # The machine watch's test runs as the first process of its own unprivileged user, mount and
       # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a

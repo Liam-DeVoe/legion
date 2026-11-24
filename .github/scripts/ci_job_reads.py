@@ -2665,19 +2665,20 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
-    harness("ci_log_guard_test", "Test the log guard that keeps a server's text from becoming a workflow command",
+    # Both guard harnesses run in one step, so ci.yaml carries one output and one input for them
+    # (its 64,000-byte limit, check-workflow-files.sh): the first harness is harness()'s, the second
+    # a subject run by the same step.
+    harness("log_guard_test", "Test the log guard and the check that every network command a step runs is guarded",
             f"{SCRIPTS}/ci-log-guard.test.sh", [
         (f"{SCRIPTS}/ci-log-guard.sh", "the library under test"),
-        (".github/workflows/release.yaml", "the harness reads its npm publish steps' inline guard out of it"),
-        (".github/workflows/release-envoy-listener.yaml", "the harness reads its Determine latest step's inline guard out of it"),
-    ]),
-    harness("check_log_guard_test", "Test the check that every network command a step runs is guarded",
-            f"{SCRIPTS}/check-log-guard.test.sh", [
-        (f"{SCRIPTS}/check-log-guard.sh", "the script under test, symlinked into every fixture"),
+        (".github/workflows/release.yaml", "ci-log-guard.test.sh reads its npm publish steps' inline guard out of it"),
+        (".github/workflows/release-envoy-listener.yaml", "ci-log-guard.test.sh reads its Determine latest step's inline guard out of it"),
+        (f"{SCRIPTS}/check-log-guard.test.sh", "the step runs it after ci-log-guard.test.sh"),
+        (f"{SCRIPTS}/check-log-guard.sh", "check-log-guard.test.sh's script under test, symlinked into every fixture"),
         (f"{SCRIPTS}/shell_commands.py", "the command scanner the check imports, symlinked in beside it"),
-        (".github/log-guard-allow.tsv", "the harness runs the check over a copy of this repository's .github"),
-        (".github/workflows/**", "the harness runs the check over a copy of this repository's .github"),
-        (".github/actions/**", "the harness runs the check over a copy of this repository's .github"),
+        (".github/log-guard-allow.tsv", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
+        (".github/workflows/**", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
+        (".github/actions/**", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
     ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",

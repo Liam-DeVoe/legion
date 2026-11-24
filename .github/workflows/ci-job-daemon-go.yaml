@@ -315,10 +315,7 @@ jobs:
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux
-        run: |
-          . .github/scripts/ci-log-guard.sh
-          ci_log_guard sudo apt-get update
-          ci_log_guard sudo apt-get install -y --no-install-recommends tmux
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
       # internal/launcher's workspace-bundle and git-lock tests drive the real jj and its
       # working-copy filters (testbin.RequireJJFilters).

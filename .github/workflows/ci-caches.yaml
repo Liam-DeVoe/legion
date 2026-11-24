@@ -573,31 +573,28 @@ jobs:
           # Each call waits out a spent API budget within this job's limit, and fails by name
           # past it.
           source .github/scripts/gh-read.sh
-          # gh's output, a refused call's reply that gh_wait_reset prints included, goes to the log
-          # inside .github/scripts/ci-log-guard.sh's block; this step's own commands go to stderr.
-          . .github/scripts/ci-log-guard.sh
           # The readers' key: the saved one without the commit the fill put at its end.
           base=${KEEP%"-$SHA"}
           if [ "$base-$SHA" != "$KEEP" ]; then
-            echo "::error::the $FAMILY key this leg saved does not end in this run's commit, so nothing is deleted" >&2
+            echo "::error::the $FAMILY key this leg saved does not end in this run's commit, so nothing is deleted"
             exit 1
           fi
           # Newest first, by GitHub's own creation order, so the new entry is among the entries
           # read however many older ones a failed run left behind.
-          entries=$(ci_log_guard_stderr gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
+          entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted" >&2
+            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted"
             exit 0
           fi
           jq -r --arg keep "$KEEP" --arg base "$base" --arg ref "$REF" \
             '.[] | select(.ref == $ref and .key != $keep and (.key == $base or (.key | startswith($base + "-")))) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
+                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
                 exit 1
               fi
               echo "Deleting $FAMILY entry $id, which the new entry supersedes"
-              ci_log_guard gh_wait_reset gh cache delete "$id"
+              gh_wait_reset gh cache delete "$id"
             done
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action

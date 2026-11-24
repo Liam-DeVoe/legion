@@ -64,9 +64,7 @@ jobs:
         # authorization of its own (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The
         # registry is this repository's own, so a failed pull is a fault of this repository. Show
         # it, do not retry it.
-        run: |
-          . .github/scripts/ci-log-guard.sh
-          ci_log_guard docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
       # zsh is missing; the runner image has no zsh.
