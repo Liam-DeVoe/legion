@@ -3,7 +3,7 @@ import { type ReactNode, useRef } from "react";
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
-import { armOnPress, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { heldPress } from "./held-press";
 
 /** The frame of a panel a trigger opens: a card over the page, at most 20rem tall and 16rem wide
@@ -126,14 +126,7 @@ export function PanelTrigger({
           role="dialog"
         >
           {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the panel took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the panel (`armOnPress`), so the box needs no role of its own. */}
-          <div
-            className="contents"
-            onChangeCapture={armOnPress}
-            onClickCapture={armOnPress}
-            onKeyDownCapture={armOnPress}
-            onFocus={noteFocus}
-            ref={content}
-          >
+          <div className="contents" {...ARM_ON_PRESS} onFocus={noteFocus} ref={content}>
             {children(close)}
           </div>
         </AnchoredPanel>

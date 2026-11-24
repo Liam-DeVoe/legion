@@ -1499,12 +1499,14 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     // The project List's interrupted-action notice: Dismiss and Finish each take the notice
     // with them. The action is the record a stopped New epic leaves, here naming an open epic,
     // so Finish adopts its member and ends.
+    /** The key the project List of CORE keeps its record under, its interrupted action in it. */
+    const tableRecord = "dispatch.project-table.CORE";
     const interruptedNotice = async (id: string) => {
       await page.goto("/projects/CORE/issues");
       await page.evaluate(
-        ({ action }) => {
+        ({ action, key }) => {
           localStorage.setItem(
-            "dispatch.project-table.CORE",
+            key,
             JSON.stringify({ action: { ...action, startedAt: Date.now() } })
           );
         },
@@ -1517,6 +1519,7 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
             target: epic.key,
             writes: {},
           },
+          key: tableRecord,
         }
       );
       await page.reload();
@@ -1541,7 +1544,7 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
               return typeof record === "object" && record !== null && "action" in record
                 ? (record.action ?? null)
                 : null;
-            }, "dispatch.project-table.CORE"),
+            }, tableRecord),
           { message: `project List at ${at}: the interrupted action's ${press} never ended` }
         )
         .toBeNull();
@@ -4957,10 +4960,7 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
 // a stop for each field of a date box, one for a radio group - and the panel follows the engine's,
 // the clause of `playwright.config.ts` on the engine's own Tab order; and each engine takes the
 // focus out of a text box the close removes in its own way, the clause on how the engine takes
-// the focus out of one on Tab. The row reads where the focus ends, not which code put it there:
-// with the list's own hand-off to its trigger taken out (`focusLost` in `MultiSelect.tsx`'s close
-// effect read as a focus on the body), the focus rescue the page had then still put the focus on
-// the trigger in Firefox and WebKit, and this row passed in both (2026-11-18).
+// the focus out of one on Tab.
 test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
   page,
 }) => {
@@ -5661,7 +5661,7 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
 // (Firefox, as the last digit completes the date, and Playwright's fill(), the value set without
 // keys as assistive technology sets it). A caused walk-back passes over Author, which takes typed
 // text, so the reader's date keeps the focus inside the Filter panel on no text field; a loss
-// misread as uncaused goes to the Search dialog's own stop, outside that panel. WebKit's date box
+// misread as uncaused leaves the focus on the page's body, outside that panel. WebKit's date box
 // takes no typed date from Playwright's keys, so the typed case is not read there. A focused
 // control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
 // and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
@@ -6462,8 +6462,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
-// Color merges by (`DeliveryPage`). One short fixed list stays a native select, and the row does
-// not open it: the issue header's Status. At each width each list is
+// Color merges by (`DeliveryPage`). The issue header's Status is the shared single pick too
+// (20f534c5); this row does not open it, and its own unit cases hold its text box
+// (`features/issue/IssuePage.test.tsx`, `features/issue/issue-writes.test.tsx`). At each width
+// each list is
 // opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
 // 16 px, the size `styles.css` gives every input below 1280 px and under which iOS Safari zooms
 // the page onto the box - the option a typed word leaves is not the value the list starts on, the
@@ -8414,11 +8416,11 @@ test("the Inbox card's Referenced by Retry keeps the keyboard focus while its re
 // Unsubscribe at 1440 on the subscriber's own name link, and at 390 on another question's Select
 // checkbox, outside the card, in Chromium, Firefox and WebKit at both commits. The rule: a control
 // held while the write its press started is out is held through components/held-press.ts, never
-// natively disabled, so it keeps the keyboard focus, and the dialog's hand-back finds it
-// (held-press.ts's doc comment). A focused control disabled under the press, which each engine
-// moves to the body at its own time, and Confirm taken away with its dialog, for which Firefox and
-// WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the
-// page-own focus row (e2e/playwright.config.ts).
+// natively disabled, so it keeps the keyboard focus, and the dialog's hand-back finds it (its own
+// doc comment). A focused control disabled under the press, which each engine moves to the body
+// at its own time, and Confirm taken away with its dialog, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts).
 test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard focus on a control of the card while their write is out @firefox @webkit", async ({
   page,
 }) => {

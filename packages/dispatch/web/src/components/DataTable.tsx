@@ -40,7 +40,7 @@ import {
 } from "../theme/classes";
 import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL, type ControlSize } from "./control-names";
-import { armOnPress, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
@@ -668,13 +668,7 @@ export function DataTable<Row>({
                 </tr>
               ))}
             </thead>
-            <tbody
-              onChangeCapture={armOnPress}
-              onClickCapture={armOnPress}
-              onKeyDownCapture={armOnPress}
-              onFocus={noteFocus}
-              ref={body}
-            >
+            <tbody {...ARM_ON_PRESS} onFocus={noteFocus} ref={body}>
               {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
               {virtualRows.map((virtual) => {
                 const entry = displayRows[virtual.index];

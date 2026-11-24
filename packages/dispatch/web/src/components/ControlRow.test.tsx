@@ -3,6 +3,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { layOutLine, withCss } from "../__tests__/chips-line";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { afterFrameAndTasks } from "../__tests__/frames";
 import { installResizeObserver } from "../__tests__/scroll-box";
@@ -54,14 +55,6 @@ function slotOf(testId: string): HTMLElement {
   const box = screen.getByTestId(testId).parentElement;
   if (box === null) throw new Error(`${testId} is drawn outside a slot of its own`);
   return box;
-}
-
-/** Puts Tailwind's rules for the row in the document for one test. */
-function withCss(css: string): () => void {
-  const style = document.createElement("style");
-  style.textContent = css;
-  document.head.appendChild(style);
-  return () => style.remove();
 }
 
 test("the slots are drawn in the row's own order, whatever order the page names them in", () => {
@@ -454,33 +447,6 @@ test("a removal that commits later hands the focus on then, whatever held it mea
     view.unmount();
   }
 });
-
-/** The width of `+N more` in a line `layOutLine` lays out, whatever its N. */
-const MORE_WIDTH = 60;
-
-/**
- * Lays the chips line out as a browser would, which happy-dom does not: the box the chips and
- * `+N more` share is `room.width` px wide, each chip as wide as `widths` says for its words, and
- * `+N more` `MORE_WIDTH` px; the chips stand 8 px apart (`gap-2`). Any other element is a box of
- * no width. A test that changes `room.width` reports it to the line's observers. Answers what
- * puts happy-dom's own layout back.
- */
-function layOutLine(room: { width: number }, widths: Readonly<Record<string, number>>): () => void {
-  const removeCss = withCss(".gap-2{column-gap:8px}");
-  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const words = this.textContent ?? "";
-    let width = widths[words] ?? 0;
-    if (this.firstElementChild?.hasAttribute("data-chip-strip") === true) width = room.width;
-    else if (/^\+\d+ more$/.test(words)) width = MORE_WIDTH;
-    return new DOMRect(0, 0, width, 44);
-  });
-  return () => {
-    boxes.mockRestore();
-    removeCss();
-  };
-}
 
 /** The words of each chip the line draws, in its order. */
 function lineChips(): string[] {

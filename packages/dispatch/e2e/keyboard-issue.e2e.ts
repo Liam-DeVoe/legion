@@ -227,7 +227,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
   }
 });
 
-test("Escape leaves a focused header select, so the next chord is a chord and not type-ahead", async ({
+test("Escape leaves a focused header list's trigger, so the next chord is a chord and opens no list", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

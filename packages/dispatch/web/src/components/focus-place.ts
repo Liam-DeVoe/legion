@@ -193,11 +193,7 @@ function walkBackInRegion(element: Element, around: RegionPlace): void {
     placeLeft({ ...around, element }, region, drawn),
     atPlaceOf(rowsIn(spots), region)
   );
-  const clips = new Map<Element, boolean>();
-  for (const candidate of back) {
-    if (inSightNow(candidate, clips) && land(candidate, clips)) return;
-  }
-  focusOwnStop(region);
+  if (!landFirstInSight(back)) focusOwnStop(region);
 }
 
 /**
@@ -301,11 +297,7 @@ export function useFocusPlace(
       if (held.around !== null) walkBackInRegion(held.element, held.around);
       return;
     }
-    // One read of each box's style for the whole hand-off (`clippingBoxes`).
-    const clips = new Map<Element, boolean>();
-    for (const candidate of candidates) {
-      if (inSightNow(candidate, clips) && land(candidate, clips)) return;
-    }
+    if (landFirstInSight(candidates)) return;
     const region = handOffRegionOf(held.container);
     if (region !== null) focusOwnStop(region);
   });
@@ -341,13 +333,6 @@ export function useFocusPlace(
  *  press in it (`PRESS_REGION`). */
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
-/** Whether `element` is a row of a table or list or inside one: whether it or an element around
- *  it is a row by `row-marker.ts`'s one rule, `ROW_SELECTOR`: a press on a row's mark is read by
- *  it (`pressOnRowMark`). */
-function inRow(element: Element): boolean {
-  return element.closest(ROW_SELECTOR) !== null;
-}
-
 /** Every row around `element` by `row-marker.ts`'s one rule (`ROW_SELECTOR`), itself included,
  *  nearest first: rows nest, as an ask card's `<article>` in an Inbox row's `<li>`, and a loss
  *  is read against each of them (`pressPlaces`). */
@@ -367,11 +352,11 @@ function rowsAround(element: Element): Element[] {
  *  mark): the reader empties a selection from a row by it, from the bar itself otherwise. */
 const MARK = 'input[type="checkbox"]';
 
-/** Whether `element` is a row's mark: the one checkbox a row draws (`MARK`), inside a row
- *  (`inRow`). A press on one is read apart (`pressOnRowMark`), and the selection bar arms the
- *  hand-off for one (`SelectionBar`). */
+/** Whether `element` is a row's mark: the one checkbox a row draws (`MARK`), inside a row by
+ *  `row-marker.ts`'s one rule (`ROW_SELECTOR`). A press on one is read apart (`pressOnRowMark`),
+ *  and the selection bar arms the hand-off for one (`SelectionBar`). */
 export function isRowMark(element: Element): boolean {
-  return inRow(element) && element.matches(MARK);
+  return element.matches(MARK) && element.closest(ROW_SELECTOR) !== null;
 }
 
 /** The regions of their own a focus can sit in: a dialog or a panel (`DIALOG`), or the selection
@@ -465,9 +450,9 @@ export function focusLost(): boolean {
  *  centre a control that is not wholly in view, and Firefox moved a control half cut by a dialog's
  *  top edge 405 px. WebKit scrolls a focused control only a frame later, by when a list's own
  *  scroll keeping may have moved the page again. So every engine lands a control the same way.
- *  `clips` is the caller's read of which boxes clip (`clippingBoxes`), where it made one: a focus
- *  changes no box's overflow. Answers whether it took the focus. */
-function land(element: HTMLElement, clips = new Map<Element, boolean>()): boolean {
+ *  `clips` is the caller's read of which boxes clip (`clippingBoxes`): a focus changes no box's
+ *  overflow. Answers whether it took the focus. */
+function land(element: HTMLElement, clips: Map<Element, boolean>): boolean {
   element.focus({ preventScroll: true });
   if (document.activeElement !== element) return false;
   const sight = sightOf(clippingBoxes(element, clips), undefined);
@@ -476,6 +461,15 @@ function land(element: HTMLElement, clips = new Map<Element, boolean>()): boolea
     element.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   return true;
+}
+
+/** Lands the first of `candidates`, in their order, that the reader can see now (`inSightNow`)
+ *  and that takes the focus (`land`): a component's hand-off lands so (`useFocusPlace`,
+ *  `walkBackInRegion`). Answers whether one took it. */
+function landFirstInSight(candidates: readonly HTMLElement[]): boolean {
+  // One read of each box's style for the whole hand-off (`clippingBoxes`).
+  const clips = new Map<Element, boolean>();
+  return candidates.some((candidate) => inSightNow(candidate, clips) && land(candidate, clips));
 }
 
 /** A row that will move up the page by `by` pixels once the rows a press is still taking away
@@ -585,7 +579,7 @@ function clippingBoxes(element: Element, clips?: Map<Element, boolean>): Element
  *  hand-off reads it when it answers a loss of that element, which may have gone by then, so it
  *  holds what the last read before that saw (`outOfSight`). */
 interface Sight {
-  readonly boxes: Set<Element>;
+  readonly boxes: readonly Element[];
   readonly element: HTMLElement;
   seen: boolean;
   /** Whether a read since the element took the focus has found it in sight: the read at the
@@ -801,16 +795,16 @@ export function armHandOff(pressed: Element, root?: Element): void {
 }
 
 /** The React handler a component that hands its focus off puts on its root, the one that carries
- *  its `useFocusPlace` handler, as `onClickCapture`, `onChangeCapture` and `onKeyDownCapture`: it
- *  arms the hand-off for the element a press landed on (`armHandOff`), at that root, before the
- *  press's own handler runs. A pick fires `change`, and Enter and Space on a button fire `click`;
- *  a `change` that is no press - the `input` React reports as a text field's change, at every
- *  character typed - arms nothing (`isPress`). A key arms where it is a press of a control that
- *  acts at the key itself rather than at a `click`: Enter on any element, as a list's text box
- *  picks its active row at Enter's `keydown` (`MultiSelect`), and Space on one that takes no
- *  typed text (`takesText`), where it presses rather than types; any other key arms nothing, and
- *  Escape none either, since a control it takes away is the reader leaving it. So a keyboard
- *  reader arms what a pointer reader arms. It makes nothing interactive. */
+ *  its `useFocusPlace` handler, as `onClickCapture`, `onChangeCapture` and `onKeyDownCapture`
+ *  (`ARM_ON_PRESS`): it arms the hand-off for the element a press landed on (`armHandOff`), at
+ *  that root, before the press's own handler runs. A pick fires `change`, and Enter and Space on
+ *  a button fire `click`; a `change` that is no press - the `input` React reports as a text
+ *  field's change, at every character typed - arms nothing (`isPress`). A key arms where it is a
+ *  press of a control that acts at the key itself rather than at a `click`: Enter on any element,
+ *  as a list's text box picks its active row at Enter's `keydown` (`MultiSelect`), and Space on
+ *  one that takes no typed text (`takesText`), where it presses rather than types; any other key
+ *  arms nothing, and Escape none either, since a control it takes away is the reader leaving it.
+ *  So a keyboard reader arms what a pointer reader arms. It makes nothing interactive. */
 export function armOnPress(event: SyntheticEvent): void {
   const pressed = event.nativeEvent;
   if (pressed instanceof KeyboardEvent) {
@@ -823,6 +817,15 @@ export function armOnPress(event: SyntheticEvent): void {
   }
   if (isPress(pressed)) armHandOff(pressed.target, event.currentTarget);
 }
+
+/** What a component that hands its focus off spreads onto its root, the one that carries its
+ *  `useFocusPlace` handler: `armOnPress` as `onChangeCapture`, `onClickCapture` and
+ *  `onKeyDownCapture`, so no root arms for one kind of press and not another. */
+export const ARM_ON_PRESS = {
+  onChangeCapture: armOnPress,
+  onClickCapture: armOnPress,
+  onKeyDownCapture: armOnPress,
+} as const;
 
 /** Begins a hold on what answers the armed press (`armHandOff`): begun while that press is live,
  *  it keeps the press live until the function it answers runs, up to `ACTION_BOUND_MS` from the
@@ -848,7 +851,7 @@ export function holdHandOff(): () => void {
 /** A new record of what the reader can see of `element` (`Sight`), read now against every box
  *  around it that clips it (`clippingBoxes`): seen, and shown where any of it is in sight now. */
 function sightOfFocused(element: HTMLElement): Sight {
-  const boxes = new Set(clippingBoxes(element));
+  const boxes = clippingBoxes(element);
   return { boxes, element, seen: true, shown: inSight(element, boxes) };
 }
 
@@ -880,8 +883,10 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     press.answers.size > 0 || (!late && !answerBegun && !heldBefore && isHeld(control));
   const read = () => {
     if (press.answers.size > 0) answerBegun = true;
-    // The watch on the control's hold runs only while that hold alone can keep the press live.
-    if (answerBegun || late) {
+    // The watch on the control's hold runs only while that hold alone can keep the press live
+    // (`writeOut`): never for a control already held at the arm, and not once a hold on what
+    // answers the press has begun or the write deadline has passed.
+    if (answerBegun || late || heldBefore) {
       watcher.disconnect();
       watching = false;
     } else if (!watching) {
@@ -999,7 +1004,7 @@ function pressRegionOf(element: Element): Element | null {
 }
 
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
- *  the element itself, every row around it (`rowsAround`, by the rule `inRow` reads), and the
+ *  the element itself, every row around it (`rowsAround`, by `ROW_SELECTOR`), and the
  *  dialog, panel or selection bar it was lost from (`pressRegionOf`). Every row counts, not the
  *  nearest alone: a press in an Inbox row outside the ask card it holds is a press in that row, so
  *  a loss inside the card is the reader's own. A press in a list's panel is in that panel, so a
@@ -1098,7 +1103,7 @@ const ROW_CONTROL = [
 
 /** The controls `row` holds, in order, by markup alone (`ROW_CONTROL`): the row itself first
  *  where it is one, then each inside it. Counted by markup and not by what the page draws, so
- *  the same place in two rows names the same control whatever either draws (`controlsLikeIn`). */
+ *  the same place in two rows names the same control whatever either draws (`controlsLikeRow`). */
 function rowControls(row: Element): Element[] {
   const inside = [...row.querySelectorAll(ROW_CONTROL)];
   return row.matches(ROW_CONTROL) ? [row, ...inside] : inside;
@@ -1108,7 +1113,7 @@ function rowControls(row: Element): Element[] {
  *  (`afterComponents`). WebKit can hold a page's frames back while nothing on it is drawn -
  *  measured in headless WebKit, one wait for a frame lasted 775 ms, and another had none in 2 s
  *  while the page's timers ran - and a press is not to stay live that long past its answer. */
-export const FRAME_WAIT_MS = 100;
+const FRAME_WAIT_MS = 100;
 
 /** Runs `then` once the components have had their turn with what a press did: a frame, or
  *  `FRAME_WAIT_MS` where no frame comes, and then a task later. Answers what cancels it.
@@ -1166,42 +1171,25 @@ function placeOfRemoval(controls: readonly Element[], spot: Spot): number {
   return index;
 }
 
-/** The controls `row` offers a focus lost at `index` among the controls of the row that stood at
- *  `row`'s place, in the order the focus is offered them: the same control, which is the one at
- *  that place among `row`'s controls (`rowControls`), of `like`'s tag and role, so the reader can
- *  go on, and then `row`'s first control. Only controls among `drawn` are offered, and none at
- *  all where `row` draws none. Read by markup in both rows, so every engine finds the same one. */
-function controlsLikeIn(
-  row: Element,
-  index: number,
-  like: Element,
-  drawn: readonly HTMLElement[]
-): HTMLElement[] {
-  const controls = drawn.filter((control) => row.contains(control));
+/** The controls the row now standing at a moved row's place offers the focus that `control`, a
+ *  control of the moved row `from`, holds, in the order the focus is offered them: the same
+ *  control - the one at `control`'s place among the row's controls (`rowControls`), of its tag
+ *  and role, so the reader can go on - and then that row's first control. Only controls `row`
+ *  draws are offered, and none at all where it draws none. Read by markup in both rows, so every
+ *  engine finds the same one. The Agents page hands the focus on this way where a pin's move
+ *  leaves it on a control the reader cannot see whole (`AgentsPage`'s `focusAfterPin`). */
+export function controlsLikeRow(row: Element, control: Element, from: Element): HTMLElement[] {
+  const controls = focusableIn(row).filter(rendered);
   const first = controls[0];
   if (first === undefined) return [];
-  const same = rowControls(row)[index];
+  const same = rowControls(row)[rowControls(from).indexOf(control)];
   const alike =
     same instanceof HTMLElement &&
     same !== first &&
     controls.includes(same) &&
-    same.tagName === like.tagName &&
-    same.getAttribute("role") === like.getAttribute("role");
+    same.tagName === control.tagName &&
+    same.getAttribute("role") === control.getAttribute("role");
   return alike ? [same, first] : [first];
-}
-
-/** The controls the row now standing at a moved row's place offers the focus that `control`, a
- *  control of the moved row `from`, holds: the same control - the one at `control`'s place among
- *  the row's controls, of its tag and role - and then that row's first control, each drawn
- *  (`controlsLikeIn`). The Agents page hands the focus on this way where a pin's move leaves it
- *  on a control the reader cannot see whole (`AgentsPage`'s `focusAfterPin`). */
-export function controlsLikeRow(row: Element, control: Element, from: Element): HTMLElement[] {
-  return controlsLikeIn(
-    row,
-    rowControls(from).indexOf(control),
-    control,
-    focusableIn(row).filter(rendered)
-  );
 }
 
 /** Focuses `target` without a scroll: a region's own stop (`focusOwnStop`), and the control the

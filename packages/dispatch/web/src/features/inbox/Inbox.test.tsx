@@ -16,7 +16,7 @@ import {
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterFrameAndTasks, nextFrame } from "../../__tests__/frames";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -7650,14 +7650,7 @@ test("a bulk Snooze that lands after its pick's frame, at the reading column's w
     await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     expect(picker).toHaveFocus();
-    await act(async () => {
-      await nextFrame();
-      for (const _ of [0, 1]) {
-        const turn = Promise.withResolvers<void>();
-        setTimeout(turn.resolve, 0);
-        await turn.promise;
-      }
-    });
+    await afterFrameAndTasks();
 
     await act(async () => {
       landing.resolve();

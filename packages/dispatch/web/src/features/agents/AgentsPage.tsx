@@ -35,7 +35,7 @@ import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
 import {
-  armOnPress,
+  ARM_ON_PRESS,
   controlsLikeRow,
   focusNoScroll,
   inSightWhole,
@@ -229,11 +229,10 @@ function AgentExchangeReply({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     // Pending through the read that draws the new attempt: Retry and the mode changes stay held
-    // (`DeliveryRetry`) until that read takes them away, so the press is still the cause of their
-    // going (`causedByReader`). The read settles either way, and a failed one lets them go. A read
-    // that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
-    // browser is offline - lets them go then, and the conversation says why it is not read yet
-    // (`useReadBound`).
+    // (`DeliveryRetry`), so the pressed one keeps the focus until that read takes them away. The
+    // read settles either way, and a failed one lets them go. A read that has not settled by the
+    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
+    // them go then, and the conversation says why it is not read yet (`useReadBound`).
     onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
@@ -1139,9 +1138,7 @@ function SelectionHeader({
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own.
     <div
       className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8"
-      onChangeCapture={armOnPress}
-      onClickCapture={armOnPress}
-      onKeyDownCapture={armOnPress}
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={header}
     >

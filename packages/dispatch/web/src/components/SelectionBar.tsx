@@ -13,6 +13,7 @@ import { spaceTaken } from "../features/shell/ViewportAnchor";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
+  ARM_ON_PRESS,
   aboveSightNow,
   armHandOff,
   armOnPress,
@@ -465,8 +466,7 @@ function DrawnBar({
       aria-label={label}
       className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
-      onChangeCapture={armOnPress}
-      onClickCapture={armOnPress}
+      {...ARM_ON_PRESS}
       onKeyDownCapture={armOnBarKey}
       onFocus={(event) => {
         focused.current = event.target;
