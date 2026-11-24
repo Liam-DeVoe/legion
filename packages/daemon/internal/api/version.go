@@ -3542,7 +3542,51 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 234: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 248: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3610,7 +3654,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 234 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 248 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's
 // are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3624,12 +3668,11 @@ package api
 // `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
 // five routes' request records start at this contract
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
-// other answer moved, so this contract's records of every other answer are 232's, under its own
+// other answer moved, so this contract's records of every other answer are 246's, under its own
 // number. agentActionsContract is now the last number of answers.go's SupportedContracts,
 // after shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract,
-// cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract
-// and 232, and a renumber of this
-// entry moves that constant with it.
+// cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract,
+// 232 and podHoldContract, and a renumber of this entry moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -3738,18 +3781,22 @@ package api
 // The merge of main `ce0420c3`, which still declares 220, keeps 234: no open head but this one
 // declares it (read at the head of each of the 494 open pull requests, 2026-11-24T09:45:39Z to
 // 09:48:06Z). The merge of main `7ccabcba`, which declares 228 (#4590, INFRA-1575's entry above),
-// keeps 234: 229 (#2230), 230 (#4580), 231 (#4540), 232 (#5271) and 233 (#4173, #4180, #4182,
-// #4193 and #4932) are other open pull requests', and no open head but this one declares 234
-// (read at the head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z).
-// The merge of main `e01affc8`, which still declares 228, keeps 234: no open head but this one
-// declares it (read at the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to
-// 11:37:36Z). The merge of main `3dbaa2b2`, which declares 232 (#5271, the entry above), keeps 234:
-// 229 to 233 are other open pull requests', and no open head but this one declares 234 (read at the
-// head of each of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z). The merge of main
-// `9a4e7a14`, which still declares 232, keeps 234: no open head but this one declares it (read at
-// the head of each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of
-// main `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read
-// at the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z).
-// Read the base's own number and every open head again at the next merge rather than from
-// this line.)
-const DaemonAPIVersion = 234
+// keeps 234: 229 (#2230), 230 (#4580), 231 (#4540), 232 (#5271) and 233 (#4173, #4180, #4182, #4193
+// and #4932) are other open pull requests', and no open head but this one declares 234 (read at the
+// head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z). The merge of main
+// `e01affc8`, which still declares 228, keeps 234: no open head but this one declares it (read at
+// the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to 11:37:36Z). The merge of
+// main `3dbaa2b2`, which declares 232 (#5271, INFRA-4508's entry above), keeps 234: 229 to 233 are
+// other open pull requests', and no open head but this one declares 234 (read at the head of each
+// of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z). The merge of main `9a4e7a14`,
+// which still declares 232, keeps 234: no open head but this one declares it (read at the head of
+// each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of main
+// `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read at
+// the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z). The merge of
+// main `7e75126f`, which declares 246 (#4960, the pod hold's entry right above), moves this entry
+// from 234 to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596),
+// 243 (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
+// requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,
+// 2026-11-24T15:47:51Z to 15:50:22Z). Read the base's own number and every open head again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 248
