@@ -44,6 +44,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
@@ -515,6 +516,16 @@ A test that reads `pg_locks` or `pg_stat_activity` names its own database in the
 `datname = current_database()`). The tests beside it hold the same tables, OIDs and lock keys in
 databases cloned from the same template, so a predicate on a relation or a lock key alone counts
 their waiters as its own.
+
+A test beside seven others shares the runner's four cores with them, so a test that proves two
+calls run at once, or that a request does not wait on something, by how many milliseconds it
+took, fails on a correct product whenever the machine is busy. Prove it by the order of events
+instead, with the test binary's deadline as the only bound (`testwait.Receive`): hold each call at
+the stand-in until all of them have arrived, or hold the thing the request must not wait on until
+after its response. A product bound the test does not mean to race takes a value past any run
+through a field of the server that only a test sets, as `server.mentionLookupBound` and
+`server.duplicateBound` do; a package variable would change it for the parallel tests beside it
+(`comment_delivery_sender_test.go`, `TestMentionLookupsOfOneCommentRunAtOnce`).
 
 ## Go's package deadline
 

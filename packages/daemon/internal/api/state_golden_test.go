@@ -878,6 +878,16 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				// Its pod is quiet and kept: its reviewer's last report named an async job still
+				// running, so every pass of the idle rule since the evening before has held the pod
+				// for background work, the last of them a minute before this state. That streak is
+				// the pod's standing hold (contract 246), with the kind the report named.
+				PodHold: &PodHoldView{
+					Reason:  "background_work",
+					FirstAt: time.Date(2026, 9, 21, 22, 4, 0, 0, time.UTC),
+					At:      time.Date(2026, 9, 22, 9, 17, 0, 0, time.UTC),
+					Detail:  "async-job",
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -1178,14 +1188,15 @@ func TestStateGolden(t *testing.T) {
 // `repositories` block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
 // row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
-// intakeGiveUpsContract's row does as well, and every other key as a caller at
-// shapedAnswersContract is served it, since no other row of stateNarrowings stands between
-// shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row and
-// pauseContract's stand at or below the contract it is served at, which is why the golden carries
-// `lowestPluginContract`, each claim view's `updateState` and `paused`. The mark's `daemon` names
-// this daemon's own contract, which an entry moves, so it is taken out before the golden is
-// compared or written and held to that number here, as TestStateGolden takes out its marks; the
-// `caller` is 199, which no entry moves, and stays.
+// intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
+// podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
+// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
+// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
+// view's `updateState` and `paused`. The mark's `daemon` names this daemon's own contract, which
+// an entry moves, so it is taken out before the golden is compared or written and held to that
+// number here, as TestStateGolden takes out its marks; the `caller` is 199, which no entry moves,
+// and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
