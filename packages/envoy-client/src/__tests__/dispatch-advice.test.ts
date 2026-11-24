@@ -2224,7 +2224,7 @@ describe("the answered questions of other projects", () => {
 });
 
 // A notice that cites a skill section sends the agent to read it, so each cited section must be a
-// `## ` heading of that skill's SKILL.md.
+// `## ` heading of that skill's SKILL.md, read as dispatch-tools.test.ts reads the Dispatch skill's.
 test("every skill section a notice cites is a heading of that skill", () => {
   const repoRoot = path.resolve(import.meta.dir, "../../../..");
   // The dispatcher's entry and every module of its commands: a notice's text sits with the

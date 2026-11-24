@@ -72,6 +72,22 @@ function recordingSchemaApi(): {
   };
 }
 
+/** The Dispatch skill's own text, read from the repository it ships in. */
+function dispatchSkill(): string {
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  return readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
+}
+
+/** Every `## ` heading of the Dispatch skill, the names a tool description may point at. */
+function dispatchSkillHeadings() {
+  return dispatchSkill()
+    .split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^## (.+)$/u);
+      return match === null ? [] : [match[1]];
+    });
+}
+
 function specFor(name: string) {
   const spec = dispatchToolSpecs.find((candidate) => candidate.name === name);
   if (!spec) throw new Error(`missing ${name}`);
@@ -1641,6 +1657,22 @@ describe("dispatchToolSpecs", () => {
       expect(skills, tool).toEqual(["dispatch-writing-specs"]);
     }
     expect(existsSync(resolve(repoRoot, "skills/dispatch-writing-specs/SKILL.md"))).toBe(true);
+  });
+
+  // The Dispatch skill keeps the headings code and other skills cite.
+  test("the Dispatch skill keeps every heading code and other skills cite", () => {
+    expect(dispatchSkillHeadings()).toEqual(
+      expect.arrayContaining([
+        "Asks and ask blocks",
+        "Issue status is yours to move",
+        "Choosing what to work on",
+        "Close what you opened",
+        "Structure over stream",
+        "Architecture components",
+        "References",
+        "Setup and the HTTP API",
+      ])
+    );
   });
 
   // Each tool that writes a body states the server's bounds and the decision
