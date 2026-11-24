@@ -3514,6 +3514,34 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
 // 233: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
@@ -3524,7 +3552,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of the release before (228, the number main declares at 15338e75e3) reads that state
+// A plugin of the release before (232, the number main declares at d27405712c) reads that state
 // as before, since it parses the three names, and the boot
 // gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
@@ -3601,4 +3629,12 @@ package api
 // #4182, #4193 and #4932, which carry this change's own entry, 234 #4065, 235 #5204, 236 #4984,
 // 237 #5168 and #5169, 238 #5285, 239 #4592, 241 #4771 and #5307, 242 #4596, 243 #5349 and 244
 // #3831.)
+// (At the forward merge of 2026-11-24 that brings main in at d27405712c, main declares 232, the
+// entry before this one, and this change keeps 233: the lowest number above main's 232 that no
+// open pull request declares beside this change's own entry, in a reading of `const
+// DaemonAPIVersion` at the head of each of the 479 open pull requests, made between
+// 2026-11-24T12:40:10Z and 12:42:17Z: 233 #4180, #4182, #4193 and #4932, which carry this
+// change's own entry, 234 #4065, 235 #5204, 236 #4984, 237 #5168 and #5169, 238 #5285, 239 #4592,
+// 240 #3712, #3993, #4049 and #4771, 242 #4596, 243 #5349, 244 #3831 and #5365, 245 #5158 and 246
+// #4960.)
 const DaemonAPIVersion = 233
