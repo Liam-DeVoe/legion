@@ -186,9 +186,8 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the
 // daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
 // two of each task of the reviewer, in each phase, and for a review step of a role of the
-// deployment the sentence of the commit its agent's own review read last, or, where its row holds
-// none, of the commit another agent's review read, so a kind of task added later cannot be queued
-// without them.
+// deployment its sentence of the commit, so a kind of task added later cannot be queued without
+// them.
 //
 // Only a start of the reviewer or of a role of the deployment (NamesTheRound) that carries a task
 // and does not hold the sentences already is named, so no other row reads the record for them. It
@@ -217,12 +216,10 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 // it now on issue by agent, the claim its start reaches: task followed by the daemon's sentences
 // of its review round (namingTheReviewRound), read from the phase the issue stands in and, as tx
 // holds them, the issue's phases rows and among them the row of role that agent ran last
-// (record.AgentsRowOf), its commit and entry at the moment the task is named: the role's row now,
-// unless that is the step of another agent of the role, so a wake of an earlier step's agent is
-// named its own commit and entry, never the other agent's. The queue names each such start it
-// queues through it (queuedRow), and the daemon's start executor names such a start queued for
-// news alone through it, which carries no task for the queue to name and is composed only when it
-// runs (the daemon's newsForStart).
+// (record.AgentsRowOf), its commit and entry at the moment the task is named. The queue names each
+// such start it queues through it (queuedRow), and the daemon's start executor names such a start
+// queued for news alone through it, which carries no task for the queue to name and is composed
+// only when it runs (the daemon's newsForStart).
 func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, agent claim.Token, task string) (string, error) {
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
@@ -1045,9 +1042,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // starts as the role's row now (record.PhaseRowOf) with no handoff (phaseHandoff), so it carries
 // what the role's one row carried from one phase to the next, the record it last named among it,
 // and leaves the earlier step's report standing for the task text that names it (reportsBefore).
-// The commit a review read it takes from the step's agent alone (stepRunRow), whichever agent's
-// runs wrote the step's row: its agent's newest on the task, held by its own rows of the role at
-// any of its steps, and none where that agent has no such row there. An issue with no plan
+// The commit a review read it takes from the step's agent alone (stepRunRow). An issue with no plan
 // rows keeps no task and place 0, one row for each role, as it always did, and the architect's
 // entry is no step of the issue's task. w is the walk of issue's run as the caller read it, which
 // only a phase worker's raise reads; EnterArchitect gives none.
@@ -1162,22 +1157,19 @@ type entered struct {
 // step (record.Store.MovePhaseToStep); else, for a later step's first run (record.NoRowOfTheStep),
 // now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries the record
 // the role named last and the counts of its rounds, and the row of the role's earlier step keeps its
-// report. The commit a review read (record.PhaseRow.ReviewedHead) is the agent's own, never now's
-// and never another agent's: a first run takes the commit of agent's own rows of the role on the
-// task, at any of its steps, which hold agent's newest (record.ReviewedBefore), and none where agent
-// has no such row there, so that agent reads the whole change and its task names another agent's
-// commit beside it (record.AnotherAgentsReview, namingTheReviewRound). A row of the step that names
-// another agent's claim takes its commit the same way: a later version of the plan, given after
-// stop_task over the same task, can give a step another key's agent, and the step's row, which the
-// earlier agent's runs wrote, would otherwise name that agent's commit to the new one as its own,
-// while the new agent's own row of a later step of the earlier version can hold its newest.
+// report.
+//
+// The commit a review read (record.PhaseRow.ReviewedHead) the row holds is agent's own, never
+// another agent's: a step's first run takes agent's (record.AgentsReviewedHead), and so does a run
+// whose row names another agent's claim, since a later version of the plan, given after stop_task
+// over the same task, can give a step another key's agent.
 func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int, agent claim.Token) (record.PhaseRow, bool) {
 	row, found := record.StepRowOf(rows, role, task, place)
 	switch found {
 	case record.RowOfTheStep:
 		row.LastHandoff = now.LastHandoff
 		if agent != "" && row.Claim != "" && row.Claim != agent {
-			row.ReviewedHead = record.ReviewedBefore(rows, role, task, place, agent)
+			row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
 		}
 		return row, false
 	case record.RowOfNoStep:
@@ -1186,7 +1178,7 @@ func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, ta
 	}
 	row = phaseHandoff{}.onto(now)
 	row.StepTask, row.StepPlace = task, place
-	row.ReviewedHead = record.ReviewedBefore(rows, role, task, place, agent)
+	row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
 	return row, false
 }
 
