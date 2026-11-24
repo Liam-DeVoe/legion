@@ -63,7 +63,7 @@ func TestTheOwnersSlotActsAsTheStepItDoes(t *testing.T) {
 		{"LEGION-309", phase.Retro, nil, &planned{"acceptance:owner", TaskPlace{Kind: PlaceRetro}}, "", false},
 		{"LEGION-310", phase.Retro, nil, &planned{"implementer reviewer", TaskPlace{Kind: PlaceRetro}}, "", false},
 		{"LEGION-311", phase.Held, &Hold{From: phase.Retro, Reason: HoldEscalated}, &planned{"implementer:owner reviewer", TaskPlace{Kind: PlaceRetro}}, "", false},
-		{"LEGION-305", phase.Accepting, nil, &planned{"implementer acceptance:owner", step(2)}, "acceptance", true},
+		{"LEGION-305", phase.Accepting, nil, &planned{"implementer acceptance:owner", step(2)}, claim.RoleAcceptance, true},
 		{"LEGION-306", phase.Accepting, nil, nil, "", false},
 		{"LEGION-307", phase.Held, &Hold{From: phase.Implementing, Reason: HoldEscalated}, &planned{"implementer:owner reviewer", step(1)}, "", false},
 	}
