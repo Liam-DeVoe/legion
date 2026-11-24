@@ -217,16 +217,38 @@ func numbered(prefix string, count int) []string {
 	return words
 }
 
-// One refusal of a plan names the first MostReasons causes in the order the checks find them and
-// counts the rest in one more reason, of the whole plan, so its size does not grow with the plan.
-// Each check that finds a cause for each item of the plan is held to it: a `needs` word that names
-// no task, a role nobody defines, a step's key, and a step that reads a pull request with no
-// implementer before it (which comes after the role named at two steps); and Supported's and
-// Validate's causes share the one bound. A plan of MostReasons causes or fewer gets every cause
-// and no count. Each case holds the word or the step each named reason names, in order, and the
-// count; none holds a sentence. The fault is a refusal that names every cause; the control is
-// reasons.add with its bound taken out, under which each case past the bound names every cause.
-func TestARefusalNamesItsFirstReasonsAndCountsTheRest(t *testing.T) {
+// shown is a reason a refusal holds: one of task that names item, or, where count is above 0, one
+// of the whole plan that counts the rest of a kind of cause.
+type shown struct {
+	task, item string
+	count      int
+}
+
+// naming is one reason of task for each item, each naming it, in order.
+func naming(task string, items ...string) []shown {
+	reasons := make([]shown, len(items))
+	for i, item := range items {
+		reasons[i] = shown{task: task, item: item}
+	}
+	return reasons
+}
+
+// counting is the reason that counts count more causes of a kind.
+func counting(count int) []shown { return []shown{{count: count}} }
+
+// One refusal of a plan names the first MostReasons causes of each kind in the order the checks
+// find them, and right after the last of them one more reason, of the whole plan, counts the rest
+// of that kind, so its size does not grow with the plan and no kind pushes another out. Each check
+// that finds a cause for each item of the plan is held to it: a `needs` word that names no task, a
+// role nobody defines, a step's key, and a step that reads a pull request with no implementer
+// before it. A kind with MostReasons causes or fewer is named whole. Each kind has its own bound,
+// so a cycle is named whatever else the plan has, and the reasons named keep the order the checks
+// find them in, the dropped ones left out. Each case holds the task and the word or step each
+// reason names, and each count, in order; none holds a sentence. The fault is a refusal that names
+// every cause, or one bound for the whole refusal, under which the plan of a ring of 22 tasks
+// names 19 of its needs and counts its cycle. The control is reasons.add with its bound taken out,
+// under which each case past the bound names every cause.
+func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	steps := func(words ...[]string) Plan { return oneTask("a", strings.Join(slices.Concat(words...), " ")) }
 	keyed := func(role string, keys []string) []string {
@@ -246,47 +268,83 @@ func TestARefusalNamesItsFirstReasonsAndCountsTheRest(t *testing.T) {
 		return words
 	}
 	implementer := []string{"implementer"}
+	// ring is 22 tasks t01 to t22, each needing the next and t22 needing t01: 22 reasons of needs,
+	// which this release does not carry out yet, and then the one set of tasks that need each other.
+	var ring []Block
+	var ringNeeds []shown
+	for i := 1; i <= 22; i++ {
+		id, next := fmt.Sprintf("t%02d", i), fmt.Sprintf("t%02d", i%22+1)
+		ring = append(ring, taskNeeding(id, next))
+		if i <= MostReasons {
+			ringNeeds = append(ringNeeds, shown{task: id, item: next})
+		}
+	}
+	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task.
+	var selves []Block
+	var selfNeeds, selfSets []shown
+	for i := 1; i <= 21; i++ {
+		id := fmt.Sprintf("s%02d", i)
+		selves = append(selves, taskNeeding(id, id))
+		if i <= MostReasons {
+			selfNeeds = append(selfNeeds, shown{task: id, item: id + " needs " + id})
+			selfSets = append(selfSets, shown{task: id, item: id + " needs " + id})
+		}
+	}
+	// mixed is task a with 25 words that name no task and two roles nobody defines, then task b
+	// with 3 such words and one such role. The checks find them in that order (Validate's loop over
+	// the tasks), so the 21st to 28th words are dropped, and b's role comes after a's.
+	mixed := planOf(t, 1,
+		Block{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer r00001 r00002", "needs": strings.Join(numbered("x", 25), " ")}},
+		Block{ID: "b", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer r00003", "needs": strings.Join(numbered("y", 3), " ")}})
 	const past = MostReasons + 7
 	for _, tc := range []struct {
-		name  string
-		plan  Plan
-		named []string // what each named reason names, in order
-		left  int      // how many causes the last reason counts
+		name string
+		plan Plan
+		want []shown
 	}{
 		{name: "needs words that name no task, past the bound", plan: planOf(t, 1, taskNeeding("a", numbered("x", past)...)),
-			named: numbered("x", MostReasons), left: 7},
+			want: slices.Concat(naming("a", numbered("x", MostReasons)...), counting(7))},
 		{name: "needs words that name no task, at the bound", plan: planOf(t, 1, taskNeeding("a", numbered("x", MostReasons)...)),
-			named: numbered("x", MostReasons)},
-		{name: "roles nobody defines, past the bound", plan: steps(implementer, numbered("r", past)), named: numbered("r", MostReasons), left: 7},
-		{name: "roles nobody defines, at the bound", plan: steps(implementer, numbered("r", MostReasons)), named: numbered("r", MostReasons)},
+			want: naming("a", numbered("x", MostReasons)...)},
+		{name: "roles nobody defines, past the bound", plan: steps(implementer, numbered("r", past)),
+			want: slices.Concat(naming("a", numbered("r", MostReasons)...), counting(7))},
+		{name: "roles nobody defines, at the bound", plan: steps(implementer, numbered("r", MostReasons)),
+			want: naming("a", numbered("r", MostReasons)...)},
 		// Each step reviewer:kNNNNN names a key, and then the role reviewer is named at two steps.
-		{name: "keys, past the bound", plan: steps(implementer, keyed("reviewer", numbered("k", past))), named: numbered("k", MostReasons), left: 8},
-		{name: "keys, at the bound", plan: steps(implementer, keyed("reviewer", numbered("k", MostReasons-1))),
-			named: append(numbered("k", MostReasons-1), "reviewer at steps 2 and 3")},
+		{name: "keys, past the bound", plan: steps(implementer, keyed("reviewer", numbered("k", past))),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(7), naming("a", "reviewer at steps 2 and 3"))},
+		{name: "keys, at the bound", plan: steps(implementer, keyed("reviewer", numbered("k", MostReasons))),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), naming("a", "reviewer at steps 2 and 3"))},
 		// The role tester is named at two steps, and then each tester step has no implementer before it.
 		{name: "steps with no implementer before them, past the bound", plan: steps(testers(past), implementer),
-			named: append([]string{"tester at steps 1 and 2"}, stepAt(MostReasons-1)...), left: 8},
-		{name: "steps with no implementer before them, at the bound", plan: steps(testers(MostReasons-1), implementer),
-			named: append([]string{"tester at steps 1 and 2"}, stepAt(MostReasons-1)...)},
-		{name: "Supported's causes, then Validate's, share the bound", plan: steps(implementer, keyed("reviewer", numbered("k", 12)), numbered("r", 12)),
-			named: slices.Concat(numbered("k", 12), []string{"reviewer at steps 2 and 3"}, numbered("r", 7)), left: 5},
+			want: slices.Concat(naming("a", "tester at steps 1 and 2"), naming("a", stepAt(MostReasons)...), counting(7))},
+		{name: "steps with no implementer before them, at the bound", plan: steps(testers(MostReasons), implementer),
+			want: slices.Concat(naming("a", "tester at steps 1 and 2"), naming("a", stepAt(MostReasons)...))},
+		{name: "Supported's kinds and Validate's each have their own bound", plan: steps(implementer, keyed("reviewer", numbered("k", 25)), numbered("r", 25)),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(5), naming("a", "reviewer at steps 2 and 3"),
+				naming("a", numbered("r", MostReasons)...), counting(5))},
+		{name: "a cycle is named after more than MostReasons reasons of another kind", plan: planOf(t, 1, ring...),
+			want: slices.Concat(naming("", "(t01, t02, "), ringNeeds, counting(2), naming("t01", "t22 needs t01"))},
+		{name: "21 sets of tasks that need each other: 20 named, 1 counted", plan: planOf(t, 1, selves...),
+			want: slices.Concat(naming("", "(s01, s02, "), selfNeeds, counting(1), selfSets, counting(1))},
+		{name: "the reasons named keep the checks' order, the dropped ones left out", plan: mixed,
+			want: slices.Concat(naming("", "(a, b)", "(a, b)"), naming("a", numbered("x", MostReasons)...), counting(8),
+				naming("a", "r00001", "r00002"), naming("b", "r00003"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Refusals(tc.plan, d)
-			named := got
-			if tc.left > 0 && len(got) > 0 {
-				named = got[:len(got)-1]
-				count := got[len(got)-1]
-				if count.Task != "" || !strings.Contains(count.Reason, fmt.Sprintf(" %d ", tc.left)) {
-					t.Errorf("the last reason is %+v, want one of the whole plan that counts %d more", count, tc.left)
-				}
+			if len(got) != len(tc.want) {
+				t.Fatalf("the refusal holds %d reasons, want %d: %.3000v", len(got), len(tc.want), got)
 			}
-			if len(named) != len(tc.named) {
-				t.Fatalf("the refusal names %d causes, want %d, then a count of %d: %+v", len(named), len(tc.named), tc.left, got)
-			}
-			for i, item := range tc.named {
-				if named[i].Task != "a" || !strings.Contains(named[i].Reason, item) {
-					t.Errorf("reason %d is %+v, want one of task a naming %q", i+1, named[i], item)
+			for i, want := range tc.want {
+				reason := got[i]
+				switch {
+				case want.count > 0:
+					if reason.Task != "" || !strings.Contains(reason.Reason, fmt.Sprintf(" %d ", want.count)) {
+						t.Errorf("reason %d is %+v, want one of the whole plan counting %d more of a kind", i+1, reason, want.count)
+					}
+				case reason.Task != want.task || !strings.Contains(reason.Reason, want.item):
+					t.Errorf("reason %d is %+v, want one of task %q naming %q", i+1, reason, want.task, want.item)
 				}
 			}
 		})

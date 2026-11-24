@@ -254,19 +254,22 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
-// A refused plan's answer names its first plan.MostReasons reasons and counts the rest in one
-// more, so its size does not grow with the plan. Each version below is one `plan_task` block whose
-// one attribute holds 1 MiB of words, the most a Dispatch document holds as its server writes it,
-// each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles nobody
-// defines, and 116,508 steps `tester:k`, each with a key and with no implementer before it. Each
-// is answered 409 PLAN_REFUSED with plan.MostReasons reasons and one that counts the rest, in its
-// sentence too, within answerBound bytes. The fault is an answer with a reason for each cause;
-// the control is plan's reasons with its bound taken out, under which each answer is tens of MB.
-// It holds the count and the size, and no sentence.
+// A refused plan's answer names the first plan.MostReasons reasons of each kind of cause and
+// counts the rest of the kind in one more, so its size does not grow with the plan's items. Three
+// versions below are one `plan_task` block whose one attribute holds 1 MiB of words, the most a
+// Dispatch document holds as its server writes it, each word a cause of its own: 262,144 `needs`
+// words that name no task, 209,712 roles nobody defines, and 116,508 steps `tester:k`, each with a
+// key and with no implementer before it. Each answer is within perKind bytes for each kind it
+// holds, and counts the rest of each kind past the bound, in its sentence too. The fourth is a
+// ring of 40,000 tasks, whose two reasons that list ids, the plan's tasks and the cycle through
+// them, are as long as the ids they name: its answer is within ringBound, so a change that copies
+// such a list into each reason fails it. The fault is an answer with a reason for each cause; the
+// control is plan's reasons with its bound taken out, under which the answers are tens of MB. It
+// holds the counts and the size, and no sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
-	// answerBound is plan.MostReasons reasons and the count, each written twice (in `error` and
-	// in `reasons`) at under 200 bytes with its JSON, then the code and the sentence's opening.
-	const answerBound = 8 << 10
+	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
+	// `error` and in `reasons`) at under 200 bytes with its JSON.
+	const perKind = (plan.MostReasons + 1) * 2 * 200
 	const mib = 1 << 20
 	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
 	digits := func(i int, alphabet string, n int) string {
@@ -288,39 +291,58 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	for i := range (mib - len("implementer ")) / len("abcd ") {
 		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
 	}
-	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", mib/len("tester:k ")), " ")
+	steps := mib / len("tester:k ")
+	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", steps), " ")
+	// The ring: t00000 to t39999, each needing the next and the last the first.
+	const ringSize = 40_000
+	ring := make([]dispatch.DocumentBlock, ringSize)
+	for i := range ring {
+		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d", (i+1)%ringSize))
+	}
+	// ringBound is the plan's tasks, 8 bytes an id with its comma, and the cycle through them, 21
+	// bytes a task (`t00000 needs t00001, `), each written twice, and its three kinds of reasons.
+	const ringBound = 2*ringSize*(len("t00000, ")+len("t00000 needs t00001, ")) + 3*perKind
 	for _, tc := range []struct {
-		name  string
-		block dispatch.DocumentBlock
-		left  int // the causes the last reason counts
+		name    string
+		blocks  []dispatch.DocumentBlock
+		bound   int
+		reasons int   // the reasons the answer holds
+		counts  []int // what the reasons that count the rest of a kind count
 	}{
-		{"262,144 needs words that name no task", needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " ")), len(words) - plan.MostReasons},
-		{"209,712 roles nobody defines", taskBlock("a", strings.Join(roles, " ")), len(roles) - 1 - plan.MostReasons},
-		// A key and no implementer before it at each step, the role tester at two steps, and no implementer.
-		{"116,508 steps tester:k", taskBlock("a", keyed), 2*(mib/len("tester:k ")) + 2 - plan.MostReasons},
+		{"262,144 needs words that name no task", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))},
+			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}},
+		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
+			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}},
+		// Four kinds: a key at each step, the role tester at two steps, no implementer, and no
+		// implementer before each step.
+		{"116,508 steps tester:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
+			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}},
+		// Three kinds: the plan's tasks, the need of each task, and the one cycle.
+		{"a ring of 40,000 tasks", ring, ringBound, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := planHarness(t)
 			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-			statuses.givePlan(planDoc, 1, tc.block)
-			written := 0
-			for _, value := range tc.block.Attributes {
-				written = max(written, len(value))
-			}
+			statuses.givePlan(planDoc, 1, tc.blocks...)
 
 			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
 			size := answer.Body.Len()
-			t.Logf("%s: an attribute of %d bytes is answered %d in %d bytes", tc.name, written, answer.Code, size)
-			if answer.Code != http.StatusConflict || size > answerBound {
-				t.Fatalf("an attribute of %d bytes is answered %d in %d bytes, want 409 in at most %d", written, answer.Code, size, answerBound)
+			t.Logf("%s: answered %d in %d bytes, the bound %d", tc.name, answer.Code, size, tc.bound)
+			if answer.Code != http.StatusConflict || size > tc.bound {
+				t.Fatalf("%s is answered %d in %d bytes, want 409 in at most %d", tc.name, answer.Code, size, tc.bound)
 			}
 			var refusal PlanRefusal
 			decodeInto(t, answer, &refusal)
-			count := fmt.Sprintf(" %d ", tc.left)
-			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != plan.MostReasons+1 ||
-				refusal.Reasons[plan.MostReasons].Task != "" || !strings.Contains(refusal.Reasons[plan.MostReasons].Reason, count) || !strings.Contains(refusal.Error, count) {
-				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d reasons, the last of the whole plan counting %d more, in its sentence too: %.2000s",
-					refusal.Code, len(refusal.Reasons), plan.MostReasons+1, tc.left, refusal.Error)
+			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != tc.reasons {
+				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d", refusal.Code, len(refusal.Reasons), tc.reasons)
+			}
+			for _, left := range tc.counts {
+				count := fmt.Sprintf(" %d ", left)
+				if !strings.Contains(refusal.Error, count) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+					return reason.Task == "" && strings.Contains(reason.Reason, count)
+				}) {
+					t.Errorf("no reason of the whole plan counts %d more, in `reasons` and in the sentence: %.3000s", left, refusal.Error)
+				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("a refused registration recorded %#v, want nothing", got)

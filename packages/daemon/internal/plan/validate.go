@@ -9,14 +9,15 @@ import (
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
 // reason for each cause it finds, so a plan with two causes gets two reasons, and the owner reads
 // every cause at once rather than one for each try. Each reason names its task where it has one.
-// One refusal names at most MostReasons of them and counts the rest (reasons).
+// One refusal names at most MostReasons causes of each kind and counts the rest (reasons).
 
-// MostReasons is the most reasons one refusal of a plan names; one more reason counts the rest
-// (reasons). The owner fixes what the refusal names and gives the plan again, and the next refusal
-// names what is left. Twenty is one screen of sentences of 50 to 170 bytes, a few kilobytes in an
-// answer that writes each reason twice, which a terminal and an agent's tool result both hold, and
-// enough causes to show a slip the plan makes at each of its items, such as a reference to the
-// blocks of another document in each need or a key on each step.
+// MostReasons is the most reasons of one kind of cause that one refusal of a plan names; one more
+// reason counts the rest of that kind (reasons). The owner fixes what the refusal names and gives
+// the plan again, and the next refusal names what is left. Twenty is about one screen of sentences
+// of 50 to 170 bytes, a few kilobytes in an answer that writes each reason twice, which a terminal
+// and an agent's tool result both hold, and enough causes to show a slip the plan makes at each of
+// its items, such as a reference to the blocks of another document in each need or a key on each
+// step.
 const MostReasons = 20
 
 // noTask is the reason a plan with no task block gets. No later release takes such a plan, so it
@@ -26,45 +27,109 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// reasons is the reasons of one refusal of a plan, as Supported and Validate find them: the first
-// MostReasons in the order found, then a count of the rest. Every cause of either check is added
-// here, so a plan whose blocks give a cause for each of their items (each `needs` word that names
-// no task, each role nobody defines, each step's key, each step that reads a pull request with no
-// implementer before it) gets a refusal of MostReasons reasons and the count, however many items
-// it holds. One reason for each such word made a 409 answer of about 30 MB from a 1 MiB attribute.
-type reasons struct {
-	named []Refusal
-	left  int
+// cause is the kind of a cause of a refusal, one for each reason Supported and Validate write.
+// reasons bounds each kind apart, so no kind of cause pushes another out of the answer.
+type cause int
+
+// The kinds, in the order the checks find them. Some give one reason in a plan at most (the plan's
+// tasks, its tasks that no task needs, no task block); the others give one for each item.
+const (
+	manyTasks cause = iota
+	manySinks
+	roleBlock
+	taskNeeds
+	taskOwner
+	taskPartOf
+	taskMerges
+	acceptanceNoKey
+	stepKey
+	roleTwice
+	noImplementer
+	readsBeforeImplementer
+	noTaskBlock
+	unresolvedNeed
+	undefinedRole
+	needsItself
+	causes // how many kinds there are
+)
+
+// causeWords is each kind as the reason that counts the rest of it names it.
+var causeWords = [causes]string{
+	manyTasks:              "plans of more than one task",
+	manySinks:              "plans of more than one task that no task needs",
+	roleBlock:              "roles the plan defines",
+	taskNeeds:              "tasks that need other tasks",
+	taskOwner:              "tasks that name owner",
+	taskPartOf:             "tasks that name part_of",
+	taskMerges:             "tasks that name merges",
+	acceptanceNoKey:        "steps that name acceptance with no key",
+	stepKey:                "steps that name a key",
+	roleTwice:              "roles a task names at two steps",
+	noImplementer:          "tasks with no step implementer",
+	readsBeforeImplementer: "steps that read a pull request with no implementer step before them",
+	noTaskBlock:            "plans with no task block",
+	unresolvedNeed:         "needs that name no task of this plan",
+	undefinedRole:          "roles that neither the deployment nor the plan defines",
+	needsItself:            "sets of tasks that need each other",
 }
 
-// add is one cause of task, "" for a cause of the whole plan: named while fewer than MostReasons
-// are, counted past them, so reason is called only for a reason the refusal names.
-func (r *reasons) add(task string, reason func() string) {
-	if len(r.named) == MostReasons {
-		r.left++
+// reasons is the reasons of one refusal of a plan, as Supported and Validate find them: of each
+// kind of cause, the first MostReasons in the order found, and past them one more reason that
+// counts the rest of that kind, right after the kind's last reason named. The reasons named keep
+// the order the checks find them in. Every cause of either check is added here with its kind, so
+// each kind a plan has is named at least once, and a plan whose blocks give a cause for each of
+// their items (each `needs` word that names no task, each role nobody defines, each step's key,
+// each step that reads a pull request with no implementer before it) gets a refusal of at most
+// MostReasons + 1 reasons of each kind, however many items it holds: one reason for each such
+// word made a 409 answer of about 30 MB from a 1 MiB attribute.
+type reasons struct {
+	named []namedReason
+	found [causes]int // the causes of each kind found, named or not
+	last  [causes]int // the place in named of each kind's last reason
+}
+
+// namedReason is a reason the refusal names, with the kind of its cause.
+type namedReason struct {
+	Refusal
+	kind cause
+}
+
+// add is one cause of kind of task, "" for a cause of the whole plan: named while fewer than
+// MostReasons of its kind are, counted past them, so reason is called only for a reason named.
+func (r *reasons) add(kind cause, task string, reason func() string) {
+	r.found[kind]++
+	if r.found[kind] > MostReasons {
 		return
 	}
-	r.named = append(r.named, Refusal{Task: task, Reason: reason()})
+	r.last[kind] = len(r.named)
+	r.named = append(r.named, namedReason{Refusal: Refusal{Task: task, Reason: reason()}, kind: kind})
 }
 
 // yet is add of a cause a later release carries out (Supported's): its reason ends notYet.
-func (r *reasons) yet(task string, reason func() string) {
-	r.add(task, func() string { return reason() + notYet })
+func (r *reasons) yet(kind cause, task string, reason func() string) {
+	r.add(kind, task, func() string { return reason() + notYet })
 }
 
-// refusals is the reasons named, then, past MostReasons, one reason of the whole plan that counts
-// the rest, so the answer says how many it leaves out.
+// refusals is the reasons named, in their order, each kind with more than MostReasons followed,
+// right after its last reason named, by one reason of the whole plan that counts the rest.
 func (r *reasons) refusals() []Refusal {
-	if r.left == 0 {
-		return r.named
+	if len(r.named) == 0 {
+		return nil
 	}
-	return append(r.named, Refusal{Reason: fmt.Sprintf(
-		"Legion found %d more reasons, which this answer leaves out: it names the first %d.", r.left, MostReasons)})
+	refusals := make([]Refusal, 0, len(r.named)+int(causes))
+	for at, named := range r.named {
+		refusals = append(refusals, named.Refusal)
+		if left := r.found[named.kind] - MostReasons; left > 0 && r.last[named.kind] == at {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+				"Legion leaves out %d more of the %s: this answer names the first %d.", left, causeWords[named.kind], MostReasons)})
+		}
+	}
+	return refusals
 }
 
 // Refusals is every reason Legion does not take p, as one refusal names them (reasons): Supported's,
 // what this release does not carry out yet, then Validate's, what no release can. Both checks run,
-// so a plan with a cause of each kind gets both, and the two share the one bound.
+// so a plan with a cause of each check gets both.
 func Refusals(p Plan, d Deployment) []Refusal {
 	var found reasons
 	supported(p, &found)
@@ -89,7 +154,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 // validate adds Validate's causes to found.
 func validate(p Plan, d Deployment, found *reasons) {
 	if len(p.Tasks) == 0 {
-		found.add("", func() string { return noTask })
+		found.add(noTaskBlock, "", func() string { return noTask })
 		return
 	}
 	defined := make(map[string]bool, len(p.RoleBlocks))
@@ -98,7 +163,7 @@ func validate(p Plan, d Deployment, found *reasons) {
 	}
 	for _, task := range p.Tasks {
 		for _, word := range task.Unresolved {
-			found.add(task.ID, func() string {
+			found.add(unresolvedNeed, task.ID, func() string {
 				return fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)
 			})
 		}
@@ -108,14 +173,14 @@ func validate(p Plan, d Deployment, found *reasons) {
 				continue
 			}
 			refused[step.Role] = true
-			found.add(task.ID, func() string {
+			found.add(undefinedRole, task.ID, func() string {
 				return fmt.Sprintf("step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)
 			})
 		}
 	}
 	sets, _ := cycles(p.Tasks)
 	for _, cycle := range sets {
-		found.add(cycle[0], func() string {
+		found.add(needsItself, cycle[0], func() string {
 			chain := make([]string, len(cycle))
 			for i, id := range cycle {
 				chain[i] = id + " needs " + cycle[(i+1)%len(cycle)]
@@ -303,7 +368,7 @@ func Supported(p Plan) []Refusal {
 // supported adds Supported's causes to found.
 func supported(p Plan, found *reasons) {
 	if len(p.Tasks) > 1 {
-		found.yet("", func() string {
+		found.yet(manyTasks, "", func() string {
 			ids := make([]string, len(p.Tasks))
 			for i, task := range p.Tasks {
 				ids[i] = task.ID
@@ -312,12 +377,12 @@ func supported(p Plan, found *reasons) {
 		})
 	}
 	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
-		found.yet("", func() string {
+		found.yet(manySinks, "", func() string {
 			return fmt.Sprintf("the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), strings.Join(sinks, ", "))
 		})
 	}
 	for _, role := range p.RoleBlocks {
-		found.yet("", func() string { return "the plan defines the role " + role + "." })
+		found.yet(roleBlock, "", func() string { return "the plan defines the role " + role + "." })
 	}
 	for _, task := range p.Tasks {
 		taskReasons(task, found)
@@ -328,16 +393,16 @@ func supported(p Plan, found *reasons) {
 // (stepReasons).
 func taskReasons(t Task, found *reasons) {
 	if len(t.Needs) > 0 {
-		found.yet(t.ID, func() string { return fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")) })
+		found.yet(taskNeeds, t.ID, func() string { return fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")) })
 	}
 	if t.Owner != "" {
-		found.yet(t.ID, func() string { return fmt.Sprintf("task %s names owner.", t.ID) })
+		found.yet(taskOwner, t.ID, func() string { return fmt.Sprintf("task %s names owner.", t.ID) })
 	}
 	if t.PartOf != "" {
-		found.yet(t.ID, func() string { return fmt.Sprintf("task %s names part_of.", t.ID) })
+		found.yet(taskPartOf, t.ID, func() string { return fmt.Sprintf("task %s names part_of.", t.ID) })
 	}
 	if t.Merges {
-		found.yet(t.ID, func() string { return fmt.Sprintf("task %s names merges.", t.ID) })
+		found.yet(taskMerges, t.ID, func() string { return fmt.Sprintf("task %s names merges.", t.ID) })
 	}
 	if t.NamesSteps() {
 		stepReasons(t, found)
@@ -365,11 +430,11 @@ func stepReasons(t Task, found *reasons) {
 		at := i + 1
 		switch {
 		case step.Role == "acceptance" && step.Key == "":
-			found.yet(t.ID, func() string {
+			found.yet(acceptanceNoKey, t.ID, func() string {
 				return fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID)
 			})
 		case step.Key != "" && (step.Role != "acceptance" || step.Key != "owner"):
-			found.yet(t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key) })
+			found.yet(stepKey, t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key) })
 		}
 		if _, seen := firstAt[step.Role]; !seen {
 			firstAt[step.Role] = at
@@ -381,20 +446,20 @@ func stepReasons(t Task, found *reasons) {
 	}
 	for _, role := range roles {
 		if second, ok := secondAt[role]; ok {
-			found.yet(t.ID, func() string {
+			found.yet(roleTwice, t.ID, func() string {
 				return fmt.Sprintf("task %s names the role %s at steps %d and %d.", t.ID, role, firstAt[role], second)
 			})
 		}
 	}
 	if !hasImplementer {
-		found.yet(t.ID, func() string { return fmt.Sprintf("task %s has no step implementer.", t.ID) })
+		found.yet(noImplementer, t.ID, func() string { return fmt.Sprintf("task %s has no step implementer.", t.ID) })
 	}
 	for i, step := range t.Steps {
 		if step.Role == "implementer" {
 			break
 		}
 		if readsPullRequest[step.Role] {
-			found.yet(t.ID, func() string {
+			found.yet(readsBeforeImplementer, t.ID, func() string {
 				return fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads.",
 					i+1, t.ID, step, step)
 			})
