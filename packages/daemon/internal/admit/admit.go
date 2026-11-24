@@ -1478,7 +1478,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 			if retroHolds == nil {
 				retroHolds = record.RetroHoldsOf(issues, facts)
 			}
-			read := retroHeldReadOf(parent, retroHolds[parent.Key])
+			read := retroHeldRead{moved: parent.MovedAt, holds: retroHolds[parent.Key]}
 			if !a.readsHeldRetro(parent.Key, read) {
 				continue
 			}
@@ -1527,11 +1527,6 @@ func (a *Admission) dueCloses(ctx context.Context, tx pgx.Tx, issues []record.Is
 type retroHeldRead struct {
 	moved time.Time
 	holds record.RetroHolds
-}
-
-// retroHeldReadOf is what holds, the pass's facts of parent, show of it.
-func retroHeldReadOf(parent record.Issue, holds record.RetroHolds) retroHeldRead {
-	return retroHeldRead{moved: parent.MovedAt, holds: holds}
 }
 
 // same says two reads show one movement of the parent's record and the same issues in each hold.
