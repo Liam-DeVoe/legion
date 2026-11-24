@@ -278,6 +278,47 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 	}
 }
 
+// A notice named to a task's sub-owner (record.Notice.To) whose forward an earlier listener reports
+// failed is queued again, as a notice to an architect is: the report names the sub-owner's lane, the
+// copy carries the claim it names, counted as one re-send of row 7, and the next run publishes it on
+// the sub-owner's topic under the key of the row it copies.
+//
+// The fault it catches is a notice to a sub-owner lost under an earlier listener (its control: the
+// read of a report that takes an architect's lane alone, under which nothing is queued).
+func TestAForwardThatFailedToASubOwnerIsQueuedAgain(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	named := subOwnerToken(t, "LEGION-3", "f")
+	if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: named, Project: "legion", Tree: "LEGION-1", Issue: "LEGION-3",
+		Role: claim.RoleSubOwner, State: supervise.StateWorking, Session: "ses_sub"}, ""); err != nil {
+		t.Fatalf("create the sub-owner's claim: %v", err)
+	}
+	publisher := &holderPublisher{}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+	notice := record.Notice{Kind: "parts-done", Role: claim.RoleArchitect, Reason: "each part of task f of LEGION-3 is done: f1. Report f with complete_task, or give another part.", To: named}
+	topic := notify.RoleTopicPrefix + string(named)
+	report := laneReport{"evt-exception", "delivery_failed", topic, "parts-done on LEGION-3", notice, "legion-outbox:7", "ses_sub"}
+
+	if err := runner.rehold(context.Background(), report.envelope(t)); err != nil {
+		t.Fatalf("rehold: %v", err)
+	}
+	queued := queuedNotices(t, pool)
+	if len(queued) != 1 || !strings.HasPrefix(queued[0], "LEGION-3 ") || !strings.Contains(queued[0], `"to": "`+string(named)+`"`) ||
+		!strings.Contains(queued[0], `"resends": 1`) || !strings.Contains(queued[0], `"resend_of": 7`) {
+		t.Fatalf("queued %v, want one copy on LEGION-3 that names %s, counted as one re-send of row 7", queued, named)
+	}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the copy: %v", err)
+	}
+	_, delivered := publisher.snapshot()
+	if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].key != "legion-outbox:7" || outboxRows(t, pool) != 0 {
+		t.Fatalf("delivered %+v with %d rows left, want the copy on %s under the key of row 7 and none left", delivered, outboxRows(t, pool), topic)
+	}
+}
+
 // The listener refuses a publish to a role no live session holds and reports it on the same lane
 // (packages/envoy/cmd/listener/api.go, publishHandler), with the refusal's own reason. The
 // executor's own notice publishes are refused that way whenever their architect holds no role, so

@@ -95,7 +95,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // (treeCatchUp) — a root's whole tree, a child's own issue and every issue under it — for launch,
 // the launch it was written for, so a failed forward of an older one is not queued again behind it
 // (the outbox's rehold). The row is queued on issue's own key, and the outbox publishes it to
-// issue's own architect and to no other (the daemon's noticeArchitect): a child's catch-up that
+// issue's own architect and to no other (the daemon's noticeRecipient): a child's catch-up that
 // reached the architect above it would be read there as that architect's own state.
 //
 // relaunch is the sentence of what the last let-go of the architect's process ended, which a

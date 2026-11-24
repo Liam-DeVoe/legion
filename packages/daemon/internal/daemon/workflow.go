@@ -286,8 +286,8 @@ type workflowRuntime struct {
 	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
 	// the fact the failed callback lost.
 	failed chan error
-	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
-	// released yet.
+	// readied is the claims a notice goes to (record.NoticeGoesTo) that claimReady recorded, whose
+	// waiting notices releaseReadied has not released yet.
 	readied *wakeSet[claim.Token]
 	// handedOff is each read of a task's pull request an agent's handoff the API recorded asked
 	// for (handoffCompleted) that readHandedOff has not made yet, which is what makes a second
@@ -2415,12 +2415,14 @@ func (w *workflowRuntime) promoteAfterHoldClears(ctx context.Context) error {
 	return err
 }
 
-// claimReady records an architect whose claim is ready, for releaseReadied to release the notices
-// waiting for a later attempt that it owns (outbox.releaseWaiting): a relaunched architect is told
-// what it missed at once, ahead of what follows. The ready route calls it before it answers the
-// agent, so it only records the claim and wakes the release.
+// claimReady records a claim a notice goes to (record.NoticeGoesTo: an architect's, or a task's
+// sub-owner's, which a notice names) whose claim is ready, for releaseReadied to release the
+// notices waiting for a later attempt that go to it (outbox.releaseWaiting): a relaunched recipient
+// is told what it missed at once, ahead of what follows. Every other claim's ready has no notice to
+// release. The ready route calls it before it answers the agent, so it only records the claim and
+// wakes the release.
 func (w *workflowRuntime) claimReady(c supervise.Claim) {
-	if c.Role != claim.RoleArchitect {
+	if !record.NoticeGoesTo(c.Token) {
 		return
 	}
 	w.readied.add(c.Token)
@@ -2528,22 +2530,22 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	}()
 }
 
-// releaseReadied releases, until ctx ends, the waiting notices of the architects claimReady
-// recorded: each wake takes every architect recorded since the last one, in one release.
+// releaseReadied releases, until ctx ends, the waiting notices of the claims claimReady recorded:
+// each wake takes every claim recorded since the last one, in one release.
 func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 	for {
-		architects, ok := w.readied.take(ctx)
+		recipients, ok := w.readied.take(ctx)
 		if !ok {
 			return
 		}
-		if len(architects) == 0 {
+		if len(recipients) == 0 {
 			continue
 		}
 		release, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
-		err := w.outbox.releaseWaiting(release, architects...)
+		err := w.outbox.releaseWaiting(release, recipients...)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			w.log.Error("release the notices waiting for ready architects", "architects", architects, "error", err)
+			w.log.Error("release the notices waiting for ready architects", "architects", recipients, "error", err)
 		}
 	}
 }

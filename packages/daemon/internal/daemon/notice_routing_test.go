@@ -166,6 +166,17 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	return token
 }
 
+// subOwnerToken is the claim token of the sub-owner of task on issue (record.SubOwnerAgent), the
+// one claim a notice names (record.Notice.To).
+func subOwnerToken(t *testing.T, issue, task string) claim.Token {
+	t.Helper()
+	token, err := claim.AgentToken("legion", issue, record.SubOwnerAgent(task))
+	if err != nil {
+		t.Fatalf("claim token of the sub-owner of task %s of %s: %v", task, issue, err)
+	}
+	return token
+}
+
 // ownerWalkTree is the tree LEGION-1 the tests of a notice's recipient route over: the root, its
 // child, the child's child, and two children whose parents are no issue of the tree, one not
 // recorded and one recorded in another tree.
@@ -235,7 +246,7 @@ func (c ownerWalkCase) noticeKind() record.NoticeKind {
 // role (not failed or retired, and not suspended except by the idle release), else the tree root;
 // a child's close or status change, and a worker-died or worker-stalled about a child's
 // architect, start at its parent. A catch-up goes to the architect of its own issue alone
-// (noticeArchitect). The walk stays inside the issue's tree: admission records a Dispatch
+// (noticeRecipient). The walk stays inside the issue's tree: admission records a Dispatch
 // re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
 // that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
 // runs are the outbox's own (holdsRole), over the claim's state alone.
@@ -254,14 +265,14 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 // A notice that names the claim it goes to (record.Notice.To) goes to that claim, whatever
 // architect owns its issue and whichever sub-architect runs: the workflow named it from the task
 // the notice is about. A notice that names none goes to the architect that owns its issue, as
-// every notice did before (noticeArchitect), in each case of the owner walk.
+// every notice did before, in each case of the owner walk.
 func TestANoticeGoesToTheClaimItNames(t *testing.T) {
 	tree := ownerWalkTree()
 	for _, tc := range ownerWalkCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// The named claim stands for the claim a writer of To names, a sub-owner's: a claim of
-			// the notice's issue that no owner walk answers.
-			named := mustClaimToken(t, tc.issue, claim.RoleImplementer)
+			// The named claim is the claim a writer of To names, a sub-owner's: a claim of the
+			// notice's issue that no owner walk answers.
+			named := subOwnerToken(t, tc.issue, "f")
 			if got, err := noticeRecipient("legion", tree, tree[tc.issue], record.Notice{Kind: tc.noticeKind(), To: named}, tc.runs(t)); err != nil || got != named {
 				t.Fatalf("the recipient of a notice to %s = %s, %v; want the claim it names", named, got, err)
 			}
@@ -490,9 +501,10 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 
 // The order held is each recipient's own, a claim a notice names (record.Notice.To) among them: a
 // notice held for the claim it names, whose session is away, does not hold a later notice of the
-// same issue for the architect that owns the issue, which is delivered at once. The named
-// claim's ready releases the notice waiting for it (releaseWaiting) and the architect's does not,
-// and the released notice goes to the claim it names.
+// same issue for the architect that owns the issue, which is delivered at once. A release for the
+// named claim (releaseWaiting) makes the notice waiting for it due and a release for the architect
+// does not, and the released notice goes to the claim it names. The ready route that runs the
+// release is TestANoticeToANamedClaimGoesOutWhenThatClaimIsReady's.
 func TestTheOrderOfNoticesHoldsForEachRecipient(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -500,11 +512,11 @@ func TestTheOrderOfNoticesHoldsForEachRecipient(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	architect := architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
-	// The named claim stands for the claim a writer of To names, a sub-owner's: a claim of the
-	// notice's issue that no owner walk answers, launching, so a notice for it is held for it.
-	named := mustClaimToken(t, "LEGION-3", claim.RoleImplementer)
+	// The named claim is the claim a writer of To names, a sub-owner's: a claim of the notice's
+	// issue that no owner walk answers, launching, so a notice for it is held for it.
+	named := subOwnerToken(t, "LEGION-3", "f")
 	if _, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: named, Project: "legion", Tree: "LEGION-1", Issue: "LEGION-3", Role: claim.RoleImplementer, State: supervise.StateLaunching,
+		Token: named, Project: "legion", Tree: "LEGION-1", Issue: "LEGION-3", Role: claim.RoleSubOwner, State: supervise.StateLaunching,
 	}, ""); err != nil {
 		t.Fatalf("create the named claim: %v", err)
 	}
@@ -550,6 +562,66 @@ func TestTheOrderOfNoticesHoldsForEachRecipient(t *testing.T) {
 	}
 	if got, want := topics(), []string{architectTopic(t, "LEGION-2"), namedTopic}; !slices.Equal(got, want) || outboxRows(t, pool) != 0 {
 		t.Fatalf("after the named claim's ready: delivered to %v with %d rows left, want %v and none left", got, outboxRows(t, pool), want)
+	}
+}
+
+// A notice named to a claim (record.Notice.To), a task's sub-owner's, that waits for a later
+// attempt goes out when that claim reports ready, through the ready route as the daemon runs it:
+// the route's hook records the claim (workflow's claimReady, behind claimReadyHook), the release
+// loop makes the notice due at once (releaseReadied), and the next run publishes it on the claim's
+// own topic. The notice is due a minute out, as a notice held on its backoff is, so only the
+// release can make it due inside the test's bound.
+//
+// The fault it catches is a notice that waits out its backoff, up to 64 s, after its recipient is
+// back (its control: claimReady that records an architect's ready alone, under which the notice
+// stays waiting).
+func TestANoticeToANamedClaimGoesOutWhenThatClaimIsReady(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	named := subOwnerToken(t, "LEGION-3", "f")
+	ready := supervise.Claim{Token: named, Project: "legion", Tree: "LEGION-1", Issue: "LEGION-3", Role: claim.RoleSubOwner, State: supervise.StateReady, Session: "ses_sub"}
+	if _, _, err := sup.Create(context.Background(), ready, ""); err != nil {
+		t.Fatalf("create the named claim: %v", err)
+	}
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "parts-done", Role: claim.RoleArchitect,
+		Reason: "each part of task f of LEGION-3 is done: f1. Report f with complete_task, or give another part.", To: named}, time.Now().Add(time.Minute)))
+	publisher := &holderPublisher{}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token]()}
+	due := func() bool {
+		t.Helper()
+		var due bool
+		if err := pool.QueryRow(context.Background(), "select next_at <= $1 from outbox", time.Now()).Scan(&due); err != nil {
+			t.Fatalf("read the waiting notice: %v", err)
+		}
+		return due
+	}
+
+	claimReadyHook(nil, w.claimReady)(ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		w.releaseReadied(ctx)
+		close(stopped)
+	}()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !due(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the notice named to %s still waits for its backoff after that claim reported ready", named)
+		}
+	}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the notices after the named claim's ready: %v", err)
+	}
+	_, delivered := publisher.snapshot()
+	if len(delivered) != 1 || delivered[0].topic != notify.RoleTopicPrefix+string(named) || outboxRows(t, pool) != 0 {
+		t.Fatalf("delivered %+v with %d rows left, want the notice on %s's topic and none left", delivered, outboxRows(t, pool), named)
 	}
 }
 

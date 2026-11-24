@@ -363,8 +363,10 @@ type Notice struct {
 	Topic   string      `json:"topic,omitempty"`
 	// To is the claim the notice goes to, where the workflow decides it from the task the notice
 	// is about: the owner of a part's task, which is that task's sub-owner, or a task's own
-	// sub-owner. Empty, the notice goes to the architect that owns its issue, as every notice
-	// that names no claim does (the daemon's noticeRecipient).
+	// sub-owner. So it names a task's sub-owner's claim alone (SubOwnerOf), which the validation
+	// holds (validateOutboxPayload). Empty, the notice goes to the architect that owns its issue,
+	// as every notice that names no claim does (the daemon's noticeRecipient). NoticeGoesTo is the
+	// claims a notice reaches either way.
 	To claim.Token `json:"to,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
@@ -889,6 +891,21 @@ type CatchUpIssue struct {
 }
 
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
+
+// NoticeGoesTo says whether a notice can go to the claim token names: an architect's, which a
+// notice that names no claim goes to (the daemon's noticeRecipient, by the owner walk), or a task's
+// sub-owner's (SubOwnerOf), the one claim a notice names (Notice.To, which the validation holds to
+// it). It is the one statement of the claims a notice reaches, which the daemon reads where a
+// claim's ready releases the notices waiting for it (its claimReady) and where an earlier listener
+// reports a forward that failed (its exceptionNotice). The controller's claim is none: its notices
+// are controller notices, on a topic of their own.
+func NoticeGoesTo(token claim.Token) bool {
+	if _, agent, named := token.Cut(); named && agent == claim.Agent(claim.RoleArchitect) {
+		return true
+	}
+	_, subOwner := SubOwnerOf(token)
+	return subOwner
+}
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
 // a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
@@ -2453,6 +2470,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
+		}
+		if _, subOwner := SubOwnerOf(value.To); value.To != "" && !subOwner {
+			return fmt.Errorf("a %s notice names %s as the claim it goes to; a notice names a task's sub-owner's claim alone, and reaches an architect by naming none", value.Kind, value.To)
 		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {

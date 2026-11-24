@@ -491,7 +491,7 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // one left behind would keep naming the child's own tree as its Sandbox's home
 // (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
 // admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
-// (noticeArchitect) what was not posted and Dispatch's own refusal (messagePostRefused), since
+// (noticeRecipient) what was not posted and Dispatch's own refusal (messagePostRefused), since
 // nothing else would: the message is the daemon's only word on the issue for what it carries.
 // Each of those notice rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
@@ -1792,15 +1792,16 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 	return nil, nil
 }
 
-// notice publishes a notice row to its architect (noticeArchitect), on that architect's own role
-// topic, and to nothing else: a catch-up to the architect of its own issue, whose state it states,
-// and every other notice to the architect that owns its issue. Every notice kind is for an
-// architect, and no claim subscribes to an issue topic (packages/pi-legion/src/claim-session.ts),
-// so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
-// its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
-// behind an earlier notice of its tree that is held for the same architect, so each architect is
-// told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
-// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
+// notice publishes a notice row to its recipient (noticeRecipient), on that claim's own role
+// topic, and to nothing else: the task's sub-owner a notice names, a catch-up to the architect of
+// its own issue, whose state it states, and every other notice to the architect that owns its
+// issue. Every notice kind is for an architect or a sub-owner, and no claim subscribes to an issue
+// topic (packages/pi-legion/src/claim-session.ts), so no issue topic carries one. The recipient,
+// the earlier notices it waits behind, and whether its tree lingers are read from one snapshot of
+// the tree (notice_routing.go). A notice waits behind an earlier notice of its tree that is held
+// for the same recipient, so each recipient is told in the order the notices were written: on its
+// backoff (errNoticeWaits), or, when the earlier row is itself due at a moment still ahead, at
+// that moment and once (wait.Until). A role
 // topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
 // can hold its role again — relaunching, a root the operator suspended and can resume, or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
@@ -1852,7 +1853,7 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // what matters to its reader, since one grep over the daemon's log finds every wake of a restart
 // or a plugin wave, whichever lane caused it, and counts the wakes of a minute against the rate
 // and burst each line names. The claim is the architect the catch-up goes to, the architect of
-// the row's own issue (noticeArchitect; QueueCatchUp writes the row on that issue), spelled as a
+// the row's own issue (noticeRecipient; QueueCatchUp writes the row on that issue), spelled as a
 // machine's own lines spell a claim, since this logger is the runner's and carries no claim of its
 // own — where a machine's logger carries one already, which is why the field is this caller's to
 // add.
@@ -1908,17 +1909,18 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if err != nil {
 		return err
 	}
-	// The notice goes to the claim it names, else to the architect that owns its issue
-	// (noticeRecipient). A catch-up names none and goes to the architect of its own issue and to
-	// no other (noticeArchitect), so it is judged against that architect's claim and that issue's
-	// generation: a child's catch-up is superseded by the child's architect's later launch, never
-	// by its tree root's.
-	architect, err := noticeRecipient(tree.project, tree.issues, issue, payload, r.holdsItsRole)
+	// The notice goes to the claim it names, a task's sub-owner's, else to an architect: the one
+	// that owns its issue, or for a catch-up, which names none, the architect of its own issue and
+	// no other (noticeRecipient), so a catch-up is judged against that architect's claim and that
+	// issue's generation: a child's catch-up is superseded by the child's architect's later
+	// launch, never by its tree root's. The log lines keep the words and the key `architect` they
+	// always had, which the operator's checks read.
+	recipient, err := noticeRecipient(tree.project, tree.issues, issue, payload, r.holdsItsRole)
 	if err != nil {
-		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
+		return fmt.Errorf("the recipient of the notice of %s: %w", row.Issue, err)
 	}
 	if payload.CatchUp != nil {
-		held := r.supervisedClaim(architect).Claim
+		held := r.supervisedClaim(recipient).Claim
 		if catchUpSuperseded(*payload.CatchUp, held, &issue) {
 			// A row that published before told what it named and settles after this run
 			// (settleTold); one that never published hands its decisions to a fresh catch-up, since
@@ -1939,61 +1941,61 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		// writes a fresh one. A root's catch-up is not judged by this check: besides the endings
 		// every notice has, it ends when a newer one supersedes it (catchUpSuperseded, above), when
 		// its architect stopped with its finished tree (stoppedWithTree, below), or when no session
-		// holds its role and its claim will not hold it again (noticeAnswered's architectEnded).
+		// holds its role and its claim will not hold it again (noticeAnswered's recipientEnded).
 		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) {
 			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
 	}
-	// The architect whose stop_task stopped the task is answered by its own call, so a
-	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
-	// told only when that is another claim (record.Notice.StoppedBy). Published keeps the field,
-	// so a re-held copy is judged the same way.
-	if payload.StoppedBy == architect {
+	// The claim whose stop_task stopped the task is answered by its own call, so a task-stopped
+	// notice that names it finishes here, and the one the issue's notices reach is told only when
+	// that is another claim (record.Notice.StoppedBy). Published keeps the field, so a re-held copy
+	// is judged the same way.
+	if payload.StoppedBy == recipient {
 		r.log.Info("outbox notice finished without publishing: its architect stopped the task itself",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient)
 		return nil
 	}
 	notice, key := payload.Published(row.ID)
-	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
+	if held := r.supervisedClaim(recipient); stoppedWithTree(tree.root.Lingers(), held) {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "state", held.State, "stopping", held.Stopping)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient, "state", held.State, "stopping", held.Stopping)
 		return nil
 	}
-	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
-	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
-	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
-	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
-	// a notice held for its architect still (errNoticeWaits).
-	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue, row.HeldByPause); err != nil {
+	// A notice whose recipient's pod was released is that recipient's still (holdsRole), and this
+	// is the wake that brings it back for it: the row waits on its backoff, as it waits for a
+	// recipient that is relaunching, and publishes once the woken session holds its role. A launch
+	// of the recipient the wake pacing holds is waited for until it runs, the claim read again at
+	// its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is a notice
+	// held for its recipient still (errNoticeWaits).
+	if waits, turn, err := r.wakeForDelivery(ctx, recipient, "a notice of "+row.Issue, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
 		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
-			row.ID, architect, turn.UTC().Format(time.RFC3339))))
+			row.ID, recipient, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
-		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
+		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, recipient, row.ID)
 	}
-	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, due := earlierNoticeFor(tree, recipient, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
-		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
+		// next read of the recipient's parked launch, at most parkedWakeBound out (parkedWait).
 		// This row runs once, then, rather than climbing its backoff to it — over a hold of tens
 		// of minutes that is a Warn every attempt from the seventh (settle), about one wake's
 		// worth of noise per architect in a wave. The hold itself is right: it keeps the
 		// architect to the one wake its catch-up is.
 		if now := r.now().UTC(); due.After(now) {
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
-				architect, row.ID, earlier, due.Format(time.RFC3339)))
+				recipient, row.ID, earlier, due.Format(time.RFC3339)))
 		}
-		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
+		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, recipient, row.ID, earlier)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
-	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(recipient), noticeSummary(payload.Kind, row.Issue), notice, key)
+	return r.noticeAnswered(ctx, row, payload, tree, recipient, published)
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one

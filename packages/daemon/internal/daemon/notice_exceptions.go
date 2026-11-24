@@ -92,7 +92,7 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 }
 
 // rehold queues a notice again when a listener of a release before the confirmed publish route
-// (packages/envoy/cmd/listener/confirmed.go) reports that its forward to the owning architect's
+// (packages/envoy/cmd/listener/confirmed.go) reports that its forward to the notice's recipient's
 // session did not complete after it answered the publish 200: the forward failed
 // (`delivery_failed`), the holder lapsed between the two (`no_holder`), or the session the
 // listener forwarded to did not confirm it in time (`receipt_timeout`). A listener of this
@@ -106,10 +106,10 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // reholdNotice. The subscription stays while a deployment may run an earlier listener.
 //
 // rehold reads the report: an envelope the listener itself sent, whose payload names a reason it
-// knows and a notice of this daemon's outbox to an architect of this project (exceptionNotice). A
-// report about another daemon's publish, another project, a role that is not an architect, or
-// anything but a notice changes nothing. The exception lane has no redelivery, so a report that
-// cannot be read is logged by the caller and dropped.
+// knows and a notice of this daemon's outbox to a claim of this project a notice goes to, an
+// architect's or a task's sub-owner's (exceptionNotice). A report about another daemon's publish,
+// another project, a phase worker's role, or anything but a notice changes nothing. The exception
+// lane has no redelivery, so a report that cannot be read is logged by the caller and dropped.
 //
 // The listener also reports a publish it refused before forwarding anything, because no live
 // session held the role (`unclaimed`, `holder_lapsed`), and the executor's own notice publishes
@@ -183,11 +183,13 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // (dispatch://INFRA-392). That answer is logged as the wait it is, naming the holder and the
 // state the listener reported it in: a session that will answer for itself is no failure of the
 // row's, so it costs no error line per attempt, where a publish that did fail still costs one.
-// A role no session holds is held for its architect while that architect's claim can hold it
+// A role no session holds is held for its recipient while that recipient's claim can hold it
 // again, and finishes undelivered once nobody will. Any other failure is the row's, retried on
-// its backoff.
+// its backoff. recipient is the claim the row was routed to (noticeRecipient): an architect's, or
+// the task's sub-owner's the notice names. The log lines keep the words and the key `architect`
+// they always had, which the operator's checks read (scripts/e2e/lib/parked-decision-verdict.jq).
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
-	tree treeSnapshot, architect claim.Token, published error,
+	tree treeSnapshot, recipient claim.Token, published error,
 ) error {
 	// The same pair the publish went out as (Notice.Published): the notice as it was sent and the
 	// dedupe key it was sent under, derived here rather than passed in, so no caller can hand this
@@ -198,7 +200,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	var denied notify.ErrPublishDenied
 	switch {
 	case published == nil:
-		r.noticePublished(row, payload, architect)
+		r.noticePublished(row, payload, recipient)
 		// The architect has the catch-up and reads its whole context from it, so this attempt is
 		// the wake the pacing held the row for, and the line it writes is written here: once for
 		// the row, whatever the attempts before it met (wakeRan).
@@ -224,55 +226,56 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// the copy publishes and no "supervise: wake ran" is written at all, so the operator's
 		// own check neither counts that wake nor builds its window (scripts/wake-windows.py).
 		notice.PacedAt, notice.PacedFrom = payload.PacedAt, payload.PacedFrom
-		reported := reportedNotice{issue: row.Issue, notice: notice, row: source, architect: architect, claims: row.ID}
+		reported := reportedNotice{issue: row.Issue, notice: notice, row: source, recipient: recipient, claims: row.ID}
 		if err := r.reholdNotice(ctx, reported, notDelivered.Reason, notDelivered.Holder); err != nil {
-			return fmt.Errorf("re-hold the notice for %s that its architect %s did not take: %w", row.Issue, architect, err)
+			return fmt.Errorf("re-hold the notice for %s that its recipient %s did not take: %w", row.Issue, recipient, err)
 		}
 		return nil
 	case errors.As(published, &refused):
 		r.log.Warn("outbox notice finished undelivered: its architect's session does not advertise the delivery mode",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "holder", refused.Holder, "error", published)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient, "holder", refused.Holder, "error", published)
 		return nil
 	case errors.As(published, &denied):
 		r.log.Warn("outbox notice finished undelivered: the listener's NATS grant denied the forward to its architect",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "reason", denied.Message)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient, "reason", denied.Message)
 		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
-			row.Issue, architect, notify.StateUnresponsive, published)
+		return wait.Errorf("the notice for %s waits for its recipient %s, whose session the listener reports %s: %w",
+			row.Issue, recipient, notify.StateUnresponsive, published)
 	case !errors.Is(published, notify.ErrNoHolder):
-		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
+		return fmt.Errorf("publish notice for %s to its recipient %s: %w", row.Issue, recipient, published)
 	}
-	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
+	if ended := recipientEnded(tree, r.claimState(recipient)); ended != "" {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient, "because", ended)
 		return nil
 	}
-	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
+	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, recipient, row.Issue, published)
 }
 
 // noticePublished is the one line a notice the listener took writes: its kind, its issue, its row
-// and the architect claim it reached, and for a catch-up the generation it states, the launch it
-// was written for and how many issues it lists. It is written on the attempt that publishes, so
-// once per publish: a row that waited or failed before writes nothing for those attempts, and a
-// copy a re-hold queues is a row of its own, which writes its own line when it publishes. It is
-// how the daemon's log shows which architect each notice reached, a sub-architect's catch-up at
-// its launch among them.
-func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, architect claim.Token) {
-	fields := []any{"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect}
+// and the claim it reached, under the key `architect` the operator's checks read, and for a
+// catch-up the generation it states, the launch it was written for and how many issues it lists.
+// It is written on the attempt that publishes, so once per publish: a row that waited or failed
+// before writes nothing for those attempts, and a copy a re-hold queues is a row of its own, which
+// writes its own line when it publishes. It is how the daemon's log shows which claim each notice
+// reached, a sub-architect's catch-up at its launch among them.
+func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, recipient claim.Token) {
+	fields := []any{"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient}
 	if payload.CatchUp != nil {
 		fields = append(fields, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch, "issues", len(payload.CatchUp.Issues))
 	}
 	r.log.Info("outbox notice published", fields...)
 }
 
-// reholdNotice queues reported's notice again after a publish its architect's session did not
-// take: the publish, under the dedupe key of reported's row (record.OutboxKey), went to the
-// architect's role topic, the listener named reason, and recipient is the session it forwarded to
-// ("" when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
+// reholdNotice queues reported's notice again after a publish its recipient's session did not
+// take: the publish, under the dedupe key of reported's row (record.OutboxKey), went to the role
+// topic of reported's recipient, an architect or the task's sub-owner the notice names, the
+// listener named reason, and session is the session it forwarded to ("" when it named none). It
+// runs from a role-lane exception of an earlier listener (rehold) and
 // from the 504 `receipt_timeout` answer of a confirmed publish route of a listener older than
 // dispatch://INFRA-771, which this daemon still handles until that rollout finishes (a listener
 // of this release answers `delivery_failed` instead). A session that
@@ -311,11 +314,11 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // (parkDecision). Those checks read the claim from memory, outside ApplyFact's lock, which the
 // ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
 // again when it runs the row.
-func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
+func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, session string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
-	topic := notify.RoleTopicPrefix + string(reported.architect)
-	held := r.supervisedClaim(reported.architect)
+	topic := notify.RoleTopicPrefix + string(reported.recipient)
+	held := r.supervisedClaim(reported.recipient)
 	if !holdsRole(held) {
 		root, lingers, err := r.issueTree(ctx, issue)
 		if err != nil {
@@ -344,7 +347,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		return nil
 	}
 	due := r.now().Add(noticeReholdDelays[notice.Resends])
-	if copyDueAtOnce(held.Claim, notice.Resends, recipient) {
+	if copyDueAtOnce(held.Claim, notice.Resends, session) {
 		due = r.now()
 	}
 	mark := fmt.Sprintf("%s#%d", key, notice.Resends)
@@ -447,13 +450,13 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 	return issue != nil && issue.Generation > catchUp.Generation
 }
 
-// copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
-// claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
-// notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
-// holder) names. A copy is due at once when the architect's agent has said it is ready
-// (supervise.SaidReady), and it is the first copy or its report names a session other than the
-// one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
-// copy due, and every later notice to the architect would wait behind it. The first covers a
+// copyDueAtOnce says whether the next copy of a notice is due at once, given held, the claim of the
+// notice's recipient as this daemon supervises it (the zero Claim when it does not), resends, the
+// copies of the notice already sent, and session, the session the report (or the listener's 504
+// answer, as its holder) names. A copy is due at once when the recipient's agent has said it is
+// ready (supervise.SaidReady), and it is the first copy or its report names a session other than
+// the one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make
+// the copy due, and every later notice to the recipient would wait behind it. The first covers a
 // relaunch that reported ready inside the receipt window; a later copy that failed on another
 // session went where the role no longer is. A later copy whose report names no session (the
 // listener names none for no_holder, or when it could not read the holder) says nothing about
@@ -461,21 +464,22 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 // ready session and every copy while the claim has not reported ready, so a claim that reads live
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
 // keeps the notice for the whole schedule instead of spending its copies in seconds.
-func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
+func copyDueAtOnce(held supervise.Claim, resends int, session string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
+	return resends == 0 || session != "" && !held.HoldsSession(session)
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or
 // the notice executor knows it when the listener answers: its issue, the notice as it was
-// published, the outbox row its dedupe key names, and the architect whose role topic it went to.
+// published, the outbox row its dedupe key names, and the recipient whose role topic it went to,
+// an architect or the task's sub-owner the notice names (record.NoticeGoesTo).
 type reportedNotice struct {
 	issue     string
 	notice    record.Notice
 	row       int64
-	architect claim.Token
+	recipient claim.Token
 	// claims is the outbox row still running that claims the decisions the notice names (the
 	// confirmed route's answer, in the row's own run), 0 when that row has already finished (an
 	// earlier listener's report).
@@ -483,11 +487,12 @@ type reportedNotice struct {
 }
 
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
-// dedupe key names a row) to the role topic of an architect of this project, in either form of
-// the lane's name (the role alone, or this daemon's Dispatch project and then the role), whose
-// summary is the executor's own "<kind> on <issue>" for an issue of this project and whose payload
-// is that notice. ok is false for a report about anything else, a lane of another project
-// among them.
+// dedupe key names a row) to the role topic of a claim of this project that a notice goes to
+// (record.NoticeGoesTo: an architect's, or a task's sub-owner's), in either form of the lane's name
+// (the role alone, or this daemon's Dispatch project and then the role), whose summary is the
+// executor's own "<kind> on <issue>" for an issue of this project and whose payload is that
+// notice. ok is false for a report about anything else, a phase worker's lane and a lane of
+// another project among them.
 func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, bool) {
 	row, ok := record.ParseOutboxKey(exception.DedupeKey)
 	if !ok {
@@ -498,7 +503,7 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 		return reportedNotice{}, false
 	}
 	project, token, legacy := subjectforms.CanonicalRole(lane)
-	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
+	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !record.NoticeGoesTo(claim.Token(token)) {
 		return reportedNotice{}, false
 	}
 	var notice record.Notice
@@ -511,22 +516,22 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if !found || kind != notice.Kind || !claim.IsIssueKey(issue) || !strings.HasPrefix(issue, r.dispatchProject+"-") {
 		return reportedNotice{}, false
 	}
-	return reportedNotice{issue: issue, notice: notice, row: row, architect: claim.Token(token)}, true
+	return reportedNotice{issue: issue, notice: notice, row: row, recipient: claim.Token(token)}, true
 }
 
 // releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
-// architects now (noticeRecipient: the claim the notice names, else the architect that owns its
-// issue), once their claims are ready: each agent said it can be prompted (supervise.SaidReady),
+// recipients now (noticeRecipient: the claim the notice names, a task's sub-owner's, else an
+// architect), once their claims are ready: each agent said it can be prompted (supervise.SaidReady),
 // having booted or taken its Envoy role back. A boot's ready comes before the name — the session
 // claims its role at its first turn — so a notice this releases, and
 // the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
 // backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
-// the release ends is the wait for the architect, not the wait for the role. That covers a copy
+// the release ends is the wait for the recipient, not the wait for the role. That covers a copy
 // waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
 // claim's session file, so the relaunched agent registers the very session id the stopped one
 // had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
 // minutes for a stopped session's registration to lapse would otherwise hold back every later
-// notice to that architect behind the fence, after the architect is back. Released, the notices
+// notice to that recipient behind the fence, after the recipient is back. Released, the notices
 // go in the order they were written, ahead of the ones behind them. The waiting notices and their
 // trees are one repeatable read, each tree read once; the fence is not read, since a release only
 // makes a notice due and its send still passes the fence.
@@ -538,8 +543,9 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // reported ready, which is the wave the pacing exists to spread. What is held back is the row
 // whose reserved moment is still ahead of now (record.Notice.PacedAt), not every row the pacing
 // ever marked: a catch-up whose turn came and whose attempt then failed waits on a backoff of its
-// own, and that wait is one a ready releases like any other, since the pacing has had its say.
-func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) error {
+// own, and that wait is one a ready releases like any other, since the pacing has had its say. The
+// log line keeps the words and the key `architects` it always had.
+func (r *outbox) releaseWaiting(ctx context.Context, recipients ...claim.Token) error {
 	now := r.now()
 	released := []record.OutboxRow{}
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -564,13 +570,13 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 			if err != nil {
 				return err
 			}
-			if owner, err := noticeRecipient(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
+			if to, err := noticeRecipient(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(recipients, to) {
 				released = append(released, row)
 			}
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("read the notices waiting for %v: %w", architects, err)
+		return fmt.Errorf("read the notices waiting for %v: %w", recipients, err)
 	}
 	if len(released) == 0 {
 		return nil
@@ -586,13 +592,13 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("release the notices waiting for %v: %w", architects, err)
+		return fmt.Errorf("release the notices waiting for %v: %w", recipients, err)
 	}
 	committed()
 	ids := make([]int64, len(released))
 	for i, row := range released {
 		ids[i] = row.ID
 	}
-	r.log.Info("outbox notices released: their architect is ready", "architects", architects, "rows", ids)
+	r.log.Info("outbox notices released: their architect is ready", "architects", recipients, "rows", ids)
 	return nil
 }

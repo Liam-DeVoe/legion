@@ -403,7 +403,7 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 			payload.Resends = len(noticeReholdDelays)
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
 				notices: &hookPublisher{}, supervisor: sup, project: "legion", now: func() time.Time { return now }}
-			reported := reportedNotice{issue: "LEGION-1", notice: payload, row: leased.ID, architect: token}
+			reported := reportedNotice{issue: "LEGION-1", notice: payload, row: leased.ID, recipient: token}
 			if err := runner.reholdNotice(ctx, reported, notify.ReasonReceiptTimeout, "ses-architect"); err != nil {
 				t.Fatalf("answer the late report of the spent copy: %v", err)
 			}
