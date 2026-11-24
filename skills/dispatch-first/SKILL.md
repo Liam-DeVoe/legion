@@ -5,6 +5,10 @@ description: "Use when a session has the dispatch command."
 
 # Dispatch first
 
+Search before you act, and reach a person only through Dispatch.
+
+**Done when:** you dropped no request you accepted.
+
 ## Search before you act
 
 - Before your first `dispatch` command in this session, read `skill://dispatch`.
