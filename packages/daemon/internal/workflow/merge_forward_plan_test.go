@@ -394,7 +394,8 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 // A planner step after the implementer works on a branch whose pull request is open, so it is read
 // for a conflict as every later step is: a head push and a base push in its planning each ask for a
 // read (classify.MergeStateReadOwed). An ask made in implementing is asked again on the move into
-// that planning, as on a move into testing. The control is a planner before the implementer, whose
+// that planning, as on a move into testing, with the planner's hold. The control is a planner
+// before the implementer, whose
 // planning comes before any pull request work and asks nothing.
 func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testing.T) {
 	for _, tc := range []struct {
@@ -432,9 +433,9 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 			t.Fatalf("after the implementer's completion the issue is in %s, want planning", got)
 		}
 		want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictCheckNotGreen),
-			implementerAsked(phase.Planning, record.ConflictCheckNotGreen)}
+			implementerAsked(phase.Planning, record.ConflictCheckNotGreen), heldIn(claim.RolePlanner, phase.Planning, record.ConflictCheckNotGreen)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-			t.Fatalf("merge-forward messages %+v, want %+v: the planning after the implementer asks again", got, want)
+			t.Fatalf("merge-forward messages %+v, want %+v: the planning after the implementer asks again and holds the planner", got, want)
 		}
 		if _, stays := checksRedNotice(t, pool); stays != phase.Planning {
 			t.Fatalf("the checks-red notice names %s, want planning, the phase the issue stays in", stays)
