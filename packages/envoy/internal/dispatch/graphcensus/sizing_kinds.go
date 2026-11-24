@@ -230,7 +230,7 @@ func storeKinds() []StoreKind {
 			" state, and either its part_of the role it claimed with that role's held_by and the retraction that ends it," +
 			" or a page of its own with that page's visibility, state and part_of - three tuples either way, and two" +
 			" nodes at most, since which one a session took is the role bucket's and no table's",
-		count: `(select count(*) from (` + recordedSessions + `) recorded
+		count: `(select count(*) from (` + recordedSessions(sizingAuthors) + `) recorded
 			where recorded.at > ` + sizingWindow + ` and octet_length(recorded.id) <= ` + addressBound + `)`,
 	}, {
 		Name: graphstore.KindRole, MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -380,23 +380,26 @@ func storeKinds() []StoreKind {
 		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
-		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 6,
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 7,
 		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
-			" and, at most, its anchored_to and owned_by",
+			" and, at most, its anchored_to and owned_by, and the part_of the document holding its block, which an ask" +
+			" block's anchored_to names too",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,
 		Driver: "ask.edited events in the window: at most the ask's question and options values",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.edited')`,
 	}, {
-		Name: "answer", MovedBy: movedWithAsks, Tuples: 5,
-		Driver: "ask.answered events in the window: the answer text, the options it selects, its author and its time," +
-			" and the ask's answer_state",
+		Name: "answer", MovedBy: movedWithAsks, Tuples: 6,
+		Driver: "ask.answered events in the window: the answer text, the options it selects, its author, as answered_by" +
+			" and as the decided_by that makes the answered ask a person's decision, and its time, and the ask's" +
+			" answer_state",
 		count: `(select count(*) from sized_ask_events where type = 'ask.answered')`,
 	}, {
-		Name: "ask_resolved", MovedBy: movedWithAsks, Tuples: 1,
-		Driver: "ask.resolved events in the window: the ask's answer_state",
-		count:  `(select count(*) from sized_ask_events where type = 'ask.resolved')`,
+		Name: "ask_resolved", MovedBy: movedWithAsks, Tuples: 3,
+		Driver: "ask.resolved events in the window: the ask's answer_state and its resolution, and at most the" +
+			" retraction that ends that resolution, which the reopen that restores the ask appends",
+		count: `(select count(*) from sized_ask_events where type = 'ask.resolved')`,
 	}, {
 		Name: "ask_follower", MovedBy: movedWithAsks, Tuples: 1,
 		Driver: "ask.follower_added and ask.follower_removed events in the window: a followed_by or the retraction that" +
@@ -406,6 +409,23 @@ func storeKinds() []StoreKind {
 		Name: "keep", MovedBy: movedWithAsks, Tuples: 2,
 		Driver: "decision_keeps.kept_at in the window: a kept_by and a kept_text_sum on the decision",
 		count:  `(select count(*) from decision_keeps where kept_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "ask_copy", MovedBy: movedWithAsks, Tuples: 1,
+		Driver: "document_blocks.changed_at in the window of an ask block that names an ask of another document of its" +
+			" owner and that no ask row of its own document names, a copy of that ask: the copy's copied_from, which" +
+			" a settlement claims once and no table projects",
+		count: `(select count(*) from document_blocks b join artifacts d on d.id = b.artifact_id
+			where b.type = 'ask' and b.changed_at > ` + sizingWindow + `
+			  and not exists (select 1 from asks own where own.block_artifact_id = b.artifact_id and own.block_id = b.block_id)
+			  and exists (select 1 from asks source join artifacts s on s.id = source.block_artifact_id
+			              where source.block_id = b.block_id and source.block_artifact_id <> b.artifact_id
+			                and s.issue_key is not distinct from d.issue_key and s.project_key = d.project_key))`,
+	}, {
+		Name: "ask_invalid", MovedBy: movedWithAsks, Tuples: 2,
+		Driver: "block.invalid events in the window, each a settlement's flag of a block that fails the strict read:" +
+			" at most the reason as its ask node's invalid value, where the block has an ask row, and the retraction" +
+			" that ends it once the block reads again",
+		count: `(select count(*) from events where type = 'block.invalid' and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
@@ -451,6 +471,15 @@ func storeKinds() []StoreKind {
 			" its lens and one prevented_by",
 	}}
 }
+
+// sizingAuthors is the relation recordedSessions reads storedAuthors as when the sizing reads it:
+// a FROM item named stored, of (kind, id, at), that holds no row. Every writer storedAuthors adds
+// is read off the store itself - a decision's or a reading's decided_by or authored_by, an ask
+// node's authored_by - and the sizing reads no table of the store, so it runs on a database the
+// store does not exist in yet. A session that asked is counted all the same, by the asks rows and
+// the ask.opened events recordedSessions reads beside it, and a decision or a reading is a kind
+// production writes none of yet, whose rate the sizing assumes.
+const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // reachesANode is true of a topic the outbox reads as a node of the store (outbox's
 // nodeOfSubject): a session's own topic or a role's, with a name after the prefix, and that name

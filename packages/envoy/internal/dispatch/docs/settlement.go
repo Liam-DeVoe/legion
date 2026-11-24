@@ -573,8 +573,9 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 }
 
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
-// what each block's row and the document owe each other, and holds its check blocks to the four
-// rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
+// what each block's row and the document owe each other, holds its check blocks to the four
+// rules (reconcileCICheckBlocks) and its decisions' server-owned attributes to what the store
+// holds (reconcileDecisionBlocks): the repairs to write into the room, the events to append, and
 // the copies to arm. On a closed issue the reconciliation changes no ask (reconcileAskBlocks), and
 // each event it appends - a block.repaired or a block.invalid, of an ask block or a check block -
 // is the settlement's own (SettlementActor), not the person whose edit the version saves: a
@@ -591,6 +592,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	// against the document as settlement read it, before any other repair is planned on it.
 	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if st.issueClosed {
@@ -718,18 +722,36 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 	})
 }
 
-// stateReadability plans the readability of the asks whose blocks this settlement read
-// (stateInvalidReasons), in the name the version carries (versionActor) at at, and queues its
-// statements under cause as one step (write): the version's event, which the step follows right
-// after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that writes no
-// version.
-func (st *settlement) stateReadability(ctx context.Context, at time.Time, cause int64) error {
-	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, st.credit.versionActor(), at)
-	if err != nil || readability == nil {
+// stateCopiesAndReadability plans the copied_from of the nodes of the document's ask blocks
+// (claimCopies) and the readability of the asks whose blocks this settlement read
+// (stateInvalidReasons), both in the name the version carries (versionActor) at at, and queues
+// their statements under cause as one step (write): the version's event, which the step follows
+// right after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that
+// writes no version. It runs once the version's blocks are planned, so the copies read the nodes
+// the block index leaves (heldBlockIndex).
+func (st *settlement) stateCopiesAndReadability(ctx context.Context, at time.Time, cause int64) error {
+	who := st.credit.versionActor()
+	copies, err := st.reconciliation.claimCopies(ctx, st.tx, st.room, who, at)
+	if err != nil {
 		return err
 	}
+	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, who, at)
+	if err != nil {
+		return err
+	}
+	if copies == nil && readability == nil {
+		return nil
+	}
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		return readability(b, cause)
+		if copies != nil {
+			if err := copies(b, cause); err != nil {
+				return err
+			}
+		}
+		if readability != nil {
+			return readability(b, cause)
+		}
+		return nil
 	})
 }
 
@@ -858,8 +880,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// The readability of the asks whose blocks this settlement read is stated in the name the
-	// version itself carries (versionActor), at one time (stateReadability).
+	// The copies among the document's ask blocks and the readability of the asks whose blocks
+	// this settlement read are stated in the name the version itself carries (versionActor), at
+	// one time (stateCopiesAndReadability).
 	at := time.Now().UTC()
 	if versioning {
 		var keptEditor *model.Actor
@@ -870,6 +893,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			settled:          &st.reconciliation.sources,
 			closedIssue:      st.issueClosed,
 			settlement:       true,
 			keptEditor:       keptEditor,
@@ -922,15 +946,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
-		// The readability, once the version's blocks are planned, under that same event, right
-		// after it.
-		if err := st.stateReadability(ctx, at, graphstore.LatestEvent); err != nil {
+		// The copies and the readability, once the version's blocks are planned, under that same
+		// event, right after it.
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.LatestEvent); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	// The nodes and the follows of the asks this settlement opened, and what each answer state it
-	// wrote states on its ask's node, wait for the events that record them, each stated right
-	// after its own (causedByEvent).
+	// An ask this settlement opened has its row and node only in this write phase, so a version
+	// written before them stated none of its block's shaped ties; a settlement that writes a
+	// version states them in that version's index, and one that writes none writes them here,
+	// after the rows, before the ask.opened that names the targets they moved is appended.
+	if !versioning {
+		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
+	// The nodes and the follows of the asks this settlement opened, their blocks' ties, and what
+	// each answer state it wrote states on its ask's node wait for the events that record them,
+	// each stated right after its own (causedByEvent).
 	caused, err := st.reconciliation.causedByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)
@@ -938,9 +971,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.appendEvents(ctx, st.reconciliation.events, caused); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// A settlement that writes no version states the readability under no event.
+	// A settlement that writes no version states the copies and the readability under no event.
 	if !versioning {
-		if err := st.stateReadability(ctx, at, graphstore.NoEvent); err != nil {
+		if err := st.stateCopiesAndReadability(ctx, at, graphstore.NoEvent); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}

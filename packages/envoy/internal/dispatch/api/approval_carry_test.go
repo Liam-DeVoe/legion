@@ -23,8 +23,8 @@ import (
 // he approved rather than from nothing; a first request names none. A person's answer to an
 // ask block is held once, on the ask's node, and writes one version, which changes only the
 // server-owned attributes of the ask's block (R3), and R10's case carries an approval across it;
-// the carries are those of a version restoring the approved text and of R10's case
-// (docs.carryApproval).
+// the carries are those of a version restoring the approved text, of R2's readings
+// (reading_approval_test.go) and of R10's case (docs.carryApproval).
 
 // carriedAsk is an approval ask as the carry tests read it: the document version it names and the
 // earlier approval it carries, absent when the document was never approved.

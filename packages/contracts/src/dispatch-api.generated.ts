@@ -4483,6 +4483,68 @@ export interface components {
       question: string;
       suggestions: components["schemas"]["Suggestions"] | null;
     };
+    DecisionDecider: {
+      id: string;
+      kind: string;
+      title?: string;
+    };
+    DecisionEntry: {
+      answer: null | string;
+      answer_state: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      answer_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      answered_at: null | string;
+      answered_by: null | string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      decided_by: components["schemas"]["DecisionDecider"] | null;
+      declined: boolean;
+      declined_note: null | string;
+      document: components["schemas"]["DecisionEntryDocument"] | null;
+      from_ask: string[] | null;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kept_by: null | string;
+      kept_text_sum: null | string;
+      kind: string;
+      multiple: null | boolean;
+      node: components["schemas"]["DecisionEntryNode"];
+      options: components["schemas"]["AskOption"][] | null;
+      question: null | string;
+      readings: components["schemas"]["DecisionReading"][] | null;
+      ref: string;
+      replaced: boolean;
+      resolution: components["schemas"]["AskResolution"] | null;
+      selected: string[] | null;
+      shaped: components["schemas"]["DecisionLink"][] | null;
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty: null | string;
+      uncertainty_reason: null | string;
+      urgency: null | string;
+      waiting_review: boolean;
+    };
+    DecisionEntryDocument: {
+      artifact_id: string;
+      block: string;
+      block_id: string;
+      ref: string;
+    };
+    DecisionEntryNode: {
+      id: string;
+      kind: string;
+    };
     DecisionKeep: {
       artifact_id: string;
       block_id: string;
@@ -4492,12 +4554,24 @@ export interface components {
       kept_by: string;
     };
     DecisionLink: {
+      changed_since_tie: boolean;
       /** Format: date-time */
       created_at: string;
       created_version: number;
+      event?: number;
       from_block: string;
       stale: boolean;
+      /** Format: date-time */
+      text_changed_at?: string;
+      text_changed_event?: number;
       to: components["schemas"]["GraphNode"];
+    };
+    DecisionReading: {
+      artifact_id: null | string;
+      authored_by: components["schemas"]["DecisionEntryNode"] | null;
+      block_id: string;
+      node: components["schemas"]["DecisionEntryNode"];
+      text: null | string;
     };
     DecisionResponse: {
       credential_id: null | string;
@@ -4956,6 +5030,7 @@ export interface components {
       block?: string;
       find?: string;
       index?: unknown;
+      into?: string;
       markdown?: string;
       occurrence?: number;
       op: string;
@@ -5397,6 +5472,7 @@ export interface components {
     IssueDecisions: {
       decisions: components["schemas"]["Decision"][] | null;
       document: null | string;
+      entries: components["schemas"]["DecisionEntry"][] | null;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDesignGate: {
@@ -15141,8 +15217,13 @@ export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuilds = components["schemas"]["DashboardBuilds"];
 export type Decision = components["schemas"]["Decision"];
 export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
+export type DecisionDecider = components["schemas"]["DecisionDecider"];
+export type DecisionEntry = components["schemas"]["DecisionEntry"];
+export type DecisionEntryDocument = components["schemas"]["DecisionEntryDocument"];
+export type DecisionEntryNode = components["schemas"]["DecisionEntryNode"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
+export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];

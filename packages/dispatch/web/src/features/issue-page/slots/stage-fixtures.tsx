@@ -17,7 +17,7 @@ import type { IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
 import { FAILED_READ_RETRY } from "./failed-read-line";
@@ -240,11 +240,7 @@ export function stubReads(): { mockRestore(): void }[] {
       requirements: [],
       spec_artifact_id: "",
     }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({
       checks: [],
       issue: KEY,

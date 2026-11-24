@@ -783,6 +783,7 @@ test("a press in the document takes over once the document has reported an empty
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
     document: `dispatch://${issue.key}/artifact/decisions-md`,
+    entries: [],
     open_questions: [],
   });
   const view = renderLandingWithReport();

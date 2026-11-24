@@ -3770,16 +3770,26 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a spec node it shaped: its `shaped` tuple
+// (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
+// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it, and
+// TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
+// last changed in; the three are absent where the store holds none. Stale is the release
+// before's rule, which every reader of a link's `stale` reads: the decision's own words changed
+// after the tuple was written, and the node's text has not changed since the decision's did.
+// ChangedSinceTie is the other fact (R5): the node's text changed after the tuple was written. It
+// is Decision's, and the Decisions read's `entries` answer it as each entry's `shaped`, so it
+// stays when the old `decisions` member goes.
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	ChangedSinceTie  bool       `json:"changed_since_tie"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
 // Decision is one decision of an issue's decisions.md: its heading block and every block after
@@ -3808,6 +3818,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.
@@ -3876,6 +3891,10 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// Into is an insert's third anchor, `block:<id>`: the markdown goes inside that block, after
+	// its last child, read as that block's content (docs.insertInto), where After and Before put
+	// it beside one. An insert names exactly one of the three.
+	Into string `json:"into,omitempty"`
 }
 
 // Route is a validated issue delivery route.

@@ -96,12 +96,6 @@ func uploadedID(t *testing.T, answer httpAnswer) string {
 	return uploaded.Artifact.ID
 }
 
-// agentBearer is the header the shared agent bearer's request carries; the body names the session
-// it writes as.
-func agentBearer() http.Header {
-	return http.Header{"Authorization": {"Bearer " + dispatchTestAgentToken}}
-}
-
 // restoreSession is the agent's session whose writes move the answered asks out of the specs.
 const restoreSession = "ses_restore_approvals_agent"
 

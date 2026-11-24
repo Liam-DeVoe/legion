@@ -169,6 +169,7 @@ var readsWithoutAViewer = map[string]string{
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
+	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
 	"DocumentIsCited":      noNode,
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
@@ -186,7 +187,9 @@ var readsWithoutAViewer = map[string]string{
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
 	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
@@ -461,7 +464,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

@@ -18455,6 +18455,318 @@
         ],
         "type": "object"
       },
+      "DecisionDecider": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "DecisionEntry": {
+        "properties": {
+          "answer": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answer_state": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answer_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answered_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_version": {
+            "type": "integer"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionDecider"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "declined": {
+            "type": "boolean"
+          },
+          "declined_note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionEntryDocument"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from_ask": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "kept": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionKeep"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kept_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kept_text_sum": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "node": {
+            "$ref": "#/components/schemas/DecisionEntryNode"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOption"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionReading"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "replaced": {
+            "type": "boolean"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "shaped": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_sha256": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "uncertainty": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "uncertainty_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "urgency": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "waiting_review": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "node",
+          "ref",
+          "document",
+          "kind",
+          "text",
+          "text_sha256",
+          "question",
+          "options",
+          "urgency",
+          "multiple",
+          "answer_state",
+          "answer",
+          "selected",
+          "answered_by",
+          "answered_at",
+          "resolution",
+          "declined",
+          "declined_note",
+          "uncertainty",
+          "uncertainty_reason",
+          "decided_by",
+          "kept_by",
+          "kept_text_sum",
+          "replaced",
+          "kept",
+          "waiting_review",
+          "changed_version",
+          "changed_at",
+          "shaped",
+          "from_ask",
+          "readings"
+        ],
+        "type": "object"
+      },
+      "DecisionEntryDocument": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "block": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ref",
+          "block_id",
+          "block"
+        ],
+        "type": "object"
+      },
+      "DecisionEntryNode": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
       "DecisionKeep": {
         "properties": {
           "artifact_id": {
@@ -18485,6 +18797,9 @@
       },
       "DecisionLink": {
         "properties": {
+          "changed_since_tie": {
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -18492,11 +18807,21 @@
           "created_version": {
             "type": "integer"
           },
+          "event": {
+            "type": "integer"
+          },
           "from_block": {
             "type": "string"
           },
           "stale": {
             "type": "boolean"
+          },
+          "text_changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "text_changed_event": {
+            "type": "integer"
           },
           "to": {
             "$ref": "#/components/schemas/GraphNode"
@@ -18507,7 +18832,48 @@
           "to",
           "created_version",
           "created_at",
-          "stale"
+          "stale",
+          "changed_since_tie"
+        ],
+        "type": "object"
+      },
+      "DecisionReading": {
+        "properties": {
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "authored_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionEntryNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/DecisionEntryNode"
+          },
+          "text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "node",
+          "artifact_id",
+          "block_id",
+          "text",
+          "authored_by"
         ],
         "type": "object"
       },
@@ -20561,6 +20927,9 @@
             "type": "string"
           },
           "index": {},
+          "into": {
+            "type": "string"
+          },
           "markdown": {
             "type": "string"
           },
@@ -22565,6 +22934,15 @@
               "string"
             ]
           },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "open_questions": {
             "items": {
               "$ref": "#/components/schemas/IssueAskRow"
@@ -22576,6 +22954,7 @@
           }
         },
         "required": [
+          "entries",
           "document",
           "open_questions",
           "decisions"

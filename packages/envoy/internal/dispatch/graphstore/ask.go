@@ -33,6 +33,11 @@ const (
 	// TupleCopiedFrom points from the block node of a copy of an ask, on another document of its
 	// owner, to the ask it was copied from (docs' copiedAskSources). No table projects it.
 	TupleCopiedFrom = "copied_from"
+	// TupleRemovedBy points from an answered ask's node to the person who took its block out of
+	// the document its row names: that person's removal stays, and the decisions step never
+	// writes the block back. It is retracted once an ask block of that ask stands in that document
+	// again. No table projects it.
+	TupleRemovedBy = "removed_by"
 )
 
 // AskPlaces are the addresses (artifacts.ref_key) of the documents an ask's node relates to, each

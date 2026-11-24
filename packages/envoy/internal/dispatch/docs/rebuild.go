@@ -35,8 +35,9 @@ type RebuildReport struct {
 // supplied markdown, which changes the document), a latest version holding an element this build
 // does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
 // Proof document, drops an open ask block, introduces a block pointer at a block the attribute
-// may not name (refuseBlockPointers), or introduces a check block that breaks a rule of a check
-// CI proves (refuseCICheckBlocks), each against the latest version. Supplied markdown is caller
+// may not name (refuseBlockPointers), introduces a check block that breaks a rule of a check CI
+// proves (refuseCICheckBlocks), or introduces a reading in an ask that holds no answer
+// (refuseReadingsWithoutAnswers), each against the latest version. Supplied markdown is caller
 // text: it is parsed as an upload is, and its rendering is weighed as a new document's is
 // (SeedText). The latest version is the server's own rendering of the document, read back as
 // every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
@@ -235,6 +236,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		if err := refuseReadingsWithoutAnswers(ctx, tx, artifactID, tree, prior); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
