@@ -110,3 +110,76 @@ func unfilledKeys(t *testing.T, w *workflowRuntime) []string {
 	}
 	return keys
 }
+
+// A record written before the record carried its repository is filled only where the pull request
+// of each of its merges is on the repository Dispatch resolves it to. LEGION-1's plan holds a and b,
+// each a task that no task needs, so each merges by itself: a's pull request #7 is on acme/widgets,
+// which Dispatch resolves; where b's #8 is on zeta/tools, the record is left, named with #8 and the
+// fix; where #8 is on acme/widgets too, the record is filled.
+//
+// The fault it catches is a record filled on a repository the issue did not work in, read from one
+// merge of several (its control: the backfill reading the issue's merge pull request alone, a's
+// #7, under which the record is filled on acme/widgets while #8 is on zeta/tools).
+func TestTheBackfillReadsThePullRequestOfEachMerge(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
+	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+	for _, tc := range []struct{ name, bRepo, want string }{
+		{"b's pull request on another repository", "zeta/tools", "Dispatch resolves it to acme/widgets, but its pull request #8 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools)"},
+		{"each pull request on the resolved repository", "acme/widgets", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch)
+				values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, '', '')`); err != nil {
+				t.Fatal(err)
+			}
+			records := record.NewStore()
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				v := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-1", Source: record.PlanSourceOwner,
+					GivenBy: "legion-legion-legion-1-architect", GivenAt: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}
+				var tasks []record.PlanTask
+				for _, id := range []string{"a", "b"} {
+					tasks = append(tasks, record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: id, PlanVersion: 1, BlockText: "Do " + id + ".",
+						State: record.TaskRunning})
+				}
+				if err := records.PutPlan(ctx, tx, v, tasks, nil); err != nil {
+					return err
+				}
+				for _, pr := range []record.PullRequest{
+					{Issue: "LEGION-1", Repo: "acme/widgets", Number: 7, HeadSHA: "head-a", State: record.PullRequestOpen},
+					{Issue: "LEGION-1", Repo: tc.bRepo, Number: 8, HeadSHA: "head-b", State: record.PullRequestOpen},
+				} {
+					task := map[int]string{7: "a", 8: "b"}[pr.Number]
+					branch, err := records.AssignTaskBranch(ctx, tx, "LEGION-1", 1, task)
+					if err != nil {
+						return err
+					}
+					pr.Branch = branch
+					if err := records.PutPullRequest(ctx, tx, pr); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			w := &workflowRuntime{pool: pool, records: records, log: quietLogger()}
+			left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
+				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
+			got := recordedIssue(t, w, "LEGION-1")
+			if tc.want != "" {
+				if want := leftAs("LEGION-1", "acme/widgets", tc.want); !left || !strings.Contains(logged, want) {
+					t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
+				}
+				if got.Repo != "" {
+					t.Fatalf("LEGION-1 = %s after the backfill left it, want it unfilled", got.Repo)
+				}
+				return
+			}
+			if left || got.Repo != "acme/widgets" {
+				t.Fatalf("backfill left %t and LEGION-1 = %q, logging:\n%s\nwant LEGION-1 filled with acme/widgets", left, got.Repo, logged)
+			}
+		})
+	}
+}
