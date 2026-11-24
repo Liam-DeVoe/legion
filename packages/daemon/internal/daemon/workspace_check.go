@@ -363,20 +363,31 @@ func (r *outbox) roleDecline(issue string, role claim.Role, readAt time.Time, wo
 // the store queues it once for each pod (store's recordDecline), whether the read found work or
 // failed. Its hold is recorded under the unowned_ names (declineHold).
 func (r *outbox) keptDecline(ctx context.Context, issue string, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
-	decline := declineOf(claim.RoleArchitect, work.PodUID, readAt, work, failed)
 	hold, why := declineHold(true, work, failed)
 	claims, err := r.trees.ClaimStatesIn(ctx, r.project, issue)
 	if err != nil {
 		return store.IdleReleaseDecline{}, hold, "", err
 	}
-	notice := record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
-		Reason: keptMessage(issue, work.PodUID, claims, work, failed)}
-	message, err := record.NewOutboxRow(issue, notice, readAt)
+	decline, err := keptNoticeDecline(issue, work.PodUID, readAt, work, failed, keptMessage(issue, work.PodUID, claims, work, failed))
 	if err != nil {
-		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("encode the notice of %s's kept pod: %w", issue, err)
+		return store.IdleReleaseDecline{}, hold, "", err
 	}
-	decline.Kept, decline.Message = true, &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
 	return decline, hold, why, nil
+}
+
+// keptNoticeDecline is the Kept decline of the read at readAt of issue's pod, pod (declineOf), that
+// tells the issue's architect by its workspace-kept notice (record.WorkspaceKeptNotice), whose
+// reason is notice: the decline of a pod whose launcher read it (keptDecline), and the record of an
+// update round's keep that tells no open phase's worker (recordPodKept). The store queues the
+// notice once for each pod (store's recordDecline).
+func keptNoticeDecline(issue, pod string, readAt time.Time, work runtime.WorkspaceWork, failed error, notice string) (store.IdleReleaseDecline, error) {
+	message, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect, Reason: notice}, readAt)
+	if err != nil {
+		return store.IdleReleaseDecline{}, fmt.Errorf("encode the notice of %s's kept pod: %w", issue, err)
+	}
+	decline := declineOf(claim.RoleArchitect, pod, readAt, work, failed)
+	decline.Kept, decline.Message = true, &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+	return decline, nil
 }
 
 // declineRelease ends a release whose workspace check found work that no branch or tag on origin
@@ -478,9 +489,26 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 	if pod != "" {
 		where += " (pod " + pod + ")"
 	}
-	found := []string{where + ". No role process runs in this pod, so the pod's launcher read its workspace before the delete."}
+	return keptNotice(issue, claims, work, failed,
+		where+". No role process runs in this pod, so the pod's launcher read its workspace before the delete.",
+		"The launcher could not read the workspace",
+		"The daemon does not push this work and does not save it. The pod stays until a later read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue closes, or its tree closes or lingers. "+
+			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
+		fmt.Sprintf("To keep the work, start a role of %s in this pod, for example with `legion claims resume` or `legion claims retry`, and push the work to legion/%s. "+
+			"You are told this once for this pod.", issue, issue))
+}
+
+// keptNotice is the issue's architect's workspace-kept notice (record.WorkspaceKeptNotice) in the
+// one shape both keeps of a pod give it (keptMessage, roundKeptMessage): opening, which names the
+// pod and why its workspace was read; what the read found, or, for a read that failed (failed),
+// that unread, who could not read it, cannot show the workspace holds nothing, and the read's
+// error (readError); the state of each claim of the issue; rest, which says what keeps the pod,
+// what ends the keep and how the work is pushed; and, for a read that failed, the read the daemon
+// makes again after an hour.
+func keptNotice(issue string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error, opening, unread string, rest ...string) string {
+	found := []string{opening}
 	if failed != nil {
-		found = append(found, "The launcher could not read the workspace, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. "+
+		found = append(found, unread+", so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. "+
 			"The error of the read, in quotes, is: "+readError(failed)+".")
 	} else {
 		found = append(found, "The workspace holds work that no branch or tag on origin holds.")
@@ -490,11 +518,7 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 	if len(claims) == 0 {
 		states = "The daemon holds no claim of " + issue + "."
 	}
-	found = append(found, states,
-		"The daemon does not push this work and does not save it. The pod stays until a later read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue closes, or its tree closes or lingers. "+
-			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
-		fmt.Sprintf("To keep the work, start a role of %s in this pod, for example with `legion claims resume` or `legion claims retry`, and push the work to legion/%s. "+
-			"You are told this once for this pod.", issue, issue))
+	found = append(append(found, states), rest...)
 	if failed != nil {
 		found = append(found, "Because the read failed, the daemon also reads the workspace again after an hour.")
 	}
