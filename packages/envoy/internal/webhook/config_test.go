@@ -48,15 +48,9 @@ func TestLoadWebhookConfig(t *testing.T) {
 			wantVerdictAppID: "5341240",
 		},
 		{
-			name:             "a verdict app ID with a leading zero is read as GitHub spells the number",
-			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "05341240"},
-			wantGitHub:       true,
-			wantVerdictAppID: "5341240",
-		},
-		{
 			name:    "a verdict app ID that is no number → error naming it",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "app123"},
-			wantErr: `ENVOY_VERDICT_APP_ID="app123"`,
+			wantErr: `ENVOY_VERDICT_APP_ID "app123" is not a GitHub App id`,
 		},
 		{
 			name: "github verdict app ID is trimmed",
@@ -196,7 +190,7 @@ func TestOldVerdictAppSettingIsRead(t *testing.T) {
 		{
 			name:    "a former app ID that is no number → error naming the former name",
 			env:     map[string]string{"ENVOY_REVIEWER_APP_ID": "0"},
-			wantErr: `ENVOY_REVIEWER_APP_ID="0"`,
+			wantErr: `ENVOY_REVIEWER_APP_ID "0" is not a GitHub App id`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,13 +223,15 @@ func TestOldVerdictAppSettingIsRead(t *testing.T) {
 // ENVOY_VERDICT_APP_ID is a GitHub App's id, which GitHub's JSON gives as a whole number above 0
 // and the listener compares as written (contracts.VerdictAppsOwnSuite): any other non-blank value
 // would match no App and leave every suite in the record, so the listener refuses to start and
-// names the variable. Unset or blank is no verdict App, and the value is trimmed.
+// names the variable. The value is trimmed. Unset or blank, the listener refuses to start too: the
+// one App's id is required with github, since no verdict check is recorded without it, and here
+// no former ENVOY_REVIEWER_APP_ID stands in for it.
 func TestLoadWebhookConfigReadsTheVerdictAppID(t *testing.T) {
 	for _, tc := range []struct {
 		value, want, err string
 	}{
-		{value: "", want: ""},
-		{value: "  ", want: ""},
+		{value: "", err: "ENVOY_VERDICT_APP_ID required when github enabled"},
+		{value: "  ", err: "ENVOY_VERDICT_APP_ID required when github enabled"},
 		{value: " 5341240 ", want: "5341240"},
 		{value: "not-a-number", err: `ENVOY_VERDICT_APP_ID "not-a-number" is not a GitHub App id`},
 		{value: "05341240", err: `ENVOY_VERDICT_APP_ID "05341240" is not a GitHub App id`},
@@ -247,7 +243,6 @@ func TestLoadWebhookConfigReadsTheVerdictAppID(t *testing.T) {
 			clearEnvoyEnvironment(t)
 			t.Setenv("ENVOY_WEBHOOKS", "github")
 			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
-			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
 			t.Setenv("ENVOY_VERDICT_APP_ID", tc.value)
 			cfg, err := LoadWebhookConfig()
 			if tc.err != "" {

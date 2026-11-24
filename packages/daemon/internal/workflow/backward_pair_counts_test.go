@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -215,11 +216,32 @@ func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, ge
 	return counts
 }
 
-// testerMovesBack is the tester's own move of key out of testing back to the phase named
-// (request_backward_move).
+// testerMovesBack is the tester's return of key's task from testing to the earlier step whose
+// phase is to. The tester moves nothing back by request (BACKWARD_REFUSED): a check state failing
+// at the head it tested fails its step (failsAtTheHead), and its completion names the step the task
+// returns to by its place in the task (failedTest's returnTo), each completion naming a handoff
+// record of its own.
 func testerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase) {
 	t.Helper()
-	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: key, Requester: claim.RoleTester, To: to, Reason: "the review missed a case"})
+	var walk Walk
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		walk, err = engine.walk(ctx, tx, *issue)
+		return err
+	})
+	returnTo := slices.IndexFunc(walk.Steps, func(step record.PlanStep) bool { return step.Role == string(phase.RoleFor(to)) }) + 1
+	if returnTo == 0 {
+		t.Fatalf("task a of %s runs no step of %s to return to: %+v", key, to, walk.Steps)
+	}
+	apply := applyFacts(t, pool, engine)
+	failsAtTheHead(t, pool, apply, key)
+	completion := failedTest(key, returnTo, "test"+randomSuffix(t))
+	if result := apply(t.Name()+randomSuffix(t), completion); result.Refusal != nil {
+		t.Fatalf("the tester's completion returning %s to step %d was refused: %+v", key, returnTo, result.Refusal)
+	}
 }
 
 // A move back is counted by the task's own order, not by phase.Order: with the steps

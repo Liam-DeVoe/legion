@@ -82,11 +82,6 @@ func TestListenerEnvCheck(t *testing.T) {
 		// The verdict App's id, which github takes and does not require.
 		{name: "github with a verdictAppId", mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("5341240") }},
 		{
-			name:   "github with a blank verdictAppId",
-			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID(" ") },
-			input:  "verdictAppId", err: "verdictAppId is blank: give the verdict App's id, or leave it out",
-		},
-		{
 			name:   "github with a verdictAppId that is not a number",
 			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("not-a-number") },
 			input:  "verdictAppId", err: `verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`,
@@ -178,18 +173,26 @@ func TestListenerEnvCheck(t *testing.T) {
 	}
 }
 
-// The verdict App's id is written as ENVOY_VERDICT_APP_ID, after the other GitHub variables, only
-// when it is given: a listener given none writes the environment it wrote before the input.
-func TestListenerEnvWritesTheVerdictAppIdOnlyWhenGiven(t *testing.T) {
+// The verdict App's id is written as ENVOY_VERDICT_APP_ID, after the other GitHub variables, once:
+// github requires it (Check), so a listener with github always writes it, and one without github
+// never does.
+func TestListenerEnvWritesTheVerdictAppIdOnce(t *testing.T) {
 	e := listenerEnv()
 	e.NatsUrls = []string{"nats://example-bus.example-namespace.internal.example:4222"}
+	with, err := e.Variables()
+	require.NoError(t, err)
+	written := 0
+	for _, line := range with {
+		if strings.HasPrefix(line, "ENVOY_VERDICT_APP_ID=") {
+			written++
+		}
+	}
+	require.Equal(t, 1, written, "ENVOY_VERDICT_APP_ID lines in %q", with)
+	require.Equal(t, "ENVOY_VERDICT_APP_ID="+*e.VerdictAppId, with[len(with)-1])
+
+	withoutGitHub(&e)
+	e.Webhooks = []string{"slack"}
 	without, err := e.Variables()
 	require.NoError(t, err)
 	require.NotContains(t, strings.Join(without, "\n"), "ENVOY_VERDICT_APP_ID")
-
-	verdictApp := "5341240"
-	e.VerdictAppId = &verdictApp
-	with, err := e.Variables()
-	require.NoError(t, err)
-	require.Equal(t, append(without, "ENVOY_VERDICT_APP_ID=5341240"), with)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -320,11 +321,12 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 }
 
 // A task in another order than today's goes back to a step before it by its own order: with the
-// steps `implementer reviewer tester`, the tester runs after the review, and its move back to
-// reviewing puts the task at the review's step, from which the approval moves it on to the test
-// again and the test's pass to Legion's own retro. Each place moves with issues.phase in one write.
-// The twin: an issue with no plan rows walks today's line, where testing comes before reviewing,
-// so the tester's same move back to reviewing is refused there and moves nothing.
+// steps `implementer reviewer tester`, the tester runs after the review, and its return to the
+// review (a check state failing at the head it tested and its completion naming step 2,
+// testerMovesBack) puts the task at the review's step, from which the approval moves it on to the
+// test again and the test's pass to Legion's own retro. Each place moves with issues.phase in one
+// write. The twin: an issue with no plan rows, in testing, is refused a tester's move back by
+// request, as every tester's is (BACKWARD_REFUSED), and moves nothing.
 func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
@@ -343,14 +345,7 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
 
-	result, err := intake.ApplyFact(t.Context(), pool, "api", "tester-back-to-reviewing",
-		intake.BackwardMove{Issue: root.Key, Requester: claim.RoleTester, To: phase.Reviewing, Reason: "the review missed a case"}, engine, admissionStub{})
-	if err != nil {
-		t.Fatalf("the tester's move back to reviewing: %v", err)
-	}
-	if result.Refusal != nil {
-		t.Fatalf("the tester's move back to reviewing was refused: %+v", result.Refusal)
-	}
+	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 2}, phase.Reviewing)
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
@@ -360,7 +355,7 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 	// The twin: an issue with no plan rows, in testing, is refused the same move.
 	todays := migratedPool(t)
 	today := stepRoot(t, todays, phase.Testing)
-	result, err = intake.ApplyFact(t.Context(), todays, "api", "tester-back-to-reviewing",
+	result, err := intake.ApplyFact(t.Context(), todays, "api", "tester-back-to-reviewing",
 		intake.BackwardMove{Issue: today.Key, Requester: claim.RoleTester, To: phase.Reviewing, Reason: "the review missed a case"}, engine, admissionStub{})
 	if err != nil {
 		t.Fatalf("the tester's move back to reviewing with no plan rows: %v", err)

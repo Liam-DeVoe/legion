@@ -294,7 +294,6 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 		replicas       int
 		webhooks       []string
 		trigger, appID string // given with github
-		verdictApp     string // given with github when set
 		want           string // derived by hand from the listener's environment rules
 	}{
 		{
@@ -327,22 +326,6 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 				"ENVOY_VERDICT_APP_ID=7654321\n",
 		},
 		{
-			name:       "a verdict App",
-			natsUrls:   []string{"nats://example-bus.example-namespace.internal.example:4222"},
-			listenHost: "0.0.0.0", replicas: 1,
-			webhooks: []string{"github", "slack"}, trigger: "@legion", appID: "1234567", verdictApp: "5341240",
-			want: "PORT=9020\n" +
-				"ENVOY_LISTEN_HOST=0.0.0.0\n" +
-				"ENVOY_MACHINE_ID=example-machine\n" +
-				"NATS_URLS=nats://example-bus.example-namespace.internal.example:4222\n" +
-				"ENVOY_ALLOW_REMOTE_NATS=1\n" +
-				"ENVOY_NATS_REPLICAS=1\n" +
-				"ENVOY_WEBHOOKS=github,slack\n" +
-				"ENVOY_GITHUB_MENTION_TRIGGER=@legion\n" +
-				"ENVOY_REVIEWER_APP_ID=1234567\n" +
-				"ENVOY_VERDICT_APP_ID=5341240\n",
-		},
-		{
 			name:       "no webhook",
 			natsUrls:   []string{"nats://example-bus.example-namespace.internal.example:4222"},
 			listenHost: "0.0.0.0", replicas: 1,
@@ -362,9 +345,6 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			if github {
 				args = append(args, "--verdict-app-id", c.appID, "--mention-trigger", c.trigger)
 			}
-			if c.verdictApp != "" {
-				args = append(args, "--verdict-app-id", c.verdictApp)
-			}
 			args = append(args, "--listen-host", c.listenHost,
 				"--nats-replicas", strconv.Itoa(c.replicas))
 			stdout, stderr, code := run(args...)
@@ -379,9 +359,6 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			in.MentionTrigger, in.VerdictAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
 			if !github {
 				in.GitHubWebhookSecretArn, in.MentionTrigger, in.VerdictAppId = nil, nil, nil
-			}
-			if c.verdictApp != "" {
-				in.VerdictAppId = pulumi.StringRef(c.verdictApp)
 			}
 			if !slices.Contains(c.webhooks, "slack") {
 				in.SlackSigningSecretArn = nil
@@ -725,9 +702,10 @@ func TestWebhookListenerEnvRefusals(t *testing.T) {
 			want: "refused: --mention-trigger: holds a line break, which a KEY=value line cannot carry",
 		},
 		{
+			// No GitHub App id holds a line break, so the id rule refuses it before the line-break rule.
 			name: "a line break in --verdict-app-id",
 			args: listenerFlags([]string{"verdict-app-id"}, "--verdict-app-id", "123\n4567"),
-			want: "refused: --verdict-app-id: holds a line break, which a KEY=value line cannot carry",
+			want: `refused: --verdict-app-id: verdictAppId "123\n4567" is not a GitHub App id: a whole number above 0, with no leading zero`,
 		},
 		{
 			name: "a --verdict-app-id that is not a GitHub App id",

@@ -42,9 +42,11 @@ import (
 // moved again when a push stopped naming whose role made it, since one App pushes for every role:
 // the fuzzes no longer draw that mark, so each seed draws another history. Drawn as before, the
 // histories still judged to the digests recorded before the mark went, so that change moved no
-// judgement.
+// judgement. The run fuzz's run-1 digest is the one the remembered settled heads moved, so it
+// moved for both changes at once: the histories drawn without the mark, judged with that memory.
+// Every other digest is the one drawn without the mark, as before.
 var noMoveNamedDigests = map[string]string{
-	"run-1":          "245fb1515d4bfe0e6d5f80b70b168529119049c06e0a304fcc444560a8d5a195",
+	"run-1":          "c27cd93e5f74fc4df841c2284c1302b457711b8b33ef9f18270d097ecd156fa4",
 	"run-7":          "636aaa65ec64bb8ea6c3c63540e1c5ff736fbdfcee32618d198660eb6215b6b7",
 	"move-1-random":  "de0b76d0bb8becf4530eb29e874479b287c7f8aae16f8f3612e0daf4f60aaaca",
 	"move-1-bounded": "0a3e862d97b70d5009c6ca9fcebbb7ca133dd0db0b9d048dac6c6200a41f15ed",
@@ -57,7 +59,7 @@ var noMoveNamedDigests = map[string]string{
 // sender either way - and the move fuzz's are not: there the sender is what tells two pushes of
 // the same two heads apart.
 var noSenderNamedDigests = map[string]string{
-	"run-1":          "245fb1515d4bfe0e6d5f80b70b168529119049c06e0a304fcc444560a8d5a195",
+	"run-1":          "c27cd93e5f74fc4df841c2284c1302b457711b8b33ef9f18270d097ecd156fa4",
 	"run-7":          "636aaa65ec64bb8ea6c3c63540e1c5ff736fbdfcee32618d198660eb6215b6b7",
 	"move-1-random":  "fec4918ac26a89653730334d08da3c8a5ebca9b6f0e6934b2aae83ca35f85304",
 	"move-1-bounded": "2405078960dade0aaed79a17095874391811731650e6e284e42468739e606a0d",

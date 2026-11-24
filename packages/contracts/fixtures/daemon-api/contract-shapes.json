@@ -30743,6 +30743,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
