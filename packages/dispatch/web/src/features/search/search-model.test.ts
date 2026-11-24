@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { SearchOwner, SearchResult } from "../../api/types";
+import type { DisplayTree, SearchOwner, SearchResult } from "../../api/types";
 import {
   firstHighlightTerm,
   groupResults,
@@ -10,8 +10,9 @@ import {
   kindLabel,
   optionId,
   ownerWords,
-  plainSnippet,
+  snippetWithoutDirectives,
   stepActive,
+  withoutDirectiveSyntax,
 } from "./search-model";
 
 /** An issue owner as the one flat owner record carries it: the route table leaves `kind` a plain
@@ -103,33 +104,86 @@ test("a hit that is the issue itself shows its title once: the marked snippet wh
   expect(issueHitTitle(issue, "rate limit headers")).toBe("API: rate limit headers");
 });
 
-// Rule 1: no marker text. A snippet is a window cut from a document's Markdown and Proof's
-// directives, so its row's second line takes the markup out - a directive's fence and its
-// attributes, a link's address, list and table marks, emphasis - and keeps the words a person
-// wrote, with the words the search matched still marked (review N2, 13-filing-line).
-test("a hit's snippet reads as plain words, its matches still marked", () => {
-  const words = (snippet: string) =>
-    plainSnippet(snippet)
-      .map((part) => part.text)
-      .join("");
-  expect(words('table. ::: :::plan_task{#t1 serves="A page is…')).toBe("table. A page is…");
-  expect(words(":::decision{#d2}\nWe keep **one** [chip](/issues/CORE-1) per `item`.\n:::")).toBe(
-    "We keep one chip per item."
+// Rule 1: no marker text (review N2, 13-filing-line). A snippet is a window of a body, and a
+// window that starts or ends inside a Proof directive leaves its fence or its attributes cut,
+// which the server's reader reads as no directive: they reach the snippet's tree as paragraph
+// text, a soft break between them a space (`pmdoc/parse.go`). Their syntax comes out of the text,
+// the words of a quoted value stay, and nothing else of the text - its Markdown is the tree's -
+// is touched.
+test("a snippet's text loses a cut directive's fence and attributes, and keeps the words of its values", () => {
+  expect(withoutDirectiveSyntax('table. ::: :::plan_task{#t1 serves="A page is')).toBe(
+    "table. A page is"
   );
-  expect(words("## Steps\n- Read the [spec](https://example.com/spec\n| a | b |\n|---|---|")).toBe(
-    "Steps Read the spec a b"
-  );
-  expect(words("keep snake_case and *stars* apart")).toBe("keep snake_case and stars apart");
   expect(
-    plainSnippet(
-      'serves="<mark>astrolabe</mark> work" :::plan_task{#t1 serves="The <mark>astrolabe</mark>"}'
-    )
-  ).toEqual([
-    { mark: false, text: 'serves="' },
-    { mark: true, text: "astrolabe" },
-    { mark: false, text: ' work" The ' },
-    { mark: true, text: "astrolabe" },
-  ]);
+    withoutDirectiveSyntax(':::decision{#d2 title="One chip" by="alice"} We keep one chip. :::')
+  ).toBe("One chip alice We keep one chip.");
+  expect(withoutDirectiveSyntax(":::note[Why] We keep it.")).toBe("Why We keep it.");
+  // A window that began inside the attributes starts with their tail, inside a value or not.
+  expect(withoutDirectiveSyntax('serves="A page is"} The plan loads.')).toBe(
+    "A page is The plan loads."
+  );
+  expect(withoutDirectiveSyntax('page is"} The plan loads.')).toBe("page is The plan loads.");
+  // Prose with colons, braces or quotes and no directive is left as it is.
+  for (const prose of ['Ratio 1:2, a {b} and "c".', "snake_case **stays** as written"]) {
+    expect(withoutDirectiveSyntax(prose)).toBe(prose);
+  }
+});
+
+test("a snippet tree loses a cut directive's syntax across its text nodes, its marks kept", () => {
+  const tree: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: 'table. ::: :::plan_task{#t1 serves="', type: "text" },
+          {
+            marks: [{ attrs: { href: "/issues/CORE-1" }, type: "link" }],
+            text: "A page",
+            type: "text",
+          },
+          { text: " is ready once its ", type: "text" },
+          { marks: [{ type: "searchHighlight" }], text: "plan", type: "text" },
+          { text: " loads", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  expect(snippetWithoutDirectives(tree)).toEqual({
+    content: [
+      {
+        content: [
+          { text: "table. ", type: "text" },
+          {
+            marks: [{ attrs: { href: "/issues/CORE-1" }, type: "link" }],
+            text: "A page",
+            type: "text",
+          },
+          { text: " is ready once its ", type: "text" },
+          { marks: [{ type: "searchHighlight" }], text: "plan", type: "text" },
+          { text: " loads", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  });
+  // A paragraph that was nothing but a closing fence keeps no empty text node.
+  const closing: DisplayTree = {
+    content: [{ content: [{ text: ":::", type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+  expect(snippetWithoutDirectives(closing)).toEqual({
+    content: [{ content: [], type: "paragraph" }],
+    type: "doc",
+  });
+  // A tree with no directive syntax is the very tree, so its drawing is the one it had.
+  const plain: DisplayTree = {
+    content: [{ content: [{ text: "Plain words.", type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+  expect(snippetWithoutDirectives(plain)).toBe(plain);
+  expect(snippetWithoutDirectives(undefined)).toBeUndefined();
 });
 
 test("uses the first positive websearch term for document highlighting", () => {

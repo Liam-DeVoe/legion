@@ -6,6 +6,7 @@ import {
   type ReactNode,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -94,10 +95,11 @@ import {
   issueHitTitle,
   optionId,
   ownerWords,
-  plainSnippet,
   searchOperators,
   searchResultKind,
+  snippetWithoutDirectives,
   stepActive,
+  withoutDirectiveSyntax,
 } from "./search-model";
 import { useBarScope } from "./useBarScope";
 import { useGoingBar } from "./useGoingBar";
@@ -327,10 +329,11 @@ function PaletteOption({
 /** A hit (design v3, state 1): its kind's icon, its owner's key and its words at the size of the
  *  line on top, and the issue's status at its end, the one place the row says it. A hit that is
  *  the issue itself is one line, its title. Any other hit names its owner - the issue's title,
- *  and the document's name where it is one of the issue's - on the first line, and its snippet in
- *  plain words on a second, grey line under it (`plainSnippet`): a snippet is cut from a
- *  document's Markdown and Proof's directives, and no marker text shows (rule 1). The words the
- *  search matched stay marked. A hit of a done issue reads muted. */
+ *  and the document's name where it is one of the issue's - on the first line, and its snippet on
+ *  a second, grey line under it: the server's reading of it (`snippet_tree`) drawn on one line,
+ *  its formatting shown rather than its syntax and the words the search matched marked, with the
+ *  syntax of a Proof directive the window cut taken out of its text (`snippetWithoutDirectives`;
+ *  rule 1, no marker text). A hit of a done issue reads muted. */
 function ResultOption({
   active,
   onSelect,
@@ -359,8 +362,13 @@ function ResultOption({
   const itself = hitIsItsIssue(result);
   const title = itself ? issueHitTitle(result, source) : undefined;
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
-  const snippet = itself ? [] : plainSnippet(result.snippet);
   const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
+  // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
+  // time would paint the snippet again on each.
+  const snippetTree = useMemo(
+    () => snippetWithoutDirectives(result.snippet_tree),
+    [result.snippet_tree]
+  );
   let named: ReactNode;
   if (!itself) {
     named = (
@@ -406,23 +414,17 @@ function ResultOption({
           </span>
         )}
       </div>
-      {snippet.length === 0 ? null : (
+      {itself ? null : (
         // Under the key, past the icon's 16 px and the 8 px gap after it.
-        <p
-          className={`mt-0.5 truncate pl-6 text-xs ${textMutedOnSelectedCard}`}
-          data-testid="search-hit-snippet"
-        >
-          {snippet.map((part, index) =>
-            part.mark ? (
-              // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the one snippet, which never changes for one hit
-              <mark className={highlight} key={index}>
-                {part.text}
-              </mark>
-            ) : (
-              part.text
-            )
-          )}
-        </p>
+        <div className="mt-0.5 flex min-w-0 pl-6" data-testid="search-hit-snippet">
+          <MarkdownPreview
+            className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
+            highlightClassName={highlight}
+            lines={1}
+            markdown={withoutDirectiveSyntax(source)}
+            tree={snippetTree}
+          />
+        </div>
       )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>

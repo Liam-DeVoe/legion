@@ -256,6 +256,69 @@ test("groups the hits by kind with marked snippets, names each hit's issue once,
   }
 });
 
+// A document hit whose headline window began in one Proof directive and ends inside the next
+// one's attributes (review N2, 13-filing-line): the server's reader reads neither cut piece as a
+// directive, so its tree holds them as paragraph text, a soft break between them a space. The
+// snippet line draws that tree, its link and its highlight as drawn, with no fence and no
+// attribute syntax: `table. A page is ready once its plan loads`.
+test("a document hit's snippet shows no directive fence or attributes a cut window left, its link and highlight kept", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([
+      {
+        artifact: { name: "plan.md", slug: "plan" },
+        href: "/issues/LEGION-2/artifact/plan?q=plan",
+        id: "document-plan",
+        kind: "document",
+        owner: { key: "LEGION-2", kind: "issue", status: "in_progress", title: "Local testing" },
+        rank: 1,
+        snippet:
+          'table.\n:::\n:::plan_task{#t1 serves="A page is ready once its <mark>plan</mark> loads',
+        snippet_tree: {
+          content: [
+            {
+              content: [
+                { text: 'table. ::: :::plan_task{#t1 serves="', type: "text" },
+                {
+                  marks: [{ attrs: { href: "https://example.com/pages" }, type: "link" }],
+                  text: "A page",
+                  type: "text",
+                },
+                { text: " is ready once its ", type: "text" },
+                { marks: [{ type: "searchHighlight" }], text: "plan", type: "text" },
+                { text: " loads", type: "text" },
+              ],
+              type: "paragraph",
+            },
+          ],
+          type: "doc",
+        },
+      },
+    ])
+  );
+  const view = renderPalette();
+  try {
+    await searchFor(user, "plan");
+    const option = within(screen.getByRole("group", { name: "Documents" })).getByRole("option");
+    const snippet = within(option).getByTestId("search-hit-snippet");
+    const body = snippet.querySelector<HTMLElement>("[data-markdown-preview]");
+    if (body === null) throw new Error("the search snippet is not a MarkdownPreview");
+    await waitFor(() =>
+      expect(body.textContent?.replace(/\s+/gu, " ").trim()).toBe(
+        "table. A page is ready once its plan loads"
+      )
+    );
+    expect(body.textContent).not.toMatch(/:::|plan_task|serves=|[{}"]/u);
+    expect(within(body).getByText("plan", { selector: "mark" })).toBeTruthy();
+    expect(body.querySelector("[data-markdown-link]")?.textContent).toBe("A page");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("an issue hit whose snippet starts past the title's first words shows the whole title, once", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();

@@ -1,6 +1,11 @@
 import { SEARCH_OPERATORS, SEARCH_RESULT_KINDS } from "@legion/contracts";
-import { type SnippetSegment, snippetSegments } from "@legion/contracts/dispatch-snippet";
-import type { SearchOperator, SearchOwner, SearchResult, SearchResultKind } from "../../api/types";
+import type {
+  DisplayTree,
+  SearchOperator,
+  SearchOwner,
+  SearchResult,
+  SearchResultKind,
+} from "../../api/types";
 
 /** `value` as a result kind, or `undefined` where this dashboard knows no such kind. Every
  *  surface that needs the kind itself - the palette, the related-items list - narrows here. */
@@ -87,80 +92,186 @@ export function issueHitTitle(result: SearchResult, snippetText: string): string
   return snippetText.trim() === title.trim() ? undefined : title;
 }
 
-/** Characters of Unicode's private use area that stand for the server's `<mark>` and `</mark>`
- *  while a snippet's markup is taken out (`plainSnippet`), so a match keeps its highlight. */
-const MARK_OPEN = "\uE000";
-const MARK_CLOSE = "\uE001";
+/** One piece of a directive's syntax in a text: the characters from `start` to `end` come out,
+ *  and `put` goes in their place. */
+interface DirectiveCut {
+  readonly start: number;
+  readonly end: number;
+  readonly put: string;
+}
 
-/** The quoted values of a directive's attributes, the one part of them written for a person; a
- *  value the snippet's window cut runs to its end. */
-const QUOTED = /"([^"]*)(?:"|$)/gu;
+/** A directive's fence where a line of it began: three colons or more, and the directive's name
+ *  where the fence opens one (`:::plan_task`), as Proof's tokenizer reads a name
+ *  (`parseDisplayDirectiveOpen`, `pmdoc/display.go`). A soft break reads as a space in the tree, so
+ *  a fence of a line after the first stands after whitespace. */
+const DIRECTIVE_FENCE = /(?<=^|\s):{3,}(?:[A-Za-z][\w-]*)?/gu;
 
-/** Each piece of markup a snippet's text can hold, in the order `plainSnippet` takes them out,
- *  and what each leaves. */
-const MARKUP: readonly (readonly [RegExp, string | ((match: string, inner: string) => string)])[] =
-  [
-    // A directive's fence - ":::plan_task", or a bare ":::" - leaves nothing.
-    [/:{3,}[ \t]*[A-Za-z][\w-]*/gu, " "],
-    [/:{3,}/gu, " "],
-    // An inline directive's name, ":ref" of ":ref[DEMO-1]".
-    [/(^|[\s(]):[A-Za-z][\w-]*(?=[[{])/gu, "$1"],
-    // A directive's attributes, closed or cut, leave their quoted values.
-    [
-      /\{([^{}]*)(?:\}|$)/gu,
-      (_match, inner) => ` ${[...inner.matchAll(QUOTED)].map((value) => value[1]).join(" ")} `,
-    ],
-    // An image or a link leaves its words; what a cut link leaves of its address goes, and so
-    // does a lone bracket. An address holds no space, so a cut one ends at the first.
-    [/!?\[([^\]]*)\]\([^)\s]*\)?/gu, "$1"],
-    [/\[([^\]]*)\]\[[^\]]*\]/gu, "$1"],
-    [/\]\([^)\s]*\)?/gu, ""],
-    [/[[\]]/gu, ""],
-    // An autolink leaves its address; any other tag, nothing.
-    [/<((?:https?|mailto):[^>\s]*)>/gu, "$1"],
-    [/<\/?[A-Za-z][^>]*>/gu, ""],
-    // A heading's, a quote's and a list item's mark at a line's start; a table's rule, a rule
-    // between sections, and the pipes between a table's cells.
-    [/(^|\n)[ \t]*(?:#{1,6}|>|[-*+]|\d+[.)])[ \t]+/gu, "$1"],
-    [/(^|\n)[ \t|:-]{3,}(?=\n|$)/gu, "$1"],
-    [/\|/gu, " "],
-    // Strong, strike-through and code marks, then a single star or underscore that opens or
-    // closes emphasis - never one inside a word, as in "snake_case".
-    [/\*\*|__|~~|`+/gu, ""],
-    [/(^|[\s(])[*_]+(?=\S)/gu, "$1"],
-    [/(\S)[*_]+(?=[\s).,;:!?]|$)/gu, "$1"],
-    // A backslash escape leaves the character it escapes.
-    [/\\([^\w\s])/gu, "$1"],
-  ];
+/** The cuts of a directive's attributes from `start` to `end` of `text`: the words of each quoted
+ *  value stay, a space before each after the first, and the rest goes - `{`, `#t1`, `serves=`,
+ *  the quotes, `}`. `inValue` says whether `start` is inside a value already, as it is where the
+ *  window began partway through one. */
+function attributeCuts(text: string, start: number, end: number, inValue: boolean): DirectiveCut[] {
+  const cuts: DirectiveCut[] = [];
+  let inside = inValue;
+  // Whether a value's words were kept already, so the next value's are set apart by a space.
+  let kept = inValue;
+  let from = start;
+  for (let at = start; at < end; at += 1) {
+    if (text[at] !== '"') continue;
+    if (inside) {
+      from = at;
+    } else {
+      cuts.push({ end: at + 1, put: kept ? " " : "", start: from });
+      kept = true;
+    }
+    inside = !inside;
+  }
+  if (!inside) cuts.push({ end, put: "", start: from });
+  return cuts;
+}
+
+/** Where the window began inside a directive's attributes: the text up to their `}`, which
+ *  stands before any `{` and right after a quote, then whitespace or the text's end
+ *  (`serves="A page is"} The plan…`, or `page is"} The plan…` cut inside the value); -1 where the
+ *  text starts any other way. */
+function cutAttributesEnd(text: string): number {
+  const close = text.indexOf("}");
+  if (close < 1 || text[close - 1] !== '"' || text.lastIndexOf("{", close) !== -1) return -1;
+  return close + 1 === text.length || /\s/u.test(text[close + 1] ?? "") ? close + 1 : -1;
+}
 
 /**
- * A hit's snippet as plain words for the second line of its row (design v3, rule 1: no marker
- * text): the server's snippet is a window cut from a document's Markdown and Proof's directives
- * (`:::plan_task{#t1 serves="…"}`), so its fences, attributes, links, tags, list and table marks
- * and emphasis come out, leaving the words a person wrote, on one line. The words the search
- * matched stay marked.
+ * Where `text` holds a Proof directive's syntax and what each piece leaves: the fence and its
+ * name come out; a label keeps its words and loses its brackets; the attributes after it, to
+ * their `}` or to the text's end where the window cut them, keep the words of their quoted values
+ * and lose the rest (`attributeCuts`); and so do the attributes a window that began inside them
+ * starts with (`cutAttributesEnd`). Nothing else in the text is touched.
  */
-export function plainSnippet(snippet: string): SnippetSegment[] {
-  let text = snippetSegments(snippet)
-    .map((segment) => (segment.mark ? `${MARK_OPEN}${segment.text}${MARK_CLOSE}` : segment.text))
-    .join("");
-  for (const [pattern, leaves] of MARKUP) {
-    text =
-      typeof leaves === "string" ? text.replace(pattern, leaves) : text.replace(pattern, leaves);
+function directiveCuts(text: string): DirectiveCut[] {
+  const cuts: DirectiveCut[] = [];
+  const leading = cutAttributesEnd(text);
+  if (leading !== -1) {
+    const quotes = text.slice(0, leading - 2).split('"').length - 1;
+    cuts.push(...attributeCuts(text, 0, leading, quotes % 2 === 0));
   }
-  const segments: SnippetSegment[] = [];
-  let mark = false;
-  for (const part of text
-    .replace(/\s+/gu, " ")
-    .trim()
-    .split(/([\uE000\uE001])/u)) {
-    if (part === MARK_OPEN || part === MARK_CLOSE) {
-      mark = part === MARK_OPEN;
-    } else if (part !== "") {
-      segments.push({ mark, text: part });
+  DIRECTIVE_FENCE.lastIndex = Math.max(leading, 0);
+  for (let fence = DIRECTIVE_FENCE.exec(text); fence !== null; fence = DIRECTIVE_FENCE.exec(text)) {
+    let at = fence.index + fence[0].length;
+    cuts.push({ end: at, put: "", start: fence.index });
+    if (text[at] === "[") {
+      const close = text.indexOf("]", at);
+      cuts.push({ end: at + 1, put: "", start: at });
+      if (close !== -1) {
+        cuts.push({ end: close + 1, put: "", start: close });
+        at = close + 1;
+      } else {
+        at = text.length;
+      }
     }
+    if (text[at] === "{") {
+      const close = text.indexOf("}", at);
+      const end = close === -1 ? text.length : close + 1;
+      cuts.push(...attributeCuts(text, at, end, false));
+      at = end;
+    }
+    DIRECTIVE_FENCE.lastIndex = Math.max(DIRECTIVE_FENCE.lastIndex, at);
   }
-  return segments;
+  return cuts.filter((cut) => cut.end > cut.start || cut.put !== "");
+}
+
+/** `text` with `cuts` made: each cut's characters out, its `put` in their place, at `offset` of
+ *  the whole text the cuts were found in. */
+function cutText(text: string, cuts: readonly DirectiveCut[], offset = 0): string {
+  let out = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const at = offset + index;
+    let removed = false;
+    for (const cut of cuts) {
+      if (cut.start === at) out += cut.put;
+      if (at >= cut.start && at < cut.end) removed = true;
+    }
+    if (!removed) out += text[index];
+  }
+  return out;
+}
+
+/** `text` with the syntax of a Proof directive taken out (`directiveCuts`), its spaces run
+ *  together; `text` itself where it holds none. */
+export function withoutDirectiveSyntax(text: string): string {
+  const cuts = directiveCuts(text);
+  return cuts.length === 0 ? text : cutText(text, cuts).replace(/\s+/gu, " ").trim();
+}
+
+/** A node of a display tree, as far as the cut below reads one. */
+interface TreeNode {
+  readonly type: string;
+  readonly text?: string;
+  readonly content?: readonly TreeNode[];
+  readonly [key: string]: unknown;
+}
+
+/** `block`'s inline content with the directive syntax its text holds taken out, across its text
+ *  nodes, whose marks stay: the text of the block is read whole, since a mark - a link, a search
+ *  highlight - splits a fence or its attributes over several nodes. Any inline node that is not
+ *  text (a picture, a reference) stands as one character no cut takes. A node the cut empties
+ *  goes, as a tree holds no empty text, and the block's spaces are run together and trimmed at
+ *  its ends. `block` itself where it holds no directive syntax. */
+function cutBlock(block: TreeNode): TreeNode {
+  const inline = block.content ?? [];
+  const whole = inline
+    .map((node) => (node.type === "text" ? (node.text ?? "") : "\uFFFC"))
+    .join("");
+  const cuts = directiveCuts(whole);
+  if (cuts.length === 0) return block;
+  const content: TreeNode[] = [];
+  let offset = 0;
+  for (const node of inline) {
+    if (node.type !== "text") {
+      content.push(node);
+      offset += 1;
+      continue;
+    }
+    const text = node.text ?? "";
+    const cut = cutText(text, cuts, offset).replace(/\s{2,}/gu, " ");
+    offset += text.length;
+    if (cut !== "") content.push({ ...node, text: cut });
+  }
+  const first = content[0];
+  if (first?.type === "text") content[0] = { ...first, text: (first.text ?? "").trimStart() };
+  const last = content.at(-1);
+  if (last?.type === "text")
+    content[content.length - 1] = { ...last, text: (last.text ?? "").trimEnd() };
+  return { ...block, content: content.filter((node) => node.type !== "text" || node.text !== "") };
+}
+
+/**
+ * A hit's snippet tree with the syntax of a Proof directive taken out of its text (design v3,
+ * rule 1: no marker text; review N2). The server reads a hit's headline for display
+ * (`pmdoc.DisplaySnippetJSON`), but the headline is a window of the body, and a window that
+ * starts or ends inside a directive leaves its fence or its attributes cut - an opening line
+ * whose `{` never closes, a closing `:::` whose opener the window left out - which the reader
+ * reads as no directive, so they reach the tree as paragraph text, a soft break between them a
+ * space: `table. ::: :::plan_task{#t1 serves="A page is`. The words, their formatting and the
+ * search's highlight stay. `tree` itself where no textblock of it holds directive syntax.
+ */
+export function snippetWithoutDirectives(tree: DisplayTree | undefined): DisplayTree | undefined {
+  if (tree === undefined) return undefined;
+  let changed = false;
+  const walk = (node: TreeNode): TreeNode => {
+    const content = node.content;
+    if (content === undefined) return node;
+    if (content.some((child) => child.type === "text")) {
+      const cut = cutBlock(node);
+      changed ||= cut !== node;
+      return cut;
+    }
+    const walked = content.map(walk);
+    return walked.every((child, index) => child === content[index])
+      ? node
+      : { ...node, content: walked };
+  };
+  const walked = walk(tree as TreeNode);
+  return changed ? (walked as DisplayTree) : tree;
 }
 
 /** Mirrors the server's first positive websearch token for document deep links. */

@@ -52,10 +52,11 @@ body: |-
   a model service's own: "Dispatch could not file it just now", "Dispatch stopped before it filed
   the issue", or a failed run's sentence, such as "Dispatch could not reach the model". While a
   plan waits, the view shows its card from the question down with Approve and Discard pinned at
-  its foot and "↵ Approve" under the box, in the bar and the panel alike; a hit's snippet reads as
-  plain words on a grey second line; a stopped run's steps fold closed with its answer so far
-  above its card, and a Stop reads "Stopped · read 1 item" with Continue; a header over ended
-  calls reads in the past tense; a long plan title counts ("Change 4 items and send 1 message");
+  its foot and "↵ Approve" under the box, in the bar and the panel alike; a hit's snippet stands
+  formatted on a grey second line, with no directive fence or attributes a cut window left in
+  it; a stopped run's steps fold closed with its answer so far above its card, and a Stop reads
+  "Stopped · read 1 item" with Continue; a header over ended calls reads in the past tense; a
+  long plan title counts ("Change 4 items and send 1 message");
   a message on an issue names the agent it reaches or says none takes it; an undone run's fold
   line says what Undo left; Recent rows show the item's chip; New puts the cursor back in the box;
   the chip sits clear of the screen's top; and Settings says "Saved" beside the mode it saved.

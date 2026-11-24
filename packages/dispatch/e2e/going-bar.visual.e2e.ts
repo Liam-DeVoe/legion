@@ -317,9 +317,22 @@ const barRows: readonly BarRow[] = [
         [seed.bar.eyepiece, "Polish the eyepiece"],
         [seed.bar.dome, "Raise the observatory dome"],
       ] as const) {
+        // The issue page marks its spec read once it shows it (`spec-marks.ts`, a PUT of
+        // `/api/v1/me/documents/{id}/read`), a moment after its title shows. A goto made while
+        // that write is out cuts it, and the browser finishes it after the page has gone
+        // (`keepalive`), so the record of this page's requests holds it with no answer and no
+        // failure for good: the next page's settle wait counts it as an Inbox read still out
+        // and never settles (CI at 9e517ae6, state 01, two cut marks 4 ms and 11 ms before the
+        // two gotos). So the row leaves each issue once its mark is answered.
+        const marked = page.waitForResponse(
+          (response) =>
+            response.request().method() === "PUT" &&
+            /^\/api\/v1\/me\/documents\/[^/]+\/read$/u.test(new URL(response.url()).pathname)
+        );
         await page.goto(`/issues/${key}`);
         // The title has come, so the item is recorded with its title, as Recent lists it.
         await expect(page.getByText(title).first()).toBeVisible();
+        expect((await marked).ok(), `the read mark of ${key}'s spec`).toBe(true);
       }
       await openTheBar(page, seed);
       await askTheAgent(page, earlier);
