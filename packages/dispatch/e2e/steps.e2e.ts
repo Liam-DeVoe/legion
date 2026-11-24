@@ -11,6 +11,8 @@ import { expect, test } from "./test";
 
 const at = (time: string) => `2026-11-16T${time}:00Z`;
 
+// SLOW(>=2s): four runs written through the daemon's route, two issues' tabs read, and one
+// screenshot of the table scrolled to its last columns, which the review of the tab reads.
 test("the Steps tab lists each run of an issue's steps, a running run as running", async ({
   page,
 }, testInfo) => {
@@ -77,6 +79,13 @@ test("the Steps tab lists each run of an issue's steps, a running run as running
   await expect(rows.nth(0).getByRole("cell").nth(9)).toHaveText("—");
   await expect(rows.nth(0).getByRole("cell").nth(10)).toHaveText("unknown");
   await expect(rows.nth(2).getByRole("cell").nth(10)).toHaveText("running");
+  // Beside the margin the table is wider than its card, which scrolls it. The shot is of the card
+  // scrolled to its end, so it shows Result, Set model and Answered by whole.
+  await table.evaluate((element) => {
+    const box = element.parentElement;
+    if (box !== null) box.scrollLeft = box.scrollWidth;
+  });
+  await expect(rows.nth(1).getByRole("cell").nth(10)).toBeInViewport({ ratio: 1 });
   await page.screenshot({
     fullPage: true,
     path: testInfo.outputPath("steps-tab-answered-by.png"),
