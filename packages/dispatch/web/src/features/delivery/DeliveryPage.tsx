@@ -388,7 +388,8 @@ const facetTriggerClass = `flex w-full items-center justify-between rounded bord
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
  *  with its count, in the order `values` gives. A facet with no values in the window and nothing
- *  picked is not shown. */
+ *  picked is not shown. Until an answer is in (`counts` undefined) a value is drawn with no count:
+ *  nothing has been counted yet, and a 0 there would say the window holds no such pull request. */
 function Facet({
   label,
   values,
@@ -401,7 +402,7 @@ function Facet({
 }: {
   label: string;
   values: readonly string[];
-  counts: Readonly<Record<string, number>>;
+  counts: Readonly<Record<string, number>> | undefined;
   selected: readonly string[];
   valueLabel: (value: string) => string;
   open: boolean;
@@ -412,7 +413,7 @@ function Facet({
   const options = [...new Set([...selected, ...values])];
   const state =
     selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
-  const countOf = (value: string) => counts[value] ?? 0;
+  const countOf = (value: string) => counts?.[value] ?? 0;
   return (
     <div className="w-full">
       <span className={facetLabelClass}>{label}</span>
@@ -422,11 +423,15 @@ function Facet({
         onChange={onChange}
         onOpenChange={onOpenChange}
         open={open}
-        optionDetail={(value) => String(countOf(value))}
-        optionDetailLabel={(value) => {
-          const count = countOf(value);
-          return `${count} PR${count === 1 ? "" : "s"}`;
-        }}
+        optionDetail={counts === undefined ? undefined : (value) => String(countOf(value))}
+        optionDetailLabel={
+          counts === undefined
+            ? undefined
+            : (value) => {
+                const count = countOf(value);
+                return `${count} PR${count === 1 ? "" : "s"}`;
+              }
+        }
         optionLabel={valueLabel}
         options={options}
         searchLabel={`Search ${label.toLowerCase()}\u2026`}
@@ -463,8 +468,9 @@ function Facet({
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
  * the page has nothing else to show. A value is named in the words the answer gives it - an
  * issue's title, a group's or a component's name - only once there is an answer; until then it
- * reads as the address spells it. The panel then offers only what is picked, and no **Edit
- * groups**, whose editor edits the groups the answer lists.
+ * reads as the address spells it. The panel then offers what is picked and Rework's and
+ * Deployed's every verdict, each with no count beside it, since nothing has counted them, and no
+ * **Edit groups**, whose editor edits the groups the answer lists.
  */
 function DeliveryControls({
   columnsDrawn,
@@ -573,7 +579,7 @@ function DeliveryControls({
               {inPanel.map(({ key, label }) => (
                 <Facet
                   {...facetPanel(key)}
-                  counts={countsOf(key)}
+                  counts={data === undefined ? undefined : countsOf(key)}
                   key={key}
                   label={label}
                   onChange={(next) => onFilters({ ...filters, [key]: next })}
