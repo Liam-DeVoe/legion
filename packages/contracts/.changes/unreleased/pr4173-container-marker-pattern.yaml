@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    `CONTAINER_MARKER_PATTERN` is the regular expression source of one container marker a block nested in a quote, a list item or a footnote is written after: `>`, a list marker (`-`, `*`, `+`, or a number and `.` or `)`) followed by a space or a tab, or a footnote label `[^label]:` with a label that is not blank. The web's and the CLI's readers of an ask block's opening line build their rule from it.
+time: 2026-11-24T07:49:03.000000000Z
+custom:
+    Issue: pr4173

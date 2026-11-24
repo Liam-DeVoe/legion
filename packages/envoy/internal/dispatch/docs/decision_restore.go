@@ -2037,9 +2037,12 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 
 // withoutAsklessAskAttributes takes every attribute a version can store off each ask block of tree
 // that withAsk does not name (askBlocksWithAnAsk) - one that has no ask row and is no copy of an
-// ask, which keeps none of the eight (R10) - and reports whether it changed one. The strip is
-// R10's and stays; the blocks withAsk names are passed over only while a version keeps a form of
-// each ask, and that goes with it.
+// ask, which keeps none of the eight (R10) - and reports whether it changed one. Its one caller is
+// the decisions step's write of the decisions document (writeDecisionsDocument), so it goes with
+// the step; the blocks withAsk names are passed over only while a version keeps a form of each
+// ask, and that goes earlier.
+//
+// kept for one release: decisions-step
 func withoutAsklessAskAttributes(tree *pmdoc.Node, withAsk map[string]bool) bool {
 	changed := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
