@@ -2112,11 +2112,19 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 		r.log.Info(ownerStepStaleLine, "row", row.ID, "issue", row.Issue, "owner", owner, "role", payload.Role, "phase", payload.Phase, "run", payload.OwnerStep)
 		return false, nil
 	}
-	step := payload.Role
-	if step == "" {
-		if step, err = r.retroActsAs(ctx, row.Issue); err != nil {
+	// The role the notice's place is done as is the one rule of what the owner's place switches its
+	// slot to (record.OwnersPlaceActsAs, which ownerSlotRole reads for the slot too), with the
+	// task's plan rows read for the retro alone, whose notice names no role, and the owner's own
+	// role where it answers none.
+	var steps []record.PlanStep
+	if payload.Role == "" {
+		if steps, err = r.retroSteps(ctx, row.Issue); err != nil {
 			return false, err
 		}
+	}
+	step, acts := record.OwnersPlaceActsAs(payload.Phase, payload.Role, steps)
+	if !acts {
+		step = claim.RoleArchitect
 	}
 	if err := r.ownerSlotFor(ctx, row, owner, step, errNoticeWaits, "notice row"); err != nil {
 		return false, err
@@ -2183,28 +2191,24 @@ func (r *outbox) slotHoldsApp(ctx context.Context, row record.OutboxRow, owner c
 	return nil
 }
 
-// retroActsAs is the role the retro of issue's task is done as (record.RetroActsAs), read from the
-// plan rows of its run in a read-only transaction of its own: the role whose App the owner's slot
-// holds before the owner is told its retro (ownerSlotHolds). An issue the daemon does not record,
-// and a run with no plan rows, whose retro the owner does as itself, answer the architect.
-func (r *outbox) retroActsAs(ctx context.Context, issue string) (claim.Role, error) {
-	role := claim.RoleArchitect
+// retroSteps is the plan rows of the one task of issue's run (taskSteps), read in a read-only
+// transaction of its own: what the role the owner's retro is done as is read from
+// (record.OwnersPlaceActsAs, ownerSlotHolds). An issue the daemon does not record has none, and so
+// does a run with no plan rows: the owner does such a retro as itself.
+func (r *outbox) retroSteps(ctx context.Context, issue string) ([]record.PlanStep, error) {
+	var steps []record.PlanStep
 	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		stored, err := r.records.Issue(ctx, tx, issue)
 		if err != nil || stored == nil {
 			return err
 		}
-		steps, err := taskSteps(ctx, tx, r.records, *stored)
-		if err != nil {
-			return err
-		}
-		role = record.RetroActsAs(steps)
-		return nil
+		steps, err = taskSteps(ctx, tx, r.records, *stored)
+		return err
 	})
 	if err != nil {
-		return "", fmt.Errorf("read the role %s's retro is done as: %w", issue, err)
+		return nil, fmt.Errorf("read the plan rows of %s's task: %w", issue, err)
 	}
-	return role, nil
+	return steps, nil
 }
 
 // ownerStepRuns is whether step, the run an owner-step notice names, is still the open run of its
