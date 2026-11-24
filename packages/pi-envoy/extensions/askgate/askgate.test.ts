@@ -2624,14 +2624,10 @@ console.log(JSON.stringify(args, null, 2));
     ]);
     expect(g.calls).toHaveLength(4);
     // The new body is the text the model judges, as a comment's own body is.
-    expect(g.calls[0].user).toContain(
-      "The agent is about to run `dispatch edit-comment` with these arguments:"
-    );
+    expect(g.calls[0].user).toContain(toolLine("dispatch edit-comment"));
     expect(g.calls[0].user).toContain('"body": "Corrected: 72 hours, not 24."');
     // A delete carries no body: what the gate reviews is the call, naming the post it takes down.
-    expect(g.calls[1].user).toContain(
-      "The agent is about to run `dispatch delete-comment` with these arguments:"
-    );
+    expect(g.calls[1].user).toContain(toolLine("dispatch delete-comment"));
     expect(g.calls[1].user).toContain('"comment": "c-1"');
     // And each one is marked, so the CLI posts it as it posts a reviewed comment.
     expect(markersIn(g.store)).toHaveLength(4);
