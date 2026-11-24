@@ -226,8 +226,9 @@ func (w Walk) MovesBack(row Row) bool {
 // the reviewer's review an issue past it stands on. It compares places (record.TaskPlace.Rank), so
 // it reads a task whose steps of roles the deployment defines all run as step as the stored table
 // does (MovesBack). A phase the line does not hold, and an issue that stands at no place of the
-// line, passed nothing. Where two steps run as p it reads the first (PlaceOf); its readers ask of
-// implementing and reviewing, which each stand once in a line.
+// line, passed nothing. Where two steps run as p it reads the first (PlaceOf), which is what its
+// readers ask of implementing and reviewing, either of which can stand at two steps: whether any
+// such step stands behind the place the task stands at.
 func (w Walk) passedStep(at, p phase.Phase) bool {
 	here, standing := w.placeIn(at)
 	there, held := w.PlaceOf(p)

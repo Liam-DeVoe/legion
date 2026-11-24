@@ -1909,8 +1909,9 @@ const (
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
-	// MergeForwardReview asks the reviewer to read the merge that landed on an issue whose task's
-	// reviewer step already ran, and to approve the new head or request changes.
+	// MergeForwardReview asks the reviewer of the step that started last to read the merge that
+	// landed on an issue where a reviewer step of its task already ran, and to approve the new head
+	// or request changes.
 	MergeForwardReview MergeForwardStep = "review"
 )
 
