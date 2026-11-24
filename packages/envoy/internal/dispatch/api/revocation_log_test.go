@@ -126,11 +126,11 @@ func TestTheRevocationLoopsLinesNameThePersonByTheirLoginsHash(t *testing.T) {
 				t.Fatal(err)
 			}
 			clearUnboundFleet(t, r.database)
-			r.failing("catch-up")
+			r.failing(callCatchUp)
 		}, level: "ERROR", message: "catch up what the account binding did not revoke while it was off", kind: databaseDown},
 		{name: "a claimed revocation whose SettleHeld fails", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
-			r.failing("settle-held")
+			r.failing(callSettleHeld)
 		}, level: "ERROR", message: "read whether a claimed broker revocation's account holds its address again", kind: databaseDown},
 		{name: "a claimed revocation whose account holds its address again", set: func(t *testing.T, r *revocationLogRig) {
 			// replaced-account takes the address back through a build without the binding, which
@@ -140,7 +140,7 @@ func TestTheRevocationLoopsLinesNameThePersonByTheirLoginsHash(t *testing.T) {
 		}, level: "WARN", message: "it is settled, not sent", fields: []string{"subject=replaced-account"}},
 		{name: "a claimed revocation whose Sendable fails", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
-			r.failing("sendable")
+			r.failing(callSendable)
 		}, level: "ERROR", message: "read whether a claimed broker revocation may still be sent", kind: databaseDown},
 		{name: "a claimed revocation whose claim may send nothing", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
@@ -162,12 +162,13 @@ func TestTheRevocationLoopsLinesNameThePersonByTheirLoginsHash(t *testing.T) {
 		{name: "a revocation superseded whose address's generation cannot be read", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
 			r.broker.bodyByRoute[revokeRoute] = supersedeReply
-			r.failing("session-generation")
-		}, level: "ERROR", message: "answered a revocation superseded: Dispatch's session generation", fields: []string{`address_session_generation="unread: ` + databaseDown + `"`}},
+			r.failing(callSessionGeneration)
+		}, level: "ERROR", message: "answered a revocation superseded: Dispatch's session generation",
+			fields: []string{`address_session_generation="unread: ` + databaseDown + `"`, "still_owed_unread=false"}},
 		{name: "a revocation the broker revoked whose Settle fails", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
 			r.broker.bodyByRoute[revokeRoute] = revokedAnswer
-			r.failing("settle")
+			r.failing(callSettle)
 		}, level: "ERROR", message: "and the revocation could not be settled", kind: databaseDown},
 		{name: "a revocation the broker revoked", set: func(t *testing.T, r *revocationLogRig) {
 			r.owe(t, "replaced-account")
@@ -185,7 +186,7 @@ func TestTheRevocationLoopsLinesNameThePersonByTheirLoginsHash(t *testing.T) {
 		{name: "a machine-login revocation whose Settle fails", machine: true, set: func(t *testing.T, r *revocationLogRig) {
 			r.oweMachineLogins(t)
 			removalAged(t, r.database, machineLoginSettleAfter)
-			r.failing("machine-settle")
+			r.failing(callMachineSettle)
 		}, level: "ERROR", message: "and the revocation could not be settled; it is paid again", kind: databaseDown},
 		{name: "a machine-login revocation that stays owed", machine: true, set: func(t *testing.T, r *revocationLogRig) {
 			r.oweMachineLogins(t)

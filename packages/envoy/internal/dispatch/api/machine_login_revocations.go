@@ -113,7 +113,7 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 				"login_hash", person, "revoked", revoked, "retry_in", brokerRevocationRetry, "error_kind", errkind.Of(err))
 			continue
 		}
-		settled, err := revocationStoreCall(s, "machine-settle", func() (bool, error) { return revocations.Settle(ctx, revocation, machineLoginSettleAfter) })
+		settled, err := revocationStoreCall(s, callMachineSettle, func() (bool, error) { return revocations.Settle(ctx, revocation, machineLoginSettleAfter) })
 		if err != nil {
 			slog.Error("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner, and the revocation could not be settled; it is paid again",
 				"login_hash", person, "error_kind", errkind.Of(err))
