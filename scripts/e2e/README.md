@@ -464,6 +464,15 @@ Each item below names a script, then what it proves.
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `step-models-check.sh`
+
+  the check `c-real`, word for word: the step records of each issue, read with `dispatch steps`, against their agents' transcripts and the daemon's read lines.
+  For each harness it takes one step its agent ended, with both reads more than 2 s from any response.
+  That step's set model must be the settings', and its counts known, at least 1, and the transcript's between the reads.
+  No record may name a model its transcript does not hold.
+  `live-at-both-reads` holds a step that another fact ended to the same four things, as a second verdict.
+  A deployed Dispatch, the operator's credential, the daemon's JSON log and each agent's transcript, and it starts nothing
+
 - `owner-steps.sh`
 
   the plan the owner of an issue gives picks which of today's steps run and in which order, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues of one project:
@@ -5547,6 +5556,98 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an empty read is `UNKNOWN`, and each fault above has its row.
 [`plan-ratings.sh`](#plan-ratingssh)'s first step runs it against the Dispatch this checkout builds, with a `dispatch` on PATH that runs the same CLI, so it also reads finished issues a real Dispatch served rather than ones the test typed.
+
+## step-models-check.sh
+
+```sh
+scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> --agents <file> [--lower-one]     # → "c-real: PASS", exit 0
+```
+
+The check `c-real` after the release, word for word, and a second comparison beside it, `live-at-both-reads`.
+It runs `dispatch steps --issue <KEY>` once for each `--issue`, in the order given, and prints what each run printed.
+Then `bun` runs `lib/step-models-check.ts`, which joins each record to the daemon's log lines of its reads and judges it.
+It runs where the operator runs `dispatch` by hand, with the operator's own credential, as [`step-records-read.sh`](#step-records-readsh) does.
+It also needs `bun` on PATH, the daemon's JSON log and each agent's transcript.
+It sets no credential, reads no credential of its own, and writes only a scratch directory that it removes.
+
+Each item below names an input, then what it means.
+
+- `--daemon-log` names the daemon's JSON log.
+  It reads each line whose `msg` is `workflow: a step used a read of its agent's calls`.
+  The daemon writes one such line for each read that a step's start or end used.
+
+- `--agents` names a JSON file that gives each claim its `harness` (`omp` or `claude`), its `transcript` and its `setModel`.
+  A relative `transcript` path is read from the directory of the agents file.
+  `setModel` is the model that the deployment's settings give the claim's role.
+  Read it from those settings, never from a record, and keep a copy of the settings as evidence.
+  Each record that names a model needs its agent in the file.
+  A record names a model where its set model, an answering model or its last model is not `-`.
+
+- `--lower-one` lowers the first count of each taken step of both comparisons by 1, and keeps its set model.
+  It is the negative control of `c-real`: both verdicts must then be `FAIL`, exit 1.
+
+Each item below names what it reads, then how.
+
+- A record's read lines are those of its issue, task, place (the line's step), kind and start.
+  Two starts are one where they differ by less than 1 µs, since `dispatch steps` prints six fraction digits at most.
+
+- In an Oh My Pi session file, a response is each `message` entry of the role `assistant`.
+  It is named `<provider>/<model>`, at the entry's `timestamp`, and it counts unless its stop reason is `error`.
+  A `model_usage` entry is an upkeep call, and no response.
+
+- In a Claude Code transcript, a response is each assistant line, taken once by its `message.id`.
+  It is named `anthropic/<model>`, at the time of its last line, and it counts unless its model is `<synthetic>`.
+  A line whose `parent_tool_use_id` is a string, or whose `isSidechain` is true, is a subagent's, and no part of the agent's own conversation.
+
+- A transcript holds the model of each response, counted or not.
+  It also holds the model of each `model_change` entry (Oh My Pi) and `system` `init` line (Claude Code).
+
+- Each read has two gaps: the seconds since the last response before it, and the seconds to the next response after it.
+  Every response counts here, error and synthetic ones too.
+  A read is within 2 s of a response where either gap is under 2 s.
+
+Each item below names a comparison, then what it takes and judges.
+
+- `c-real` takes, for each harness of the agents file, the first step that its agent ended, in `--issue` order and then in printed order.
+  Its agent ended it where the daemon's end line of the step says `endedBy` `agent`.
+  The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
+  Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
+  Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read.
+  No record of the issues may name a set, answering or last model that its agent's transcript does not hold.
+  A harness with no such step prints `c-real: UNKNOWN: took no step of harness <harness>`, and no other kind of step stands in for it.
+
+- `live-at-both-reads` is no part of `c-real`.
+  For each harness, it takes the first step that another fact ended, on the same two reads, and holds it to the same four things.
+
+- For each step that its agent ended, taken or not, it prints one `GAP:` line.
+  That line gives each read's two gaps, or says why the read is missing or final.
+  A harness with no such step prints `GAP: harness <harness>: saw no step that its agent ended`.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `PASS: c-real: harness <harness>: <ISSUE> <task> <step> <kind> attempt <a>: <model>=<calls>,…` for each harness, then `c-real: PASS` | each harness took a step that shows the four things, and no record names a model its transcript does not hold |
+| 1 | one `FAIL: …` line for each fault, then `c-real: FAIL` | a taken step's set model or counts do not hold, or a record names a model its transcript does not hold |
+| 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, or it could read nothing to judge |
+
+It could read nothing to judge where a command failed, a line has other than 16 words, or the log holds no read line.
+The same holds where a log line holds the read line's message and is no JSON, or where a record's agent has no transcript.
+Each `PASS:` or `FAIL:` line of a taken step names its harness, so a pass shows each harness that it covered.
+Its last two lines are `c-real: <verdict>` and `live-at-both-reads: <verdict>`, on every exit.
+A usage error is exit 2 too, with the usage on stderr.
+
+A run on real harnesses may show that `c-real` cannot be met as written.
+One case is a `c-real: UNKNOWN` because no step that its agent ended meets the 2 s rule.
+Another is a model sentence that fails on a model that the transcript's form cannot hold.
+The person who ran it then stops, and changes nothing in the comparator, the stand-ins or the steps to make it pass.
+They report the `GAP:` lines and the transcript entries they read, and only whoever approved the check may change it.
+A reviewer's step that a GitHub review ends, and each merge step, never counts as ended by its agent.
+So a deployment that runs a harness only on reviewers or mergers prints `UNKNOWN` for that harness.
+
+`scripts/e2e/lib/step-models-check.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that answers each `--issue` with its own records.
+Its inputs are the fixtures of `scripts/e2e/lib/testdata/step-models/`, whose README says which are captured and which are made.
+Each fault above has its row, `--lower-one` fails both comparisons, and two issues each answer their own records.
+One row renders the made records through the real `dispatch steps` code and holds the text to the fixture.
+The made fixtures stand in for captures, so these rows do not yet show that the comparator reads real output.
 
 ## review-range.sh
 
