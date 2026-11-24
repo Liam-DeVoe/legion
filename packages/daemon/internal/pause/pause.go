@@ -476,12 +476,13 @@ func (s *Service) LastEndedPause(ctx context.Context) (store.Pause, bool, error)
 // tellsController is whether an act by `by` queues the controller's notice (decision 24). The
 // operator's act does and the controller's own does not, and only while a controller is
 // registered, which is the rule every wake of the controller keeps (admit.Admission.wakeController):
-// with none registered nothing reads the notice, since a controller that starts later is handed
-// nothing published before it (notify.ControllerTopic) and reads the pause from the state instead
-// (decision 25). The pause's notice has no rule of a waiting notice of its kind, as that function
-// has: each names its own pause, who acted and why, which the next notice does not repeat. The
-// registration is read just before the act's transaction, which reads it no more firmly: a
-// registration takes neither the fact serializer nor the pause's row.
+// a controller that starts later reads the pause from the state instead (decision 25). A notice
+// queued while one is registered waits, as every controller notice does, for the registered
+// session to hold the controller's role live (the daemon's outbox, controllerNotice). The pause's
+// notice has no rule of a waiting notice of its kind, as that function has: each names its own
+// pause, who acted and why, which the next notice does not repeat. The registration is read just
+// before the act's transaction, which reads it no more firmly: a registration takes neither the
+// fact serializer nor the pause's row.
 func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (bool, error) {
 	if by.Kind != store.PauseByOperator {
 		return false, nil

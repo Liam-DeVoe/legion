@@ -12,14 +12,6 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// The controller topic is the one the plugin's controller subscribes to
-// (legionControllerNoticeSubject, packages/contracts/src/subject.ts), byte for byte.
-func TestControllerTopicIsTheControllersNoticeSubject(t *testing.T) {
-	if got := ControllerTopic("legion"); got != "notifications.legion.legion.controller" {
-		t.Fatalf("ControllerTopic = %q, want the controller's notice subject", got)
-	}
-}
-
 func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The Envoy listener answers an unauthenticated publish with 401 (packages/envoy/cmd/listener/apiauth.go).

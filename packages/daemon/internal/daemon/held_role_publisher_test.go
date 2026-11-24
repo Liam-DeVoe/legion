@@ -3,7 +3,6 @@ package daemon
 import (
 	"cmp"
 	"context"
-	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A claim the boot could not suspend keeps its process, and that process keeps the Envoy role its
@@ -95,62 +93,6 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 			t.Fatalf("published to %s (keep %v), want %s with keep: %s records a session another claim holds", p.topic, p.keep, want, unheld)
 		}
 	}
-}
-
-// The controller topic follows the deployment's controller mode (heldTopic, review round 15 of
-// #4220). Under `controller: daemon` the launched controller claim is the project's controller, so
-// a controller notice waits while that claim records a session it does not hold: the row is
-// retried as a wait, logged as one rather than as a failure. It is published as before while that
-// claim holds its session (R9). Under `controller: operator` the topic is the operator's own
-// controller's, so a launched controller claim an earlier boot retired, whose session another
-// claim holds, holds nothing back, and the notice is published.
-//
-// The controls (the pull request records the runs): heldTopic mapping the controller topic under
-// either mode, as round 15 first did, holds the notice under `controller: operator` too; and
-// controllerNotice answering the gate's refusal as a plain failure fails the wait assertion.
-func TestTheControllerTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	controller := claim.ControllerToken("legion")
-	notice := func(t *testing.T) record.OutboxRow {
-		row := mustOutboxRow(t, "LEGION-941", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
-		row.ID = 99
-		return row
-	}
-	t.Run("controller: daemon, its claim not holding its session", func(t *testing.T) {
-		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
-			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateReady},
-		}, "ses_controller")
-		err := runner.execute(ctx, notice(t))
-		if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
-			t.Fatalf("the controller notice = %v, want a wait on the gate's refusal", err)
-		}
-		if got := publisher.topics(); len(got) != 0 {
-			t.Fatalf("published to %v while the daemon's controller claim records a session it does not hold", got)
-		}
-	})
-	t.Run("controller: daemon, its claim holding its session", func(t *testing.T) {
-		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
-			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateReady},
-		})
-		if err := runner.execute(ctx, notice(t)); err != nil {
-			t.Fatalf("the controller notice while the daemon's controller claim holds its session = %v, want it published", err)
-		}
-		if got, want := publisher.topics(), []string{notify.ControllerTopic("legion")}; !slices.Equal(got, want) {
-			t.Fatalf("published to %v, want %v: the controller claim holds its own session", got, want)
-		}
-	})
-	t.Run("controller: operator, a retired launched claim not holding its session", func(t *testing.T) {
-		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{}, []supervise.Claim{
-			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateRetired},
-		}, "ses_controller")
-		if err := runner.execute(ctx, notice(t)); err != nil {
-			t.Fatalf("the controller notice under controller: operator = %v, want it published", err)
-		}
-		if got, want := publisher.topics(), []string{notify.ControllerTopic("legion")}; !slices.Equal(got, want) {
-			t.Fatalf("published to %v, want %v: the operator's controller holds the topic", got, want)
-		}
-	})
 }
 
 // A claim's forget of a session another claim holds opens the claim's role topic, since a claim

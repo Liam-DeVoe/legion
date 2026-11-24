@@ -2406,6 +2406,22 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
+func (s *Postgres) ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", err
+	}
+	var session string
+	err = tx.QueryRow(ctx, "select session from controllers where project = $1", token).Scan(&session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the session of %s's registered controller: %w", project, err)
+	}
+	return session, nil
+}
+
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
 // issue when the caller named one and to one role of that issue when it named a role as well:
 // the same read every way, with the issue and the role as two more terms that an empty string

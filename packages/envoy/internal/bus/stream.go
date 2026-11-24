@@ -273,9 +273,9 @@ var streamSubjects = []string{
 	"notifications.dispatch.>",
 	"notifications.github.>",
 	"notifications.slack.>",
-	// The Go Legion daemon's notices for the project's controller
-	// (notifications.legion.<project>.controller); its workflow notices go to each owning
-	// architect's role topic.
+	// The Go Legion daemon's notices for the project's controller from a daemon of an earlier
+	// release (notifications.legion.<project>.controller; a current daemon sends them to the
+	// controller's role topic); its workflow notices go to each owning architect's role topic.
 	"notifications.legion.>",
 	"notifications.ghostwispr.>",
 	"notifications.whatsapp.>",
@@ -355,7 +355,7 @@ var privateStreamSubjects = []string{
 	// message sent to one session (contracts.AgentSubject, and contracts.LegacyAgentSubject in
 	// the old form).
 	contracts.AgentTopicPrefix + ">",
-	// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
+	// The Legion daemon's notices for one project's controller, from a daemon of an earlier release,
 	// which only the session holding that project's controller role may register
 	// (ControllerNoticeRole), and no other session may.
 	contracts.LegionNoticeTopicPrefix + ">",

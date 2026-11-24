@@ -80,7 +80,7 @@ type outbox struct {
 	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
-	notices    notify.Publisher
+	notices    outboxNotices
 	supervisor *supervisor
 	trees      outboxTrees
 	tokens     appauth.Tokens
@@ -181,7 +181,7 @@ type outbox struct {
 	// entry a claim the supervisor holds.
 	unheldWarned sync.Map
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
-	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
+	// its claim holds the controller's role topic back (heldTopic). False is `controller: operator`.
 	controllerLaunched bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
@@ -192,6 +192,16 @@ type outbox struct {
 	laneCtx context.Context
 	lanes   map[record.LaneKey]*outboxLane
 	wg      sync.WaitGroup
+}
+
+// outboxNotices is the Envoy listener as the outbox uses it: its publishes (notify.Publisher) and
+// the read of a role's holder (notify.HTTPPublisher.RoleHolder) that a controller notice waits on
+// (controllerHolds). The read is part of the type every outbox is built with, rather than a method
+// a publisher may or may not carry, so no publisher can be built into an outbox that would publish
+// a controller notice without asking who holds the role: a test's publisher answers it itself.
+type outboxNotices interface {
+	notify.Publisher
+	RoleHolder(ctx context.Context, role string) (holder, state string, err error)
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
@@ -229,8 +239,9 @@ type outboxTrees interface {
 }
 
 // newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
-// which decides whether the launched controller claim holds the controller topic back (heldTopic).
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
+// which decides whether the launched controller claim holds the controller's role topic back
+// (heldTopic).
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher outboxNotices, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -260,13 +271,12 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 
 // publish is every executor's publish to Envoy (r.notices), and publishKept its publish with keep,
 // both held to the claims this daemon supervises (heldBack). A publish to the role topic of a
-// claim the daemon supervises, or to its project's controller topic under `controller: daemon`
-// (heldTopic), is made only while that claim holds the session it records
-// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
-// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
-// message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message or a
-// controller notice would reach a process working under another claim's session, or one no claim
-// holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
+// claim the daemon supervises (heldTopic) is made only while that claim holds the session it
+// records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend
+// keeps its process, and that process keeps the Envoy role its session claimed, so a notice, a
+// role message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message
+// or a controller notice would reach a process working under another claim's session, or one no
+// claim holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
 // notify.ErrNoHolder, which every executor already answers its own way: a notice is held for its
 // architect; a merge-queue removal, a merge forward's message, a controller notice and a role
 // message a project's pause still owes its role (heldMessageOwed) wait; and any other role
@@ -331,19 +341,19 @@ func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
-// topic names, or, under `controller: daemon` alone, the project's controller claim for its
-// controller topic. Under `controller: operator` the controller topic is the operator's own
-// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
-// boot retired included (stopLaunchedController); under `controller: daemon` the launched
-// controller claim is the deployment's controller, since one runs per project.
+// topic names, but for the controller's role topic under `controller: operator`. There the role is
+// the operator's own controller's, so no claim the daemon launched holds it back, a launched
+// controller an earlier boot retired included (stopLaunchedController); under `controller: daemon`
+// the launched controller claim is the deployment's controller, since one runs per project.
 func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
-	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
-		return claim.Token(role), true
+	role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix)
+	if !isRole {
+		return "", false
 	}
-	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
-		return claim.ControllerToken(r.project), true
+	if !r.controllerLaunched && r.project != "" && claim.Token(role) == claim.ControllerToken(r.project) {
+		return "", false
 	}
-	return "", false
+	return claim.Token(role), true
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within
@@ -2340,7 +2350,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Five other executors publish to a role's topic, each with its own rules for what the publisher
+// Six other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
@@ -2350,14 +2360,17 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
 // merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
 // merger's claim has neither failed nor retired, and retries every other failure
-// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
+// (merge_queue_removal.go); mergeForwardMessage, a message of a merge forward, holds its row
 // the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
+// stands at the row's head (merge_forward.go); and controllerNotice, every notice told to the
+// project's controller, publishes only once the registered controller session holds the
+// controller's role live and holds its row for a topic with no live holder, however long that
+// lasts. Each of those six publishes with keep: false: deliverNotice, mergeQueueRemoval,
+// mergeForwardMessage and controllerNotice hold their own row, and a kept copy beside it would be
+// a second keeper of one message, one the listener drops after its hour; roleMessage's message is
+// stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
+// whether or not the role answers. So whoever changes the rule for a topic with no holder must
+// read all seven executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
@@ -2370,25 +2383,145 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	return err
 }
 
-// controllerNotice publishes a controller notice row to the controller topic of the daemon's own
-// project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// controllerNotice publishes a controller notice row (record.ControllerNotice) to the role topic
+// of the daemon's own project's controller (notify.RoleTopicPrefix and claim.ControllerToken), and
+// to nothing else: the Notice it is, under the row's own key. Every kind goes there: every hold
+// and a tree architect's own failed claim (workflow's noticeWithController), a root in triage
+// handed to Legion (admission), a root that keeps its admission slot while its architect waits on
+// a person (`awaiting-person`, workflow's enterAwaiting), a root admission took out of the workflow
+// because no tree of it runs and nothing would ever start it (`unslotted`, admit's
+// releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
+// outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
+// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
+// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
+// tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
+// stall), a root whose own architect is not taking the work the daemon states it is owed
+// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), one
+// of the controller's own programs its pod's memory guard ended (`memory-guard-kill`, workflow's
+// controllerMemoryGuardKill, once for each kill), a project's pause and resume
+// (`project-paused`, `project-resumed`, internal/pause), the messages the intake gave up, counted
+// in one notice that waits a minute for the give-ups after its first (`intake-gave-up`, record's
+// Postgres.GiveUpIntakeMessage), and the slot wakes admission sends through wakeController,
+// `slot-free`, `todo` and `tick` (admit.Admission.wakeController and its
+// callers say when; the tick alone carries `openCapabilities`, the deployment capabilities with no
+// decision, admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
+// `todo` or `awaiting-person`: it names the free slots in its summary and report, and work reaches
+// Legion only when a person hands it over or a role reports a clear defect the controller files
+// (skill://legion-controller, "Free slots").
+//
+// The notice is published only once the session that holds the project's controller registration
+// is the controller role's live holder at the listener (controllerHolds), and without keep. Until
+// then the row waits on its backoff, with no time bound, and a row that waited is published to the
+// next live holder whatever its age. The rules that decide whether a controller row is written at
+// all while no controller is registered stay with their writers (admit's wakeController, the
+// pause's notice).
+//
+// The listener resolves the role at the publish itself (sendToRole,
+// packages/envoy/cmd/listener/confirmed.go): it stores the notice on the live holder's own agent
+// subject, which that session's consumer follows from its first registration, and answers 200,
+// which finishes the row. The 200 is the stream's word that it stored the forward, not the
+// holder's that it read it. A session that still holds the role reads it from its backlog, and a
+// session that comes back under the same id after its process ended reads it there too. Once the
+// role is another session's or no one's, the listener copies the role messages that session did
+// not read to the role's kept lane, which hands each to the role's next live holder within the
+// hour (packages/envoy/cmd/listener's role_takeover.go and role_keep.go); a session that takes the
+// role while the old session's claim still stands is handed the old session's unread role
+// messages of the hour before its claim. A kept-lane or takeover copy keeps the event id of the
+// forward it copies, which the controller's plugin dedupes a copy on. The one loss left: a notice
+// stored for a session whose claim the role claim reaper frees before any session takes the role,
+// and that never comes back, reaches no one, and the next controller reads holds from the
+// daemon's state at its start (`legion state` and Dispatch).
+//
+// A role with no live holder at the moment of the publish — a holder whose registration passed
+// the live window since controllerHolds read it, or a role no session claims any more — is
+// answered 404 and stored for nobody (keep false: notify.ErrHolderUnresponsive or
+// notify.ErrNoHolder), and the row waits, as it waits on controllerHolds. Under `controller:
+// daemon` the publish is also held to the launched controller claim's session (heldTopic), whose
+// refusal, notify.ErrNoHolder, is the same wait: an operator's settle of that claim's name lets the
+// next attempt through. Each wait is logged by settle as a wait, never as an Error at every
+// attempt; controllerHolds says which of them turn into a warning.
+//
+// The topic the daemon published controller notices to before dispatch://INFRA-1585,
+// notifications.legion.<project>.controller, is still readable at the listener for the daemons of
+// other projects at earlier releases; this daemon publishes nothing there.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrNoHolder) {
-		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
-		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
-		// attempt, and the row runs again on its backoff, so an operator's settle of the
-		// controller claim's name lets the next attempt through.
-		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	role := claim.ControllerToken(r.project)
+	if err := r.controllerHolds(ctx, row, role); err != nil {
+		return err
 	}
-	if err != nil {
-		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
+	topic := notify.RoleTopicPrefix + string(role)
+	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	switch {
+	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
+		return wait.Errorf("the controller notice for %s waits for a live holder of %s: %w", row.Issue, role, err)
+	case err != nil:
+		return fmt.Errorf("publish the controller notice for %s to %s: %w", row.Issue, topic, err)
 	}
 	return nil
+}
+
+// controllerHolds is nil once the session that holds the project's controller registration is
+// the live holder of role, the controller's role, at the Envoy listener (GET /v1/roles/<role>,
+// notify.HTTPPublisher.RoleHolder), and a wait until then: no controller registered, a role no
+// session claims, a holder the listener reads unresponsive or gone, or a holder that is another
+// session than the registered one. A controller registers with the daemon before it claims its
+// role (packages/pi-legion's controller-session.ts), so a fresh controller's notices wait the
+// seconds its start takes. A read the listener did not answer, and one it refuses however often it
+// is asked (notify.RoleLookupRefused), fail the attempt, which the row retries.
+//
+// The wait on a registered controller is the one settle logs at INFO, then DEBUG, and at WARN from
+// attempt waitWarnAttempts on, which is the operator's sign that a registered controller does not
+// hold its role. The wait on a project with no controller registered stays at DEBUG after its first
+// attempt (routineWaiting): the controller liveness sweep already says so once per boot timeout
+// (watchController, controllerNotRegistered), and every waiting row of such a project would
+// otherwise repeat it each minute. Both retry on the outbox's own backoff (outbox.retry,
+// record.RetryBackoff: one second, doubling to
+// RetryBackoffMost, 64 s), and that cadence comes from what it waits on: a controller claims its
+// role within the seconds its own start takes after its registration answers, which the first
+// short retries catch; past that, a holder comes only when a controller session comes back or an
+// operator starts a new one, which the 64 s cap waits for at one row read and one listener read a
+// minute, so a notice reaches such a controller at most 64 s after it claims the role, and a row
+// no controller holds never spins. The wait holds nothing else of the issue behind it: a
+// controller notice is a board row, and the outbox holds a due row back only behind an older
+// status write or branch of its issue (record's outboxInOrder) or a running lifecycle row
+// (outboxLaneFree), so the issue's status writes, messages, other notices and lifecycle rows run
+// as they come due.
+func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role claim.Token) error {
+	if r.pool == nil || r.records == nil {
+		return errors.New("controller notice executor has no store to read the registered controller from")
+	}
+	var session string
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		session, err = r.records.ControllerSession(ctx, tx, r.dispatchProject)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the controller session the controller notice for %s is for: %w", row.Issue, err)
+	}
+	if session == "" {
+		return routineWaiting{err: wait.Errorf("the controller notice for %s waits for a controller to register", row.Issue)}
+	}
+	holder, state, err := r.notices.RoleHolder(ctx, string(role))
+	if err != nil {
+		return fmt.Errorf("read the holder of %s before the controller notice for %s: %w", role, row.Issue, err)
+	}
+	if holder != session || state != notify.StateLive {
+		return wait.Errorf("the controller notice for %s waits for controller session %s to hold %s live (the listener names %s): sent before then, it reaches no live controller",
+			row.Issue, session, role, holderNamed(holder, state))
+	}
+	return nil
+}
+
+// holderNamed is how a wait names the holder the listener answered for a role: the session and
+// its state, or no holder at all.
+func holderNamed(holder, state string) string {
+	if holder == "" {
+		return "no holder"
+	}
+	return fmt.Sprintf("holder %s, %s", holder, state)
 }
 
 func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {

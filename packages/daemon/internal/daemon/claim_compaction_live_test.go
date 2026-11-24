@@ -308,6 +308,10 @@ func (r *claimCompactionLive) registerController() {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
 	r.controllerSecret = registered.Secret
+	// The listener names the registered session the controller role's live holder, as it does once
+	// the controller claims the role, so a notice for it is published there (the outbox's
+	// controllerNotice).
+	r.notices.holds(string(claim.ControllerToken(r.project)), r.controllerSession)
 	r.note("the project's controller is registered as %s (claim %s), and its registration secret mints the grant its own door takes",
 		r.controllerSession, registered.ClaimToken)
 }
@@ -588,7 +592,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	}
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
-	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	r.note("the project's controller was told once on %s: %q", notify.RoleTopicPrefix+string(claim.ControllerToken(r.project)), told[0])
 
 	from := r.daemon.count()
 	answer := r.compactedByController(r.notice, claim.RoleImplementer)
@@ -1412,13 +1416,13 @@ func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.
 }
 
 // controllerNotices is the reason of every provider-errors notice the daemon has published to the
-// project's controller topic for issue, oldest first. The topic carries every claim's notice, so
-// the issue is read off the notice's own summary line (noticeSummary).
+// project's controller's role topic for issue, oldest first. The topic carries every claim's
+// notice, so the issue is read off the notice's own summary line (noticeSummary).
 func (r *claimCompactionLive) controllerNotices(issue string) []string {
 	r.t.Helper()
 	want := noticeSummary(record.ProviderErrorsNotice, issue)
 	var reasons []string
-	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))) {
 		if published.Message != want {
 			continue
 		}

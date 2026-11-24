@@ -2444,8 +2444,8 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
 // tree runs. A conventional unslotted root belongs to no live tree (unslotted); an
 // awaiting-person root is live by design, and leaves only when its hand-over label or its current
 // Dispatch claim makes a resume unsafe (workflow's Unresumable). Legion starts nothing for
-// either — it is someone else's work now, or a person's move to make — and the controller is told
-// on the controller topic alone (record.UnslottedNotice, one per root, its reason naming why). A
+// either — it is someone else's work now, or a person's move to make — and the controller alone
+// is told, on its role topic (record.UnslottedNotice, one per root, its reason naming why). A
 // key Reconcile holds is left for release to apply first, when respectHolds is set. It reports
 // whether it released any.
 func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, live map[string]struct{},

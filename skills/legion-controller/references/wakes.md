@@ -1,6 +1,6 @@
 # Wakes
 
-Read this when the skill's wake table sends you here. Wakes come on `notifications.legion.<project>.controller`, agents' messages on `notifications.role.legion-<project>-controller`. Check each in `read_state` before you act. A notice's `reason` is the daemon's own account: quote it, never rewrite it.
+Read this when the skill's wake table sends you here. Wakes and agents' messages come on `notifications.role.legion-<project>-controller`; a daemon of an earlier release sends wakes on `notifications.legion.<project>.controller`. A wake waits at the daemon while your session does not hold the role live, and comes once it does. Check each in `read_state` before you act. A notice's `reason` is the daemon's own account: quote it, never rewrite it.
 
 ## `tick`
 

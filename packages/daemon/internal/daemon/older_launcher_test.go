@@ -727,6 +727,10 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	}
 	r.awaitForgetTold()
 
+	// The controller's notice goes to its role topic once the registered controller session holds
+	// that role live (the outbox's controllerNotice).
+	registerControllerSession(t, r.pool, olderLauncherProject, "ses_controller")
+	r.notices.holds("ses_controller")
 	r.drain()
 
 	type text struct{ what, says string }
@@ -739,7 +743,7 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	architect := mustClaimToken(t, olderLauncherIssue, claim.RoleArchitect)
 	for _, to := range []struct{ who, topic string }{
 		{"its architect", notify.RoleTopicPrefix + string(architect)},
-		{"the controller", notify.ControllerTopic(olderLauncherProject)},
+		{"the controller", controllerRoleTopic},
 	} {
 		published := r.publishedOn(to.topic)
 		if len(published) != 1 {

@@ -917,9 +917,10 @@ func (n Notice) Published(id int64) (Notice, string) {
 	return n, OutboxKey(copied)
 }
 
-// ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
-// in an outbox row of its own, so its publish retries apart from the architect's notice row. It is
-// published as the Notice it is.
+// ControllerNotice is a Notice for the project's controller alone, published to the controller's
+// role topic once the registered controller session holds that role live (the daemon's outbox,
+// controllerNotice), in an outbox row of its own, so its publish retries apart from the
+// architect's notice row. It is published as the Notice it is.
 type ControllerNotice Notice
 
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
