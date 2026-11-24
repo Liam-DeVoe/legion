@@ -19,13 +19,14 @@ A tool that a workflow step reaches through `bun run` and that runs package scri
 
 ### When CI runs each job
 
-The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image`.
+The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image` and `dispatch-browser-pr`.
 `worker-image` runs on the pull request and in the release; in the merge queue, the `kind-image` job builds the same image with the same image probe, and the `kind / leak-guard` leg runs the same leak-guard test in it.
+`dispatch-browser-pr` is the browser lane's pull-request half: it runs on a pull request alone, and the merge queue runs the full lane (`dispatch-browser`) in its place.
 On a pull request, a job runs when its filter in `.github/ci-areas.yaml` matches a changed file, or when a changed file matches no filter, and the job is not held.
 The held jobs are `go-daemon`, `go-envoy-held`, `envoy-held`, `scripts-held`, `pi-held`, `web-cold`, the full browser lane (`dispatch-browser`), `agent-harness` and `airlock-arm`, with the jobs that carry their legs' names: a pull request runs one only while it carries the label `full-ci` or one of that job's lane labels (`.github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request` names them).
 No label runs `kind`: no pull request runs `kind`.
 
-A `workflow_dispatch` run of `ci.yaml` runs every job but `kind` and `agent-harness`, the held jobs included.
+A `workflow_dispatch` run of `ci.yaml` runs every job but `kind`, `agent-harness` and the four jobs whose `if:` names only a pull request or a merge group (`worker-image`, `dispatch-browser-pr`, `pr-title` and `cancel-started`), the held jobs included.
 `gh workflow run ci.yaml --ref <branch>` starts one, and is how a pull request gets a held suite's result before the merge without the label.
 `gh workflow run ci.yaml --ref <branch> -f kind-and-agent-harness=true` also runs `kind` and `agent-harness`, and is the way to run `kind` at a head.
 
