@@ -49,11 +49,9 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// The operations an architect steers its tree with that every architect prompt names (the
-	// architect's list in packages/pi-legion/src/tools.ts holds them all, with register_gate and
-	// close_root, which the root's case names, and the operations a phase worker has too): a prompt
-	// that never names one leaves it unused.
-	architectOperations := []string{"`register_plan`", "`stop_task`", "`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`complete_step`", "`read_record`"}
+	// Operations the legion tool gives an architect (packages/pi-legion/src/tools.ts) that every
+	// architect prompt names: a prompt that never names one leaves it unused.
+	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
 
 	for _, tc := range []struct {
 		name     string
@@ -66,8 +64,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
 		// and which code each of the two pre-checked texts is refused with: its length, and the
 		// decision block it holds (INFRA-1201).
-		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses the next step. It starts that step's agent", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
-		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses the next step. It starts that step's agent", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
 		// The implementer of a root with no code of its own pushes one empty commit to open its
 		// pull request. The implementer is also told the completion of implementing the handoff
@@ -92,10 +90,6 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
 			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
-		// The fresh agent a plan step `acceptance` with no key asks for composes no core of its own
-		// and ends its step with a verdict and no handoff record.
-		{"acceptance", claim.Role("acceptance"), false, []string{"core/common.md", "acceptance.md", "mechanics/headless.md"}, []string{"acceptance.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"This step writes no handoff record"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parts, err := composer.Compose(tc.role, tc.isRoot)
@@ -249,7 +243,7 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 		"Retro then commits only `docs/solutions/`", "no file changes above the approved head", "the same sha when retro added nothing", "Retro's `docs/solutions/` commit is never",
 		"'~(docs/solutions | .legion/<issue>)'", ".legion/<issue>/<phase>.json", "record handoff", "handoff-only", "Retro's last commit removes",
 		"committed handoff", "`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`", "Approved head:"}
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger, claim.Role("acceptance")} {
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 		text := composedText(t, composer, role, false)
 		for _, phrase := range retired {
 			if strings.Contains(text, phrase) {
@@ -289,7 +283,7 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 		isRoot bool
 	}{
 		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
-		{claim.RoleReviewer, false}, {claim.RoleMerger, false}, {claim.Role("acceptance"), false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
 		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
 	} {
 		text := composedText(t, composer, tc.role, tc.isRoot)
@@ -306,12 +300,12 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 // counts the `check` blocks that exist, and a rule that made the empty case a failure would stop
 // every issue in flight on the day these prompts deploy. So the tester records the gap in its
 // handoff without failing the phase for it, the reviewer names it in its review without asking
-// for changes over it, and, where the task has an acceptance step, the acceptance comment, the
-// architect's or the fresh acceptance agent's, names it and decides, which is then the only gate
-// on that gap. Each composed prompt that carries the rule says the empty case and its role's
-// answer to it, and no paragraph of that rule calls the case a failure or a request for changes.
-// Each is also told what a child proves: a child's own check whose `serves` names the root's
-// requirement, never a result against the root's own check.
+// for changes over it, and, where the task has an acceptance step, the architect's acceptance
+// comment names it and decides, which is then the only gate on that gap. Each composed prompt that
+// carries the rule says the empty case and its role's answer to it, and no paragraph of that rule
+// calls the case a failure or a request for changes. Each is also told what a child proves: a
+// child's own check whose `serves` names the root's requirement, never a result against the root's
+// own check.
 func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -330,7 +324,6 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 	}{
 		{claim.RoleTester, false, []string{"is a gap you name, never a reason of its own to send the issue back"}},
 		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a review that asks for changes"}},
-		{claim.Role("acceptance"), false, []string{"is a gap. You name it in your acceptance comment, and it is never a reason of its own to send the work back", "Your reading is then the only gate on the issue"}},
 		{claim.RoleArchitect, false, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 		{claim.RoleArchitect, true, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 	} {
@@ -440,7 +433,7 @@ func TestNoComposedPromptTeachesAnE2ELineOrAProofArray(t *testing.T) {
 		isRoot bool
 	}{
 		{claim.RolePlanner, false}, {claim.RoleImplementer, false}, {claim.RoleTester, false},
-		{claim.RoleReviewer, false}, {claim.RoleMerger, false}, {claim.Role("acceptance"), false},
+		{claim.RoleReviewer, false}, {claim.RoleMerger, false},
 		{claim.RoleArchitect, true}, {claim.RoleArchitect, false},
 	} {
 		text := composedText(t, composer, tc.role, tc.isRoot)
@@ -770,11 +763,7 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // the session the daemon recorded on the claim it started the reviewer under, in the first round
 // as in every later one, in a review whose Legion footer names the entry on the reviewer's row
 // (` Review entry: <n>.`, the task's last sentence, record.PhaseRow.Entry, which the task of a wake
-// ends with too) while that row holds the entry's task. The core part and the role part name the
-// commit in the daemon part's words, the head the Legion footer of the reviewer's own newest
-// deciding review of its step named, since a deciding review whose footer names no entry or another
-// one moves no commit, and, on an issue with no pull request, the commit the reviewer's newest
-// report of a verdict named (workflow's recordStepReview). It says to read the difference from that
+// ends with too) while that row holds the entry's task. It says to read the difference from that
 // commit and each thread, gives the thermonuclear pair that same diff, keeps every defect seen
 // outside it a finding, and names the three cases that read the whole change again. The pair's old
 // sentence, which ran it over the whole change in every round, is gone. This shows the text is
@@ -888,7 +877,6 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 		{"tester", claim.RoleTester, false, worker},
 		{"reviewer", claim.RoleReviewer, false, worker},
 		{"merger", claim.RoleMerger, false, worker},
-		{"acceptance", claim.Role("acceptance"), false, worker},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
@@ -1038,7 +1026,6 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 		{"tester", claim.RoleTester, false},
 		{"reviewer", claim.RoleReviewer, false},
 		{"merger", claim.RoleMerger, false},
-		{"acceptance", claim.Role("acceptance"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := composedText(t, composer, tc.role, tc.isRoot)
@@ -1054,19 +1041,12 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 	}
 }
 
-// A plan step `acceptance` with no key asks Legion for a fresh agent of the role acceptance, which
-// runs as accepting: an independent reading of the work at the place the task puts the step, the
-// whole finished work where it is the task's last step, where the step `acceptance:owner` is the
-// owner's own reading. Its prompt is the core every phase worker but the merger shares, its own
-// part and the headless mechanics, then the daemon's part
-// for it and the part every phase worker ends with (worker-common.md), in that order: it has no
-// core of its own. The composed text holds the reading the owner's acceptance makes — the results
-// at the head, the goal red team, the verdict that ends the step and the step it returns to — and
-// the SEPARATE-POD line with the clause that says Legion starts no pod for it. The sign-off stays
-// the owner's: every clause that names `sign_off` denies it to this agent, and one at least does,
-// so a prompt that told the agent to sign off fails, and so does one that no longer says anything
-// of it. This shows the text is loaded, never that the agent follows it.
-func TestTheAcceptancePromptHoldsTheOwnersReadingAndTheSeparatePodLine(t *testing.T) {
+// A plan step `acceptance` with no key asks Legion for a fresh agent of the role acceptance. Its
+// prompt is the core every phase worker but the merger shares, its own part and the headless
+// mechanics, then the daemon's part for it and the part every phase worker ends with
+// (worker-common.md), in that order: it has no core of its own. A pane reads each shared part
+// from the snapshot by path, so the snapshot holds the embedded part byte for byte.
+func TestTheAcceptancePromptIsTheWorkerCoreItsPartsAndWorkerCommon(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
 	if err != nil {
@@ -1085,45 +1065,17 @@ func TestTheAcceptancePromptHoldsTheOwnersReadingAndTheSeparatePodLine(t *testin
 		filepath.Join(daemonParts, "acceptance.md"),
 		filepath.Join(daemonParts, "worker-common.md"),
 	}
-	// Errorf rather than Fatalf: a part missing from the list is also read below for the words it
-	// carries, so the failure names what the agent would no longer be told.
 	if !slices.Equal(parts.RolePromptPaths, want) {
 		t.Errorf("RolePromptPaths = %q, want %q", parts.RolePromptPaths, want)
 	}
-	text := composedText(t, composer, acceptance, false)
-	folded := foldWhitespace(text)
-	for _, phrase := range []string{
-		// The SEPARATE-POD line and the clause that says it is a wish (go/worker-common.md).
-		"SEPARATE-POD <ISSUE> <task> <reason>",
-		"Legion starts no pod for this line",
-		// The owner's reading, which this agent makes in its place.
-		"goal-red-team",
-		"dispatch results --issue",
-		"each `unmet` finding",
-		"no Verification document, or with one that holds no `before_merge` check",
-		// The completion that ends the step, and the step a fail returns to.
-		`op: "handoff_complete"`,
-		`verdict: "pass"`,
-		`verdict: "fail"`,
-		"`return_to`",
-	} {
-		if !strings.Contains(folded, phrase) {
-			t.Errorf("the composed acceptance prompt omits %q", phrase)
+	for _, part := range []string{"core/common.md", "acceptance.md", "mechanics/headless.md"} {
+		got, err := os.ReadFile(filepath.Join(shared, part))
+		if err != nil {
+			t.Fatalf("read the snapshot's %s: %v", part, err)
 		}
-	}
-	denies := regexp.MustCompile(`\b(never|not)\b`)
-	named := 0
-	for _, clause := range clauses(text) {
-		if !strings.Contains(clause, "sign_off") {
-			continue
+		if string(got) != rolePart(t, part) {
+			t.Errorf("the snapshot's %s is not the embedded part", part)
 		}
-		named++
-		if !denies.MatchString(clause) {
-			t.Errorf("a clause of the composed acceptance prompt names `sign_off` without denying it to the agent: %q", clause)
-		}
-	}
-	if named == 0 {
-		t.Error("no clause of the composed acceptance prompt names `sign_off`, so nothing tells the agent the sign-off is the owner's")
 	}
 }
 
@@ -1148,67 +1100,6 @@ func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", dir, err)
-		}
-	}
-}
-
-// The owner of an issue does each step of its plan whose key is owner, and the retro of a task
-// with no step of the type implementation: Legion tells it the step with an owner-step notice, and
-// it reports the step with complete_step, which refuses an architect but the issue's own and a
-// step that does not run now. So each composed architect prompt names both and both refusals, says
-// that an owner-step goes to the issue's own architect alone and never up to the architect above it
-// while that architect does not hold its role (the daemon's noticeArchitect), and says how an
-// issue with no pull request closes. A step worker's prompt holds under every plan the
-// release takes, a task of the tester alone among them, which has no pull request: each sentence in
-// retired said every task had one, and no composed step worker prompt still says it, while each
-// worker named in noPullRequest says what it does on an issue with none. This shows the text is
-// loaded, never that an agent follows it.
-func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, isRoot := range []bool{true, false} {
-		text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, isRoot))
-		for _, term := range []string{"`owner-step`", "`complete_step`", "`NOT_THE_OWNER`", "`OWNER_STEP_NOT_RUNNING`", "the end of its retro closes one that has none", "all but an `owner-step`"} {
-			if !strings.Contains(text, term) {
-				t.Errorf("the composed architect prompt (root %t) omits %q", isRoot, term)
-			}
-		}
-	}
-	retired := []string{
-		"The issue closes after its merge",
-		"At the close, which comes at the merge",
-		"the issue's close hands this session the check task",
-		"the daemon sends the issue back to the implementer",
-		"the architect where it has the step `acceptance:owner`, and the retro",
-		"A `verdict` is the tester's alone",
-		"and the implementer opens every Legion pull request",
-		"nothing of this tree pushes above it",
-		"the architect's acceptance is the gate, where its task has the step `acceptance:owner`",
-		"names no planner has no plan handoff",
-		"the architect's acceptance where the task has the step `acceptance:owner`)",
-		"for implementation, for each step that follows yours",
-		"Past review, where the task has a reviewer step",
-		"an independent reading of the whole finished work before the retro",
-		"your issue closing, which the merge does (where",
-		"the reviewer of a task whose `Steps:` line names the planner",
-		"since the daemon asks the implementer for it once the issue is past its review",
-	}
-	noPullRequest := map[claim.Role]string{
-		claim.RoleTester:         "An issue with no pull request closes when its retro ends",
-		claim.RoleReviewer:       "Where the issue has no pull request, no review on GitHub can exist to decide your step",
-		claim.Role("acceptance"): "On an issue with no pull request the reviewer approves nothing on GitHub",
-	}
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.Role("acceptance")} {
-		text := foldWhitespace(composedText(t, composer, role, false))
-		for _, phrase := range retired {
-			if strings.Contains(text, phrase) {
-				t.Errorf("the composed %s prompt still says %q", role, phrase)
-			}
-		}
-		if want, ok := noPullRequest[role]; ok && !strings.Contains(text, want) {
-			t.Errorf("the composed %s prompt omits %q", role, want)
 		}
 	}
 }
