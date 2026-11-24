@@ -42,11 +42,11 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 // of its own. A key holds the name an earlier row of it held, and, since a version replaces the
 // rows of each task it gives and so can leave no row that names the key, the name whose claim holds
 // its session (KeySessionsOf). That holds whatever release wrote the rows: a claim of a release
-// before the claim recorded its session's agent records the agent the rows gave its name last once
-// 20261122120917 has run, so where the latest row of the name names a key, the name stays the
-// key's after the last row that said so is gone. Where a later row of the name names no key, a row
-// the release before wrote for an agent with no key that may run on the claim now, the migration
-// records that agent, and the name stays the key's only while the key's earlier row stands. A
+// before the claim recorded its session's agent records, once 20261122120917 has run, the agent
+// that ran on it last where that release kept its latest start, else the agent the rows gave its
+// name last, so where that agent is a key's, the name stays the key's after the last row that said
+// so is gone. Where the agent recorded is one with no key that the release before gave a key's name
+// in a later version, the name stays the key's only while the key's earlier row stands. A
 // name only agents with no key held is free, a numbered one as much as the role's own: a new task's
 // agent with no key takes the name of a stopped task's agent of its role, and the claim of that
 // name starts it in a session of its own (supervise.Claim.SessionAgent), so each later agent with
