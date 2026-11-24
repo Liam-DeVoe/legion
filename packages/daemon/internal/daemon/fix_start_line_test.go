@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -48,6 +49,7 @@ type fixLineRig struct {
 	rt       *fake.Runtime
 	tokens   map[claim.Role]claim.Token
 	conns    map[claim.Role]*fake.Conn
+	logs     *syncBuffer
 	applied  int
 }
 
@@ -94,24 +96,26 @@ func newFixLineRig(t *testing.T) *fixLineRig {
 	}); err != nil {
 		t.Fatalf("seed %s beside fix 1 reading its job: %v", fixLineIssue, err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
+	logs := &syncBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 2, "LEGION", log)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).phaseHolds
+	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records, log: log}).phaseHolds
 	adoptingAsTheDaemonDoes(sup)
 	conns := map[claim.Role]*fake.Conn{}
 	for role, token := range tokens {
 		conns[role] = fake.NewConn()
 		sup.deps.Conns.(*fake.Conns).Register(token, conns[role])
 	}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
+	runner := &outbox{log: log, pool: pool, dispatchProject: "LEGION", records: records,
 		supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + fixLineIssue}, nil
 		},
 	}
 	return &fixLineRig{t: t, ctx: ctx, pool: pool, records: records, handlers: []intake.Handler{engine, admission}, runner: runner,
-		sup: sup, rt: rt, tokens: tokens, conns: conns}
+		sup: sup, rt: rt, tokens: tokens, conns: conns, logs: logs}
 }
 
 // apply applies fact through the rig's handlers, the engine and the admission, as the outbox
@@ -184,7 +188,7 @@ func (r *fixLineRig) sends(role claim.Role, row record.OutboxRow) runtime.Adopti
 	}
 	machine, found := r.sup.Machine(r.tokens[role])
 	if !found {
-		r.t.Fatalf("the %s's start %d made no claim", role, row.ID)
+		r.t.Fatalf("the %s's start %d made no claim; the log:\n%s", role, row.ID, r.logs.String())
 	}
 	generation := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
@@ -297,7 +301,7 @@ func TestAFixStartAndAReviewerStartBothStand(t *testing.T) {
 
 			fixes, reviews := r.startRows(claim.RoleImplementer, true), r.startRows(claim.RoleReviewer, false)
 			if len(fixes) != 1 || len(reviews) != 1 {
-				t.Fatalf("the starts standing = %d of the fix and %d of the reviewer, want one of each", len(fixes), len(reviews))
+				t.Fatalf("the starts standing = %d of the fix and %d of the reviewer, want one of each; the log:\n%s", len(fixes), len(reviews), r.logs.String())
 			}
 			if got := r.sends(claim.RoleImplementer, fixes[0]); got.FixFrom != fixLineHead {
 				t.Fatalf("the fix's adoption = %+v, want its own copy at %s", got, fixLineHead)
