@@ -39,7 +39,7 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 	)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "WORKER_TOKEN", Hosts: []string{"api.example.com"}}}}
-		d.Machine.AirlockProxyURL, d.Machine.ProxyRoots = proxyURL, func() string { return caCertificate }
+		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = proxyURL, caCertificate
 	})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
@@ -104,7 +104,7 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "WORKER_TOKEN", Hosts: []string{"api.example.com"}, Kind: proxyrules.KindDPoP}}}
-		d.Machine.AirlockProxyURL, d.Machine.ProxyRoots = "http://127.0.0.1:13381", func() string { return "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n" }
+		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = "http://127.0.0.1:13381", "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
 	})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",

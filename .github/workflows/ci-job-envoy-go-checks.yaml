@@ -72,13 +72,10 @@ jobs:
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
-      - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
-        run: bash scripts/proxy-chain-check.test.sh
-        working-directory: packages/envoy
-      - name: Required-input and result test for airlock-check.sh (no stack or network)
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
         run: bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
-      - name: Stack and broker-start test for lib/check-stack.sh and lib/exec-env.sh, which judge-check.sh and proxy-chain-check.sh share, and judge-check.sh's result (a stand-in broker; no stack)
+      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
         run: bash scripts/judge-check.test.sh
         working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)

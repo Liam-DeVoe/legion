@@ -612,22 +612,10 @@ port of its own, behind one TCP front over both API ports and one over both prox
 enrolled pod session, whose key directory the exports name and whose lease an
 `agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
 the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
-Each broker takes its proxy's intermediate from the `ca` stand of `cmd/dev-proxy-stands`, which
-answers the certificate request a pod sends Certificate Authority Service under a test root of its
-own, so every call through the proxy verifies a chain of test root, test intermediate and leaf
-([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). `AIRLOCK_CA_CERT_FILE` holds that
-test root and the stands' own authority, which is what a client of the stack trusts;
-`PROXY_ROOT_FILE` is the test root alone. The brokers and the `ca` stand read one clock
-file, `PROXY_CLOCK_OFFSET_FILE`, a Go duration they add to the system's clock: `0s` at the
-start, and a check that writes another moves their certificates' days on without a restart.
 Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
 `DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
 loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
-one such stack runs at a time. `scripts/proxy-chain-check.sh` starts a stack of its own
-(`dev-airlock.sh --one-broker`), so stop this one first, and runs the chain's checks on it: the
-renewal at 5 days, the leaf while the pool fails, readiness and a new host (`k27`), a mounted
-intermediate (`k21`), and a client of the release before the chain against a release of two
-roots (`compat`).
+one such stack runs at a time.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
@@ -823,14 +811,11 @@ addresses the broker reaches directly rather than through the proxy: a model end
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
 answered ask on the open one, and a
 metadata server that mints the broker's identity token. The profiles file the script writes stands
-in for the deployment's own, which lives in the deployment's repository. The `ca` stand stands in
-for the pool of Certificate Authority Service a deployment names in `BROKER_PROXY_CA_POOL`: it
-answers the same request, under a policy of 7 days starting 5 minutes before its issue, path
-length 0, `serverAuth` alone, and the names `dev-airlock.sh` gives it from the profiles file before
-the brokers start, and with no credential sent to it. The two brokers behind one TCP front stand
-in for two pods behind a Service, so a call reaches either process. And the pod session the
-script enrols stands in for the Legion daemon's enrollment of a worker pod, which is why
-`agent-secrets self` answers `kind: pod` there.
+in for the deployment's own, which lives in the deployment's repository. The proxy's certificate
+authority is made at each start, where a deployment keeps it in a Kubernetes Secret both broker
+pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
+call reaches either process. And the pod session the script enrols stands in for the Legion
+daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
 The two brokers start as processes outside any cluster even when the script runs in a pod: it
 empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
 which a deployed broker in a cluster whose profiles hold a proxy block refuses to start without.

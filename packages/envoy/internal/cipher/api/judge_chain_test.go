@@ -34,7 +34,7 @@ func newJudgeServer(t *testing.T, chainSeconds uint32) *testServer {
 			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(judgedSeconds))},
 		}}
 		d.Machine.AirlockProxyURL = "http://127.0.0.1:13381"
-		d.Machine.ProxyRoots = func() string { return "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n" }
+		d.Machine.AirlockCACertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
 		chain := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(chainSeconds)},
 		}}

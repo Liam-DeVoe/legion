@@ -35,7 +35,7 @@ func newPlaceholderFixture(t *testing.T, rules proxyrules.Rules, apps ...string)
 	t.Helper()
 	file = rulesProfiles(t, rules, apps...)
 	m, enrollmentID, key = newAirlockFixture(t, file)
-	m.Airlock, m.AirlockProxyURL, m.ProxyRoots = rules, testProxyURL, func() string { return testCACertificate }
+	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
 	return m, enrollmentID, key, file
 }
 

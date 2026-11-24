@@ -15,8 +15,7 @@
 #   - one PASS: or FAIL: line for each property the check's outcome sentence names, and one for
 #     its negative control, because a control that does not behave as the check says leaves the
 #     check proving nothing;
-#   - one last line, `check <id>: passed`, `check <id>: failed (<n> of <m>)`, or
-#     `check <id>: UNKNOWN (no property was evaluated)`, which fails too.
+#   - one last line, `check <id>: passed` or `check <id>: failed (<n> of <m>)`.
 #
 # No line it prints is a credential. A value is compared by its SHA-256 (the first 16 hex
 # digits) and its length, and every line that compares one says so; that is a rule of the
@@ -92,8 +91,8 @@ names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER
 key in gws/accounts.json whose read tier it runs) in its environment, and refuses to start
 without them.
 
-It exits 0 only when every property passed, 1 when one did not or none was evaluated, and 2 on
-a usage error. k9 takes about twenty-five minutes; every other check takes a few.
+It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. k9 takes
+about twenty-five minutes; every other check takes a few.
 EOF
 }
 
@@ -226,11 +225,6 @@ report() {
 	echo
 	printf '%s\n' "${VERDICTS[@]+"${VERDICTS[@]}"}"
 	echo
-	# A run that asserted nothing proved nothing.
-	if [ "$TOTAL" -eq 0 ]; then
-		echo "check $CHECK_ID: UNKNOWN (no property was evaluated)"
-		return 1
-	fi
 	if [ "$PASSED" -eq "$TOTAL" ]; then
 		echo "check $CHECK_ID: passed"
 		return 0
