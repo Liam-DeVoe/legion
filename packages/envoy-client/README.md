@@ -1208,9 +1208,10 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with another OAuth error or without one (a proxy's page, a bare
-challenge), naming its status. The status decides first (`oauth-refusal.ts` in
+the broker refuses the login, the person denies it, its code expires, the code lapses no later
+than its first poll at the broker's interval (naming both), or the broker answers a poll with
+any other 4xx, with another OAuth error or without one (a proxy's page, a bare challenge), naming
+its status. The status decides first (`oauth-refusal.ts` in
 `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429 and a 5xx are polled
 again, whatever OAuth error they name, and only in another 4xx does a deciding error count:
 `access_denied`, which the broker answers 403, is the denial, `expired_token` and `invalid_grant`
