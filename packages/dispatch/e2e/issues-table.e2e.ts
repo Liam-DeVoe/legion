@@ -35,7 +35,6 @@ import {
   expectNoEndRoom,
   FOOT_ELEMENTS,
   FOOT_NAMES,
-  type FootSelectors,
   footCellLine,
   navigationProblems,
   readFootEnds,
@@ -390,7 +389,7 @@ test("with a refused change pending, New epic from these and Clear selection sti
     await select(other.key).check();
     // The foot, read through the shared probe as every row that carries `@foot` reads it
     // (`e2e/foot-probe.ts`), with the selection bar and Pending changes shown.
-    await expectFootClear(page, SELECTION_BAR, "issues-table 1600x1000 pending+bar");
+    await expectFootClear(page, FOOT_ELEMENTS, "issues-table 1600x1000 pending+bar");
     // A press that another element takes fails here, where Playwright reads the element at the
     // control's point, rather than hanging until the test's own timeout.
     await page.getByRole("button", { name: "New epic from these" }).click({ timeout: 5_000 });
@@ -410,18 +409,6 @@ const DESKTOP_SIZES: readonly { width: number; height: number }[] = [
   { width: 1600, height: 1000 },
   { width: 1920, height: 1080 },
 ];
-
-/** The selection bar, the one toolbar with no name, as the foot element the rows of this file
- *  read the floats against (`readFootElements`, e2e/foot-probe.ts). */
-const SELECTION_BAR: FootSelectors = {
-  "the selection bar": FOOT_ELEMENTS["the selection bar"],
-};
-
-/** The Agents page's broadcast composer, as the foot element the rows of this file read the
- *  floats against (`readFootElements`, e2e/foot-probe.ts). */
-const BROADCAST_COMPOSER: FootSelectors = {
-  "the broadcast composer": FOOT_ELEMENTS["the broadcast composer"],
-};
 
 /** A control a row names, under a name the row gives it rather than one it reads off the page.
  *  With `every`, it stands for each control the locator matches, numbered in the order the page
@@ -528,8 +515,8 @@ async function expectNamedShown(shown: readonly NamedElement[], at: string): Pro
 
 /**
  * Fails unless the foot of the issues table on `page` is clear at each of `sizes`, read through
- * the shared probe (`expectFootClear`, e2e/foot-probe.ts) against the selection bar
- * (`SELECTION_BAR`), at the real end of every scroller, and each element of `shown` has a box
+ * the shared probe (`expectFootClear`, e2e/foot-probe.ts) against every foot element
+ * (`FOOT_ELEMENTS`), at the real end of every scroller, and each element of `shown` has a box
  * there with each control it names on the page and free at its centre (`expectNamedShown`). Each
  * reading's `FOOT-CELL` line names it `issues-table <WxH> <floats>`. Then scrolls the document and
  * the table's box back to their start, where the rows a row's next press picks are drawn.
@@ -543,7 +530,7 @@ async function expectFootClearAt(
   for (const size of sizes) {
     await page.setViewportSize(size);
     const at = `${size.width}x${size.height}`;
-    await expectFootClear(page, SELECTION_BAR, `issues-table ${at} ${floats}`);
+    await expectFootClear(page, FOOT_ELEMENTS, `issues-table ${at} ${floats}`);
     await expectNamedShown(shown, at);
   }
   await page.evaluate(() => {
@@ -777,7 +764,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
       for (const size of sizes) {
         await page.setViewportSize(size);
         const at = `${size.width}x${size.height}`;
-        await expectFootClear(page, BROADCAST_COMPOSER, `agents ${at} ${floats}`);
+        await expectFootClear(page, FOOT_ELEMENTS, `agents ${at} ${floats}`);
         await expect(
           endedRow,
           `the ended session's row at the end of the page at ${at}`
@@ -896,7 +883,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
       for (const size of DESKTOP_SIZES) {
         await page.setViewportSize(size);
         const at = `${size.width}x${size.height}`;
-        const ends = await expectFootClear(page, {}, `${cell} ${at} pending+banner`);
+        const ends = await expectFootClear(page, FOOT_ELEMENTS, `${cell} ${at} pending+banner`);
         const scroller = ends.scrollers.find((read) => read.testid === testid);
         expect(
           scroller?.last ?? null,
@@ -978,7 +965,7 @@ test("with the update banner shown, every control of the selection bar takes a p
       await page.setViewportSize(size);
       await expectFootClear(
         page,
-        SELECTION_BAR,
+        FOOT_ELEMENTS,
         `issues-table ${size.width}x${size.height} banner+bar`
       );
       // A press that another element takes fails here, as in the rows above.
@@ -1042,7 +1029,11 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
     ]) {
       await page.setViewportSize(size);
       const at = `${size.width}x${size.height}`;
-      const ends = await expectFootClear(page, {}, `issues-table ${at} pending+banner+bar`);
+      const ends = await expectFootClear(
+        page,
+        FOOT_ELEMENTS,
+        `issues-table ${at} pending+banner+bar`
+      );
       const box = ends.scrollers.find((scroller) => scroller.testid === "issues-table-scroll");
       expect(
         box?.last?.cell ?? false,
@@ -1090,9 +1081,8 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
     await expect(pending).toContainText(refused.key);
     // The Navigation is read through the shared probe (`readFootEnds`, e2e/foot-probe.ts), at the
     // end of every scroll, as a settled state: the row takes the probe's problems of the
-    // Navigation, of a scroll short of its end and of two readings that differ
-    // (`navigationProblems`). Its top is null where the probe finds no Navigation, which is no
-    // problem of the probe's, so the row names it as one.
+    // Navigation, of one that does not show, of a scroll short of its end and of two readings
+    // that differ (`navigationProblems`).
     for (const size of [
       { width: 1600, height: 1000 },
       { width: 1920, height: 1080 },
@@ -1106,10 +1096,7 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
           .poll(
             async () => {
               const ends = await page.evaluate(readFootEnds, FOOT_NAMES);
-              problems = [
-                ...(ends.navigationTop === null ? ["the probe found no Navigation"] : []),
-                ...navigationProblems(ends),
-              ];
+              problems = navigationProblems(ends);
               return problems;
             },
             { message: `the Navigation's top at the end of the page at ${at}` }
