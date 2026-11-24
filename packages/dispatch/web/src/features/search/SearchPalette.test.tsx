@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -82,6 +82,13 @@ beforeEach(() => {
   jest.useFakeTimers();
 });
 afterEach(realClock);
+
+// A hit's snippet renders through the Markdown engine, a module loaded on first use
+// (`markdown-engine.ts`). Each row runs on the fake clock above, and a row's `waitFor` for a
+// snippet ran out before a held first load arrived in the cold lane (dispatch run 45428645668,
+// job 138567776636), so the engine is loaded before the rows begin, as in
+// `draft-matrix.agents-row.test.tsx`.
+beforeAll(warmMarkdownRenderer);
 
 /**
  * An issue hit's row is a reference to that issue, which reads the issue's summary to draw it.
@@ -300,11 +307,7 @@ test("a deleted post's hit draws the deleted line where its snippet would be", a
     expect(line()?.querySelector("time")).toHaveAttribute("datetime", "2026-10-02T00:00:00Z");
     expect(option(deleted)?.textContent).not.toContain("edited");
     expect(option(standing)?.querySelector("[data-post-deleted]")).toBeNull();
-    // The standing hit's snippet renders once the lazily loaded Markdown engine arrives, which
-    // the cold lane holds back, and the deleted line above needs no engine: wait for it too.
-    await waitFor(() =>
-      expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.")
-    );
+    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
   } finally {
     search.mockRestore();
     view.unmount();
