@@ -23,16 +23,18 @@ import (
 // where that step's key is owner; the implementer, for a run with no plan rows) is asked, on its
 // claim's topic, to merge the base forward onto the head and push (record.MergeForwardAsk), and the
 // record keeps the claim it asked (record.MergeForward.Agent), which says whose ask it is. Away
-// from that step it also tells the worker of the step the task stands at, when that is the tester,
-// the reviewer, the merger or a role the deployment or the plan defines, to stop writing the
-// workspace the roles share while the merge runs (record.MergeForwardHold), addressed as that
-// step's worker (record.Issue.StepWorker), so the owner at its own step is told as a fresh worker
-// of it is, by its own claim, unless that worker is the agent asked, which gets the ask alone
-// (tellAsk, addressMergeForward), and the architect that owns the issue one checks-red notice
-// whose phase is the phase the issue stays in and whose reason names the head, the base, why and
-// that the issue stays in its phase; the outbox routes that notice to the owning architect, as
-// every notice of the issue
-// but an owner-step is routed. At that step itself (Walk.atImplementation: implementing on today's
+// from that step it also tells the worker of the step the task stands at to stop writing the
+// workspace the roles share while the merge runs (record.MergeForwardHold), when that worker is
+// the tester, the reviewer, the agent of an acceptance step (a fresh agent of acceptance, or the
+// owner at `acceptance:owner`), the merger or a role the deployment or the plan defines
+// (record.MergeForwardReaches). That worker is addressed as the step's worker
+// (record.Issue.StepWorker), so the owner at its own step is told by its own claim, as a fresh
+// worker of that step is by its claim. Where that worker's claim is the claim asked, it gets the
+// ask alone, which covers the hold and says what the hold asked (tellAsk, addressMergeForward).
+// The architect that owns the issue gets one checks-red notice whose phase is the phase the issue
+// stays in and whose reason names the head, the base, why and that the issue stays in its phase;
+// the outbox routes that notice to the owning architect, as every notice of the issue but an
+// owner-step is routed. At that step itself (Walk.atImplementation: implementing on today's
 // steps) only the ask goes, and the record marks it so (record.MergeForward.Own): the agent's own
 // assignment and its completion stand, and the architect is told nothing, since the work the
 // conflict needs is already where the task stands.
@@ -51,9 +53,10 @@ import (
 // on a phase entry alike.
 //
 // The roles are addressed by the one order of a merge forward's messages to one agent
-// (addressMergeForward), one message to each claim, and a pull request that is not open, an issue
-// in no phase of record.MergeForwardPhases and a tree that lingers (record.TreeLingers, where every
-// role is suspended) are asked nothing.
+// (addressMergeForward): each claim gets one message, the ask where it is both the agent asked and
+// the worker held. A pull request that is not open, an issue in no phase of
+// record.MergeForwardPhases and a tree that lingers (record.TreeLingers, where every role is
+// suspended) are asked nothing.
 func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
 	if pr.State != record.PullRequestOpen || !record.StandsIn(issue, record.MergeForwardPhases...) {
@@ -266,14 +269,16 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // shares it.
 //
 // The worker of the step the task stands at, when the landed reaches it - the tester, the
-// reviewer, the merger or a role the deployment or the plan defines (record.MergeForwardReaches) -
-// addressed as that step's worker (record.Issue.StepWorker), the owner at its own step among them,
-// is told the old head and the new one and to read what the merge changed before it goes on
-// (record.MergeForwardLanded), unless that worker's claim is the one the ask reached
-// (record.MergeForward.Agent): that agent pushed the merge, at its own step or at another step its
-// key works. An issue past its review (record.PastReview) stands on a review of the old head, so
-// the reviewer is asked to read the merge and approve the new head or request changes
-// (record.MergeForwardReview), whoever pushed the merge, since the merger waits for that approval.
+// reviewer, the agent of an acceptance step (a fresh agent of acceptance, or the owner at
+// `acceptance:owner`), the merger or a role the deployment or the plan defines
+// (record.MergeForwardReaches) - addressed as that step's worker (record.Issue.StepWorker), the
+// owner at its own step among them, is told the old head and the new one and to read what the
+// merge changed before it goes on (record.MergeForwardLanded), unless that worker's claim is the
+// one the ask reached (record.MergeForward.Agent): that agent pushed the merge, at its own step or
+// at another step its key works. An issue past its review (record.PastReview) stands on a review
+// of the old head, so the reviewer is asked to read the merge and approve the new head or request
+// changes (record.MergeForwardReview), whoever pushed the merge, since the merger waits for that
+// approval.
 // That holds only where the issue's task has a reviewer step (the walk's line holds reviewing): a
 // task whose plan has none stands on no review of the old head, no reviewer step runs for it, and a
 // merger told to wait for a reviewer's approval would wait for good, so nothing is asked and the

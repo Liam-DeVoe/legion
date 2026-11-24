@@ -19,12 +19,16 @@ import (
 var errMergeForwardWaits = wait.New("the merge-forward message waits for its owner's slot")
 
 // mergeForwardMessage publishes one message of a merge forward (record.MergeForwardMessage,
-// dispatch://INFRA-4374 R1) to the Envoy topic of the role it names on the row's issue, and to
+// dispatch://INFRA-4374 R1) to the Envoy topic of the claim it reaches on the row's issue, and to
 // nothing else: the ask that the agent of the task's implementation step merge the base forward
-// and push, the hold that tells the worker of the phase the issue stays in to stop writing the
+// and push, the hold that tells the worker of the step the issue stands at to stop writing the
 // workspace while it does, and, once the merge lands, the landed to that worker and the review to
 // the reviewer of an issue past its review whose task has a reviewer step (payload.Message,
-// composed from the pull request as this attempt reads it). It stops nothing it reaches.
+// composed from the pull request as this attempt reads it). The workflow addresses them by the one
+// order of a merge forward's messages to one agent (its addressMergeForward): one claim gets one
+// message of each event, the ask covering the hold and the review covering the landed
+// (payload.Covers), and the landed is not sent to the claim the ask reached
+// (record.MergeForward.Agent), which pushed the merge. It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
@@ -48,13 +52,16 @@ var errMergeForwardWaits = wait.New("the merge-forward message waits for its own
 // once the owner's session runs, for the owner's slot to hold that role's App (ownerSlotActs).
 //
 // No row ends on its claim's end while the workflow still delivers it and nobody hears of it. A
-// message to the issue's owner whose claim has failed or retired waits for the owner's next start
-// (heldMessage.outlives): the owner's own steps wait on the ask, and the next phase start of a
-// child starts its failed architect again (the workflow's reviveArchitect). An ask or a review to
-// another agent's claim that failed or retired finishes undelivered, and the architect that owns
-// the issue is told it will not reach that agent (mergeForwardLost). A hold or a landed to such a
-// claim finishes undelivered with no more: its agent is the worker of the step the issue stands
-// at, whose failed claim holds that step, and whose retry starts it again at the record's head.
+// message to the issue's owner whose claim has failed or retired waits for the owner's next start,
+// since the owner's own steps wait on the ask. The daemon starts a child's failed owner again at
+// its failure where the child stands at a step or a retro only the owner ends (the workflow's
+// restartFailedOwner), and else at the child's next phase start (reviveArchitect); a re-admission
+// of a mid-phase child (admit's startMidPhaseMembers), an operator's retry and the controller's
+// fresh_session start it too. An ask or a review to another agent's claim that failed or retired
+// finishes undelivered, and the architect that owns the issue is told it will not reach that agent
+// (mergeForwardLost). A hold or a landed to such a claim finishes undelivered with no more: its
+// agent is the worker of the step the issue stands at, whose failed claim holds that step, and
+// whose retry starts it again at the record's head.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -94,9 +101,10 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	case err != nil:
 		return err
 	case delivered.ended != "" && owners:
-		// The owner's own steps wait on the message, and the owner's next start comes with its
-		// child's next phase start (the workflow's reviveArchitect), a hold's retry or an operator's
-		// retry: the row waits for it.
+		// The owner's own steps wait on the message. The owner's claim is started again at its
+		// failure at a step or a retro only it ends (the workflow's restartFailedOwner), at its
+		// child's next phase start (reviveArchitect), at a re-admission, or by an operator's retry
+		// or the controller's fresh_session: the row waits for that start.
 		return wait.Errorf("the merge-forward %s of %s waits for its %s's claim, which has %s, to be started again", payload.Step, row.Issue, payload.Role, delivered.ended)
 	case delivered.ended != "":
 		if err := r.mergeForwardLost(ctx, row, *issue, token, payload, delivered.ended); err != nil {

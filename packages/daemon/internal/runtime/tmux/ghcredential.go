@@ -115,20 +115,21 @@ type paneWrite struct {
 }
 
 // writePaneCredential writes entry's pane's gh files for the App of the role the pane works as
-// (paneRole), and is every write of a watched pane's gh files: the refresh's and the one an
-// owner's step asks of a slot (WriteSlotCredential). The role is judged once to mint its bundle
-// before the launch lock, since a mint is a network call every launch would wait out, and judged
-// again under the launch lock, which the write is made under and every launch's write of the
-// claim's gh directory too (writeGitHubCredential); where the two differ, a step of the owner
-// having started or ended in the mint, the bundle is minted again there for the role judged under
-// the lock. So the App a pane's files hold is decided in the one critical section that writes it,
-// and no write judged before another lands after it: a refresh that judged the architect's own App
-// before the owner's step started cannot write it over the step's App once the step's write is
-// made. The write is made only while the pane is still watched, judged under the same lock: the
-// lock a launch holds from its refusal of the claim's earlier process, which lets that process go
-// (refuseLiveIncarnation), through its own write of the claim's bundle to its watch of the new pane
-// (launch), so a pane the caller's snapshot held and a relaunch has since let go is passed over,
-// the relaunch having written the bundle of the role its new pane runs as.
+// (paneRole), and is every write of a watched pane's gh files: the refresh's and the one the
+// daemon asks of a slot for an act of the owner's, a step, a retro or a merge forward asked of it
+// (WriteSlotCredential). The role is judged once to mint its bundle before the launch lock, since a
+// mint is a network call every launch would wait out, and judged again under the launch lock, which
+// the write is made under and every launch's write of the claim's gh directory too
+// (writeGitHubCredential); where the two differ, an act of the owner having started or ended in the
+// mint, the bundle is minted again there for the role judged under the lock. So the App a pane's
+// files hold is decided in the one critical section that writes it, and no write judged before
+// another lands after it: a refresh that judged the architect's own App before the owner's act
+// started cannot write it over the act's App once the act's write is made. The write is made only
+// while the pane is still watched, judged under the same lock: the lock a launch holds from its
+// refusal of the claim's earlier process, which lets that process go (refuseLiveIncarnation),
+// through its own write of the claim's bundle to its watch of the new pane (launch), so a pane the
+// caller's snapshot held and a relaunch has since let go is passed over, the relaunch having
+// written the bundle of the role its new pane runs as.
 func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess) (paneWrite, error) {
 	role, known, err := r.paneRole(ctx, entry)
 	if err != nil || !known {
@@ -204,11 +205,11 @@ func (r *Runtime) watching(entry trackedProcess) bool {
 
 // paneRole is the role whose App entry's pane holds (runtime.SlotRole): the controller's for the
 // controller's pane; the role the runtime's ActsAs gives the claim, the step's while the
-// architect does a step of its own; else the role the pane was launched as, which the claim held
-// then and the process keeps for its whole life, and for a pane this runtime adopted without
-// seeing its launch, the daemon's record of the claim's role (Options.ClaimRole). It answers false
-// for a pane whose role it cannot know: an adopted pane with no record to ask, or a token that
-// names no claim.
+// architect does a step of its own or the retro of one, and the implementer while a merge forward
+// asked of it has not ended; else the role the pane was launched as, which the claim held then and
+// the process keeps for its whole life, and for a pane this runtime adopted without seeing its
+// launch, the daemon's record of the claim's role (Options.ClaimRole). It answers false for a pane
+// whose role it cannot know: an adopted pane with no record to ask, or a token that names no claim.
 func (r *Runtime) paneRole(ctx context.Context, entry trackedProcess) (claim.Role, bool, error) {
 	token := entry.locator.Claim
 	if token.IsController() {

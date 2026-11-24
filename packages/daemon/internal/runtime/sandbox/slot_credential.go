@@ -21,19 +21,20 @@ var _ runtime.SlotCredentials = (*Runtime)(nil)
 // WriteSlotCredential satisfies runtime.SlotCredentials: the one-slot write of the refresh
 // (writeSlotCredential) of the slot of token in its issue's live pod, for the App of the role the
 // refresh judges for it (judgeSlot: runtime.SlotRole of the claim the store holds in the slot,
-// judged on each read of the slot's Secret, so a step that began or ended since the read makes the
-// write a conflict judged again), minted on the issue the slot's Secret records (claimBundle), so a
-// role a plan defines holds the App of its type. The Secret is rewritten only where it does not
-// hold that render already. While a launch into the slot is in flight (markSlotLaunch) the write is
-// refused, as a refresh's is (refreshUpdate): the launch's start waits for the very token the
-// launch wrote, so no other write may change it until the start ends. The write then waits for the
-// end of that launch, its start answered, failed or cut short (slotLaunchEnd), never for a clock,
-// and is made again on a fresh read of the pod and the stored claims, for the App judged then. Where
-// ctx ends first it answers runtime.ErrSlotCredentialPending, a wait, and writes nothing. It holds
-// no lock and no transaction while it waits, so the launch it waits for needs nothing of it. A
-// runtime with no credential function wrote no slot any gh files, and an issue with no live pod
-// has no slot to write: the claim's next launch writes the App runtime.SlotRole answers then,
-// judged the same way.
+// judged on each read of the slot's Secret, so a step, or a merge forward asked of the owner, that
+// began or ended since the read makes the write a conflict judged again), minted on the issue the
+// slot's Secret records (claimBundle), so a role a plan defines holds the App of its type. The
+// Secret is rewritten only where it does not hold that render already. While a launch into the
+// slot is in flight (markSlotLaunch) the write is refused, as a refresh's is (refreshUpdate): the
+// launch's start waits for the very token the launch wrote, so no other write may change it until
+// the start ends. The write then waits for the end of that launch, its start answered, failed or
+// cut short (slotLaunchEnd), never for a clock, and is made again on a fresh read of the pod and
+// the stored claims, for the App judged then. Where ctx ends first it answers
+// runtime.ErrSlotCredentialPending, a wait, and writes nothing. It holds no lock and no
+// transaction while it waits, so the launch it waits for needs nothing of it. A runtime with no
+// credential function wrote no slot any gh files, and an issue with no live pod has no slot to
+// write: the claim's next launch writes the App runtime.SlotRole answers then, judged the same
+// way.
 func (r *Runtime) WriteSlotCredential(ctx context.Context, token claim.Token) error {
 	if r.gitHubCredential == nil {
 		return nil

@@ -54,8 +54,9 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 
 // refreshGitHubCredentials brings the slot Secrets of every live pod to the current render of the
 // GitHub credential each slot holds — the App of the role runtime.SlotRole answers for it: the
-// role the runtime's ActsAs gives the claim in it, the step's while the architect there does a
-// step of its own, else the role its process was launched as, which that launch recorded on the
+// role the runtime's ActsAs gives the claim in it (the step's while the architect there does a
+// step of its own or the retro of one, and the implementer while a merge forward asked of it has
+// not ended), else the role its process was launched as, which that launch recorded on the
 // Secret, else the stored claim's role, and its own name's App where no stored claim runs in it
 // (slotAppRole) — so the gh files its container projects (GHConfigDir)
 // carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
@@ -116,10 +117,11 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		return token, err == nil
 	}
 	// Each slot holds the App of the role the runtime's ActsAs gives its claim (the step's, while
-	// the architect does a step of its own or the retro of one), else of the role its process was
-	// launched as, which that launch recorded on the slot's Secret, else of the step its claim does
-	// now, read from the stored claims once a tick (slotAppRole); the role is judged on the Secret
-	// each write reads (refreshGitHubCredential).
+	// the architect does a step of its own or the retro of one, and the implementer while a merge
+	// forward asked of it has not ended), else of the role its process was launched as, which that
+	// launch recorded on the slot's Secret, else of the step its claim does now, read from the
+	// stored claims once a tick (slotAppRole); the role is judged on the Secret each write reads
+	// (refreshGitHubCredential).
 	// A tick that cannot read the stored claims refreshes no slot of an issue pod, each of which
 	// keeps its last tokens until the next tick, rather than mint a slot for its name.
 	held, heldErr := r.slotHolders(ctx)
@@ -218,16 +220,16 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // every slot of the pod.
 //
 // That role is judged on the Secret the write reads, under its resourceVersion (slotAppRole):
-// the role the runtime's ActsAs gives the claim in the slot where it gives one (runtime.SlotRole,
-// the step's role while the architect does a step of its own or the retro of one), else the role
-// the slot's process was launched as, which the launch's own write of the Secret recorded
-// (launchedRoleAnnotation), and, on a Secret no launch into this pod wrote, the stored role the
-// tick read of the claim in the slot, held. A launch of a re-roled claim into the pod
-// writes the slot for its new role's App at once and waits for that token (writeLaunchCredential),
-// so a refresh that read the stored claims before the re-role must not write the old role's App
-// over it: the launch's write lands before this one reads the Secret, and records the role, or
-// between its read and its write, and the write is refused as a conflict and judged again on a
-// fresh read (writeSlotCredential).
+// the role the runtime's ActsAs gives the claim in the slot where it gives one (runtime.SlotRole:
+// the step's role while the architect does a step of its own or the retro of one, and the
+// implementer while a merge forward asked of it has not ended), else the role the slot's process
+// was launched as, which the launch's own write of the Secret recorded (launchedRoleAnnotation),
+// and, on a Secret no launch into this pod wrote, the stored role the tick read of the claim in
+// the slot, held. A launch of a re-roled claim into the pod writes the slot for its new role's App
+// at once and waits for that token (writeLaunchCredential), so a refresh that read the stored
+// claims before the re-role must not write the old role's App over it: the launch's write lands
+// before this one reads the Secret, and records the role, or between its read and its write, and
+// the write is refused as a conflict and judged again on a fresh read (writeSlotCredential).
 //
 // A refresh writes nothing into a slot while a launch into the pod is in flight in it, from just
 // before the launch writes the slot to the end of its start (markSlotLaunch, refreshUpdate): the
@@ -319,8 +321,9 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 // the slot is written for (slotAppRole, over held, the stored claims by slot): the judgment of
 // every write of a slot of a pod that is running (writeSlotCredential) but a launch's, which judges
 // for the role it launches (writeLaunchCredential). It reads the runtime's ActsAs at each read of
-// the Secret, so under that read's resourceVersion: a step of the owner that began or ended since
-// is in the judgment, or the Secret was written since and the write is refused and judged again.
+// the Secret, so under that read's resourceVersion: a step of the owner, or a merge forward asked
+// of it, that began or ended since is in the judgment, or the Secret was written since and the
+// write is refused and judged again.
 func (r *Runtime) judgeSlot(held map[slotKey]slotHolder, sandbox string, slot claim.Agent) func(context.Context, *corev1.Secret) (claim.Role, error) {
 	return func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
 		return r.slotAppRole(ctx, held, sandbox, slot, secret.Annotations[launchedRoleAnnotation])
@@ -440,12 +443,13 @@ type slotWrite struct {
 // generation of its claim whose launch started the claim in that role (launchedRecord). A process
 // runs its role for its whole life, since a claim takes another role only while it runs nothing
 // (supervise.Machine.Rerole), though its slot holds the App of another role while the architect in
-// it does a step of its own (runtime.ActsAs). A launch into a pod it keeps writes the record with
-// the slot's credential, in the one update, where it starts the claim in another role than the
-// record names (writeLaunchCredential, writeSlotCredential), and the build of a pod writes it for
-// the launching claim's slot and clears it on every other, whose process the build ends
-// (writeLauncherSecrets). The refresher renders a slot for it while it is of the stored claim's
-// latest generation or a later one and the runtime's ActsAs gives no other role (slotAppRole).
+// it does a step of its own or the retro of one, or a merge forward asked of it (runtime.ActsAs). A
+// launch into a pod it keeps writes the record with the slot's credential, in the one update, where
+// it starts the claim in another role than the record names (writeLaunchCredential,
+// writeSlotCredential), and the build of a pod writes it for the launching claim's slot and clears
+// it on every other, whose process the build ends (writeLauncherSecrets). The refresher renders a
+// slot for it while it is of the stored claim's latest generation or a later one and the runtime's
+// ActsAs gives no other role (slotAppRole).
 const launchedRoleAnnotation = "legion.dev/launched-role"
 
 // launchedRecord is the record a launch of generation, as role, leaves on its slot's Secret
@@ -602,7 +606,8 @@ func (r *Runtime) renderSlot(ctx context.Context, pod *corev1.Pod, slot claim.Ag
 
 // claimBundle is one ask of a claim's gh bundle, with no memo (appauth.ClaimBundle): what a write
 // of one slot outside the refresher's walk mints from — a launch into a pod it keeps
-// (writeLaunchCredential), and the write and the check an owner's step asks of a slot
+// (writeLaunchCredential), and the write and the check the daemon asks of a slot before it tells
+// the owner an act, a step, a retro or a merge forward asked of it, and at that act's end
 // (WriteSlotCredential, SlotHoldsCredential).
 func (r *Runtime) claimBundle(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository, owner string) (ghconfig.Bundle, error) {
 	return appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, issue, role, repo, owner)
