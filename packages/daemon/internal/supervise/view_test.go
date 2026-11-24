@@ -2,12 +2,14 @@ package supervise
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // View never waits on a decision in flight, where Claim does: while a relaunch waits in the
@@ -171,7 +173,9 @@ func TestViewSaysAProcessIsStoppingOnlyWhenItsClaimDoesNotRunAgain(t *testing.T)
 // it working.
 func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
 	h := newBareHarness(t)
-	held := &stepHeldStore{memStore: h.store, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	// reached says which came first: the step record's write, held, or the decision's return.
+	reached := make(chan string, 2)
+	held := &stepHeldStore{memStore: h.store, reached: reached, release: make(chan struct{})}
 	h.deps.Store = held
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 		t.Fatal(err)
@@ -181,14 +185,25 @@ func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 
 	held.armed.Store(true)
-	started := make(chan error, 1)
-	go func() { started <- h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token}) }()
-	select {
-	case <-held.entered:
-	case err := <-started:
-		t.Fatalf("the turn's start returned (%v) before it wrote its step record", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn's start never wrote its step record")
+	var (
+		started     error
+		decided     = make(chan struct{})
+		releaseOnce sync.Once
+	)
+	release := func() { releaseOnce.Do(func() { close(held.release) }) }
+	// A failure below lets the held decision go and waits for it, so no decision outlives the
+	// test holding the machine's lock.
+	t.Cleanup(func() {
+		release()
+		<-decided
+	})
+	go func() {
+		defer close(decided)
+		started = h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token})
+		reached <- "returned"
+	}()
+	if first := testwait.Receive(t, "the turn's start to write its step record", reached); first != "held" {
+		t.Fatalf("the turn's start returned (%v) before it wrote its step record", started)
 	}
 	if stored := h.store.load(h.token); stored.State != StateWorking {
 		t.Fatalf("the store holds the claim %s while the turn's step is written, want %s", stored.State, StateWorking)
@@ -196,9 +211,10 @@ func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
 	if published := h.m.Published(); published.State != StateWorking {
 		t.Fatalf("the claim is published %s while the store holds it %s, want it published as written", published.State, StateWorking)
 	}
-	close(held.release)
-	if err := <-started; err != nil {
-		t.Fatalf("the turn's start: %v", err)
+	release()
+	<-decided
+	if started != nil {
+		t.Fatalf("the turn's start: %v", started)
 	}
 	if c := h.m.View(); c.State != StateWorking {
 		t.Fatalf("the claim reads %s once the turn's start ended, want %s", c.State, StateWorking)
@@ -206,17 +222,17 @@ func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
 }
 
 // stepHeldStore holds the first step record written once it is armed until the test lets it
-// through.
+// through, and says on reached that it holds it.
 type stepHeldStore struct {
 	*memStore
 	armed   atomic.Bool
-	entered chan struct{}
+	reached chan<- string
 	release chan struct{}
 }
 
 func (s *stepHeldStore) PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error) {
 	if s.armed.CompareAndSwap(true, false) {
-		s.entered <- struct{}{}
+		s.reached <- "held"
 		<-s.release
 	}
 	return s.memStore.PutClaimStep(ctx, token, step)
