@@ -664,11 +664,14 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // Secret and writes nothing; relaunch asks it only of a launcher that does not wait for a start's
 // credential.
 //
-// It asks the runtime's ActsAs once, for the claim (runtime.SlotRole over spec.Role), and judges
-// each role by that one answer (acting): an ActsAs that gives the claim a role gives it for every
-// role read here. A failed ask, or a failed read of the Secret, is an error the launch retries,
-// never a slot read as starting another App: that answer ends the launch for the pod's update
-// round (runtime.AwaitsPodUpdate), which a read that failed for a moment must not cost.
+// It asks the runtime's ActsAs once, for the claim, as runtime.SlotRole does, and judges each role
+// by that one answer (acting): an ActsAs that gives the claim a role gives it for every role read
+// here. A failed ask, a failed read of a role's App (the plan of the claim's issue, which
+// appauth.RoleApps.Of reads for a role that is none of Legion's) or a failed read of the Secret is
+// an error the launch retries; only a role that acts as no App (appauth.ErrRoleNotDefined) is read
+// as another App. A failed read is never a slot read as starting another App: that answer ends the
+// launch for the pod's update round (runtime.AwaitsPodUpdate), which a read that failed for a
+// moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
 	var acting claim.Role
 	acts := false
@@ -698,7 +701,14 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 		held = append(held, launched)
 	}
 	for _, role := range held {
-		if was, err := appOf(role); err != nil || was != app {
+		was, err := appOf(role)
+		if errors.Is(err, appauth.ErrRoleNotDefined) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if was != app {
 			return true, nil
 		}
 	}
