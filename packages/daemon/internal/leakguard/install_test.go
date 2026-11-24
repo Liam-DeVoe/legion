@@ -378,6 +378,40 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 	}
 }
 
+// GitHub's tarball of a tag carries the modes git archive gives its members under its tar.umask of
+// 002: 0664 for a file and 0775 for a program. The install takes group and other write off each
+// member's mode, so the installed check's files have the modes they had when the umask of 022
+// made them, 0644 and 0755, whatever umask the launcher runs under: under 002 as well. The test
+// sets the process's umask, so it does not run beside another.
+func TestTheInstalledCheckHasNoGroupOrOtherWriteUnderAnyUmask(t *testing.T) {
+	members := theCheck(answersItsHelp)
+	want := map[string]os.FileMode{}
+	for name, archived := range map[string]int64{checkName: 0o775, theNeighbour: 0o664, leakguardtest.ReadmeName: 0o664, theFixture: 0o600, theNested: 0o664} {
+		m := members[name]
+		m.Mode = archived
+		members[name] = m
+		want[name] = os.FileMode(archived) &^ 0o022
+	}
+	body := served(t, leakguardtest.GitHubTarball(t, members))
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	umask := syscall.Umask(0o002)
+	_, err := install(t, dir, theTag, body)
+	syscall.Umask(umask)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for name, mode := range want {
+		info, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("the install is missing %s: %v", name, err)
+			continue
+		}
+		if got := info.Mode(); got != mode {
+			t.Errorf("the install holds %s as %s from the archive's %o, want %s", name, got, members[name].Mode, mode)
+		}
+	}
+}
+
 // A served check that does not answer its --help, a body holding no file and a body that is no
 // tarball each fail the install, name what happened, and leave the directory as it was — an
 // absent one absent, and one holding an install with that install — with nothing beside it.
