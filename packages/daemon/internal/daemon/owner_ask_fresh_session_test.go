@@ -42,7 +42,7 @@ func TestAnOwnersFreshSessionIsToldTheMergeForwardStillAskedOfIt(t *testing.T) {
 			r.relaunched(t, ownerHoldLaunch+1, tc.session)
 			r.ready(t, "ready-2", ownerHoldLaunch+1, false)
 			var catchUps []record.Notice
-			for _, notice := range r.queuedNotices(t) {
+			for _, notice := range queuedNoticesOf(t, r.pool, "LEGION-1") {
 				if notice.Kind == "catch-up" {
 					catchUps = append(catchUps, notice)
 				}

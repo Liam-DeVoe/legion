@@ -212,7 +212,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		drainAt(t, runner, 0, "the row's attempt")
 		// The ask's row is finished; the one row left is the checks-red notice that tells the
 		// architect the ask did not reach the implementer (mergeForwardLost).
-		notices := architectNoticesQueued(t, pool)
+		notices := queuedNoticesOf(t, pool, "LEGION-208")
 		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != "checks-red" {
 			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one checks-red notice",
 				attempts, outboxRows(t, pool), notices)

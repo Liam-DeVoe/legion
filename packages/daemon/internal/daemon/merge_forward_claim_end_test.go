@@ -15,12 +15,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// architectNoticesQueued is every notice row the outbox holds, decoded, in the order written.
-func architectNoticesQueued(t *testing.T, pool *store.Pool) []record.Notice {
+// queuedNoticesOf is every notice of issue the outbox holds, decoded, in the order written.
+func queuedNoticesOf(t *testing.T, pool *store.Pool, issue string) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "select payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+	rows, err := pool.Query(context.Background(), "select payload from outbox where kind = $1 and issue = $2 order by id",
+		string(record.OutboxKindNotice), issue)
 	if err != nil {
-		t.Fatalf("read the queued notices: %v", err)
+		t.Fatalf("read %s's queued notices: %v", issue, err)
 	}
 	defer rows.Close()
 	var notices []record.Notice
@@ -36,7 +37,7 @@ func architectNoticesQueued(t *testing.T, pool *store.Pool) []record.Notice {
 		notices = append(notices, notice)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the queued notices: %v", err)
+		t.Fatalf("read %s's queued notices: %v", issue, err)
 	}
 	return notices
 }
@@ -89,7 +90,7 @@ func TestAMergeForwardMessageIsNotLostToItsClaimsEnd(t *testing.T) {
 				}
 			}
 			ended := loggedLines(t, logs.String(), mergeForwardEnded)
-			notices := architectNoticesQueued(t, pool)
+			notices := queuedNoticesOf(t, pool, "LEGION-208")
 			if tc.waits {
 				if left := outboxRows(t, pool); left != 1 || len(ended) != 0 || len(notices) != 0 {
 					t.Fatalf("the owner's ask left %d rows, logged %v and queued the notices %+v; want its row kept for the owner's next start, no line of its end and no notice",
