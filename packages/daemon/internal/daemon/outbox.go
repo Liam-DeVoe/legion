@@ -3805,11 +3805,12 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 		states = "The daemon holds no claim of " + issue + "."
 	}
 	found = append(found, states,
-		"The daemon does not push this work and does not save it. The pod stays until a later read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue or its tree closes.",
+		"The daemon does not push this work and does not save it. The pod stays until a later read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue closes, or its tree closes or lingers. "+
+			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
 		fmt.Sprintf("To keep the work, start a role of %s in this pod, for example with `legion claims resume` or `legion claims retry`, and push the work to legion/%s. "+
 			"You are told this once for this pod.", issue, issue))
 	if failed != nil {
-		found = append(found, "The daemon reads the workspace again after an hour, or after a role of the issue starts.")
+		found = append(found, "Because the read failed, the daemon also reads the workspace again after an hour.")
 	}
 	return strings.Join(found, " ")
 }

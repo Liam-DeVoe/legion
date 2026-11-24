@@ -7701,14 +7701,15 @@ It changes no claim, so each claim keeps its state, its phase, its budgets and i
 It deletes the disk only after a read of the workspace found nothing that no branch or tag on origin holds.
 No role process runs in that pod, so the pod's launcher makes the read, with the count a role's shim makes: the release queues that workspace check first, and the teardown waits for it.
 A read that finds work keeps the pod (`unowned_unpushed_work`), and so does a read that cannot be made (`unowned_workspace_unread`), such as a pod whose launcher is older than the read and so does not say `readsWorkspace` in its hello.
-The issue's architect, the one that owns the issue (the notice route walks up the tree), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found.
-A failed read is asked again after an hour, or after a start of a claim of the issue; a read that found work holds the pod until a later read finds nothing, the runtime holds another pod for the issue, or the issue or its tree leaves the workflow or lingers.
+The issue's architect, the one that owns the issue (the notice route walks up the tree), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found; where that architect will not hold its role again (its claim failed, or its tree lingers or has closed), the project's controller gets the notice instead.
+A read that found work holds the pod until a start or a turn of a claim of the issue after that read, and the read the release then makes finds nothing; until the runtime holds another pod for the issue; or until the issue or its tree leaves the workflow or lingers.
+A failed read holds it the same way, and is also asked again after an hour.
 The daemon pushes and saves nothing.
 A start or a turn of a claim of the issue after the release's mark cancels the teardown, so a read a later turn could make stale deletes nothing.
 Where the Sandbox keeps a volume the issue's next pod mounts, the release deletes no disk, and it reads nothing.
 Before any read, the rule reads the decline of the issue's idle release:
 where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
-A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
+A start of a claim of the issue, or a turn of one, after that read ends the hold, in whichever pod it ran, since the role can have pushed the work; the release then has the launcher read the disk before it deletes anything, and a read that finds the same work keeps the pod again.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
 Of the reasons that hold such a pod past the idle period, the daemon writes five to its hold records, each under a name of its own:

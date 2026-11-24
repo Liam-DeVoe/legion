@@ -25,12 +25,12 @@ import (
 // issue's architect is told once for the pod, with the state of each claim and what the read found.
 
 // workspaceKeptNotice is the notice kind that tells the issue's architect that a pod no role runs
-// in is kept for its disk (record.WorkspaceKeptNotice).
-const workspaceKeptNotice record.NoticeKind = "workspace-kept"
+// in is kept for its disk.
+const workspaceKeptNotice = record.WorkspaceKeptNotice
 
 // unownedWorkspaceUnread is the hold of a pod no role runs in whose launcher could not read its
-// workspace (workflow.IdleHoldUnownedWorkspaceUnread).
-const unownedWorkspaceUnread = "unowned_workspace_unread"
+// workspace, by the name the hold records carry.
+var unownedWorkspaceUnread = workflow.IdleHoldUnownedWorkspaceUnread.String()
 
 // noRoleRig is newLeftPodRig's child with no role process in its pod: its planner failed and
 // records no process, and its implementer is suspended by an earlier idle release, with no
@@ -205,6 +205,10 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 		}
 		if launcher := launcherReads(rig); launcher != 0 {
 			t.Fatalf("workspace reads through the launcher = %d, want none: a kept volume the next pod mounts is not deleted", launcher)
+		}
+		if _, present := rig.rt.IssueSandbox(rig.issue.Key); !present || !rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()) {
+			t.Fatalf("after the release the issue's Sandbox stands = %t and keeps its volume = %t, want both: the release keeps the volume the next pod mounts",
+				present, rig.rt.IssueKeepsVolume(rig.issue.Key, time.Now()))
 		}
 	})
 
