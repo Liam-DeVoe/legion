@@ -46,7 +46,9 @@ only one side has. A base tree whose filters cannot be computed makes every filt
 change that touches none of those files is not compared, and costs no second computation.
 
 When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
-and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
+and the install each run with `continue-on-error`; the install runs under network-install.sh's
+bound for bun, so a registry that stalls costs one attempt of 120 s and the next attempt runs,
+and only three that fail end the step, by name), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
 runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
