@@ -169,6 +169,12 @@ func populatedSeed(t *testing.T) populatedRecord {
 	chained.Ancestry = []string{"LEGION-209", "LEGION-208"}
 	chained.MovedAt = at(22, 7, 45, 0)
 
+	// LEGION-216: a root that has never run, queued in the line's starting part behind
+	// LEGION-211, which Dispatch says waits on LEGION-210: the promotion passes over it.
+	queued := issue("LEGION-216", "LEGION-216", phase.Admitted, "todo", "acme/widgets", 1)
+	queued.Rank = "00016"
+	queued.MovedAt = at(22, 8, 30, 0)
+
 	// LEGION-212: its architect asked a person, and the person answered. It keeps the slot it
 	// took when the daemon started it, and waits in the line for its architect's resume.
 	answered := issue("LEGION-212", "LEGION-212", phase.AwaitingPerson, "in_progress", "acme/widgets", 1)
@@ -194,7 +200,7 @@ func populatedSeed(t *testing.T) populatedRecord {
 	planner208 := token("LEGION-208", claim.RolePlanner)
 	implementer208 := token("LEGION-208", claim.RoleImplementer)
 	store := projectionStore{
-		issues: []record.Issue{merged, root, child, escalated, handed, answered, labelOff, chained, waiting, stuck},
+		issues: []record.Issue{merged, root, child, escalated, handed, answered, labelOff, chained, queued, waiting, stuck},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-207": {
 				{Issue: "LEGION-207", Role: claim.RoleImplementer, Claim: token("LEGION-207", claim.RoleImplementer),
@@ -287,6 +293,7 @@ func populatedSeed(t *testing.T) populatedRecord {
 			{Key: "LEGION-212", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 8},
 			{Key: "LEGION-214", Project: "LEGION", Status: "todo", Blockers: []string{}, Seq: 9},
 			{Key: "LEGION-215", Project: "LEGION", Status: "todo", Blockers: []string{}, Seq: 12, Rank: "00015"},
+			{Key: "LEGION-216", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-210"}, Seq: 13, Rank: "00016"},
 			{Key: "LEGION-218", Project: "LEGION", Status: "needs_review", Blockers: []string{}, Seq: 10},
 			{Key: "LEGION-219", Project: "LEGION", Status: "needs_review", Blockers: []string{}, Seq: 11},
 		},

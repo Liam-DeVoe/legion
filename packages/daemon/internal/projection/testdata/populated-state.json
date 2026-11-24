@@ -17,7 +17,8 @@
     ],
     "waiting": [
       "LEGION-212",
-      "LEGION-211"
+      "LEGION-211",
+      "LEGION-216"
     ],
     "trees": [
       "LEGION-208",
@@ -25,6 +26,7 @@
       "LEGION-211",
       "LEGION-212",
       "LEGION-215",
+      "LEGION-216",
       "LEGION-218",
       "LEGION-219"
     ],
@@ -34,6 +36,12 @@
         "blockedBy": [
           "LEGION-210",
           "LEGION-213"
+        ]
+      },
+      {
+        "issue": "LEGION-216",
+        "blockedBy": [
+          "LEGION-210"
         ]
       }
     ],
@@ -453,16 +461,16 @@
       ],
       "waitingLine": {
         "place": 2,
-        "length": 2,
+        "length": 3,
         "part": "starting",
         "kind": "queued_root",
         "partPlace": 1,
-        "partLength": 1,
+        "partLength": 2,
         "holdsSlot": false,
         "rootRank": "00011",
         "ownRank": "00011",
         "rootKey": "LEGION-211",
-        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
       },
       "why": {
         "state": "claim_stopped",
@@ -514,7 +522,7 @@
       },
       "waitingLine": {
         "place": 1,
-        "length": 2,
+        "length": 3,
         "part": "returned",
         "kind": "answered",
         "partPlace": 1,
@@ -591,6 +599,42 @@
       },
       "treeMovedAt": "2026-09-22T07:45:00Z",
       "quietHours": 1.55
+    },
+    "LEGION-216": {
+      "key": "LEGION-216",
+      "generation": 1,
+      "phase": "admitted",
+      "status": "todo",
+      "tree": "LEGION-216",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {},
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "approvedVersion": null,
+          "status": "unregistered"
+        }
+      ],
+      "waitingLine": {
+        "place": 3,
+        "length": 3,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 2,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00016",
+        "ownRank": "00016",
+        "rootKey": "LEGION-216",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-210, which is not done."
+      },
+      "treeMovedAt": "2026-09-22T08:30:00Z",
+      "quietHours": 0.8
     },
     "LEGION-218": {
       "key": "LEGION-218",

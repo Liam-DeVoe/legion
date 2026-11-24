@@ -2027,9 +2027,9 @@ test("the state golden names what every blocked issue waits on", () => {
 
   expect(state.admission?.blocked).toEqual([
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
-    { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
+    { issue: "LEGION-216", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission?.waiting).toEqual(["LEGION-212", "LEGION-211"]);
+  expect(state.admission?.waiting).toEqual(["LEGION-212", "LEGION-211", "LEGION-216"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
