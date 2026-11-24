@@ -44,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
@@ -121,12 +122,12 @@ func clone(t testing.TB, template string) *store.Store {
 	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
-	t.Cleanup(func() { dropDatabase(name) })
+	testcleanup.Add(t, func() { dropDatabase(name) })
 	database, err := store.Open(ctx, testdb.WithConnectDeadline(t, databaseURL(shared.server, name)))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(database.Pool.Close)
+	testcleanup.Add(t, database.Pool.Close)
 	return database
 }
 
@@ -140,7 +141,7 @@ func Empty(t testing.TB) string {
 	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
-	t.Cleanup(func() { dropDatabase(name) })
+	testcleanup.Add(t, func() { dropDatabase(name) })
 	return testdb.WithConnectDeadline(t, databaseURL(shared.server, name))
 }
 
