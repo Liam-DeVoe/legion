@@ -604,23 +604,112 @@ test("a code is polled at the broker's interval, once a second at least, every 5
   }
 });
 
-// RFC 8628 Section 3.5 has the poll wait at least the broker's interval, so an interval of 1800 s
-// leaves no poll before the stand-in's 600 s code lapses: it is refused at once, naming both,
-// rather than waited out and said to have expired before the person approved it.
-test("a code that lapses no later than its first poll is refused at once, naming both", async () => {
-  const stub = broker({ interval: 1_800 });
+// RFC 8628 Section 3.5 has the poll wait at least the broker's interval, so a code that lapses no
+// later than its first poll could never be polled. `startDeviceLogin` refuses such an answer before
+// its code is shown, since an approval of it would mint a launcher credential bound to a key no
+// process holds. The refusal names the broker's interval and what ends the code first, its own
+// lifetime or the hour this machine polls a code at most, a huge interval in whole digits, and
+// what must change at the broker: asking again would meet the same answer.
+test("a broker's code no poll could reach is refused before it is shown, naming the cause", async () => {
+  const tail =
+    ", so the code would lapse before its first poll; no device login works at that broker until its poll interval is shorter than both its codes' lifetime and an hour";
+  for (const [options, answer] of [
+    [{ interval: 1_800 }, "a device code that lives 600 s, with a poll interval of 1800 s"],
+    [{ interval: 600 }, "a device code that lives 600 s, with a poll interval of 600 s"],
+    [
+      { interval: 5_000, expiresIn: 7_200 },
+      "a poll interval of 5000 s, and this machine polls a device code for an hour at most",
+    ],
+    [
+      { interval: 1e21 },
+      "a device code that lives 600 s, with a poll interval of 1000000000000000000000 s",
+    ],
+    [{ expiresIn: 0 }, "a device code that had already lapsed, with a poll interval of 1 s"],
+    [
+      { interval: null, expiresIn: 3 },
+      "a device code that lives 3 s, with no poll interval, so one of 5 s",
+    ],
+    [
+      { interval: 0.25, expiresIn: 1 },
+      "a device code that lives 1 s, with a poll interval of 0.25 s, so one of 1 s",
+    ],
+  ] as const) {
+    const stub = broker(options);
+    const refusal = await startDeviceLogin({
+      brokerUrl: stub.url,
+      person: PERSON,
+      host: HOST,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal?.message, answer).toStartWith("the secrets broker at ");
+    expect(refusal?.message, answer).toEndWith(`answered ${answer}${tail}`);
+    expect(refusal?.message, answer).not.toContain(STAND_IN_USER_CODE);
+    expect(stub.polls, answer).toHaveLength(0);
+  }
+  // Control: an interval just inside the code's life is a code to show and poll.
+  const inside = broker({ interval: 599 });
+  const started = await startDeviceLogin({ brokerUrl: inside.url, person: PERSON, host: HOST });
+  expect(started.userCode).toBe(STAND_IN_USER_CODE);
+});
+
+// A `started` handed to the poll is checked again: one a caller made, or one a step of the wall
+// clock has brought nearer its end, may lapse no later than its first poll, or have lapsed. It is
+// refused at once, naming the code, not waited out and said to have expired before the person
+// approved it; asking again starts a code `startDeviceLogin` checks.
+test("a code handed to the poll that lapses no later than its first poll is refused at once", async () => {
+  const stub = broker();
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const { waits, sleep } = recordedWaits();
-  const refusal = await finishDeviceLogin(started, { path: loginPath(), sleep }).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(waits).toHaveLength(0);
+  for (const [handed, says] of [
+    [
+      { ...started, intervalSeconds: 1_800 },
+      /^lapses in (59\d|600) s, no later than its first poll, 1800 s on/,
+    ],
+    [
+      { ...started, expiresAt: new Date(Date.now() - 1_000) },
+      /^had lapsed before its first poll, 1 s on/,
+    ],
+    [
+      { ...started, intervalSeconds: 5_000, expiresAt: new Date(Date.now() + 7_200_000) },
+      /^would lapse here before its first poll, 5000 s on, as this machine polls a device code for an hour at most/,
+    ],
+  ] as const) {
+    const { waits, sleep } = recordedWaits();
+    const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    const message = refusal?.message ?? "";
+    expect(message, String(says)).toStartWith(`the code ${STAND_IN_USER_CODE} `);
+    expect(message.slice(`the code ${STAND_IN_USER_CODE} `.length), String(says)).toMatch(says);
+    expect(message, String(says)).toEndWith(
+      `, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
+    );
+    expect(waits, String(says)).toHaveLength(0);
+  }
   expect(stub.polls).toHaveLength(0);
-  expect(refusal?.message).toMatch(
-    /^the code WDJB-MJHT lapses in (59\d|600) s, and the broker's interval puts the first poll 1800 s on, so no poll could reach it; ask again with: /
-  );
-  expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
+});
+
+// A `started` a caller made whose end is no date, or whose interval is no number of seconds, 1 or
+// more, would poll the broker as fast as it answers: it is refused before any poll.
+test("a code handed to the poll with no date or no interval of a second or more is refused", async () => {
+  const stub = broker();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  for (const handed of [
+    { ...started, intervalSeconds: Number.NaN },
+    { ...started, intervalSeconds: 0 },
+    { ...started, expiresAt: new Date(Number.NaN) },
+  ]) {
+    const { waits, sleep } = recordedWaits();
+    const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(refusal).toBeInstanceOf(TypeError);
+    expect(waits).toHaveLength(0);
+  }
+  expect(stub.polls).toHaveLength(0);
 });
 
 test("a code and an access token are taken to live an hour at most, whatever the broker says", async () => {
@@ -717,18 +806,6 @@ test("a login nobody approves is refused, and writes no file", async () => {
     expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
     expect(await stat(path).catch(() => null)).toBeNull();
   }
-  // A code whose lifetime has passed is not polled at all.
-  const stub = broker();
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const lapsed = await finishDeviceLogin(
-    { ...started, expiresAt: new Date(Date.now() - 1) },
-    { path: loginPath(), sleep: noSleep }
-  ).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(stub.polls).toHaveLength(0);
-  expect(lapsed?.message).toContain("expired");
 });
 
 // Go's `oauthrefusal.Refusal`, which the helper's `pollLogin` reads: RFC 6749 Section 5.2 has an

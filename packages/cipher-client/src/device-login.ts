@@ -126,6 +126,10 @@ const LEAST_POLL_SECONDS = 1;
  *  poll, or a token the broker no longer honours, past any use. */
 const MOST_LIFETIME_SECONDS = 3600;
 
+/** A number of seconds as a refusal prints it: every digit however large, as the Go helper prints
+ *  one, with no exponent (`1e+21`); a fraction the broker sent keeps up to three decimals. */
+const SECONDS = new Intl.NumberFormat("en-US", { useGrouping: false });
+
 /** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
 const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
@@ -345,8 +349,13 @@ export interface DeviceAuthorization {
  * and where, each refused where it holds a control or format character, and the page where it is
  * no http or https URL; the interval it polls at is the broker's, {@link LEAST_POLL_SECONDS} at
  * least, and {@link DEFAULT_POLL_SECONDS} where the broker names none, and the code lives as long
- * as the broker says, {@link MOST_LIFETIME_SECONDS} at most. A refusal is worded as every broker
- * refusal is (`brokerRefusal`).
+ * as the broker says, {@link MOST_LIFETIME_SECONDS} at most. A poll waits the interval first (RFC
+ * 8628 Section 3.5), so a code that lapses no later than its first poll could never be polled:
+ * it is refused here, before its user code is shown, as the Go helper's `Login` refuses it, since
+ * an approval of it would mint a launcher credential bound to a key no process holds. The
+ * refusal names the broker's interval and lifetime, or the hour this machine polls a code at
+ * most where that is what ends the code first: asking again would meet the same answer. A refusal
+ * is worded as every broker refusal is (`brokerRefusal`).
  */
 export async function startDeviceLogin(options: {
   readonly brokerUrl: string;
@@ -385,9 +394,26 @@ export async function startDeviceLogin(options: {
   } catch (error) {
     throw brokerRefusal("ask for a code for", "this machine's device login", endpoint, error);
   }
-  const expiresAt = new Date(
-    Date.now() + Math.min(answered.expires_in, MOST_LIFETIME_SECONDS) * 1000
-  );
+  const intervalSeconds = Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS);
+  const lifetimeSeconds = Math.min(answered.expires_in, MOST_LIFETIME_SECONDS);
+  if (intervalSeconds >= lifetimeSeconds) {
+    const interval =
+      answered.interval === undefined
+        ? `no poll interval, so one of ${DEFAULT_POLL_SECONDS} s`
+        : answered.interval < intervalSeconds
+          ? `a poll interval of ${SECONDS.format(answered.interval)} s, so one of ${LEAST_POLL_SECONDS} s`
+          : `a poll interval of ${SECONDS.format(intervalSeconds)} s`;
+    const answer =
+      lifetimeSeconds <= 0
+        ? `a device code that had already lapsed, with ${interval}`
+        : lifetimeSeconds < answered.expires_in
+          ? `${interval}, and this machine polls a device code for an hour at most`
+          : `a device code that lives ${SECONDS.format(lifetimeSeconds)} s, with ${interval}`;
+    throw new BrokerTradeFailedError(
+      `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered ${answer}, so the code would lapse before its first poll; no device login works at that broker until its poll interval is shorter than both its codes' lifetime and an hour`
+    );
+  }
+  const expiresAt = new Date(Date.now() + lifetimeSeconds * 1000);
   return {
     brokerUrl,
     person,
@@ -398,7 +424,7 @@ export async function startDeviceLogin(options: {
         ? undefined
         : page(answered.verification_uri_complete, endpoint),
     expiresAt,
-    intervalSeconds: Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS),
+    intervalSeconds,
     deviceCode: holdSecret(answered.device_code, expiresAt),
     key: privateKey,
   };
@@ -456,20 +482,26 @@ function retryAfterMs(error: unknown): number {
  * end polls on after it resumes, and the broker answers `expired_token`, an expiry too. The device
  * code is held for the scrub (`@legion/contracts/held-secrets`) until an hour past that end, read
  * again on the wall clock at each poll. A code that lapses no later than its first poll, the
- * broker's interval on, could never be polled, so it is refused at once, naming both, as the Go
- * helper's `Login` refuses it, rather than waited out and said to have expired before the person
- * approved it. Any other answer of a 4xx, with another OAuth error or without one (a proxy's HTML
- * page, a bare `WWW-Authenticate` challenge), stops the poll at once, naming the status, rather
- * than polling until the code lapses and saying it expired. That is the one place this poll and
- * `pollLogin` differ by choice: the helper polls on there until the code lapses, as it records the
- * login's state in the background, where a person waits on this poll. They also read apart some
- * answers no conforming broker gives, where their libraries or their own checks differ; the one
- * list of them is `pollLogin`'s doc (`packages/envoy/internal/cipher/helper/broker.go`). Each
- * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot
- * be kept is refused naming its credential, which the broker holds live, and where to revoke it,
- * and a copy of it written whole is kept beside the file ({@link KeptCopyError}), which the refusal
- * names whatever fails after it, letting go of the lock included. One kept whose lock is then not
- * let go is answered as kept: the machine uses that login, so it is not one to revoke.
+ * interval on, could never be polled: {@link startDeviceLogin} refuses such an answer before its
+ * code is shown, and this poll refuses one it is handed too (a `started` a caller made, or one a
+ * step of the wall clock since then has brought nearer its end), naming the code, which has
+ * lapsed or will before its first poll, rather than waiting it out and saying it expired before
+ * the person approved it; asking again starts a new code, which that check reads. A `started`
+ * whose `expiresAt` is no date, or whose interval is not a number of seconds, 1 or more, is
+ * refused with a `TypeError`: it would poll the broker more than once a second, or as fast as the
+ * broker answers. Any other answer of a 4xx, with another OAuth error or without one (a proxy's
+ * HTML page, a bare `WWW-Authenticate` challenge), stops the poll at once, naming the status,
+ * rather than polling until the code lapses and saying it expired. That is the one place this
+ * poll and `pollLogin` differ by choice: the helper polls on there until the code lapses, as it
+ * records the login's state in the background, where a person waits on this poll. They also read
+ * apart some answers no conforming broker gives, where their libraries or their own checks
+ * differ; the one list of them is `pollLogin`'s doc
+ * (`packages/envoy/internal/cipher/helper/broker.go`). Each refusal before an approval, but that
+ * `TypeError`, names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
+ * cannot be kept is refused naming its credential, which the broker holds live, and where to
+ * revoke it, and a copy of it written whole is kept beside the file ({@link KeptCopyError}), which
+ * the refusal names whatever fails after it, letting go of the lock included. One kept whose lock
+ * is then not let go is answered as kept: the machine uses that login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -482,6 +514,15 @@ export async function finishDeviceLogin(
     readonly clock?: (() => number) | undefined;
   }
 ): Promise<KeptDeviceLogin> {
+  if (
+    !Number.isFinite(started.expiresAt.getTime()) ||
+    !Number.isFinite(started.intervalSeconds) ||
+    started.intervalSeconds < LEAST_POLL_SECONDS
+  ) {
+    throw new TypeError(
+      `finishDeviceLogin was handed a device authorization whose expiresAt is no date, or whose intervalSeconds is not a number of seconds, ${LEAST_POLL_SECONDS} or more`
+    );
+  }
   const wait = options.sleep ?? ((ms: number) => sleep(ms, undefined, true));
   const clock = options.clock ?? (() => performance.now());
   const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, {
@@ -508,14 +549,19 @@ export async function finishDeviceLogin(
   // What is left of the code, read once from the wall clock, and the hour at most, which a step
   // back of that clock since `startDeviceLogin`, or a `started` a caller made, could otherwise
   // pass, and with it a timer's range; its end is kept on the monotonic clock.
-  const leftAtStart = Math.min(
-    started.expiresAt.getTime() - Date.now(),
-    MOST_LIFETIME_SECONDS * 1000
-  );
+  const named = started.expiresAt.getTime() - Date.now();
+  const leftAtStart = Math.min(named, MOST_LIFETIME_SECONDS * 1000);
   const endsAt = clock() + leftAtStart;
-  if (leftAtStart > 0 && waitMs >= leftAtStart) {
+  if (waitMs >= leftAtStart) {
+    const first = `its first poll, ${SECONDS.format(interval)} s on`;
+    const lapse =
+      leftAtStart <= 0
+        ? `had lapsed before ${first}`
+        : named > leftAtStart
+          ? `would lapse here before ${first}, as this machine polls a device code for an hour at most`
+          : `lapses in ${Math.ceil(leftAtStart / 1000)} s, no later than ${first}`;
     throw new Error(
-      `the code ${started.userCode} lapses in ${Math.ceil(leftAtStart / 1000)} s, and the broker's interval puts the first poll ${interval} s on, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
+      `the code ${started.userCode} ${lapse}, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
     );
   }
   while (true) {
