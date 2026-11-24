@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // How a14's three shapes are built: the seeding statements, the counts every shape is held to
@@ -19,14 +21,14 @@ import (
 // the database when it did reads this one. Both run only under LEGION_SCALE_TEST, since nothing
 // here is called unless TestDismissedScaleHoldsTheInboxsReads runs.
 
-// seedDismissedScale builds one shape: a server on a database of its own, the pile it was asked
-// for, the 600 undismissed threads with 300 unread among them, and the 1,000 unread threads the
-// mark-all works over. It asserts every count before the caller times anything, because a
-// measurement over a seed that did not land is worse than none.
+// seedDismissedScale builds one shape: a server on a database of its own with JIT off
+// (jitOffStore), the pile it was asked for, the 600 undismissed threads with 300 unread among
+// them, and the 1,000 unread threads the mark-all works over. It asserts every count before the
+// caller times anything, because a measurement over a seed that did not land is worse than none.
 func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismissedScaleShape {
 	t.Helper()
 	started := time.Now()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _ := newTestServer(t, testServerOptions{store: jitOffStore(t, "the "+name+" shape's database", storetest.Open(t))})
 	issue := createInteractionIssue(t, handler, "SCALE", "A pile of dismissed threads", "A spec")
 	shape := &dismissedScaleShape{
 		name: name, handler: handler, database: database, issue: issue.Key,

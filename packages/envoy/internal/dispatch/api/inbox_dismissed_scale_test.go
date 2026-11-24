@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // INFRA-450's a14: what the Inbox's reads cost once a person has dismissed a very great many
@@ -153,6 +155,12 @@ type dismissedScaleShape struct {
 // writes' reads and the Dismissed pages at the pile's own size (explainDismissedScaleReads), and
 // holds each operation to the two bounds above.
 //
+// Every shape's database runs with jit = off (jitOffStore), read back on a new session of each
+// before the first reading and printed above the table. Production's Postgres, Cloud SQL, runs no
+// JIT, and compiling a plan inflates a reading: in a builds Job, whose Postgres compiles by
+// default, JIT took 129 ms in a references read whose median run was 122.5 ms, a read of 25.7 ms
+// at p50 with jit = off.
+//
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
 // ordinary run of this package should pay.
@@ -164,6 +172,10 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	loaded := seedDismissedScale(t, "loaded", dismissedScaleReplyPile, dismissedScaleAgentPile)
 	none := seedDismissedScale(t, "no dismissed", 0, 0)
 	onePage := seedDismissedScale(t, "one page dismissed", dismissedScalePageReplies, dismissedScalePageAgents)
+	var jit []string
+	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+		jit = append(jit, shape.name+": "+requireJITOff(t, "the "+shape.name+" shape's database", shape.database.Pool.Config().ConnString()))
+	}
 
 	// The readings, each the p50 and p95 of 20 runs. The two Dismissed reads are measured on the
 	// no-dismissed shape as well, where they answer nothing: that number is reported rather than
@@ -194,7 +206,9 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 
 	// The table, in one block, which is what goes in the pull request's comment. Both statistics
 	// are printed for every operation: the p95 each time bound is taken on, and the p50 the ratio
-	// is taken on, which for the Inbox count is recorded rather than bounded.
+	// is taken on, which for the Inbox count is recorded rather than bounded. The line above it
+	// says what each shape's database read on a new session before the first reading.
+	t.Logf("the shapes' databases, each read on a new session: %s", strings.Join(jit, "; "))
 	t.Log("operation\tshape\tp50 ms\tp95 ms\tbaseline p50 ms\tbaseline p95 ms\tratio of p50s\tbound")
 	for _, held := range dismissedScaleBounds() {
 		reading, ok := readings[held.operation+" @ loaded"]
@@ -564,4 +578,61 @@ func percentileOfDismissedScale(sorted []time.Duration, quantile float64) time.D
 
 func msOf(taken time.Duration) float64 {
 	return float64(taken.Microseconds()) / 1000
+}
+
+// turnJITOff sets jit = off on the database databaseURL names, which a failure calls what: `alter
+// database ... set jit = off`. Every session opened on that database afterwards starts with it,
+// whoever opens it: a pool of this process, or a build's own process given only the URL. A session
+// already open keeps the value it opened with, so a measurement turns JIT off before any pool or
+// process it times opens one.
+func turnJITOff(t *testing.T, what, databaseURL string) {
+	t.Helper()
+	ctx := context.Background()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s to turn JIT off: %v", what, err)
+	}
+	defer connection.Close(ctx)
+	var name string
+	if err := connection.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
+		t.Fatalf("read the name of %s: %v", what, err)
+	}
+	if _, err := connection.Exec(ctx, `alter database `+pgx.Identifier{name}.Sanitize()+` set jit = off`); err != nil {
+		t.Fatalf("turn JIT off for %s: %v", what, err)
+	}
+}
+
+// jitOffStore turns JIT off for database's own database (turnJITOff) and answers a store on a pool
+// of its own opened after that, so every session a server built on it reads through, and every
+// pool reopened from it (storetest.Traced), holds jit = off. database's own pool already holds the
+// session store.Open pinged on, opened before the setting, so it is left to its cleanup.
+func jitOffStore(t *testing.T, what string, database *store.Store) *store.Store {
+	t.Helper()
+	turnJITOff(t, what, database.Pool.Config().ConnString())
+	return storetest.Reopened(t, database, func(*pgxpool.Config) {})
+}
+
+// requireJITOff reads current_setting('jit') and pg_jit_available() on a new session of the
+// database databaseURL names, through the URL its measured pool or process was given, and fails
+// naming what unless jit is off. Where pg_jit_available() is false the server cannot compile and
+// the setting is moot, but turnJITOff leaves it off all the same, so one rule holds on every
+// server. It answers both as the readings' lines print them: "jit=off pg_jit_available=false".
+func requireJITOff(t *testing.T, what, databaseURL string) string {
+	t.Helper()
+	ctx := context.Background()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s to read its jit setting: %v", what, err)
+	}
+	defer connection.Close(ctx)
+	var jit string
+	var available bool
+	if err := connection.QueryRow(ctx, `select current_setting('jit'), pg_jit_available()`).Scan(&jit, &available); err != nil {
+		t.Fatalf("read the jit setting of %s: %v", what, err)
+	}
+	if jit != "off" {
+		t.Fatalf("a new session of %s reads jit = %s (pg_jit_available() = %t), want off: its readings would time the "+
+			"plans Postgres compiles, which production's never does (turnJITOff)", what, jit, available)
+	}
+	return fmt.Sprintf("jit=%s pg_jit_available=%t", jit, available)
 }

@@ -52,6 +52,13 @@ import (
 // has drained what the corpus owes its background work (settleOneInbox), and a person's request asks
 // for display trees on both, as the dashboard asks.
 //
+// Both databases run with jit = off, set on each before any measured session opens on it
+// (turnJITOff, jitOffStore) and read back on a new session of each before the first reading, which
+// the first c-p99: line prints with pg_jit_available. Production's Postgres, Cloud SQL, runs no
+// JIT, and compiling a plan inflates a reading: in a builds Job, whose Postgres compiles by
+// default, JIT took 129 ms in a references read whose median run was 122.5 ms, a read of 25.7 ms
+// at p50 with jit = off.
+//
 // Before any timing it runs `vacuum analyze` and then `explain (analyze)` on the one read of each
 // reader below as the dashboard's request of it ran through this build's handler: the read's
 // statement prepared, and its execute explained with that request's own arguments under the
@@ -168,6 +175,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	requireOneInboxWriteBoundsMatchPaths(t)
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, oneInboxDatabaseEnv, oneInboxDatabase)
+	turnJITOff(t, "the base build's database", databaseURL)
 
 	here := bootOneInboxHere(t)
 	this := here.side
@@ -175,6 +183,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	backfillOneInbox(t, this.database)
 	requireOneInboxHistoryInTheStore(t, this.database)
 	analyzeOneInbox(t, this)
+	thisJIT := requireJITOff(t, "this build's database", this.database.Pool.Config().ConnString())
 	// The scan rule and the hint rule, before anything is timed: a read whose plan scans a table
 	// the corpus fills to scale, or whose plan a planner setting steers, is no read a timing of it
 	// would say anything about.
@@ -194,11 +203,13 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	base.corpus = seedOneInboxCorpus(t, base.database, base.server)
 	settleOneInbox(t, base, oneInboxOwedWork)
 	analyzeOneInbox(t, base)
+	baseJIT := requireJITOff(t, "the base build's database", databaseURL)
 
 	this.server.trees, base.server.trees = true, true
 	t.Logf("c-p99: the base build %s against this build at %s, each a process of its own, %d readings of each operation and shape "+
-		"after one not counted, alternating between the two one operation at a time, each the round trip on loopback; taken_at=%s",
-		commit, gitOutput(t, ".", "rev-parse", "HEAD"), oneInboxReadings, oneInboxNow())
+		"after one not counted, alternating between the two one operation at a time, each the round trip on loopback; "+
+		"each database read on a new session: this build's %s, the base build's %s; taken_at=%s",
+		commit, gitOutput(t, ".", "rev-parse", "HEAD"), oneInboxReadings, thisJIT, baseJIT, oneInboxNow())
 	for _, reader := range oneInboxReaders {
 		measureOneInboxRead(t, reader, base, this)
 	}
@@ -241,14 +252,15 @@ func requireOneInboxWriteBoundsMatchPaths(t *testing.T) {
 	}
 }
 
-// bootOneInboxHere builds this build's server in the process over a database of the test's own: a
-// person read from the header the base build is told to trust too, on the untraced pool so a
-// sign-in is no statement of a counted write; the stand-in listener the base build delivers to;
-// and this checkout's commit as its build commit, as every server a two-build check boots carries
-// its own. Its side's server is the handler served on loopback until bootOneInboxThisBuild.
+// bootOneInboxHere builds this build's server in the process over a database of the test's own
+// with JIT off (jitOffStore): a person read from the header the base build is told to trust too,
+// on the untraced pool so a sign-in is no statement of a counted write; the stand-in listener the
+// base build delivers to; and this checkout's commit as its build commit, as every server a
+// two-build check boots carries its own. Its side's server is the handler served on loopback until
+// bootOneInboxThisBuild.
 func bootOneInboxHere(t *testing.T) *oneInboxHere {
 	t.Helper()
-	database := storetest.Open(t)
+	database := jitOffStore(t, "this build's database", storetest.Open(t))
 	statements := &meInboxStatements{}
 	reads := &oneInboxTracer{meInboxStatements: statements}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, reads, nil)}
@@ -371,9 +383,10 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 //     scale, in the plan of any read, printing that plan;
 //   - the hint rule, that no planner setting steers the plan the scan rule reads, wherever it is
 //     made: the connection the plans are made on holds no planner setting its database, its role,
-//     its parameters or its session set (oneInboxHeldPlannerSettings); the request makes the planner
-//     settings meInboxSettings make, each before the read's statement, and no other, and carries no
-//     planner hint comment; and the read's plan made under the generic plan alone
+//     its parameters or its session set but the jit = off the test sets on its database
+//     (oneInboxHeldPlannerSettings); the request makes the planner settings meInboxSettings make,
+//     each before the read's statement, and no other, and carries no planner hint comment; and the
+//     read's plan made under the generic plan alone
 //     (plan_cache_mode = force_generic_plan, which explainDismissedScaleGeneric always sets, as
 //     meInboxGenericPlan does), without meInboxSettings' other settings, scans neither table where
 //     the plan under all of meInboxSettings does not, so no setting of theirs beside the generic
@@ -561,7 +574,10 @@ func oneInboxPlannerSettings(t *testing.T, connection *pgx.Conn) map[string]bool
 // was started with it (pg_settings' source: its default, its configuration file, its command line,
 // its environment or an override of its own): one its database, its role, the connection's
 // parameters or a statement of its session set, which would steer every plan made on it, the scan
-// rule's among them, and which neither the read's statement nor its settings name.
+// rule's among them, and which neither the read's statement nor its settings name. It names no
+// jit = off, which the test sets on the database (jitOffStore) and which steers no plan: JIT
+// compiles the plan the planner chose once it has chosen it, and the read's own transaction sets
+// it off too (meInboxNoJIT).
 func oneInboxHeldPlannerSettings(t *testing.T, connection *pgx.Conn) []string {
 	t.Helper()
 	rows, err := connection.Query(context.Background(), `
@@ -569,6 +585,7 @@ func oneInboxHeldPlannerSettings(t *testing.T, connection *pgx.Conn) []string {
 		from pg_settings
 		where category like 'Query Tuning%'
 		  and source not in ('default', 'environment variable', 'configuration file', 'command line', 'override')
+		  and not (name = 'jit' and setting = 'off')
 		order by name
 	`)
 	if err != nil {
