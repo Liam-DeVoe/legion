@@ -505,7 +505,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("write its slot's github credential", err)
 		}
 		if credential != nil {
-			if projected := time.Now().Add(secretProjectionBound); projected.After(deadline) {
+			// Planted fault, a control of a test, never merged: the projection bound replaces the
+			// start bound even where the start bound has more left.
+			if projected := time.Now().Add(secretProjectionBound); !projected.IsZero() {
 				deadline = projected
 				var extended context.CancelFunc
 				starting, extended = context.WithDeadline(bounded, deadline.Add(r.terminationGrace))
