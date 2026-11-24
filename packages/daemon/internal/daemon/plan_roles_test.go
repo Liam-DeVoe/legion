@@ -169,8 +169,8 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 	if err := os.WriteFile(prompt, []byte(deploymentProberPrompt+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	logs := filepath.Join(t.TempDir(), "daemon.log")
-	t.Setenv(liveDaemonLogEnv, logs)
+	logs := &syncBuffer{}
+	r.logTo = logs
 	r.restartWith([]config.Role{{Name: planProber, Type: "testing", PromptFile: prompt, Model: deploymentProberModel, GitHubApp: config.RoleAppImplement}},
 		kept, other)
 	// A restarted daemon knows no model until the agent answers again (supervise.StreamAnswered).
@@ -190,12 +190,8 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 		t.Fatalf("%s, whose plan defines no role: %v", other, err)
 	}
 
-	written, err := os.ReadFile(logs)
-	if err != nil {
-		t.Fatalf("read the daemon's log: %v", err)
-	}
 	var lines []string
-	for line := range strings.Lines(string(written)) {
+	for line := range strings.Lines(logs.String()) {
 		if strings.Contains(line, "has the name of a role the plan in force") {
 			lines = append(lines, line)
 		}

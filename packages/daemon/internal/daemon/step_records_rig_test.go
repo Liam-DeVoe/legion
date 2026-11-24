@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -61,6 +62,9 @@ type stepRecordsRig struct {
 	// (overrides.streamWaitBegan) before it answered: what a test reads to tell a request that
 	// waited for its agent's stream from one that applied at once.
 	waited bool
+	// logTo, where a test sets it, is where each later boot writes the daemon's own log, in the
+	// text form liveProof.log writes, in place of the file liveDaemonLogEnv names.
+	logTo io.Writer
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
@@ -231,7 +235,13 @@ func (r *stepRecordsRig) boot() {
 			<-held.release
 		}
 	}
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
+	var logger *slog.Logger
+	if r.logTo != nil {
+		logger = slog.New(slog.NewTextHandler(r.logTo, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	} else {
+		logger = r.log()
+	}
+	r.d = startDaemonWithin(r.t, r.cfg, o, logger, stepRecordsWait)
 }
 
 // restart stops the daemon and boots it again (reboot).
