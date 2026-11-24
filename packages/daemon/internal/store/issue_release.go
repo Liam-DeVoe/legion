@@ -77,8 +77,7 @@ const (
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
 	// ReleaseCausePaused: the project is paused at the release's workspace check. The pause deletes
-	// no pod, so the release is cancelled before any role stops (IssueReleaseCheck, decision 12 and
-	// departure 4 of dispatch://INFRA-3759).
+	// no pod, so the release is cancelled before any role stops (IssueReleaseCheck).
 	ReleaseCausePaused
 )
 
@@ -330,8 +329,8 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 //
 // A check that finds the project paused cancels the release (ReleaseCausePaused): the pause
 // deletes no pod, so a release whose check had not run when the pause began is cancelled and keeps
-// its pod, whatever reached its roles first (decision 12 and departure 4 of
-// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken, which
+// its pod, whatever reached its roles first.
+// The pause is project's, read by its token (readOpenPauseByToken, which
 // says why). No production row reaches a check for another project's issue: the check runs from
 // the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows of its
 // own project's keys (record's DueRows). A release whose check ran before the pause finishes as it

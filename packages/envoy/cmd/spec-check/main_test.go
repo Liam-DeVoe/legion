@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/specgraph/testdata/** fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary lists and its built binary reads
+
 import (
 	"encoding/json"
 	"errors"
@@ -14,6 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // noList is the line tree writes after the directory when it reads no --retired list: the
 // instrument says what it did not read.

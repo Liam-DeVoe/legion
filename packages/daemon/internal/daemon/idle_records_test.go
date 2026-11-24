@@ -20,9 +20,8 @@ func (r *idleRig) records(t *testing.T) store.PodReleaseRecords {
 	return records
 }
 
-// INFRA-945 R6: a completed release is recorded with the run it released and the roles whose
-// claims it suspended, so a deployment can count what release did without reading the daemon's
-// log.
+// A completed release is recorded with the run it released and the roles whose claims it
+// suspended, so a deployment can count what release did without reading the daemon's log.
 func TestAReleaseRecordsItsRunAndItsRoles(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)

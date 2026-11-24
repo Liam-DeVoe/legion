@@ -50,4 +50,4 @@ A replacement of an issue's pod took a disk that may hold work origin does not h
 
 ## GitHub mentions
 
-Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names, and the Verification document where the root registered it as `criteria`; a project that wants no gate sets `gates.design: []` in `legion.yaml`.

@@ -262,7 +262,7 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 // not passed.
 //
 // A project that is paused is marked no release and written no close, whatever decide answers:
-// the pause starts no release (decision 12 of dispatch://INFRA-3759). decide is still handed the
+// the pause starts no release (#4115's project pause). decide is still handed the
 // view, which carries the pause (pods.IdleView.Paused), so its caller can record what kept the
 // pod. The view is read under treelifecycle.Serialize, which the pause's transaction takes too,
 // so a pause and a mark commit one after the other.
