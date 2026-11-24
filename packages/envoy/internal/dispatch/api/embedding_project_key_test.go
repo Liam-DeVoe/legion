@@ -33,6 +33,7 @@ var embeddingProjectKinds = []string{"comment_block", "document_block", "message
 // key would be as invisible to the project that owns it as a null one, and no count of nulls
 // would say so.
 func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	const project = "LABL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -104,6 +105,7 @@ func TestEveryWrittenEmbeddingRowCarriesItsProject(t *testing.T) {
 // one progress row and writes nothing. A pass that stopped at its first batch, or one whose
 // cursor did not move, fails on the rows it left null.
 func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
+	t.Parallel()
 	const project = "FILL"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -206,9 +208,16 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	// The process that is about to die, with a pool of its own on the same database: it takes
 	// the lease through the machinery the server takes it through and stands inside its pass.
 	dying := storetest.SecondProcess(t, database)
-	dyingLeases, err := dying.Pool.Leases()
+	dyingCallers, err := dying.Pool.Leases()
 	if err != nil {
 		t.Fatalf("open the dying process's lease pool: %v", err)
+	}
+	// The lease pool is handed out as reservations, one per caller that can be inside a lease
+	// statement at the same moment (`store.LeaseCallers`), so this holder takes a name of its
+	// own as the server's fill does.
+	dyingLeases, err := dyingCallers.For("embeddings project key fill test hold")
+	if err != nil {
+		t.Fatalf("reserve a caller of the dying process's lease pool: %v", err)
 	}
 	taken, release := make(chan struct{}), make(chan struct{})
 	// The holder stands in its pass until this is called, and a failure above it calls it too:

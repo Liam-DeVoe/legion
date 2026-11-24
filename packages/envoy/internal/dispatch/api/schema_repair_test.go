@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -87,9 +88,12 @@ var outsideSchemaCorruptions = slices.Concat(docs.OutsideSchemaCorruptionsForTes
 	}, Refusal: `mark "link" attribute "nested" nests more than 99 arrays and objects`},
 })
 
-// outsideSchemaRefusal opens every refusal of a stored tree outside the schema: the repair, then
-// the schema refusal that names what is wrong.
-const outsideSchemaRefusal = "document is outside the Proof schema; replace the document from markdown to repair it: outside Proof schema: "
+// outsideSchemaRefusal is every refusal of a stored tree outside the schema: the schema refusal
+// that names what is wrong, then what the repair, a replacement from markdown, discards and that a
+// person decides it.
+func outsideSchemaRefusal(refusal string) string {
+	return "document is outside the Proof schema: outside Proof schema: " + refusal + ". A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document"
+}
 
 // createCorruptedDocument creates a document holding "before" and gives it corrupt's stored tree,
 // written while no room holds the document.
@@ -148,9 +152,15 @@ func createAnchoredComment(t *testing.T, handler http.Handler, issueKey, artifac
 // tree after its review began would have them. A text embed holding a string is text, so a
 // document holding one reads.
 func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
-			handler, database, deps := newTestServer(t, testServerOptions{})
+			// settle: an hour, so no background settlement of the corrupted document runs between
+			// the routes below and fails its room: a failed room answers 503 DOC_SERVICE_UNAVAILABLE
+			// whatever failed it, which is a different path from the one this test asks each route
+			// about (job 137399725401, where the default 20 ms timer fired before the comment reply
+			// under load).
+			handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 			issue := createArtifactIssue(t, handler)
 			artifact := createBeforeDocument(t, handler, issue.Key, "routes.md")
 			open := createAnchoredComment(t, handler, issue.Key, artifact.ID, "open thread")
@@ -191,7 +201,7 @@ func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
 					Code  string `json:"code"`
 					Error string `json:"error"`
 				}](t, response)
-				if refusal := outsideSchemaRefusal + test.Refusal; response.Code != http.StatusConflict || answer.Code != "DOC_SCHEMA" || answer.Error != refusal {
+				if refusal := outsideSchemaRefusal(test.Refusal); response.Code != http.StatusConflict || answer.Code != "DOC_SCHEMA" || answer.Error != refusal {
 					t.Fatalf("%s %s: status=%d body=%s, want 409 DOC_SCHEMA %q", route.method, route.name, response.Code, response.Body.String(), refusal)
 				}
 			}
@@ -223,10 +233,12 @@ func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
 }
 
 // An artifact whose persisted tree is outside the schema is a repairable conflict: its text route
-// names the replacement, and uploading markdown under the same name restores the document. That
-// holds for every stored tree outsideSchemaCorruptions lists, one whose text holds an embed among
-// them, which the upload replaces whole rather than diffing against.
+// names the replacement, what it discards and that a person decides it, and uploading markdown
+// under the same name restores the document. That holds for every stored tree
+// outsideSchemaCorruptions lists, one whose text holds an embed among them, which the upload
+// replaces whole rather than diffing against.
 func TestOutsideSchemaArtifactIsRepairableThroughUpload(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})
@@ -234,8 +246,8 @@ func TestOutsideSchemaArtifactIsRepairableThroughUpload(t *testing.T) {
 			artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "repair.md", test.Corrupt)
 
 			text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifact.ID+"/text", nil, "alice")
-			if text.Code != http.StatusConflict || !strings.Contains(text.Body.String(), `"code":"DOC_SCHEMA"`) || !strings.Contains(text.Body.String(), "replace the document from markdown") {
-				t.Fatalf("read outside-schema document: status=%d body=%s, want 409 DOC_SCHEMA naming the repair", text.Code, text.Body.String())
+			if text.Code != http.StatusConflict || !strings.Contains(text.Body.String(), `"code":"DOC_SCHEMA"`) || !strings.Contains(text.Body.String(), "A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document") {
+				t.Fatalf("read outside-schema document: status=%d body=%s, want 409 DOC_SCHEMA naming what the repair discards and that a person decides it", text.Code, text.Body.String())
 			}
 			repaired := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "repair.md"}, "repair.md", "text/markdown", []byte("repaired\n"), "alice")
 			if repaired.Code != http.StatusCreated {

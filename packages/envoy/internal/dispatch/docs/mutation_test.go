@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -54,7 +55,7 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 		{"SeedText", func() error { _, err := service.SeedText(unjoined, artifactID, "seeded", alice); return err }},
 		{"SnapshotVersion", func() error { _, err := service.SnapshotVersion(unjoined, artifactID, alice); return err }},
 		{"NamedVersion", func() error { _, err := service.NamedVersion(unjoined, artifactID, "named", alice); return err }},
-		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice); return err }},
+		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice, nil); return err }},
 		{"ApplyOps", func() error { _, err := service.ApplyOps(unjoined, artifactID, insert, alice, nil); return err }},
 		{"ApplyOps with a precondition", func() error {
 			_, err := service.ApplyOps(unjoined, artifactID, insert, alice, &model.EditPrecondition{Document: token})
@@ -182,6 +183,47 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 	}
 }
 
+// A replacement that names no token is taken unchecked, as every replacement was before #3000,
+// since no deployed `dispatch` client can name one on `dispatch artifact` (INFRA-4980); the
+// refusal of a missing token comes back once every deployed client sends one. A replacement that
+// names a token is still checked, on the tree the write has already read and under its own lock:
+// one naming a token the document has moved past is refused and leaves the document as it was,
+// and one naming the live token is taken. A replacement of a document whose live tree is outside
+// the Proof schema names no token either, since such a tree has none for any caller to name
+// (TestRepairingUploadNeedsNoToken in api).
+func TestReplaceTextTakesAReplacementNamingNoTokenAndChecksANamedOne(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "before\n")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	replace := func(markdown string, precondition *model.EditPrecondition) error {
+		return joinedWrite(service, func(ctx context.Context) error {
+			_, err := service.ReplaceText(ctx, artifactID, markdown, alice, precondition)
+			return err
+		})
+	}
+
+	stale := liveDocumentToken(t, service, artifactID)
+	if err := replace("after\n", nil); err != nil {
+		t.Fatalf("a replacement naming no token: %v, want it taken", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the document reads %q after the replacement naming no token, want the replacement", text)
+	}
+	var failed *ErrPreconditionFailed
+	if err := replace("again\n", stale); !errors.As(err, &failed) {
+		t.Fatalf("a replacement naming a token the document moved past = %v, want ErrPreconditionFailed", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
+	}
+	if err := replace("again\n", liveDocumentToken(t, service, artifactID)); err != nil {
+		t.Fatalf("a replacement naming the live token: %v", err)
+	}
+	if text := documentText(t, service, artifactID); text != "again\n" {
+		t.Fatalf("the document reads %q after the replacement that named its token, want the replacement", text)
+	}
+}
+
 func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# First")
@@ -192,7 +234,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	}
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -371,7 +413,11 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 			return err
 		},
 		"a text replacement": func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, "after", actor)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, "after", actor, precondition)
 			return err
 		},
 	} {
@@ -436,6 +482,55 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 	version = waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 1 || version.Authors[0] != editor {
 		t.Fatalf("settled version authors = %#v, want only %v", version.Authors, editor)
+	}
+}
+
+// Another build may have written the latest version: during a release two builds serve one
+// database, and an older renderer escapes some text differently. While no update since that
+// version changed the content, a snapshot writes no version, even though this build renders the
+// document differently, as settlement writes none.
+func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedContent(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	snapshot := func() VersionResult {
+		t.Helper()
+		tx, err := service.store.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin snapshot transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		snapshotCtx, ledger := service.Join(ctx, tx)
+		defer ledger.Discard()
+		result, err := service.SnapshotVersion(snapshotCtx, artifactID, alice)
+		if err != nil {
+			t.Fatalf("snapshot the document: %v", err)
+		}
+		if err := ledger.Commit(ctx); err != nil {
+			t.Fatalf("commit the snapshot: %v", err)
+		}
+		return result
+	}
+	seedServiceText(t, service, artifactID, "snake_case here")
+	latest := snapshot()
+	if !latest.Wrote {
+		t.Fatal("the snapshot after the seed wrote no version")
+	}
+	var stored string
+	if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number).Scan(&stored); err != nil {
+		t.Fatalf("read the latest version: %v", err)
+	}
+	if stored != "snake_case here\n" {
+		t.Fatalf("latest version markdown = %q, want %q", stored, "snake_case here\n")
+	}
+	// An older renderer escaped every underscore.
+	if _, err := service.store.Pool.Exec(ctx, `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number, `snake\_case here`+"\n"); err != nil {
+		t.Fatalf("store an older renderer's markdown: %v", err)
+	}
+
+	if again := snapshot(); again.Wrote || again.Version.Number != latest.Version.Number {
+		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write", again.Version.Number, again.Wrote, latest.Version.Number)
 	}
 }
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
@@ -803,8 +898,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			var answered error
 			if err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
-				// The issue route holds the issue's row before it writes any document.
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				// The issue route holds the issue's owner lock before it writes any document.
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if answered = unchanged.write(ctx); answered != nil && !errors.Is(answered, ygws.ErrNoChanges) {
@@ -1000,7 +1095,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 		t.Fatalf("decode settle event payload: %v", err)
 	}
 	issueKey := "DOC-1"
-	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !reflect.DeepEqual(named.ReferencesChanged, want) {
 		t.Fatalf("settle event references_changed = %#v, want %#v", named.ReferencesChanged, want)
 	}
@@ -1050,7 +1145,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	if err := ledger.Commit(context.Background()); err != nil {
 		t.Fatalf("commit snapshot: %v", err)
 	}
-	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !snapshot.Wrote || !reflect.DeepEqual(snapshot.Changes.Targets, want) {
 		t.Fatalf("snapshot changes = %#v (wrote=%t), want %#v", snapshot.Changes.Targets, snapshot.Wrote, want)
 	}
@@ -1069,6 +1164,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	want = []model.ChangedReference{
 		{Kind: "ask", ID: askIDs[1], IssueKey: &issueKey},
 		{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey},
+		{Kind: "issue", ID: issueKey},
 	}
 	if !reflect.DeepEqual(named.Changes.Targets, want) {
 		t.Fatalf("named version changes = %#v, want %#v", named.Changes.Targets, want)

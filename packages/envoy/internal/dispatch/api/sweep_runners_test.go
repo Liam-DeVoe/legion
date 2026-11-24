@@ -32,11 +32,7 @@ const (
 // sweepLeases is the pool a leased loop takes its lease on, the one cmd/dispatch gives it.
 func sweepLeases(t *testing.T, database *store.Store) *pgxpool.Pool {
 	t.Helper()
-	leases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
-	return leases
+	return storetest.Leases(t, database.Pool)
 }
 
 // countLeaseLines counts the lease lines carrying message for lease.
@@ -113,6 +109,7 @@ func waitUntil(t *testing.T, within time.Duration, what string, condition func()
 // empty: one judging pass across the two, and both make progress rather than one giving its pass
 // up to the other's.
 func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -171,6 +168,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
 // it holds, one read per pass, since the loop takes no lease and logs nothing of its own.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	pool, statements := recordedPool(t, database)
 	wake := make(chan struct{}, 1)

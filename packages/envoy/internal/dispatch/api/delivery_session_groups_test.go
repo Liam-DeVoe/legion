@@ -123,6 +123,7 @@ func expectRefusal(t *testing.T, label string, response interface {
 }
 
 func TestCreateSessionGroupRecordsItsActor(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 
 	person := createSessionGroup(t, handler, "Release crew", "s1", "s2")
@@ -157,6 +158,7 @@ func TestCreateSessionGroupRecordsItsActor(t *testing.T) {
 }
 
 func TestCreateSessionGroupRefusesBadInput(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	for label, body := range map[string]map[string]any{
 		"a blank name":       {"name": "  ", "sessions": []string{"s1"}},
@@ -166,13 +168,41 @@ func TestCreateSessionGroupRefusesBadInput(t *testing.T) {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", body, "alice")
 		expectRefusal(t, label, response, http.StatusBadRequest, "SESSION_GROUP_INPUT")
 	}
-	unknown := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
+}
+
+// A member the route does not declare, as a newer build's page may send while a release rolls out,
+// is ignored: the group is created from the members the route declares, and nothing keeps the
+// other one.
+func TestCreateSessionGroupIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
 		"name": "Extra", "sessions": []string{"s1"}, "colour": "red",
 	}, "alice")
-	expectRefusal(t, "an unknown field", unknown, http.StatusBadRequest, "INVALID_JSON")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create with a colour: status = %d, body = %s, want 201", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "colour") || strings.Contains(response.Body.String(), "red") {
+		t.Fatalf("the created group %s carries the colour the route does not declare", response.Body.String())
+	}
+	var group sessionGroupBody
+	if err := json.Unmarshal(response.Body.Bytes(), &group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	if group.Name != "Extra" || !slices.Equal(group.Sessions, []string{"s1"}) {
+		t.Fatalf("group = %+v, want Extra holding s1", group)
+	}
+	var stored string
+	if err := database.Pool.QueryRow(t.Context(), `select to_jsonb(g)::text from delivery_session_groups g where id = $1::uuid`, group.ID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored group: %v", err)
+	}
+	if strings.Contains(stored, "red") {
+		t.Fatalf("the stored group %s keeps the colour", stored)
+	}
 }
 
 func TestASessionIsInOneGroup(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	first := createSessionGroup(t, handler, "First", "s1")
 
@@ -189,6 +219,7 @@ func TestASessionIsInOneGroup(t *testing.T) {
 }
 
 func TestGroupNamesAreUniqueIgnoringCase(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createSessionGroup(t, handler, "Alpha", "s1")
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
@@ -200,6 +231,7 @@ func TestGroupNamesAreUniqueIgnoringCase(t *testing.T) {
 // TestAGroupMayTakeATitleItHoldsWhole: a group may carry a session title as its name when it holds
 // every session with that title, the usual case for an agent that restarted under the same title.
 func TestAGroupMayTakeATitleItHoldsWhole(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedSessionTitles(t, database, time.Now().Add(-time.Hour), map[string]string{"s1": "Planner", "s2": "Planner"})
 	group := createSessionGroup(t, handler, "planner", "s1", "s2")
@@ -211,6 +243,7 @@ func TestAGroupMayTakeATitleItHoldsWhole(t *testing.T) {
 // TestAGroupNameRefusesATitleOutsideIt: a name another session holds as its title, outside the
 // group, is refused naming that session, on a create, a rename and a removal alike.
 func TestAGroupNameRefusesATitleOutsideIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedSessionTitles(t, database, time.Now().Add(-time.Hour), map[string]string{
 		"s1": "Planner", "s2": "Planner", "s3": "Planner", "s4": "Reviewer",
@@ -240,6 +273,7 @@ func TestAGroupNameRefusesATitleOutsideIt(t *testing.T) {
 }
 
 func TestPatchRenamesAddsRemoves(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
 	path := "/api/v1/delivery/session-groups/" + group.ID
@@ -265,6 +299,7 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 }
 
 func TestDeleteSessionGroup(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
 	path := "/api/v1/delivery/session-groups/" + group.ID

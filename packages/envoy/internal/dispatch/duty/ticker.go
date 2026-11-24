@@ -29,25 +29,46 @@ var jitterN = func(n time.Duration) time.Duration {
 
 // Jittered is d plus up to a tenth of d again, drawn afresh each call, so the waits of processes
 // that booted together drift apart. The jitter only ever adds, so a jittered wait is never shorter
-// than the d it was asked for - which is what keeps a periodic pass from landing inside a period
-// duty_passes already records as served (Exclusive): a wait of at least one period always reaches
-// the next boundary.
+// than the d it was asked for. RunWoken relies on that: a leased loop whose attempt did not run
+// waits Jittered(MinGap) before it tries again, so no retry comes sooner than its least gap. A loop
+// that must pass again within its interval waits JitteredWithin instead.
 func Jittered(d time.Duration) time.Duration {
 	return d + jitterN(d/10)
 }
 
-// RunJittered calls pass every interval until ctx is cancelled, starting after a jittered delay in
-// [0, interval) so a restart does not stampede whatever pass calls. Each wait after a pass is the
-// interval plus up to a tenth of it again (jittered), drawn afresh each time, so two processes that
-// booted with nearby phases drift apart rather than ticking in step for the life of both: a gap
-// between passes is at least one interval and under 1.1 of one, plus the pass's own run time. idle
-// is checked once, before the first tick: when it returns true the loop never starts (the caller is
-// expected to have logged why inside idle itself).
+// JitteredWithin is d less up to a tenth of d, drawn afresh each call: a wait in (d - d/10, d], so
+// a loop that waits it after each pass passes again within d of the pass before, and the waits of
+// processes that booted together drift apart. For a d under 10ns a tenth of it is zero, and the
+// wait is d.
+func JitteredWithin(d time.Duration) time.Duration {
+	return d - jitterN(d/10)
+}
+
+// LeasePeriod is the period a leased loop paced by JitteredWithin(d) hands Exclusive: d less a
+// tenth of it. Every wait JitteredWithin(d) leaves is longer than it (for a d under 10ns both are
+// d), and two due times at least one period apart always fall in two of Exclusive's epoch-aligned
+// buckets, so no tick of a lone loop is refused by the period its own previous pass served.
+func LeasePeriod(d time.Duration) time.Duration {
+	return d - d/10
+}
+
+// RunJittered calls pass about every interval until ctx is cancelled, starting after a jittered
+// delay in [0, interval) so a restart does not stampede whatever pass calls. Each wait after a
+// pass is the interval less up to a tenth of it (JitteredWithin), drawn afresh each time, so two
+// processes that booted with nearby phases drift apart rather than ticking in step for the life of
+// both, and no wait is longer than the interval: a gap between passes is more than 0.9 of an
+// interval and at most one, plus the pass's own run time. idle is checked once, before the first
+// tick: when it returns true the loop never starts (the caller is expected to have logged why
+// inside idle itself).
 //
 // pass receives the moment its tick was due, the time its timer delivered, which is what a leased
-// pass hands Exclusive. Each timer is armed once the pass before it has returned and waits at least
-// one interval, so two due times are at least one interval apart and a lone loop's tick is never
-// refused by the period its own previous pass recorded, however late either one's lease came.
+// pass hands Exclusive. Each timer is armed once the pass before it has returned and waits longer
+// than LeasePeriod(interval), so a caller that leases its pass hands Exclusive that period, and not
+// the interval: two due times are then more than one period apart, and a lone loop's tick is never
+// refused by the period its own previous pass recorded, however late either one's lease came. With
+// the interval as the period, a tick that came less than an interval after the one before would be
+// refused whenever both fell in one bucket, and the next pass would come almost two intervals after
+// the last.
 func RunJittered(ctx context.Context, interval time.Duration, idle func() bool, pass func(ctx context.Context, due time.Time)) {
 	if idle() {
 		return
@@ -63,7 +84,7 @@ func RunJittered(ctx context.Context, interval time.Duration, idle func() bool, 
 		case due = <-timer.C:
 		}
 		pass(ctx, due)
-		wait = Jittered(interval)
+		wait = JitteredWithin(interval)
 	}
 }
 
@@ -118,10 +139,11 @@ func RunLeased(ctx context.Context, leases Leases, name string, interval time.Du
 // RunLeasedAfterEachPass runs pass under the lease named name as RunLeased does, one Exclusive
 // call per tick until ctx ends, for a loop paced by its own passes: its first tick is at start,
 // and each next tick comes the wait its pass returned after that pass returned, not after the tick
-// before it was due. pass returns that wait, which must be positive: the interval, or a wait of
-// its own for a loop that speeds up while work remains, as the block-index reconciliation steps
-// two seconds after a full batch. A tick whose pass did not run waits interval, and a pass that
-// shutdown cut short still returns its wait, which goes unused.
+// before it was due. pass is given the period of its tick, the span Exclusive gave it, and returns
+// that wait, which must be positive: the interval, or a wait of its own for a loop that speeds up
+// while work remains, as the block-index reconciliation steps two seconds after a full batch. A
+// tick whose pass did not run waits interval, and a pass that shutdown cut short still returns its
+// wait, which goes unused.
 //
 // The period of a tick, the span Exclusive gives it, is the wait before it - interval for the
 // first - and its due time is the moment its timer fired, a timer armed once the tick before it
@@ -132,13 +154,13 @@ func RunLeased(ctx context.Context, leases Leases, name string, interval time.Du
 // delays the next tick by its own length, and a step is never cut short by the pass before it.
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
-func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context) time.Duration) {
+func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
 	due := time.Now()
 	for {
 		wait := interval
 		Exclusive(ctx, leases, name, due, period, func(ctx context.Context) {
-			wait = pass(ctx)
+			wait = pass(ctx, period)
 		})
 		period = wait
 		select {

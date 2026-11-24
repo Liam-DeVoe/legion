@@ -1,5 +1,5 @@
 import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
@@ -7,6 +7,7 @@ import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
+import { expandedState } from "./settled";
 
 export interface FakeSession {
   session_id: string;
@@ -56,7 +57,16 @@ export async function setLiveSessions(rows: FakeSession[], port?: number): Promi
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
 }
 
-export async function setSessionSendStatus(sessionID: string, status: 200 | 404): Promise<void> {
+/** How the fake listener answers a send to a seeded session until a reseed: `200` takes it. `404`
+ *  is "no live session": Dispatch then publishes a targeted message on the session's agent
+ *  subject itself and records the attempt queued (`listQueuedMessages`), and a mention fails.
+ *  `503` is a listener behind its starting gate, and Dispatch records the attempt failed once its
+ *  take-over window has passed. A row that reads a failed targeted message and its Retry stages
+ *  `503`. */
+export async function setSessionSendStatus(
+  sessionID: string,
+  status: 200 | 404 | 503
+): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
     send_status: status,
   });
@@ -87,12 +97,37 @@ export async function setSessionLive(sessionID: string, live: boolean): Promise<
 
 /** Says what the listener's session store holds for a seeded session: `present` is a record the
  *  per-session route answers 200 from, and answering it puts the id back in the live list as the
- *  real listener's read-through warms its cache; `absent` ends the session, which drops it from
- *  the live list and makes every answer about it - the per-session route, the list and a send -
- *  report no live session; `unreadable` is the store read that did not answer at all, a 503 the
- *  caller must retry rather than read as an ended session. */
+ *  real listener's read-through warms its cache; `absent` ends the session with no record at all,
+ *  in the registry or the known-session store, which drops it from the live list and makes every
+ *  answer about it - the per-session route, the list and a send - report no live session, so
+ *  Dispatch queues a targeted message to it itself; `unreadable` is the store read that did not
+ *  answer at all, a 503 the caller must retry rather than read as an ended session. */
 export async function setSessionRecord(sessionID: string, record: SessionRecord): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", { record });
+}
+
+/** Stops a seeded session, or starts it again. A stopped session is one the listener knows only
+ *  by its known-session record: it holds no registry entry, so it is out of the live list, a
+ *  registry read that does not ask for `stopped` in its `include=` list gets the 404, and a send
+ *  to it is stored for it and answered `state: "stopped"` with `recipient_state: "gone"`, which
+ *  Dispatch records as a queued attempt. */
+export async function setSessionStopped(sessionID: string, stopped: boolean): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
+    stopped,
+  });
+}
+
+/** What a send to this session answers its connection was, whatever a registry read of it shows:
+ *  `stopped` without stopping it is the session whose registry entry was still in place when
+ *  Dispatch resolved it and whose process had gone by the send, which the listener's probe finds
+ *  and answers with `recipient_state` still that entry's own. */
+export async function setSessionSendState(
+  sessionID: string,
+  sendState: "connected" | "stopped"
+): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
+    send_state: sendState,
+  });
 }
 
 /** The state the fake listener's record puts a seeded session in. `gone` is not one of them: a
@@ -127,8 +162,33 @@ export async function setSessionLastSeen(sessionID: string, lastSeen: number): P
  *  `ok`. */
 export type ListsState = "ok" | "refilling" | "down";
 
-export async function setListsState(state: ListsState): Promise<void> {
-  await fixtureRequest("/__fixture/lists", "PUT", { state });
+/** Sets the fake listener's list answer. `retryAfterSeconds` is the `Retry-After` a refilling
+ *  answer carries, the real listener's 5 when it is left out: the page's two retries of a refused
+ *  read each wait that long and up to as much again (`queryRetryDelay`,
+ *  `web/src/api/query-client.ts`), so a row that waits through several refilling reads sets 1. */
+export async function setListsState(
+  state: ListsState,
+  options: { retryAfterSeconds?: number } = {}
+): Promise<void> {
+  await fixtureRequest("/__fixture/lists", "PUT", {
+    state,
+    ...(options.retryAfterSeconds === undefined
+      ? {}
+      : { retry_after_seconds: options.retryAfterSeconds }),
+  });
+}
+
+/** Makes every page `context` opens from now on poll the agent list every `pollMs` in place of the
+ *  shell's 15 s (`AGENT_REGISTRY_POLL_MS`, read through `agentRegistryPollMs` in
+ *  `web/src/features/refs/agent-registry.ts`), so a row that waits for a change of the list to
+ *  reach an open page waits one short poll. Set before the page loads, as the poller reads it.
+ *  `Reflect.set` rather than the property itself: the `Window` field is declared in that web
+ *  module, which the docs site's program, which reads this file for its screenshots, does not
+ *  load. */
+export async function pollAgentListEvery(context: BrowserContext, pollMs: number): Promise<void> {
+  await context.addInitScript((ms) => {
+    Reflect.set(window, "__dispatchAgentRegistryPollMs", ms);
+  }, pollMs);
 }
 
 /** One Legion agent registry entry as the daemon writes it to the listener
@@ -255,6 +315,13 @@ export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
  *  agents: `. */
 export const BROADCAST_REFUSED = "no selected session can receive this message";
 
+/** The sentence a person reads for an attempt Dispatch records `queued`, for a session named
+ *  `name`: the listener stored the message, or Dispatch queued it on the session's agent subject
+ *  itself. It is spelt out here rather than imported from the SPA, so a change to the SPA's
+ *  wording fails the rows that read it rather than passing with it. */
+export const QUEUED = (name: string) =>
+  `Queued: ${name} is stopped; it gets the message if it runs again within 72 hours`;
+
 /** Refuses every broadcast POST as Dispatch does one no selected session can receive (400
  *  `BROADCAST_EMPTY`), until `allow()`. A broadcast tries a failed fetch, a 5xx or a 429 again
  *  under its key until Dispatch answers, so a refusal is a 4xx of Dispatch's own. The selected
@@ -375,18 +442,29 @@ export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
 }
 
 /** Collapses `group` if it is open, or opens it if it is closed: every group is open when the
- *  page loads, so a row that needs one shut says so. */
+ *  page loads, so a row that needs one shut says so. The heading says which it is, and is read
+ *  once the page has drawn it rather than at the instant it attaches. */
 export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
   const toggle = agentGroupToggle(page, group);
-  const expanded = await toggle.getAttribute("aria-expanded");
+  const fold = await expandedState(`the ${group} group's heading`, toggle);
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
+  await expect(toggle).toHaveAttribute("aria-expanded", fold === "open" ? "false" : "true");
 }
 
 /** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
  *  by what it filters rather than by what is ticked in it. */
 export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
   return page.getByRole("button", { name: `Filter by ${filter}` });
+}
+
+/** Opens a filter's panel if it is shut. Its trigger's `aria-expanded` says which it is, and is
+ *  read once the page has drawn the trigger rather than at the instant it attaches. */
+export async function openAgentFilter(
+  page: Page,
+  filter: "group" | "machine" | "role"
+): Promise<void> {
+  const trigger = agentFilter(page, filter);
+  if ((await expandedState(`the ${filter} filter`, trigger)) === "shut") await trigger.click();
 }
 
 /** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
@@ -396,8 +474,7 @@ export async function pickAgentFilter(
   filter: "group" | "machine" | "role",
   option: string
 ): Promise<void> {
-  const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await openAgentFilter(page, filter);
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);

@@ -338,13 +338,15 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 	assertMoved("a CI settlement the record takes", at(27))
 
-	// Three facts GitHub reports of the pull request itself, each written alone, so that the one
-	// field it changes is the whole of what the helper judges (workflow's pullRequestNews): the
-	// base branch the pull request targets and GitHub's merge state are news of the pull request,
-	// and the commit the record last saw its base branch moved to is not. Each write goes through
-	// GitHub's merge-state read (workflow's mergeability), which writes the record only where its
-	// answer differs and writes it through the helper, so each case reaches the judgement and
-	// nothing else of it: the issue stands in testing, the head merges, and no round is read.
+	// Facts of the pull request, each written alone, so that the one field it changes is the whole
+	// of what the helper judges (workflow's pullRequestNews): the base branch the pull request
+	// targets and GitHub's merge state are news of the pull request, and the commit the record last
+	// saw its base branch moved to is not, nor is the moment of a read that only confirms what the
+	// record holds (record.PullRequest.StateReadAt). Each write goes through GitHub's merge-state
+	// read (workflow's mergeability), which writes the record only where its answer differs or
+	// carries a read time the record does not hold, and writes it through the helper, so each case
+	// reaches the judgement and nothing else of it: the issue stands in testing, the head merges,
+	// and no round is read.
 	//
 	// The first read only brings the record to a known answer: it fills the base and GitHub's two
 	// verdicts, which a read is news of.
@@ -404,6 +406,21 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		t.Fatalf("the retargeted read left the pull request of %s on base %q, want release: the read must be one the record takes, or this case proves nothing", movedIssue, got)
 	}
 	assertMoved("a merge-state read that changes the base branch alone", at(32))
+
+	// A read that answers exactly what is recorded, carrying the moment GitHub answered, writes
+	// the row for that moment alone (record.PullRequest.StateReadAt), which is how a head the
+	// daemon read a minute ago tells itself from one nothing has read for a day. That moment is
+	// the age of the daemon's knowledge and no news of the pull request: counting it would move
+	// a tree on every read that confirms a blocked head, so a tree that stopped while GitHub held
+	// its head would never reach the bound. Making the read time news fails this case.
+	now = at(33)
+	applyMovement(t, pool, admission, engine, "github", "merge-state-confirmed", intake.PullRequestMergeability{Repo: "acme/widgets",
+		Number: 7, Base: "release", HeadSHA: "a1", Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked, ReadAt: at(33)})
+	if got := recordedPR().StateReadAt; !got.Equal(at(33)) {
+		t.Fatalf("the confirming read left the pull request of %s read at %s, want %s: the read must be one the record takes, or this case proves nothing",
+			movedIssue, got.Format(time.RFC3339Nano), at(33).Format(time.RFC3339Nano))
+	}
+	assertMoved("a merge-state read that only confirms what is recorded, moving its read time", at(32))
 
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
@@ -622,12 +639,13 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		applyMovement(t, pool, admission, engine, "supervise", "worker-silent-"+issueKey, intake.WorkerSilent{Issue: issueKey,
 			Role: claim.RoleImplementer, Generation: stands.Generation, LastStep: lastStep, Bound: silenceBound})
 
+		resume := resumeTaskOf(t, pool, engine, issueKey)
 		var resend, told bool
 		for _, row := range effects(t, pool) {
 			switch payload := row.payload.(type) {
 			case record.SuperviseRequest:
 				resend = resend || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == resume)
 			case record.Notice:
 				told = told || (row.issue == issueKey && payload.Kind == "worker-silent")
 			}
@@ -645,8 +663,12 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		started := resent.Add(time.Minute)
 		now = started
 		inTx(t, pool, func(tx pgx.Tx) {
-			if err := engine.StartPromotedWorker(ctx, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
+			fact := engine.OpenFact(ctx)
+			if err := engine.StartPromotedWorker(fact, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
 				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
+			}
+			if err := engine.SettleFact(fact, tx); err != nil {
+				t.Fatalf("settle the start of %s: %v", issueKey, err)
 			}
 		})
 		if got := movedAt(t, pool, issueKey); !got.Equal(started) {
@@ -847,7 +869,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// boot the daemon starts again every claim of its project that owns its issue's current phase
 	// and that the daemon or its own exit suspended (workflow's booted, the resume by rule); a
 	// claim level with its entry is sent the task that takes its phase on at no entry of its own
-	// (workflow.ResumePhaseTask), built where every start of a phase worker is built (workflow's
+	// (workflow's Engine.ResumeTask), built where every start of a phase worker is built (workflow's
 	// Engine.started, through workflow.StartOrOwe's own body). A claim behind that entry is sent
 	// the entry's work through the one function every send of an owed entry is written by
 	// (workflow's sendOwedEntry), which the eighth kind above locks. Either start is the daemon
@@ -901,12 +923,13 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		now = before.Add(time.Minute)
 		applyMovement(t, pool, admission, engine, "daemon", "boot:"+testProject+":1", intake.DaemonBooted{Boot: 1})
 
+		resume := resumeTaskOf(t, pool, engine, issueKey)
 		var resumed bool
 		for _, row := range effects(t, pool) {
 			if payload, ok := row.payload.(record.SuperviseRequest); ok {
 				resumed = resumed || (row.issue == issueKey && payload.Op == "start" && payload.RuleResume &&
 					payload.ResumeTask && payload.Entry == 0 && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == resume)
 			}
 		}
 		if !resumed {

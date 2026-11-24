@@ -135,6 +135,7 @@ jobs:
       group: worker-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The commit that is built and that the sha- tag names: the PR head on a pull request (ci.yaml's
       # call; github.sha would be the ephemeral merge commit there); the triggering commit for
       # release.yaml's call and workflow_dispatch.
@@ -159,6 +160,10 @@ jobs:
       # `image` output, or from the caller's `image` input when this job skipped. $GITHUB_ENV
       # gives the steps after this one the same `${IMAGE}` they always read.
       - name: Derive the image repository
+        # The id is BUILD_PLUMBING_STEPS's key in
+        # .github/scripts/check-image-trigger-paths.sh, which pins this step as the image
+        # build's own plumbing.
+        id: image
         run: |
           # Assigned first, never `echo "IMAGE=$(…)"`: a command substitution inside echo's
           # arguments cannot fail the step, since echo exits 0 whatever the substitution did, so
@@ -258,8 +263,6 @@ jobs:
             LEGION_REVISION=${{ steps.meta.outputs.built_sha }}
             PI_LEGION_VERSION=${{ inputs.pi_legion_version }}
             PI_ENVOY_VERSION=${{ inputs.pi_envoy_version }}
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
 
       - name: Record digest
         id: record

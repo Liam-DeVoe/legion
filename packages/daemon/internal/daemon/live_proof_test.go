@@ -1,17 +1,10 @@
-// The harness this package's whole-daemon live proofs share: child_adoption_live_test.go,
-// handoff_records_live_test.go and admission_issues_live_test.go, which embed liveProof;
-// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
-// phase_entry_converge_live_test.go, which embed live_issue_proof_test.go's liveIssueProof,
-// liveProof grown for one issue on an open pull request; and the proofs that drive real Oh My Pi
-// panes, through live_agent_proof_test.go's liveAgentProof. Every one of them but
-// admission_issues_live_test.go is built with `-tags e2e` by a script of its own
-// (scripts/e2e/child-adoption.sh, scripts/e2e/handoff-records.sh,
-// scripts/e2e/behind-entry-fence.sh, scripts/e2e/conflict-no-takeover.sh,
-// scripts/e2e/phase-entry-converge.sh and the four live_agent_proof_test.go names), which makes
-// the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
-// admission_issues_live_test.go runs in the ordinary `go test ./internal/daemon/` on the broker
-// that package's other tests take (newLiveProofOn over workflowNATS), which is why this file
-// carries no build tag of its own.
+// The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
+// that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
+// drive real Oh My Pi panes through liveAgentProof among them. Each one carrying the `e2e` build tag
+// is built by a script of its own under scripts/e2e, which makes the same run around it through
+// scripts/e2e/lib/live-daemon-proof.sh; admission_issues_live_test.go, which carries no build tag,
+// runs in the ordinary `go test ./internal/daemon/` on the broker that package's other tests take
+// (newLiveProofOn over workflowNATS), which is why this file carries no build tag of its own.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof reads the broker LEGION_E2E_NATS_URL
@@ -30,6 +23,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -129,12 +123,19 @@ func (p *liveProof) log() *slog.Logger {
 	if path == "" {
 		return quietLogger()
 	}
+	return slog.New(slog.NewTextHandler(evidenceFile(p.t, path), &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// evidenceFile opens path, a file of the run's evidence, to append to, and closes it when the test
+// ends: the daemon's own log, and the log of the Dispatch a driver starts beside it.
+func evidenceFile(t *testing.T, path string) *os.File {
+	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		p.t.Fatalf("open the daemon's log %s: %v", path, err)
+		t.Fatalf("open the evidence file %s: %v", path, err)
 	}
-	p.t.Cleanup(func() { file.Close() })
-	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { file.Close() })
+	return file
 }
 
 // step runs one of the proof's steps between its `== name` and `ok name (<s>s)` lines, as the
@@ -186,6 +187,23 @@ func (p *liveProof) publish(subject, source, eventID, payload string) string {
 		p.t.Fatalf("publish %s: %v", subject, err)
 	}
 	return eventID
+}
+
+// publishMergeOf publishes GitHub's merge of the pull request numbered number, issue's, at head
+// onto base, as Envoy relays a GitHub pull-request event closed with merged true (intake's
+// decodePullRequest reads it), and returns its event id. The merge commit is named for the head.
+func (p *liveProof) publishMergeOf(number int, issue, head, base string) string {
+	p.t.Helper()
+	payload, err := json.Marshal(map[string]string{
+		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		p.t.Fatalf("encode the merge payload: %v", err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), number)
+	return p.publish(subject, "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
 }
 
 // admit seeds issues, in order, into the next free admission slots in tx. Slot indexes are unique

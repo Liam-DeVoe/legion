@@ -79,8 +79,7 @@ const sessionTitlePlanStoppedRows = titledPlanNewerEvents + 1 + untitledPlanEven
 // newSessionTitlesPlanFixture writes the events both statements are read over: a session whose
 // only title is on an older event, a session whose every event carries none, a user actor
 // sharing the titled session's id (the partial index holds no such row, and neither statement
-// may answer from it), and a session nobody asked about. seedTitlesIssue clears the issue's
-// events first, so a run against the database an earlier run left reads only these.
+// may answer from it), and a session nobody asked about.
 func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
@@ -224,6 +223,7 @@ func analyzedTitlePlan(
 // deliberately answers something else, and on this fixture the two differ -- the titled
 // session's newest event carries no title at all.
 func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	want := sessionTitleRows(t, ctx, pool, correctedDistinctOnTitlesQuery)
 	// fmt.Sprint writes no space between two strings, so a row reads as its id and its title
@@ -255,6 +255,7 @@ func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T
 // the early stop), and it says nothing about a session whose every event is untitled, whose
 // whole history this read walks by design.
 func TestTheSessionTitlesReadEventsThroughTheSessionActorIndex(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	plan, root, raw := analyzedTitlePlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {

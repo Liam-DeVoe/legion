@@ -1,13 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -17,8 +9,6 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
-import { DocumentRuntime } from "../doc/runtime";
-import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -94,6 +84,7 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
         <ReadingPaneHead
           artifact={undefined}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={undefined}
@@ -163,13 +154,6 @@ function ApprovalBody({
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
-  const { blockSchema: runtimeBlockSchema } = useContext(DocumentRuntime);
-  const blockSchemaQuery = useQuery({
-    queryFn: loadBlockSchema,
-    queryKey: ["block-schema"],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  const blockSchema = runtimeBlockSchema ?? blockSchemaQuery.data;
   const user = useQuery(whoAmIQuery()).data;
   const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
   // The version the request is marked against: the document's last approval by any person, read
@@ -316,7 +300,6 @@ function ApprovalBody({
             // what was decided in them, and a column the reader flips through with `j` reads no
             // list of the document's asks to name their askers.
             asks={[]}
-            blockSchema={blockSchema}
             changeBaseline={changeBaseline}
             createdAt={
               (artifact.versions ?? []).find((version) => version.number === latestVersion)
@@ -342,6 +325,7 @@ function ApprovalBody({
         <ReadingPaneHead
           artifact={artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
@@ -378,6 +362,7 @@ function DecisionBody({
         <ReadingPaneHead
           artifact={document.artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
@@ -403,6 +388,10 @@ function DecisionBody({
  * document could not be opened falls back to as well — the column never shows the document
  * page's rebuild or repair prompts. A Reply or an Agent row is one of four thread bodies
  * (`ThreadPane.tsx`), which fall back the same way.
+ *
+ * Each flow keys its head by the ask: the head's controls hold the writes they made -
+ * `Snoozing…`, a refusal and its Retry - so the next question selected is drawn under a head of
+ * its own, never under this one still showing the last question's.
  */
 export function ReadingPane({
   onAnswered,

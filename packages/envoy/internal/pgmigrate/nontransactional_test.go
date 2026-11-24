@@ -28,9 +28,12 @@ func TestLoadNonTransactionalMigration(t *testing.T) {
 	}
 }
 
+// The marker's words inside a literal, or in prose of a longer comment, are text: the file is an
+// ordinary migration. The marker as a comment of its own on any line but the first is refused
+// (TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine).
 func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
 	for _, sql := range []string{
-		"-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"-- see `-- pgmigrate:non-transactional` in the README\nselect 1; select 2;",
 		"select $$\n-- pgmigrate:non-transactional\n$$;",
 	} {
 		migrations, err := Load(fstest.MapFS{"migrations/0001_normal.up.sql": {Data: []byte(sql)}}, "migrations")
@@ -38,6 +41,38 @@ func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
 			t.Fatalf("ordinary migration = %+v, %v", migrations, err)
 		}
 	}
+}
+
+// A replaces line, or any other line, written above the non-transactional marker leaves the marker
+// where nonTransactionalHeader does not read it, so the file would run in a transaction; the
+// loader refuses it, naming the file and the marker's line. Before this rule the first case loaded
+// as a transactional migration, and an earlier version of the test above accepted the second. The
+// control is the same file with the marker first and the replaces line after it, which loads as
+// non-transactional and declares the line.
+func TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine(t *testing.T) {
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	replaces := "-- replaces: 0001_index.up.sql sha256:" + strings.Repeat("0", 64) + "\n"
+	for name, sql := range map[string]string{
+		"below a replaces line":       replaces + "-- pgmigrate:non-transactional\n" + index,
+		"below an ordinary comment":   "-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"indented, with CRLF endings": "-- header\r\n  -- pgmigrate:non-transactional\r\n" + index,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte(sql)}}, "migrations")
+			if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2: the -- pgmigrate:non-transactional marker is read on the first line alone") {
+				t.Fatalf("Load = %+v, %v; want a refusal naming the file and line 2", got, err)
+			}
+		})
+	}
+	t.Run("control: the marker first, the replaces line after it", func(t *testing.T) {
+		got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + replaces + index)}}, "migrations")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !got[0].NonTransactional || len(got[0].Replaces) != 1 {
+			t.Errorf("non-transactional %v, replaces %v; want the marker read and the line declared", got[0].NonTransactional, got[0].Replaces)
+		}
+	})
 }
 
 func TestLoadRefusesUnsafeNonTransactionalMigrations(t *testing.T) {
@@ -69,6 +104,77 @@ func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
 	}
 }
 
+// LoadBuilt keeps every check of Load's that reads no statement: a marker below the first line is
+// refused there too, and a marker on the first line selects execution outside a transaction.
+func TestLoadBuiltKeepsTheMarkerChecks(t *testing.T) {
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	got, err := LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- ordinary header\n-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2") {
+		t.Fatalf("LoadBuilt = %+v, %v; want the refusal Load gives a marker on line 2", got, err)
+	}
+	got, err = LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err != nil || len(got) != 1 || !got[0].NonTransactional {
+		t.Fatalf("LoadBuilt = %+v, %v; want one migration marked non-transactional", got, err)
+	}
+}
+
+// A runner that reads its set with LoadBuilt reaches a marked migration's statement unchecked, so
+// ExecNonTransactional is what refuses the statements Load refuses (the two tests above), before
+// anything of them runs: each case's statement would build its relation, or open a transaction,
+// on the table it names, and after the refusal the relation is not there and the session is idle.
+// The control is the one statement Load admits, which the same call builds, so the check that
+// the relation is absent can see one that is there.
+func TestExecNonTransactionalRefusesWhatLoadRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, sql string
+		// relations are the relations the statement would make if it ran.
+		relations []string
+	}{
+		{"two statements", "create index concurrently if not exists things_kind on things (kind); create table leaked (id integer);", []string{"things_kind", "leaked"}},
+		{"not idempotent", "create index concurrently things_kind on things (kind);", []string{"things_kind"}},
+		{"not concurrent", "create index if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"unique", "create unique index concurrently if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"not an index", "create table leaked (id integer);", []string{"leaked"}},
+		{"transaction control", "begin;", nil},
+		{"no statement", "-- nothing\n", nil},
+		{"invalid SQL", "create index concurrently if not exists", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := connect(t, ctx, testpg.URL(t))
+			if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+				t.Fatal(err)
+			}
+			migration := Migration{Name: "0001_index.up.sql", SQL: tc.sql, NonTransactional: true}
+			err := ExecNonTransactional(ctx, conn, migration, nil)
+			if err == nil || !strings.Contains(err.Error(), "migration 0001_index.up.sql: ") || !strings.Contains(err.Error(), "non-transactional migration") {
+				t.Fatalf("ExecNonTransactional(%q) = %v, want a refusal naming the migration", tc.sql, err)
+			}
+			for _, name := range tc.relations {
+				if got := indexState(t, ctx, conn, name); got != (relation{}) {
+					t.Errorf("after the refusal %s is %+v, want no relation of that name: the statement ran", name, got)
+				}
+			}
+			if status := conn.PgConn().TxStatus(); status != 'I' {
+				t.Errorf("after the refusal the session's transaction status is %q, want idle", status)
+			}
+		})
+	}
+	t.Run("control: the statement Load admits is built", func(t *testing.T) {
+		ctx := context.Background()
+		conn := connect(t, ctx, testpg.URL(t))
+		if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+			t.Fatalf("ExecNonTransactional = %v, want the index built", err)
+		}
+		if got := indexState(t, ctx, conn, "things_kind"); !got.Index || !got.Valid {
+			t.Fatalf("things_kind = %+v, want a valid index", got)
+		}
+	})
+}
+
 // connect opens one connection to url and closes it when t ends. The URL is the caller's, since
 // testpg.URL makes a database of its own at each call and a test's two connections share one.
 func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
@@ -81,18 +187,51 @@ func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
 	return conn
 }
 
+// ExecNonTransactional builds the index with lock_timeout at LockTimeout, each text setting at its
+// value (textSettings), and session_authorization, role and search_path at the values that RESET
+// gives them (resetSettings), whatever the session set, and gives the session each setting back
+// after. The event trigger fails the build where one of them differs: it compares search_path,
+// role, current_user and session_user with what the connection read when it was new, before the
+// session set all seven to other values. The session sets session_authorization to the role
+// other and role to group, a role that other is a member of. Each role takes the name of the
+// test's own database, which is random, since a role spans the cluster that every test shares.
 func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	ctx := context.Background()
-	conn := connect(t, ctx, testpg.URL(t))
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	group, other := config.Database+"_group", config.Database+"_other"
+	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before conn connects, so conn closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+other+", "+group); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	conn := connect(t, ctx, url)
+	// format writes into the event trigger's body the values that conn reads now, when it is new.
 	if _, err := conn.Exec(ctx, `create table things (kind text);
-		create function check_build_settings() returns event_trigger language plpgsql as $$
-		begin
-			if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on' then
-				raise exception 'build ran without its session settings';
-			end if;
-		end $$;
+		create schema x;
+		do $do$ begin
+			execute format($f$create function check_build_settings() returns event_trigger language plpgsql as $fn$
+			begin
+				if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on'
+					or current_setting('backslash_quote') <> 'safe_encoding' or current_setting('client_encoding') <> 'UTF8'
+					or current_setting('search_path') <> %L or current_setting('role') <> %L
+					or current_user <> %L or session_user <> %L then
+					raise exception 'build ran without its session settings: search_path %%, role %%, current_user %%, session_user %%',
+						current_setting('search_path'), current_setting('role'), current_user, session_user;
+				end if;
+			end $fn$$f$, current_setting('search_path'), current_setting('role'), current_user, session_user);
+		end $do$;
 		create event trigger check_build_settings on ddl_command_start when tag in ('CREATE INDEX') execute function check_build_settings();
-		set lock_timeout = '123ms'; set standard_conforming_strings = off`); err != nil {
+		set lock_timeout = '123ms'; set standard_conforming_strings = off; set backslash_quote = off; set client_encoding = 'SJIS';
+		set session authorization `+other+`; set role `+group+`; set search_path = x`); err != nil {
 		t.Fatal(err)
 	}
 	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
@@ -102,17 +241,77 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
+	// The session's search_path is x again, so the index's name carries its schema.
 	var valid bool
-	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'things_kind'::regclass").Scan(&valid); err != nil || !valid {
+	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'public.things_kind'::regclass").Scan(&valid); err != nil || !valid {
 		t.Fatalf("index valid = %v, %v", valid, err)
 	}
-	var timeout string
-	if err := conn.QueryRow(ctx, "show lock_timeout").Scan(&timeout); err != nil || timeout != "123ms" {
-		t.Fatalf("lock_timeout = %q, %v", timeout, err)
+	for _, restored := range []setting{
+		{"lock_timeout", "123ms"},
+		{"standard_conforming_strings", "off"},
+		{"backslash_quote", "off"},
+		{"client_encoding", "SJIS"},
+		{"session_authorization", other},
+		{"role", group},
+		{"search_path", "x"},
+	} {
+		var value string
+		if err := conn.QueryRow(ctx, "select current_setting($1)", restored.name).Scan(&value); err != nil || value != restored.value {
+			t.Errorf("%s = %q, %v; want %q, as the session set it", restored.name, value, err, restored.value)
+		}
 	}
-	var stringsSetting string
-	if err := conn.QueryRow(ctx, "show standard_conforming_strings").Scan(&stringsSetting); err != nil || stringsSetting != "off" {
-		t.Fatalf("standard_conforming_strings = %q, %v", stringsSetting, err)
+	var currentUser, sessionUser string
+	if err := conn.QueryRow(ctx, "select current_user::text, session_user::text").Scan(&currentUser, &sessionUser); err != nil || currentUser != group || sessionUser != other {
+		t.Errorf("current_user %q and session_user %q, %v; want %q and %q, as the session set them", currentUser, sessionUser, err, group, other)
+	}
+}
+
+// ExecNonTransactional gives session_authorization and role back in that order, each as its own
+// statement, so a caller that signed in as one login and then took a role of its own keeps both its
+// session_user and its current_user. Setting session_authorization ends a SET ROLE, and a single
+// select does not promise the order its set_config calls run in, so giving role back inside one
+// select beside session_authorization could leave current_user at the login. Each role takes the
+// name of the test's own database, which is random, since a role spans the cluster that every test
+// shares, and the roles are dropped after.
+//
+// PostgreSQL 18 runs a select's set_config calls in the order they are listed, so this row also
+// passes on a single select that lists session_authorization first: it checks the order of the
+// restore, not its split into separate statements.
+//
+// Control: swap the restore to give role back before session_authorization (two separate statements
+// with role first, or one select with role first) and this row fails: session_user stays the login,
+// but current_user falls back to it.
+func TestExecNonTransactionalRestoresSessionAuthorizationBeforeRole(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	login, grp := config.Database+"_login", config.Database+"_grp"
+	if _, err := admin.Exec(ctx, "create role "+login+" login; create role "+grp+"; grant "+grp+" to "+login); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before conn connects, so conn closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+login+", "+grp); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	conn := connect(t, ctx, url)
+	if _, err := conn.Exec(ctx, "create table things (kind text); set session authorization "+login+"; set role "+grp); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+		t.Fatal(err)
+	}
+	var currentUser, sessionUser string
+	if err := conn.QueryRow(ctx, "select current_user::text, session_user::text").Scan(&currentUser, &sessionUser); err != nil {
+		t.Fatal(err)
+	}
+	if sessionUser != login || currentUser != grp {
+		t.Errorf("current_user %q and session_user %q; want %q and %q: the restore did not give session_authorization back before role", currentUser, sessionUser, grp, login)
 	}
 }
 

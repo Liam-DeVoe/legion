@@ -9,6 +9,9 @@ import {
   type FetchImplementation,
   isCredentialFeatureOff,
   isDeliveryNotConfigured,
+  isDocumentNewerContent,
+  isDocumentSchemaError,
+  isReferencesTimeout,
   isRetryableQueryError,
   isUnauthorized,
   NetworkError,
@@ -657,20 +660,20 @@ test("API client sends comment edits to their endpoint, and the reopen with no b
   expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
 });
 
-test("API client sends repository project mapping requests to their settings routes", async () => {
-  const stub = stubFetch(() => Response.json({ repo: "owner/repo", project: "CORE" }));
+test("API client sends project default repository requests to their route", async () => {
+  const stub = stubFetch(() => Response.json({ project: "CORE", repo: "owner/repo" }));
   const settingsApi = createApiClient(stub.fetch);
 
-  await settingsApi.listRepoProjects();
-  await settingsApi.putRepoProject("owner/repo", { project: "CORE" }, keyed("put-1"));
-  await settingsApi.deleteRepoProject("owner/repo", keyed("delete-1"));
+  await settingsApi.putProjectDefaultRepository("CORE", { repo: "owner/repo" }, keyed("put-1"));
+  await settingsApi.putProjectDefaultRepository("CORE", { repo: null }, keyed("put-2"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/settings/repo-projects"],
-    ["PUT", "/api/v1/settings/repo-projects/owner/repo"],
-    ["DELETE", "/api/v1/settings/repo-projects/owner/repo"],
+    ["PUT", "/api/v1/projects/CORE/default-repository"],
+    ["PUT", "/api/v1/projects/CORE/default-repository"],
   ]);
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ project: "CORE" });
+  // A set names the repository, and a clear sends null rather than leaving the member out.
+  expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ repo: "owner/repo" });
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ repo: null });
 });
 
 test("API client sends architecture source requests to their routes", async () => {
@@ -752,22 +755,6 @@ test("API client sends inline artifacts as JSON", async () => {
   });
 });
 
-test("API client reads the server-owned block schema", async () => {
-  const stub = stubFetch(() =>
-    Response.json({
-      types: [{ attributes: {}, content: "paragraph+", name: "callout", render: "host" }],
-      version: 1,
-    })
-  );
-  const api = createApiClient(stub.fetch);
-
-  const schema = await api.getBlockSchema();
-
-  expect(schema.version).toBe(1);
-  expect(schema.types[0]?.name).toBe("callout");
-  expect(stub.requests.map(({ path }) => path)).toEqual(["/api/v1/schema/blocks"]);
-});
-
 test("API client encodes list filters and artifact version query parameters", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
@@ -825,12 +812,12 @@ test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/sea
 
   await api.search("astrolabe", { status: "in_progress" });
   await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
-  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+  await api.search("astrolabe", { author: "sami@example.com", updated_since: "2026-11-01" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v1/search/results?q=astrolabe&status=in_progress",
     "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
-    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
+    "/api/v1/search/results?q=astrolabe&author=sami%40example.com&updated_since=2026-11-01",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {
@@ -870,7 +857,7 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
     ["GET", "/api/v1/artifacts/artifact-1/comments"],
     ["POST", "/api/v1/artifacts/artifact-1/comments"],
     ["GET", "/api/v1/artifacts/artifact-1/blocks"],
-    ["GET", "/api/v1/issues/CORE-1/references"],
+    ["GET", "/api/v1/issues/CORE-1/references?versions=latest"],
   ]);
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     content: "# Design notes\n",
@@ -969,7 +956,7 @@ test(
         Response.json(
           {
             error:
-              "document is outside the Proof schema; replace the document from markdown to repair it",
+              "document is outside the Proof schema. A replacement from markdown discards every part of the document's current content that the markdown leaves out. A person decides whether to replace the document",
             code: "DOC_SCHEMA",
           },
           { status: 409 }
@@ -985,6 +972,17 @@ test(
         )
       ).fetch
     );
+    const referencesTimeout = createApiClient(
+      stubFetch(() =>
+        Response.json(
+          {
+            error: "the issue's reference closure ran past its 2s bound",
+            code: "REFERENCES_TIMEOUT",
+          },
+          { status: 503 }
+        )
+      ).fetch
+    );
 
     const [
       unauthorizedError,
@@ -992,6 +990,7 @@ test(
       documentSchemaError,
       serverErrorResult,
       deliveryUnsetError,
+      referencesTimeoutError,
     ] = await Promise.all([
       unauthorized.whoAmI().catch((error: unknown) => error),
       featureOff.getCredentialGrants().catch((error: unknown) => error),
@@ -999,6 +998,7 @@ test(
       serverError.whoAmI().catch((error: unknown) => error),
       // The run route answers 404 DELIVERY_NOT_CONFIGURED while no settings row exists.
       deliveryUnset.getDeliveryRun(7).catch((error: unknown) => error),
+      referencesTimeout.getIssueReferences("CORE-1").catch((error: unknown) => error),
     ]);
 
     expect(isRetryableQueryError(unauthorizedError)).toBe(false);
@@ -1008,6 +1008,9 @@ test(
     expect(isRetryableQueryError(serverErrorResult)).toBe(true);
     expect(isDeliveryNotConfigured(deliveryUnsetError)).toBe(true);
     expect(isRetryableQueryError(deliveryUnsetError)).toBe(false);
+    // A references walk cut at its bound costs the database the bound again on each retry.
+    expect(isReferencesTimeout(referencesTimeoutError)).toBe(true);
+    expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
   }
 );
 
@@ -1034,6 +1037,30 @@ test("a refusal keeps the server's Retry-After in delta-seconds, and no delay fo
   expect(none).toMatchObject({ retryAfterMs: undefined, status: 503 });
   expect(isRetryableQueryError(seconds)).toBe(true);
 });
+
+test(
+  "a document holding content this build cannot read is DOC_NEWER_CONTENT, not the repair state, " +
+    "and its read is retried, since another build may answer the next one",
+  async () => {
+    const newer = createApiClient(
+      stubFetch(() =>
+        Response.json(
+          {
+            error:
+              "this Dispatch process's build cannot read an element of this document. Try again in one minute.",
+            code: "DOC_NEWER_CONTENT",
+          },
+          { status: 409 }
+        )
+      ).fetch
+    );
+    const newerError = await newer.getArtifactText("artifact-1").catch((error: unknown) => error);
+
+    expect(isDocumentNewerContent(newerError)).toBe(true);
+    expect(isDocumentSchemaError(newerError)).toBe(false);
+    expect(isRetryableQueryError(newerError)).toBe(true);
+  }
+);
 
 test(
   "the production retry policy issues one credential request when the broker is unconfigured, " +

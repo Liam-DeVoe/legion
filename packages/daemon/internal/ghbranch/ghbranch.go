@@ -44,7 +44,7 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+refPath(base), &read); err != nil {
+	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), &read); err != nil {
 		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
 	}
 	head := read.Object.SHA
@@ -60,11 +60,13 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
 }
 
-// refPath is branch as the path of its ref under /git/ref/heads/: every character a URL path
+// RefPath is branch as a path under any route of GitHub's REST API that takes a branch name with
+// its slashes kept - /git/ref/heads/, /rules/branches/, /branches/: every character a URL path
 // would read as its own syntax (`#`, `?`, `%`, and the rest url.PathEscape escapes) escaped, and
-// each `/` kept, since it separates the ref's own components, so GitHub reads the one ref branch
-// names.
-func refPath(branch string) string {
+// each `/` kept, since GitHub reads a branch name's slashes as part of the name on each of those
+// routes, so GitHub reads the one branch named. A `%2F` written in the name stays itself: its `%`
+// is escaped with the rest, so no slash comes of it.
+func RefPath(branch string) string {
 	return strings.ReplaceAll(url.PathEscape(branch), "%2F", "/")
 }
 
@@ -86,7 +88,9 @@ type Repository struct {
 
 // Read is repo as GitHub names it (`full_name` and `default_branch` of `GET /repos/{owner}/{repo}`),
 // read through github, the repository's REST API. An answer naming no default branch, or a
-// full_name that is not owner/name, is refused by name, as is every answer other than 2xx.
+// full_name that is not owner/name, is refused by name, as is every answer other than 2xx, whose
+// refusal wraps GitHub's *githubrest.Answer so a caller can tell GitHub's rate limit (RateLimited,
+// with how long GitHub asks it to wait) from GitHub's verdict on the repository.
 func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository) (Repository, error) {
 	var info struct {
 		FullName      string `json:"full_name"`

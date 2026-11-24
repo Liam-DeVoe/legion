@@ -129,6 +129,112 @@ func TestRegisterRecordsTheProcessAsLive(t *testing.T) {
 	}
 }
 
+// liveProcess is id's row as Live reads it.
+func liveProcess(t *testing.T, database *store.Store, id string) Process {
+	t.Helper()
+	live, err := Live(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the live processes: %v", err)
+	}
+	for _, p := range live {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("process %s is not live; live = %+v", id, live)
+	return Process{}
+}
+
+// The four fleet columns - the schema version and creatable version the process's documents
+// read and write, its embedder's identity and whether it stores files in a bucket - read back as
+// the process registered them, and again after a heartbeat writes a pruned row back.
+func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	registration, err := Register(context.Background(), database.Pool, Instance{
+		Commit: "c1", DashboardBuild: "build-c1", SigningKeys: fingerprints(t, "K0"),
+		SchemaVersion: 3, SchemaCreatable: 2, EmbedderIdentity: "azure:example.openai.azure.com/embed", FileStore: true,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	want := func(what string, got Process) {
+		t.Helper()
+		if got.SchemaVersion != 3 || got.SchemaCreatable != 2 || got.EmbedderIdentity != "azure:example.openai.azure.com/embed" ||
+			!got.FileStore || got.PredatesFleetColumns() {
+			t.Errorf("%s = %+v, want schema version 3, creatable 2, the Azure identity and a file store", what, got)
+		}
+	}
+	want("the registered row", liveProcess(t, database, registration.ID))
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	want("the row written again after a prune", liveProcess(t, database, registration.ID))
+}
+
+// A refresh writes the schema numbers the process serves now into its row, where every process's
+// socket admission reads them, and a row written again after a prune carries the refreshed numbers
+// rather than the ones the process registered with. A refresh to the numbers it last wrote writes
+// nothing: the process's own record of its row is what it compares with, not the row.
+func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	ctx := context.Background()
+	registration, err := Register(ctx, database.Pool, Instance{
+		Commit: "c1", SigningKeys: fingerprints(t, "K0"), SchemaVersion: 3, SchemaCreatable: 3,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	numbers := func(what string, version, creatable int) {
+		t.Helper()
+		if got := liveProcess(t, database, registration.ID); got.SchemaVersion != version || got.SchemaCreatable != creatable {
+			t.Errorf("%s holds schema version %d and creatable %d, want %d and %d", what, got.SchemaVersion, got.SchemaCreatable, version, creatable)
+		}
+	}
+
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers: %v", err)
+	}
+	numbers("the row after a refresh to version 4", 4, 3)
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned after a refresh")
+	numbers("the row written again after a prune", 4, 3)
+
+	// A refresh to the numbers it last wrote writes nothing, so a row changed behind the
+	// registration keeps what it was changed to.
+	underRegistryLock(t, database, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `update server_processes set schema_version = 9 where instance = $1`, registration.ID); err != nil {
+			t.Fatalf("change the row behind the registration: %v", err)
+		}
+	})
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers again: %v", err)
+	}
+	numbers("the row a refresh to the numbers it last wrote leaves alone", 9, 3)
+}
+
+// A row written by a build that predates the fleet columns carries none of them, so each holds its
+// default: it reads as a process that predates them, with no schema numbers, no embedder identity
+// and no file store.
+func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
+	database := storetest.Open(t)
+	var id string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys)
+		values (gen_random_uuid(), 'c0', 'build-c0', $1)
+		returning instance::text`, fingerprints(t, "K0")).Scan(&id); err != nil {
+		t.Fatalf("insert a row as a build that predates the fleet columns writes it: %v", err)
+	}
+	got := liveProcess(t, database, id)
+	if !got.PredatesFleetColumns() || got.SchemaVersion != 0 || got.SchemaCreatable != 0 || got.EmbedderIdentity != "" || got.FileStore {
+		t.Errorf("a row at the defaults = %+v, want one that predates the fleet columns: 0, 0, no identity, no file store", got)
+	}
+}
+
 // Live is measured on the database's clock: a heartbeat 14 seconds before the database's now() is
 // live, one 16 seconds before it is not, whatever this process's clock says.
 func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T) {
@@ -185,10 +291,7 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	setInterval(t, &PruneInterval, 200*time.Millisecond)
 	database := storetest.Open(t)
-	leases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
+	leases := storetest.Leases(t, database.Pool)
 	old := mustRegister(t, database, "c1", "K0")
 	recent := mustRegister(t, database, "c1", "K0")
 	live := mustRegister(t, database, "c1", "K0")
@@ -438,14 +541,15 @@ func prunedRow(t *testing.T, tx pgx.Tx, id string) {
 }
 
 // livePeer writes the row of a live process holding setting straight into the registry, past
-// Register's check, as a process registered while ours had dropped out of Live leaves it.
+// Register's check, as a process registered while ours had dropped out of Live leaves it: with
+// this build's owner lock protocol, as Register writes it.
 func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	t.Helper()
 	var id string
 	if err := tx.QueryRow(context.Background(), `
-		insert into server_processes (instance, commit, dashboard_build, signing_keys)
-		values (gen_random_uuid(), 'c9', 'build-c9', $1)
-		returning instance::text`, fingerprints(t, setting)).Scan(&id); err != nil {
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
+		values (gen_random_uuid(), 'c9', 'build-c9', $1, $2)
+		returning instance::text`, fingerprints(t, setting), store.OwnerLockProtocol).Scan(&id); err != nil {
 		t.Fatalf("add a live peer holding %q: %v", setting, err)
 	}
 	return id
@@ -613,4 +717,138 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
+}
+
+// A schema refresh and a heartbeat that has to rejoin, running at once, both finish. The two
+// want the same two things: the registry pool's one connection and the registration's lock.
+// renew takes the connection for its transaction and then the lock to read the instance it
+// rejoins with, so a refresh that held the lock while it waited for the connection would wait
+// on the heartbeat that waits on it, and neither would move until the refresh's own context ran
+// out - with the heartbeat sitting on the registry's advisory lock all the while, so every
+// other process misses a beat.
+//
+// The interleaving is arranged, not raced for: the refresh is held inside the function that
+// reads the numbers, which it calls under the lock, and the heartbeat is started and given the
+// pool's connection before the refresh is let go.
+func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, time.Hour)
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	// The heartbeat's own goroutine is stopped, so the two runs below are the only callers of
+	// the registry's pool and the test drives renew itself. Deregister stops it again, which
+	// costs nothing, and closes the pool.
+	registration.stop()
+	<-registration.stopped
+	// A row still live is stamped and nothing else is read: the heartbeat reads the instance
+	// only where its row dropped out of Live and it has to rejoin (renew).
+	ageHeartbeat(t, database, registration.ID, LiveWindow+time.Second)
+
+	// Each call is bounded, so the pair that waits on each other ends rather than hanging the
+	// test; the bound is far above what either takes.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reading, release := make(chan struct{}), make(chan struct{})
+	refreshed := make(chan error, 1)
+	go func() {
+		refreshed <- registration.RefreshSchema(ctx, func() (int, int) {
+			close(reading)
+			<-release
+			return 7, 7
+		})
+	}()
+	<-reading
+	renewed := make(chan error, 1)
+	go func() {
+		refusal, err := registration.renew(ctx)
+		renewed <- errors.Join(refusal, err)
+	}()
+	// What the heartbeat holds before it asks for the other: the pool's one connection, which
+	// it takes for its transaction. Where the refresh already holds it, this reads so at once,
+	// which is the order that cannot deadlock.
+	waitForConnectionHeld(t, registration)
+	close(release)
+
+	started := time.Now()
+	bound := time.NewTimer(time.Second)
+	defer bound.Stop()
+	for _, run := range []struct {
+		name   string
+		result <-chan error
+	}{{"the refresh", refreshed}, {"the heartbeat", renewed}} {
+		select {
+		case err := <-run.result:
+			if err != nil {
+				t.Fatalf("%s run beside the other: %v", run.name, err)
+			}
+		case <-bound.C:
+			t.Fatalf("%s had not finished a second after the two were let go (%v): the refresh and the heartbeat take the registry's connection and the registration's lock in two orders",
+				run.name, time.Since(started))
+		}
+	}
+	if got := liveProcess(t, database, registration.ID); got.SchemaVersion != 7 || got.SchemaCreatable != 7 {
+		t.Errorf("the row after both ran holds schema version %d and creatable %d, want 7 and 7", got.SchemaVersion, got.SchemaCreatable)
+	}
+}
+
+// waitForConnectionHeld waits until the registry's pool has its one connection out, which is
+// what renew holds from the moment its transaction begins.
+func waitForConnectionHeld(t *testing.T, registration *Registration) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for registration.pool.Stat().AcquiredConns() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the registry's one connection was taken by neither run within five seconds")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A process registers at this build's owner lock protocol (store.OwnerLockProtocol), which no
+// Instance carries, so neither a registration that names nothing but its build and keys nor the
+// heartbeat that writes its pruned row again is an earlier build's arrival: the row reads 1, no
+// earlier build's mark is stamped (owner_lock_legacy_mark), and the owner lock's fleet read
+// (public.owner_lock_fleet) finds no earlier build in the fleet. A row at the column's default, 0,
+// would fire owner_lock_legacy_registration and put every owner lock of the database beside an
+// earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
+func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	registration, err := Register(context.Background(), database.Pool, Instance{Commit: "c1", SigningKeys: fingerprints(t, "K0")})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	noEarlierBuild := func(what string) {
+		t.Helper()
+		var protocol int
+		var marked, legacy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select (select owner_lock_protocol from server_processes where instance = $1),
+				exists (select from owner_lock_legacy_mark),
+				public.owner_lock_fleet($2, $3)`,
+			registration.ID, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
+		).Scan(&protocol, &marked, &legacy); err != nil {
+			t.Fatalf("read %s's owner lock protocol and the owner lock's fleet: %v", what, err)
+		}
+		if protocol != store.OwnerLockProtocol || marked || legacy {
+			t.Errorf("%s: owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
+				what, protocol, marked, legacy, store.OwnerLockProtocol)
+		}
+	}
+	noEarlierBuild("the registered row")
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	requireNotLost(t, registration, "a process whose row was pruned")
+	noEarlierBuild("the row written again after a prune")
+}
+
+// The owner lock counts a row of an earlier build in the fleet for store.OwnerLockLegacyWindow
+// after its last heartbeat, which its documents state as until the row is pruned: the two are one
+// duration, declared in two packages only because the store cannot import this one.
+func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
+	if store.OwnerLockLegacyWindow != PruneAge {
+		t.Errorf("store.OwnerLockLegacyWindow is %s and PruneAge %s; want them equal, so a row of an earlier build counts in the owner lock's fleet until it is pruned",
+			store.OwnerLockLegacyWindow, PruneAge)
+	}
 }

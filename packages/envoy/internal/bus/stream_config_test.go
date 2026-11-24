@@ -9,6 +9,7 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -75,20 +78,36 @@ func (js *streamInfoJetStream) ConsumerNames(_ string, _ ...nats.JSOpt) <-chan s
 	return names
 }
 
+// silentServers is how many listeners TestConnectWithContextBoundsMultipleUnresponsiveServers
+// walks: each accepts and never answers, so nats.go waits its whole per-server timeout at each,
+// the 5 s the outer deadline cuts connectTimeout to, and a walk of them all takes about 30 s.
+const silentServers = 6
+
+// A connect whose outer deadline passes while nats.go walks silent servers returns that deadline,
+// and returns it while the walk is still under way. The row tells the two apart by the order of two
+// facts, not by a time: the connect's return against the walk reaching the last of silentServers
+// listeners. A connect that waited out its attempt, as one that no longer selects on its context
+// during the attempt does, returns only after the walk has dialed every server, the last of them
+// about 25 s after the first, and then still returns context.DeadlineExceeded from its later
+// checks; so the deadline's error alone cannot tell it from a bounded one.
 func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
-	accepted := make(chan net.Conn, 32)
-	urls := make([]string, 0, 2)
-	for range 2 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+	accepted := make(chan net.Conn, 4*silentServers)
+	var reached atomic.Int32
+	urls := make([]string, 0, silentServers)
+	for range silentServers {
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		go func() {
-			for {
+			for first := true; ; first = false {
 				conn, err := listener.Accept()
 				if err != nil {
 					return
+				}
+				if first {
+					reached.Add(1)
 				}
 				accepted <- conn
 			}
@@ -106,27 +125,33 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
+	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
+	// connect is given it as a real context, and the row asserts it ended with that deadline
+	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result := make(chan error, 1)
-	started := time.Now()
+	type ended struct {
+		err     error
+		reached int32
+	}
+	result := make(chan ended, 1)
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
+		reachedAtReturn := reached.Load()
 		if conn != nil {
 			conn.Close()
 		}
-		result <- err
+		result <- ended{err, reachedAtReturn}
 	}()
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("connect unexpectedly succeeded against unresponsive servers")
-		}
-		if elapsed := time.Since(started); elapsed > 6*time.Second {
-			t.Fatalf("connect returned after %s, want the outer five-second deadline", elapsed)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("connect exceeded the outer deadline while walking NATS URLs")
+	got := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if got.err == nil {
+		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
+	}
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", got.err)
+	}
+	if got.reached >= silentServers {
+		t.Fatalf("connect returned its deadline only once the walk had reached all %d silent servers: it waited out the attempt, not its outer deadline", silentServers)
 	}
 }
 
@@ -169,7 +194,7 @@ func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testin
 	desiredConfig.MaxAge = 72 * time.Hour
 
 	// When
-	if err := ensureStreamWithConfig(js, &desiredConfig, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &desiredConfig, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -212,7 +237,7 @@ func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
 
-	if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -235,7 +260,7 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 		injectRoleMessageOnUpdate: true,
 	}
 
-	if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	if js.roleMessages != 0 {
@@ -352,6 +377,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		"notifications.envoy.exceptions.notifications.team.>",
 		"notifications.envoy.kept.>",
 		"notifications.envoy.resume.>",
+		"notifications.envoy.takeover.>",
 	}
 	if !reflect.DeepEqual(streamCfg.Subjects, wantSubjects) {
 		t.Fatalf("stream subjects = %v, want %v", streamCfg.Subjects, wantSubjects)
@@ -360,6 +386,123 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		if subjectCapturesRoleLanes(streamSubject) {
 			t.Fatalf("stream subject %q captures a role lane", streamSubject)
 		}
+	}
+}
+
+// streamGenerations pins the settings of every stream generation a build has shipped. A row is
+// never edited once a build carries it: a build that changes MaxAge, Duplicates or Subjects ships
+// a new generation (streamConfigGeneration) and a new row, so a running older build, which leaves a
+// stream of a higher generation alone, never reverts the change.
+var streamGenerations = map[int]struct {
+	maxAge, duplicates time.Duration
+	subjects           []string
+}{
+	1: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+		},
+	},
+	// Generation 2 adds the listener's kept lane (streamCarriedSubjects).
+	2: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.kept.>",
+		},
+	},
+	// Generation 3 adds the listener's resume lane, the subject the stream carries the floor each
+	// deleted session consumer stopped at (SessionResumeSubjectPrefix, listenerOwnStreamLanes),
+	// which main's #3417 added to the stream's subjects.
+	3: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+		},
+	},
+	// Generation 4 adds a team's own topic and its exception lane, the one namespace an agent
+	// names itself (notifications.team.deploy-squad), which main's #2603 added to the stream's
+	// subjects: that is a change of Subjects, so under the rule above it ships as a generation
+	// of its own rather than as an edit of generation 3's row, and an older build that finds
+	// generation 4 deployed leaves those subjects alone instead of reverting them.
+	4: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.team.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.exceptions.notifications.team.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+		},
+	},
+	// Generation 5 adds the listener's takeover lane, the subject the stream carries each role a
+	// session took from another on, with how far the copy of the other's role messages has read
+	// (TakeoverSubjectPrefix, listenerOwnStreamLanes).
+	5: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.team.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.exceptions.notifications.team.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+			"notifications.envoy.takeover.>",
+		},
+	},
+}
+
+// The stream this build ensures has exactly the settings pinned for its generation: a change to
+// them without a new generation and a new row fails here.
+func TestTheStreamConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
+	row, ok := streamGenerations[streamConfigGeneration]
+	if !ok {
+		t.Fatalf("generation %d has no pinned row; add one with the settings it ships", streamConfigGeneration)
+	}
+	if streamCfg.MaxAge != row.maxAge || streamCfg.Duplicates != row.duplicates || !slices.Equal(streamCfg.Subjects, row.subjects) {
+		t.Fatalf("generation %d ships MaxAge=%s Duplicates=%s Subjects=%v, but its pinned row is MaxAge=%s Duplicates=%s Subjects=%v; a changed setting takes a new generation",
+			streamConfigGeneration, streamCfg.MaxAge, streamCfg.Duplicates, streamCfg.Subjects, row.maxAge, row.duplicates, row.subjects)
 	}
 }
 
@@ -419,7 +562,7 @@ func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
 	desiredConfig := oldConfig
 	desiredConfig.Subjects = []string{"notifications.github.>"}
 
-	if err := ensureStreamWithConfig(js, &desiredConfig, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &desiredConfig, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	if !reflect.DeepEqual(js.config.Subjects, desiredConfig.Subjects) {
@@ -447,7 +590,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}
-	if err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment creates the stream: %v", err)
 	}
 
@@ -459,7 +602,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	assertStreamSubjectsInclude(t, client.JS(), append([]string{"notifications.retired.>"}, streamCfg.Subjects...))
 
 	// The other deployment restarts while this binary is still live.
-	if err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment restarts: %v", err)
 	}
 	assertStreamSubjectsInclude(t, client.JS(), append([]string{"notifications.retired.>"}, streamCfg.Subjects...))
@@ -534,7 +677,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 			if err := js.DeleteStream(Stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 				t.Fatalf("reset stream: %v", err)
 			}
-			if err := ensureStreamWithConfig(js, &tc.deployed, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, &tc.deployed, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("the deployed binary creates the stream: %v", err)
 			}
 			for _, step := range []struct {
@@ -545,7 +688,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 				{name: "the rollback starts", cfg: tc.deployed},
 				{name: "the new binary starts again", cfg: tc.start},
 			} {
-				if err := ensureStreamWithConfig(js, &step.cfg, capsAnUnsetStream); err != nil {
+				if _, err := ensureStreamWithConfig(t.Context(), js, &step.cfg, capsAnUnsetStream, atStart); err != nil {
 					t.Fatalf("%s: %v", step.name, err)
 				}
 				info, err := js.StreamInfo(Stream)
@@ -564,10 +707,10 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 }
 
 // capturedLogs collects the default slog logger's JSON records for one test. Its writes and reads
-// share a lock because a bus client an earlier test closed can still be logging: nats.go's close
-// queues the disconnected and closed callbacks on the connection's async dispatcher and returns
-// without waiting for them (nats.go v1.50.0, nats.go:5892-5910), the bus's closed callback logs
-// through the default logger, and every test of the package shares one binary.
+// share a lock because a bus client an earlier test closed can still be logging: nats.go v1.55.0
+// queues the disconnected and closed callbacks on its async dispatcher and returns without waiting
+// for them. The bus's closed callback logs through the default logger, and every test of the
+// package shares one binary.
 type capturedLogs struct {
 	logtest.Buffer
 }
@@ -622,7 +765,7 @@ func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
 			deployed := *streamCfg
 			deployed.Subjects = append(slices.Clone(streamCfg.Subjects), roleSubject)
 			js := &streamInfoJetStream{config: deployed}
-			if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("ensure stream: %v", err)
 			}
 			if slices.Contains(js.config.Subjects, roleSubject) {
@@ -643,7 +786,7 @@ func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *
 	own := *streamCfg
 	own.Subjects = []string{"notifications.agent.>", "notifications.legion.*", "notifications.legion.*.*"}
 	js := &streamInfoJetStream{config: deployed}
-	if err := ensureStreamWithConfig(js, &own, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	records := logs.recordsWithMsg(t, "envoy nats stream subject replaced by an overlapping one")
@@ -667,7 +810,7 @@ func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingTh
 	deployed.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
 	js := &streamInfoJetStream{config: deployed}
 	for _, start := range []string{"the stream is already reconciled", "a second start"} {
-		if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("%s: ensure stream: %v", start, err)
 		}
 	}
@@ -690,7 +833,7 @@ func TestEnsureStreamWithConfigLogsNoReconciliationWhenTheUpdateFails(t *testing
 	own := *streamCfg
 	own.Subjects = []string{"notifications.legion.*"}
 	js := &streamInfoJetStream{config: deployed, updateErr: errors.New("update refused")}
-	if err := ensureStreamWithConfig(js, &own, capsAnUnsetStream); err == nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err == nil {
 		t.Fatal("ensure stream succeeded, want the update's error")
 	}
 	for _, message := range []string{
@@ -731,7 +874,7 @@ func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
 	for _, name := range []string{"first stream", "second stream"} {
 		t.Run(name, func(t *testing.T) {
 			js := streamTestJetStream(t)
-			if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("create stream: %v", err)
 			}
 			id := deployedStream(t, js).Config.Metadata[StreamIDMetadataKey]
@@ -750,7 +893,8 @@ func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
 // differs from the binary's configuration, and keeps the rest of its configuration and metadata:
 // settings the binary's configuration does not choose (here the message limits and a description;
 // in a cluster, the stream's placement) stay as deployed, and so do the ones it would only keep (a
-// byte limit, with no limit of its own set) or already matches (DiscardNew, the replicas).
+// byte limit, with no limit of its own set) or already matches (DiscardNew, the replicas). The
+// start stamps its generation beside the id.
 func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) {
 	js := streamTestJetStream(t)
 	deployed := *streamCfg
@@ -764,7 +908,7 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 	}
 	before := deployedStream(t, js).Config
 
-	if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -776,10 +920,11 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 	want := before
 	want.Metadata = maps.Clone(before.Metadata)
 	want.Metadata[StreamIDMetadataKey] = id
+	want.Metadata[streamGenerationKey] = strconv.Itoa(streamConfigGeneration)
 	if !reflect.DeepEqual(info.Config, want) {
-		t.Fatalf("stream config = %+v, want the deployed one with only the id added: %+v", info.Config, want)
+		t.Fatalf("stream config = %+v, want the deployed one with only the id and the generation added: %+v", info.Config, want)
 	}
-	if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	if again := deployedStream(t, js).Config.Metadata[StreamIDMetadataKey]; again != id {
@@ -802,7 +947,7 @@ func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t 
 		t.Fatalf("create the deployed stream: %v", err)
 	}
 
-	if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -838,7 +983,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 	}
 	other := *streamCfg
 	other.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
-	if err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment starts: %v", err)
 	}
 	if got := deployedStream(t, otherJS).Config.Metadata[StreamIDMetadataKey]; got != id {
@@ -854,7 +999,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 		t.Fatalf("stream id = %q after a restart, want %q", got, id)
 	}
 
-	if err := ensureStreamWithConfig(&createdMeanwhileJetStream{JetStreamContext: otherJS}, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), &createdMeanwhileJetStream{JetStreamContext: otherJS}, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start that found no stream before another created it: %v", err)
 	}
 	if got := deployedStream(t, otherJS).Config.Metadata[StreamIDMetadataKey]; got != id {
@@ -903,7 +1048,7 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 		Created: time.Date(2026, 10, 27, 9, 30, 0, 123456789, time.UTC),
 	}}
 	for _, start := range []string{"the listener", "Dispatch's server"} {
-		if err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("%s starts: %v", start, err)
 		}
 	}
@@ -951,7 +1096,7 @@ func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
 	for _, topic := range []string{
 		"notifications.agent.ses_a",
 		"notifications.dispatch.issue.KEY-1.ask.answered",
-		ExceptionTopicPrefix + contracts.AgentSubject("ses_a"),
+		ExceptionTopicPrefix + contracts.LegacyAgentSubject("ses_a"),
 		"notifications.envoy.deliver.ses_a",
 		"notifications.envoy.>",
 		"notifications.>",

@@ -21,15 +21,17 @@ import (
 // registerProcess writes the row processes.Register writes for a live server process, with a
 // heartbeat of the given age, and answers the instance id. Written here rather than by calling
 // Register because these tests need a heartbeat older than the live window, which a registration
-// that keeps beating cannot have.
+// that keeps beating cannot have. It names this build's owner lock protocol, as Register does: a
+// row at the column's default, 0, is an earlier build's arrival, whose insert waits for the owner
+// lock gate (fleetProcess in internal/dispatch/docs says why).
 func registerProcess(t *testing.T, pool *store.Pool, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
 	if err := pool.QueryRow(t.Context(), `
-		insert into server_processes (instance, heartbeat_at)
-		values (gen_random_uuid(), now() - make_interval(secs => $1))
+		insert into server_processes (instance, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), now() - make_interval(secs => $1), $2)
 		returning instance::text
-	`, heartbeatAge.Seconds()).Scan(&instance); err != nil {
+	`, heartbeatAge.Seconds(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("register a server process: %v", err)
 	}
 	return instance
@@ -99,9 +101,16 @@ func passOf(t *testing.T, passes []PassRecord, id int64) PassRecord {
 // test standing for a session the database has not reaped wants.
 func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (release func(), taken, finished <-chan struct{}) {
 	t.Helper()
-	leases, err := pool.Leases()
+	// The lease pool is handed out as reservations, one per caller that can be inside a lease
+	// statement at the same moment (`store.LeaseCallers`), so this hold takes a name of its own
+	// as the server's CI reconcile loop does.
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("the lease pool: %v", err)
+	}
+	leases, err := callers.For("CI reconcile test hold")
+	if err != nil {
+		t.Fatalf("reserve a caller of the lease pool: %v", err)
 	}
 	held := make(chan struct{})
 	ran := make(chan struct{})
@@ -181,7 +190,7 @@ func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 // read asks about is held by the pass itself.
 func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
@@ -220,7 +229,7 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
@@ -271,7 +280,7 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 // reads from exactly the number the row names.
 func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -340,7 +349,7 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 // which is what the loop's own context does when the process is told to stop.
 func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
@@ -381,7 +390,7 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 // than only in a container log the restart rotated away.
 func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	before := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return before }
@@ -418,7 +427,7 @@ func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
 // between two of them.
 func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
@@ -456,7 +465,7 @@ func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
 // longer the newest.
 func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLease(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	killed := registerProcess(t, h.pool, 0)
 	open := seedPass(t, h.pool, killed, time.Minute)
@@ -540,7 +549,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 // exists -- and a row naming no process could be read neither as running nor as ended.
 func TestAPassBeforeItsProcessIsRegisteredRecordsNothing(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.reconciler.Instance = func() string { return "" }
 

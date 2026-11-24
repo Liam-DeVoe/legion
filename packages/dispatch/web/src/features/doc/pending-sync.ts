@@ -1,8 +1,10 @@
 import { MessageType } from "@hocuspocus/provider";
 import { createDecoder, readVarUint } from "lib0/decoding";
+import { ySyncPluginKey } from "y-prosemirror";
 import { messageYjsSyncStep2, messageYjsUpdate } from "y-protocols/sync";
 import * as Y from "yjs";
 
+import { changesOnlyDerived } from "./derived-attributes";
 import type { PendingEdits, PendingKey, RestoredEdit } from "./pending-edits";
 import { FRAGMENT_NAME, MARKS_MAP_NAME } from "./roots";
 import { readField } from "./sync-frame";
@@ -131,6 +133,18 @@ function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
   return addsMissingClient || addsPendingDeletes(beforeDeletes, scratch.store.pendingDs);
 }
 
+/**
+ * Whether a local transaction is the editor's repair of the document, not an edit. y-prosemirror
+ * (1.3.7, `sync-plugin.js`) deletes an element or text it cannot build with the editor's schema
+ * (`createNodeFromYElement`, `createTextNodesFromYText`): an element a newer build wrote, for one.
+ * It makes that deletion in a transaction of its own whose origin is its sync plugin key. An edit
+ * typed in the editor has the same origin, but its transaction always carries the `addToHistory`
+ * meta, which the sync plugin's view update sets.
+ */
+function isEditorRepair(origin: unknown, transaction: Y.Transaction): boolean {
+  return origin === ySyncPluginKey && !transaction.meta.has("addToHistory");
+}
+
 /** An object's entries ordered by key, so the order Yjs keeps them in does not count. */
 function sortedEntries(record: Record<string, unknown>): [string, unknown][] {
   return Object.entries(record).sort(([left], [right]) => left.localeCompare(right));
@@ -215,48 +229,6 @@ function changesNothing(doc: Y.Doc, updates: readonly Uint8Array[]): boolean {
     [...scratch.share.keys()].every((name) => name === FRAGMENT_NAME || name === MARKS_MAP_NAME) &&
     readable(scratch) === before
   );
-}
-
-/**
- * The attributes the editor derives from the document rather than takes from a person, by the node
- * that carries them. Milkdown's `syncHeadingIdPlugin` slugs every heading's id from its text as it
- * loads the document, and its `syncListOrderPlugin` labels every ordered list item with its number
- * and types it as ordered on the first caret move or edit. No rendering carries either, so the
- * server settles an update that changes only these without a version (envoy's
- * `TestAttributesTheEditorDerivesSettleWithoutAVersion`), and the next load derives them again.
- */
-const DERIVED_ATTRIBUTES: Record<string, readonly string[]> = {
-  heading: ["id"],
-  list_item: ["label", "listType"],
-};
-
-/**
- * Whether a transaction changed nothing but `DERIVED_ATTRIBUTES`. Yjs lists each type that existed
- * before the transaction and that it changed, with the attribute keys it set or removed and `null`
- * for a change to the type's children or text. A type the transaction created is inserted into one
- * that existed, so it shows as that parent's `null`.
- */
-function changesOnlyDerived(transaction: Y.Transaction): boolean {
-  if (transaction.changed.size === 0) {
-    return false;
-  }
-  for (const [type, keys] of transaction.changed) {
-    // `Object.hasOwn`, not indexing alone: the table inherits `Object.prototype`, so a node named
-    // `constructor` would read a function.
-    const attributes =
-      type instanceof Y.XmlElement && Object.hasOwn(DERIVED_ATTRIBUTES, type.nodeName)
-        ? DERIVED_ATTRIBUTES[type.nodeName]
-        : undefined;
-    if (attributes === undefined) {
-      return false;
-    }
-    for (const key of keys) {
-      if (key === null || !attributes.includes(key)) {
-        return false;
-      }
-    }
-  }
-  return true;
 }
 
 export function startPendingSync({
@@ -452,13 +424,21 @@ export function startPendingSync({
     return pruning;
   };
 
+  // The editor's repair is never kept. A page whose schema lacks an element is admitted read-only,
+  // and the server drops what that socket sends. A later writable admission would replay a kept
+  // repair, and delete for everyone the element this editor could not show.
   const onUpdate = (
     update: Uint8Array,
     origin: unknown,
     _doc: Y.Doc,
     transaction: Y.Transaction
   ) => {
-    if (destroyed || storageAvailable === false || origin === remoteOrigin) {
+    if (
+      destroyed ||
+      storageAvailable === false ||
+      origin === remoteOrigin ||
+      isEditorRepair(origin, transaction)
+    ) {
       return;
     }
     // An update that changes only what the editor derives is held in memory, uncounted and

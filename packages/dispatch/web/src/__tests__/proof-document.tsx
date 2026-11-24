@@ -38,21 +38,6 @@ export const artifact: Artifact = {
   versions: [],
 };
 
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
-};
-
 export function createQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -199,18 +184,17 @@ export function renderProofDocument({
           focusRequest: { markId: string; seq: number } | undefined;
           hoveredMarkId: string | undefined;
           markPlacements: ReadonlyMap<string, MarkPlacement>;
-          pendingCompose:
-            | {
-                anchor: ComposerAnchor;
-                kind: "ask" | "comment" | "suggestion";
-                seq: number;
-              }
-            | undefined;
-          cancelCompose(seq: number): void;
+          composes: ReadonlyMap<
+            string,
+            {
+              open: { anchor: ComposerAnchor; kind: "ask" | "comment" | "suggestion" } | undefined;
+              seq: number;
+            }
+          >;
+          cancelCompose(artifact: string, seq: number): void;
         }
       | undefined,
   };
-  queryClient.setQueryData(["block-schema"], blockSchema);
   const toolbar: { current: DocumentToolbar | undefined } = { current: undefined };
   /** Every value the document reported upward, so a suite can assert it reported none at all. */
   const toolbarChanges: (DocumentToolbar | undefined)[] = [];
@@ -275,7 +259,9 @@ export function renderProofDocument({
     // has resolved.
     async sync() {
       await waitFor(() => expect(fake.connections).toHaveLength(1));
-      fake.sync();
+      await act(async () => {
+        fake.sync();
+      });
     },
     toolbar,
     toolbarChanges,

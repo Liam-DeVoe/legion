@@ -7,17 +7,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // architectureLeases is the pool an import pass takes its lease on, the one cmd/dispatch gives
 // the ticker.
 func architectureLeases(t *testing.T, database *store.Store) duty.Leases {
 	t.Helper()
-	leases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
-	return leases
+	return storetest.Leases(t, database.Pool)
 }
 
 // Every import pass re-reads each enabled source from GitHub against one installation's rate
@@ -66,5 +63,34 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	}
 	if rows := componentRows(t, database); len(rows) == 0 {
 		t.Fatal("the pass imported no component with the lease free")
+	}
+}
+
+// The import loop's shortest wait between two ticks is SyncInterval less a tenth of it, and a
+// nanosecond more (duty.RunJittered draws each wait in (SyncInterval - SyncInterval/10,
+// SyncInterval]). Two ticks of a lone process that far apart must both import: a tick refused as a
+// period the process's own last pass served is an import lost, and the next comes almost two
+// intervals after the last. The first tick here is due at the start of a SyncInterval-aligned
+// bucket, so the second is due inside that same five-minute bucket, which a lease whose period
+// were SyncInterval would find served. The gap is worked out from SyncInterval alone, not from the
+// period the loop hands the lease, so this test reads the same against a build that handed it
+// SyncInterval and shows the refusal there.
+func TestTwoImportTicksTheShortestWaitApartBothImport(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeSource{t: t, files: map[string]string{"core.md": "# Core\n"}}
+	importer, database := newImporterFixture(t, fake)
+	leases := architectureLeases(t, database)
+
+	interval := SyncInterval.Nanoseconds()
+	first := time.Unix(0, time.Now().UnixNano()/interval*interval)
+	second := first.Add(SyncInterval - SyncInterval/10 + 1)
+
+	syncAllLeased(ctx, importer, leases, first)
+	if _, heads := fake.lookups(); heads != 1 {
+		t.Fatalf("the first tick looked the branch head up %d times, want once: the tick imports", heads)
+	}
+	syncAllLeased(ctx, importer, leases, second)
+	if _, heads := fake.lookups(); heads != 2 {
+		t.Fatalf("two ticks %v apart looked the branch head up %d times, want twice: the second tick is due more than a lease period after the first, in a period no pass has served, and imports too", second.Sub(first), heads)
 	}
 }

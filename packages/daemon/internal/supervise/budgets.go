@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -52,8 +53,9 @@ type Limits struct {
 type FailureCause string
 
 const (
-	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out
-	// (launchNow), with no other cause pending for the relaunch it refused.
+	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out, or
+	// refused it in a way no try changes, a system prompt past the start frame (launchTries,
+	// promptRefused), with no other cause pending for the relaunch it refused.
 	CauseLaunchRefused FailureCause = "launch_refused"
 	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
 	// and through relaunchAfterFailure).
@@ -104,25 +106,52 @@ var FailureCauses = []FailureCause{
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
 // when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
 // checked before the charge, so it costs none; one whose process is already stopped is
-// relaunchRefused's.
+// relaunchRefused's. A death is charged once however often its relaunch is raised
+// (deathLaunchFailureCharged).
 //
 // cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
 // recorded on the claim before the charge: it is what the claim fails under when this budget runs
-// out, and what a launch the runtime refuses on the way fails under too (launchNow,
+// out, and what a launch the runtime refuses on the way fails under too (launchTries,
 // Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
 // cause, which is why it is handed over in a closure rather than as the method value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
+//
+// ending is why the process the claim still records is let go, in the daemon's words, which the
+// launch records with what that process ended (launch, letGo); noEnd where the caller let it go
+// already (registrationDeadline).
+//
+// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
+// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
+// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
+// anew, so it reserves afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, turn time.Time) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause)
+			return m.relaunchAfterFailure(ctx, cause, ending, time.Time{})
 		}, err)
 	}
-	m.claim.PendingCause = cause
-	m.claim.Budgets.LaunchFailures++
+	if !m.deathLaunchFailureCharged(cause) {
+		m.claim.PendingCause = cause
+		m.claim.Budgets.LaunchFailures++
+	}
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false)
+	return m.launchAfter(ctx, true, false, false, turn, ending)
+}
+
+// deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
+// the same relaunch has already charged. A death's relaunch is raised as often as that one death
+// is: by the report that decided it (died), by the sweep's next report of the same death, where
+// the lifecycle check refused the relaunch before (relaunchRefused keeps such a claim over its
+// dead process and arms no retry), and by the boot's replay of the death after a restart
+// (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
+// failure, and the others charge none. What says the charge was made is the cause it records
+// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
+// the charge sets it to died in the same claim write as the count. So a write the claim makes
+// while the relaunch waits — a task a start queues meanwhile — stores the two together, and a
+// restart reads either both or neither.
+func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
+	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
@@ -132,6 +161,11 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 // behind it, and a root architect killed six times inside its turns was relaunched for ever
 // because each death found nothing pending. A death with no turn open and nothing pending is a
 // parked agent the environment killed, which is not counted however often it happens.
+//
+// The daemon's own delivery of a relaunch's record is no task (HoldsTask): it is the sentence of
+// what the last let-go ended, which a parked agent is given at every ready that finds it holding
+// nothing, so a parked agent killed again before it read it holds that and nothing else, and its
+// death is not counted either.
 //
 // The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
 // records its end only when the agent ends it, so a turn whose agent died would otherwise stay
@@ -143,7 +177,8 @@ func (m *Machine) chargeDeath() bool {
 		return false
 	}
 	open := m.turnOpen()
-	if m.claim.Pending == nil && !open {
+	task := HoldsTask(m.claim.Pending)
+	if !task && !open {
 		return false
 	}
 	m.claim.Budgets.Deaths++
@@ -167,6 +202,10 @@ func (m *Machine) turnOpen() bool {
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
+//
+// The retirement's stop is where the process is let go, so that is where what it ended is
+// recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
+// whose failure then finds no process left to record. The launch that follows lets nothing go.
 func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
@@ -186,7 +225,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	} else if err := m.checkLaunch(ctx); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
 	}
-	if err := retirement(ctx); err != nil {
+	if err := retirement(ctx, endRetired); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
@@ -197,5 +236,5 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
-	return m.launch(ctx)
+	return m.launch(ctx, noEnd)
 }
