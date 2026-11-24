@@ -1135,8 +1135,16 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store {
 	t.Helper()
 	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
-	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
-	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	// The copy is dropped as testdb drops a database of its own (testdb.DropDatabaseOn): `with
+	// (force)`, which ends any backend still attached, asked again while Postgres answers
+	// object_in_use, as it does while a backend the force ended has not exited yet. The wait is
+	// the shared one in t (testdb.WaitIn, testwait.Eventually), so the binary's deadline less
+	// testwait's margin is its one bound.
+	t.Cleanup(func() {
+		if err := testdb.DropDatabaseOn(admin.String(), name, testdb.WaitIn(t)); err != nil {
+			t.Fatalf("drop %s, the copy of %s: %v", name, template, err)
+		}
+	})
 	store, err := Open(context.Background(), databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
@@ -1174,7 +1182,9 @@ func execOnAdmin(admin url.URL, statement string) error {
 	return err
 }
 
-// TestMain runs the package's tests, then drops every template openMigratedTestStore built.
+// TestMain runs the package's tests, then drops every template openMigratedTestStore built, each
+// as a copy is dropped (testdb.DropDatabaseOn), waiting in TestMain's form of the shared wait
+// (testwait.InMain).
 func TestMain(m *testing.M) {
 	code := m.Run()
 	migratedTemplates.Lock()
@@ -1184,7 +1194,7 @@ func TestMain(m *testing.M) {
 		if admin, err := url.Parse(os.Getenv(string(testdb.DispatchServer))); err == nil {
 			admin.Path = "/postgres"
 			for _, name := range made {
-				if err := execOnAdmin(*admin, "drop database if exists "+name+" with (force)"); err != nil {
+				if err := testdb.DropDatabaseOn(admin.String(), name, testwait.InMain); err != nil {
 					fmt.Fprintf(os.Stderr, "drop template database %s: %v\n", name, err)
 					if code == 0 {
 						code = 1

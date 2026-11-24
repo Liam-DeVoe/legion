@@ -387,7 +387,8 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 // Reads that miss a cold cache together share one listener call: each waits for the one fetch
 // rather than starting its own.
 func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
-	t.Parallel()
+	// Not parallel: rosterWaits reads every goroutine of the process (runtime.Stack, all), so a read
+	// another test parks in readRouteRoster counts as one of this row's 16.
 	served, calls, release, _ := heldRosterServer(t)
 	const readers = 16
 	results := make([]routeRoster, readers)
@@ -424,7 +425,8 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 // route as unknown, whether it started that fetch or joined it; the fetch runs on for the other
 // readers, and its answer is the one the cache keeps.
 func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
-	t.Parallel()
+	// Not parallel: rosterWaits reads every goroutine of the process (runtime.Stack, all), so a read
+	// another test parks in readRouteRoster counts as one of this row's 3.
 	served, calls, release, _ := heldRosterServer(t)
 	// The answer serves an hour here, so the last read below takes the fetch's answer however long
 	// after the fetch's send it comes: the deployment's five seconds, which the database judges,

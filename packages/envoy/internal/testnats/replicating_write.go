@@ -122,25 +122,32 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 		thaw()
 		t.Fatalf("send the held write of %s: %v", subject, err)
 	}
-	release := sync.OnceFunc(func() {
-		thaw()
-		var refused error
-		testwait.Until(t, fmt.Sprintf("the held write of %s in %s to be answered once released", subject, stream), func() (string, bool) {
-			select {
-			case <-ack.Ok():
-				return "acknowledged", true
-			case refused = <-ack.Err():
-				return fmt.Sprintf("refused: %v", refused), true
-			default:
-				return "no answer yet", false
+	// release runs its body once through a sync.Once's Do, not sync.OnceFunc: a give-up in either
+	// wait below fails t through t.Fatalf, which ends the goroutine with runtime.Goexit. Once.Do
+	// lets that Goexit through, so the row fails by name, where OnceFunc's recover reads nil and
+	// calls panic(nil) (sync/oncefunc.go:23-31), which ends the whole test binary.
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			thaw()
+			var refused error
+			testwait.Until(t, fmt.Sprintf("the held write of %s in %s to be answered once released", subject, stream), func() (string, bool) {
+				select {
+				case <-ack.Ok():
+					return "acknowledged", true
+				case refused = <-ack.Err():
+					return fmt.Sprintf("refused: %v", refused), true
+				default:
+					return "no answer yet", false
+				}
+			})
+			if refused != nil {
+				t.Errorf("the held write of %s in %s did not land: %v", subject, stream, refused)
+				return
 			}
+			c.awaitApplied(t, stream, info.Cluster.RaftGroup, leader)
 		})
-		if refused != nil {
-			t.Errorf("the held write of %s in %s did not land: %v", subject, stream, refused)
-			return
-		}
-		c.awaitApplied(t, stream, info.Cluster.RaftGroup, leader)
-	})
+	}
 	t.Cleanup(release)
 
 	// A probe names a sequence the subject does not hold, so the leader never proposes it: it is
@@ -182,7 +189,8 @@ func (c *Cluster) AwaitReplicated(t testing.TB, stream string) {
 
 // awaitApplied waits until every running member has applied, in stream's Raft group named group,
 // every entry the group's leader, member leader, has committed, and fails the test when the shared
-// wait gives up (testwait.Until), whose failure prints the member's Raft group as it last read it.
+// wait gives up (testwait.Until), whose failure prints the member's Raft group as it last read it,
+// or that the member listed no Raft group of that name.
 // Any copy may answer a direct get, and the leader answers a write once a quorum holds it, so a
 // copy outside that quorum can answer a read of a record the write replaced; once every copy has
 // applied the write, none does. The stream is the global account's, as a stream of a cluster
@@ -214,7 +222,11 @@ func (c *Cluster) awaitApplied(t testing.TB, stream, group string, leader int) {
 	for i := range c.Servers {
 		testwait.Until(t, fmt.Sprintf("member %s to apply stream %s's entries up to %d", c.Name(i), stream, led.Committed), func() (string, bool) {
 			g := raft(i)
-			return fmt.Sprintf("%+v", g), c.Servers[i].natsServer() == nil || g != nil && g.Applied >= led.Committed
+			reading := fmt.Sprintf("member %s lists no Raft group %s", c.Name(i), group)
+			if g != nil {
+				reading = fmt.Sprintf("%+v", *g)
+			}
+			return reading, c.Servers[i].natsServer() == nil || g != nil && g.Applied >= led.Committed
 		})
 	}
 }

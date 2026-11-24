@@ -279,23 +279,14 @@ func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 // many it read, so the parent wants the last read to name that count: the reading it read last,
 // whatever pace the child's asks kept on a loaded machine.
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$", "-test.timeout="+childTimeout, "-test.v")
-	child.Env = append(os.Environ(), childEnv+"=1")
-	var stdout, stderr bytes.Buffer
-	child.Stdout, child.Stderr = &stdout, &stderr
-	if err := child.Run(); err == nil {
-		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
-	}
-	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
-		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up before it:\n%s\nstderr:\n%s", &stdout, &stderr)
-	}
-	asked := regexp.MustCompile(`the reading was asked (\d+) time\(s\)`).FindStringSubmatch(stdout.String())
+	stdout, stderr := runChildMeantToFail(t, "TestTheWaitsGiveUpChild", childTimeout)
+	asked := regexp.MustCompile(`the reading was asked (\d+) time\(s\)`).FindStringSubmatch(stdout)
 	if asked == nil {
-		t.Fatalf("the child logged no count of the until wait's readings; its output:\n%s", &stdout)
+		t.Fatalf("the child logged no count of the until wait's readings; its output:\n%s", stdout)
 	}
 	name := "TestTheWaitsGiveUpChild/"
 	ending := " 30s before the test binary's deadline"
-	want := []string{
+	requireGaveUp(t, stdout, stderr, []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + "; last read: reading " + asked[1],
 		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
 		"testwait: " + name + "next_on_an_empty_stream: gave up waiting for an item no one adds" + ending + "; last read: none",
@@ -306,18 +297,9 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 		"testwait: " + name + "span: gave up waiting for the end of a 1h0m0s span (a span past the margin)" + ending,
 		"testwait: TestMain: gave up waiting for a condition TestMain waits for" + ending,
 		"testwait: a helper: gave up waiting for a send no one makes to a helper" + ending,
-	}
-	written := strings.Split(stderr.String(), "\n")
-	for _, line := range want {
-		if !slices.Contains(written, line) {
-			t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
-		}
-		if !strings.Contains(stdout.String(), line+"\n") {
-			t.Errorf("the child failed no test with %q; its output:\n%s", line, &stdout)
-		}
-	}
-	if !strings.Contains(stdout.String(), "the condition was asked 1 time(s)") {
-		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", &stdout)
+	})
+	if !strings.Contains(stdout, "the condition was asked 1 time(s)") {
+		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", stdout)
 	}
 }
 
@@ -402,18 +384,9 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 // span of 15 s or more, taken again by each of the three Receives after it, runs past the 45 s
 // deadline, which panics the child. Load only lengthens a step, and neither read is a span.
 func TestReceiveGivesUpAtTheMargin(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestReceiveGivesUpAtTheMarginChild$", "-test.timeout="+receiveChildTimeout, "-test.v")
-	child.Env = append(os.Environ(), childEnv+"=1")
-	var stdout, stderr bytes.Buffer
-	child.Stdout, child.Stderr = &stdout, &stderr
-	if err := child.Run(); err == nil {
-		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
-	}
-	if strings.Contains(stdout.String(), "panic: test timed out") || strings.Contains(stderr.String(), "panic: test timed out") {
-		t.Fatalf("the child's Receives ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", &stdout, &stderr)
-	}
-	if strings.Contains(stdout.String(), "before the margin, at ") {
-		t.Errorf("the child's first Receive gave up before the margin; its output:\n%s", &stdout)
+	stdout, stderr := runChildMeantToFail(t, "TestReceiveGivesUpAtTheMarginChild", receiveChildTimeout)
+	if strings.Contains(stdout, "before the margin, at ") {
+		t.Errorf("the child's first Receive gave up before the margin; its output:\n%s", stdout)
 	}
 	name := "TestReceiveGivesUpAtTheMarginChild/"
 	ending := " 30s before the test binary's deadline"
@@ -421,17 +394,44 @@ func TestReceiveGivesUpAtTheMargin(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		want = append(want, fmt.Sprintf("testwait: %sno_value_past_the_margin_%d: gave up waiting for a later send no one makes%s", name, i, ending))
 	}
-	written := strings.Split(stderr.String(), "\n")
+	requireGaveUp(t, stdout, stderr, want)
+	if !strings.Contains(stdout, "--- PASS: "+name+"a_value_past_the_margin (") {
+		t.Errorf("a Receive past the margin did not take the value already sent; the child's output:\n%s", stdout)
+	}
+}
+
+// runChildMeantToFail re-executes this binary to run only the test named child, under -timeout
+// timeout and with childEnv set, and returns what the child wrote to stdout and to stderr. It
+// fails t unless the child failed before its deadline: a child that passed, and one whose waits
+// ran into go test's alarm rather than giving up at the margin, fail t at once.
+func runChildMeantToFail(t *testing.T, child, timeout string) (stdout, stderr string) {
+	t.Helper()
+	run := exec.Command(os.Args[0], "-test.run=^"+child+"$", "-test.timeout="+timeout, "-test.v")
+	run.Env = append(os.Environ(), childEnv+"=1")
+	var out, errOut bytes.Buffer
+	run.Stdout, run.Stderr = &out, &errOut
+	if err := run.Run(); err == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &out, &errOut)
+	}
+	if strings.Contains(out.String(), "panic: test timed out") || strings.Contains(errOut.String(), "panic: test timed out") {
+		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", &out, &errOut)
+	}
+	return out.String(), errOut.String()
+}
+
+// requireGaveUp fails t for each give-up line of want that the child did not write to stderr as a
+// line of its own, and for each it did not fail a test with on stdout, where testing prints the
+// failure's text and a newline.
+func requireGaveUp(t *testing.T, stdout, stderr string, want []string) {
+	t.Helper()
+	written := strings.Split(stderr, "\n")
 	for _, line := range want {
 		if !slices.Contains(written, line) {
-			t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, &stderr)
+			t.Errorf("the child wrote no stderr line %q; its stderr:\n%s", line, stderr)
 		}
-		if !strings.Contains(stdout.String(), line+"\n") {
-			t.Errorf("the child failed no test with %q; its output:\n%s", line, &stdout)
+		if !strings.Contains(stdout, line+"\n") {
+			t.Errorf("the child failed no test with %q; its output:\n%s", line, stdout)
 		}
-	}
-	if !strings.Contains(stdout.String(), "--- PASS: "+name+"a_value_past_the_margin (") {
-		t.Errorf("a Receive past the margin did not take the value already sent; the child's output:\n%s", &stdout)
 	}
 }
 

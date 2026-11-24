@@ -33,8 +33,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -64,20 +62,14 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
 	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
-	// dropDatabase ends every backend attached to the database, which the drop needs because a
-	// database a connection still holds cannot be dropped. That covers a connection the test left
-	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
-	// The drop runs in t's cleanup, so t's deadline, the binary's, is its one bound. It drops the
-	// database only if it still exists (dropDatabase): a cleanup the test registered later may
-	// have dropped it already.
+	// DropDatabaseOn ends every backend attached to the database (dropDatabase), which the drop
+	// needs because a database a connection still holds cannot be dropped. That covers a connection
+	// the test left open, so one leaked pool cannot keep a database on a shared server for the rest
+	// of the run. The drop runs in t's cleanup through t's shared wait (WaitIn), so t's deadline,
+	// the binary's, is its one bound. It drops the database only if it still exists (dropDatabase):
+	// a cleanup the test registered later may have dropped it already.
 	t.Cleanup(func() {
-		conn := adminConnect(t, adminURL, server.Host)
-		defer conn.Close(context.Background())
-		wait := func(what string, holds func() bool) error {
-			testwait.Eventually(t, what, holds)
-			return nil
-		}
-		if err := dropDatabase(conn, name, wait); err != nil {
+		if err := DropDatabaseOn(adminURL, name, WaitIn(t)); err != nil {
 			t.Fatalf("drop database %s: %v", name, err)
 		}
 	})

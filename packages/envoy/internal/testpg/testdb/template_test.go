@@ -12,8 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testTemplate is a template with no migration: a copy of template1, which is all a test of how a
@@ -133,14 +131,6 @@ func (a *answering) Exec(_ context.Context, sql string, _ ...any) (pgconn.Comman
 	return pgconn.CommandTag{}, &pgconn.PgError{Severity: "ERROR", Code: code, Message: "answered " + code}
 }
 
-// waitIn is dropDatabase's wait in t, as DatabaseOn's cleanup passes it.
-func waitIn(t *testing.T) func(what string, holds func() bool) error {
-	return func(what string, holds func() bool) error {
-		testwait.Eventually(t, what, holds)
-		return nil
-	}
-}
-
 const (
 	forcedDrop = "drop database if exists testdb_test_dropped with (force)"
 	plainDrop  = "drop database if exists testdb_test_dropped"
@@ -150,7 +140,7 @@ const (
 // machine reaches; the drop is asked again until Postgres takes it.
 func TestADropIsAskedAgainWhilePostgresAnswersObjectInUse(t *testing.T) {
 	admin := &answering{codes: []string{objectInUse, objectInUse, ""}}
-	if err := dropDatabase(admin, "testdb_test_dropped", waitIn(t)); err != nil {
+	if err := dropDatabase(admin, "testdb_test_dropped", WaitIn(t)); err != nil {
 		t.Fatalf("dropDatabase = %v, want the drop taken on its third asking", err)
 	}
 	if want := []string{forcedDrop, forcedDrop, forcedDrop}; !slices.Equal(admin.asked, want) {
@@ -162,7 +152,7 @@ func TestADropIsAskedAgainWhilePostgresAnswersObjectInUse(t *testing.T) {
 // asked plainly, and asked again while a connection is still there.
 func TestADropALoginMayNotForceIsAskedPlainlyUntilEveryConnectionHasEnded(t *testing.T) {
 	admin := &answering{codes: []string{insufficientPrivilege, objectInUse, objectInUse, ""}}
-	if err := dropDatabase(admin, "testdb_test_dropped", waitIn(t)); err != nil {
+	if err := dropDatabase(admin, "testdb_test_dropped", WaitIn(t)); err != nil {
 		t.Fatalf("dropDatabase = %v, want the plain drop taken on its third asking", err)
 	}
 	if want := []string{forcedDrop, plainDrop, plainDrop, plainDrop}; !slices.Equal(admin.asked, want) {
@@ -188,7 +178,7 @@ func TestADropEndsAtAnyOtherAnswer(t *testing.T) {
 		},
 	} {
 		admin := &answering{codes: tc.codes}
-		err := dropDatabase(admin, "testdb_test_dropped", waitIn(t))
+		err := dropDatabase(admin, "testdb_test_dropped", WaitIn(t))
 		if err == nil {
 			t.Errorf("%s: dropDatabase = nil, want its refusal", name)
 			continue

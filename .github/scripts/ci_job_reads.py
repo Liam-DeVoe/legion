@@ -676,13 +676,13 @@ RULES = {
     # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for way_back_doc_test.go:181 (shippedText)"),
+                               "for way_back_doc_test.go:182 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_way_back_extract.txt for "
-         "way_back_doc_test.go:129, the committed copy it holds the guide's block to (quotedBody)"),
+         "way_back_doc_test.go:130, the committed copy it holds the guide's block to (quotedBody)"),
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
-         "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
+         "for way_back_doc_test.go:130, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
     # This test reads the store's migrations through migrations.All: its import puts their embed
     # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
@@ -692,22 +692,23 @@ RULES = {
     # go list closure of the text-check run, as the row above says, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for step_records_way_back_doc_test.go:59 (shippedText) and :41 "
-                               "(wayBackBlockOfTheGuide, way_back_doc_test.go:132)")),
+                               "for step_records_way_back_doc_test.go:58 (shippedText) and :45 "
+                               "(assertIsTheGuidesBlock, way_back_doc_test.go:164, through wayBackBlockOfTheGuide's shippedText, :182)")),
     # This test reads the plan record's migration through migrations.WayBack, which reads the
     # store's migrations as the one above does, and internal/store's plan_ratings_way_back_test.go,
     # which runs that migration's way back, reads no text outside its package, so the guide is this
     # one's one row.
     f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
-                               "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
+                               "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:164, "
+                               "through wayBackBlockOfTheGuide's shippedText, :182) and :49 (entryLinkIn of shippedText)")),
     # This test reads the plan rows' migration through migrations.All, as the one above does, and
     # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
     # text outside its package, so the guide is this one's one row.
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
-                               "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                               "for owner_steps_way_back_doc_test.go:28 (assertIsTheGuidesBlock, way_back_doc_test.go:164, "
+                               "through wayBackBlockOfTheGuide's shippedText, :182)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

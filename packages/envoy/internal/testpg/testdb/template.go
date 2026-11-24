@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -315,8 +316,9 @@ type execer interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
-// dropDatabase drops name through admin. It is every drop of a test database here: DatabaseOn's,
-// and a Template's of each clone, of the binary's other database and of each template itself.
+// dropDatabase drops name through admin. It is every drop of a test database here: a Template's of
+// each clone, of the binary's other database and of each template itself, and, through
+// DropDatabaseOn, DatabaseOn's and a drop of a database another package's tests made themselves.
 //
 // `with (force)` ends whatever is still connected. A test's own pool is closed before its drop
 // runs (DatabaseOn's and Clone's cleanups run after the caller's), but Postgres tears a backend
@@ -328,8 +330,9 @@ type execer interface {
 // as long as any connection is still there.
 //
 // So the drop is asked again for as long as Postgres answers object_in_use, through wait: the
-// caller's shared wait, testwait.InMain in Main and testwait.Eventually in a test's cleanup, which
-// gives up only at the test binary's deadline less testwait's margin. Any other answer is final.
+// caller's shared wait, testwait.InMain in Main and testwait.Eventually in a test's cleanup
+// (WaitIn), which gives up only at the test binary's deadline less testwait's margin. Any other
+// answer is final.
 //
 // `if exists`, because a cleanup the test registered later runs first and may have dropped the
 // database already: the cleanup of a role the test created there drops the database before the
@@ -354,6 +357,39 @@ func dropDatabase(admin execer, name string, wait func(what string, holds func()
 		err = fmt.Errorf("%w, after the forced drop answered: %v", err, forced)
 	}
 	return err
+}
+
+// DropDatabaseOn drops the database name on the server adminURL names, over a connection of its
+// own to adminURL, as every drop here is made (dropDatabase): `with (force)`, asked again through
+// wait for as long as Postgres answers object_in_use. DatabaseOn's cleanup drops its database
+// here, and so does a package whose tests make databases of their own on the server outside
+// DatabaseOn and Template (internal/dispatch/store's migrated templates and their copies). wait is
+// the caller's shared wait: testwait.InMain in TestMain, and WaitIn(t) in a test's cleanup. A
+// failure names the server's host and the database, never adminURL, which carries a credential.
+func DropDatabaseOn(adminURL, name string, wait func(what string, holds func() bool) error) error {
+	server, err := url.Parse(adminURL)
+	if err != nil {
+		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
+		return fmt.Errorf("parse the admin URL of the Postgres server: %w", errors.Unwrap(err))
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		return fmt.Errorf("connect to the Postgres server at %s: %w", server.Host, err)
+	}
+	defer conn.Close(ctx)
+	return dropDatabase(conn, name, wait)
+}
+
+// WaitIn is the wait dropDatabase and DropDatabaseOn take, in t: the shared wait
+// (testwait.Eventually), which fails t when it gives up at the test binary's deadline less
+// testwait's margin, so the func it returns returns nil whenever it returns. It runs on the
+// goroutine that calls it, which must be t's own, as a test's cleanup is.
+func WaitIn(t testing.TB) func(what string, holds func() bool) error {
+	return func(what string, holds func() bool) error {
+		testwait.Eventually(t, what, holds)
+		return nil
+	}
 }
 
 // drop drops name without waiting for it (dropDatabase); Main waits for every drop. Drops in
