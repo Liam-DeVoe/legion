@@ -1136,8 +1136,16 @@
         "since": 219
       },
       {
+        "value": "ci",
+        "since": 236
+      },
+      {
         "value": "escalated",
         "since": 46
+      },
+      {
+        "value": "fix",
+        "since": 236
       },
       {
         "value": "task-stopped",
@@ -1980,8 +1988,16 @@
         "since": 219
       },
       {
+        "value": "ci",
+        "since": 236
+      },
+      {
         "value": "escalated",
         "since": 46
+      },
+      {
+        "value": "fix",
+        "since": 236
       },
       {
         "value": "task-stopped",

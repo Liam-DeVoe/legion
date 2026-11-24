@@ -35398,7 +35398,9 @@
       ],
       "holdReason": [
         "children",
+        "ci",
         "escalated",
+        "fix",
         "task-stopped"
       ],
       "memoryDrawMode": [
@@ -36190,7 +36192,9 @@
       ],
       "issues.*.holdReason": [
         "children",
+        "ci",
         "escalated",
+        "fix",
         "task-stopped"
       ],
       "issues.*.memoryDrawMode": [
