@@ -813,10 +813,43 @@ judge_ts() {
   });
 });
 
+// The spend collector's variables (rig.sh's spend_variables): every Oh My Pi rig.sh starts gets the
+// six the caller sets and no other OTEL_* variable, so that it records each of its model calls as
+// one span, and no value of one stands in rig.sh's output or in a command's arguments. Each value
+// here is made up, and each row compares the variables' names alone.
+const SPEND = {
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector-a.example:4318",
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector-b.example:4318/v1/traces",
+  OTEL_RESOURCE_ATTRIBUTES: "theorem.project=alpha,theorem.lane=lane-a",
+  OTEL_LOGS_EXPORTER: "none",
+  OTEL_METRICS_EXPORTER: "none",
+};
+/** Variables of the caller that no Oh My Pi gets. */
+const OTHER_OTEL = {
+  OTEL_EXPORTER_OTLP_HEADERS: "authorization=not-a-secret-header",
+  OTEL_SERVICE_NAME: "made-up-service",
+  OTEL_TRACES_EXPORTER: "console",
+};
+const SPEND_NAMES = Object.keys(SPEND).sort();
+/** The OTEL_* names of `env`'s output lines, sorted: names alone. */
+function otelNames(text: string): string[] {
+  return text
+    .split("\n")
+    .flatMap((line) => /^(OTEL_[A-Z_]+)=/.exec(line)?.[1] ?? [])
+    .sort();
+}
+/** Expects `text` to hold no value of SPEND or OTHER_OTEL but the two words any text may hold. */
+function holdsNoSpendValue(text: string): void {
+  for (const value of [...Object.values(SPEND), ...Object.values(OTHER_OTEL)]) {
+    if (value !== "none" && value !== "http/protobuf") expect(text).not.toContain(value);
+  }
+}
+
 // cmd_profile's superpowers step, with a stand-in mise: it records the environment omp got and
 // writes a transcript whose one tool result is the text in result.txt beside it.
 describe("install_superpowers", () => {
-  function setup(result: string) {
+  function setup(result: string, extraEnv: Record<string, string> = {}) {
     const bin = freshDir("superpowers-bin");
     const label = freshDir("superpowers-label");
     const src = freshDir("superpowers-src");
@@ -854,9 +887,14 @@ echo done
     );
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
+        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("spend_variables")}\n${fn("spend_env")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
         [label],
-        { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
+        {
+          PATH: `${bin}:${childEnv.PATH}`,
+          SKILL_SCENARIOS_SUPERPOWERS: src,
+          USER: "rig",
+          ...extraEnv,
+        }
       );
     return { bin, label, run };
   }
@@ -910,6 +948,68 @@ echo done
     expect(code).toBe(1);
     expect(stderr).toContain("read no skill://writing-plans");
     expect(existsSync(path.join(label, "superpowers"))).toBe(false);
+  });
+
+  // Catches: a probe, which asks the model too, given no spend variable (the label's build records
+  // none of its calls) or an OTEL_* variable beyond the six.
+  test("the probe's omp gets the six spend variables the caller sets, and no other OTEL_* one", () => {
+    const { bin, run } = setup("# Skill writing-plans\n\nbody", { ...SPEND, ...OTHER_OTEL });
+    const result = run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    holdsNoSpendValue(result.stdout);
+    expect(otelNames(readFileSync(path.join(bin, "env.txt"), "utf8"))).toEqual(SPEND_NAMES);
+  });
+});
+
+describe("the spend collector's variables", () => {
+  // Catches: a scenario turn's Oh My Pi started with no spend variable (it records none of its
+  // model calls), or with an OTEL_* variable beyond the six (another exporter, a header).
+  test("a run's pane file gives its omp the six the caller sets, and no other OTEL_* variable", () => {
+    const run = freshDir("spend-run");
+    const bin = freshDir("spend-bin");
+    const label = freshDir("spend-label");
+    mkdirSync(path.join(label, "home"));
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    writeFileSync(path.join(run, "prompt.txt"), "Write the spec of ACME-1.\n");
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    // The stand-in mise prints the names of the OTEL_* variables its omp would get, never a value.
+    writeFileSync(
+      path.join(bin, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nenv | sed -n 's/^\\(OTEL_[A-Z_]*\\)=.*/\\1/p' | sort\n`,
+      { mode: 0o755 }
+    );
+    const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+    const result = bash(
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("spend_variables")}\n${fn("spend_env")}\n${fn("base_env")}\n${fn("launch")}\n${standIns}\nR=$1 P=$2 tag=t pin=omp@pin profile=label-a\nbase_env\nlaunch spec-writing-a-1\ncp "$R/out.txt" "$R/seen"`,
+      [run, label],
+      { PATH: `${bin}:${childEnv.PATH}`, USER: "rig", ...SPEND, ...OTHER_OTEL }
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    holdsNoSpendValue(result.stdout);
+    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
+      `${SPEND_NAMES.join("\n")}\nexit=0\n`
+    );
+    expect(otelNames(readFileSync(path.join(run, "pane.env"), "utf8"))).toEqual(SPEND_NAMES);
+  });
+
+  // Catches: a judge's container given no spend variable, one beyond the six, or a value in its
+  // `docker run` arguments, which any process of the machine can read.
+  test("a judge's docker run names the six, each as `-e NAME` alone, and no other OTEL_* variable", () => {
+    const script = `${fn("spend_variables")}\n${fn("spend_docker_args")}\nspend_docker_args`;
+    const result = bash(script, [], { ...SPEND, ...OTHER_OTEL });
+    expect(result.code).toBe(0);
+    holdsNoSpendValue(result.stdout + result.stderr);
+    // In spend_variables' order, SPEND's; the made-up hosts resolve to nothing, so no --add-host.
+    expect(result.stdout).toBe(
+      Object.keys(SPEND)
+        .map((name) => `-e\n${name}\n`)
+        .join("")
+    );
+    // A caller with none of them gives the container none.
+    expect(bash(script)).toMatchObject({ code: 0, stdout: "" });
   });
 });
 

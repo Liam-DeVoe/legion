@@ -162,7 +162,9 @@
 # Each run:
 #   - Its agent is `omp -p` on the Oh My Pi the daemon pins (.omp-pin), in the label's profile
 #     (make_omp_home, install-plugin-profile.sh, install-model-gateway.sh), under a HOME of its own
-#     copied from the label's, with `env -i` and only the variables its pane file names (base_env).
+#     copied from the label's, with `env -i` and only the variables its pane file names (base_env),
+#     the spend collector's variables the caller sets among them (spend_variables), so that Oh My
+#     Pi records each of its model calls.
 #     An agent that writes to its HOME (`mise use -g`, say) changes nothing for another run.
 #   - Its profile's settings set extensionHandlers.toolCallTimeoutMs to 120000 or more, as the model
 #     route installers write them, so AskGate's review fits inside Oh My Pi's handler limit
@@ -264,6 +266,47 @@ judge_thinking=high
 judge_image=ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 # The superpowers skills a spec run's profile holds as its own user skills (cmd_profile).
 superpowers_skills=(writing-plans brainstorming)
+
+# spend_variables prints the name of each spend collector variable the caller sets, one a line:
+# the ones every Oh My Pi this script starts gets (base_env, the superpowers probe and each judge),
+# and no other OTEL_* variable. With them Oh My Pi records each of its model calls as one span
+# ("chat {model}", one per LLM call: packages/agent/src/telemetry.ts of cybermonklabs/oh-my-pi at
+# v18.18.6-sami.20261119-162325), which the spend collector keeps as the call's usage record.
+# OTEL_LOGS_EXPORTER and OTEL_METRICS_EXPORTER hold it to that span alone, one record per call:
+# Oh My Pi sends logs and metrics to the generic endpoint too unless they say otherwise
+# (`signalDestination`, packages/coding-agent/src/telemetry-export.ts:197-227 at that tag), and
+# the deployment repository's spend/client/otel-env sets both to none for Oh My Pi for that reason.
+spend_variables() {
+  local name
+  for name in OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL \
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_RESOURCE_ATTRIBUTES OTEL_LOGS_EXPORTER \
+    OTEL_METRICS_EXPORTER; do
+    [ -z "${!name:-}" ] || printf '%s\n' "$name"
+  done
+}
+
+# spend_env prints NAME=value for each of spend_variables, one a line, as `env -i` and a pane file
+# take them.
+spend_env() {
+  local name
+  for name in $(spend_variables); do printf '%s=%s\n' "$name" "${!name}"; done
+}
+
+# spend_docker_args prints the `docker run` words that give a judge's container the spend
+# collector's variables, one a line: `-e NAME` for each of spend_variables, so that docker takes
+# each value from its own environment and no value stands in its arguments; and `--add-host` for
+# the collector's host name as resolved here, as cmd_judge_omp passes the model endpoint's, since a
+# container cannot resolve a cluster or tailnet name itself.
+spend_docker_args() {
+  local name url host ip
+  for name in $(spend_variables); do printf '%s\n%s\n' -e "$name"; done
+  for url in "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"; do
+    host=$(printf '%s\n' "$url" | sed -n 's#^ *https\{0,1\}://\([^/:]*\).*#\1#p')
+    [ -n "$host" ] || continue
+    ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
+    [ -z "$ip" ] || [ "$ip" = "$host" ] || printf '%s\n%s\n' --add-host "$host:$ip"
+  done
+}
 
 mkdir -p "$work"
 
@@ -536,15 +579,18 @@ install_superpowers() {
       printf 'superpowers-skill %s %s\n' "$skill" "$(cd "$dest/$skill" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
     done
   } >>"$P/built-from"
-  # The read runs as a run does: the label's HOME and profile, no caller variable, an empty cwd, no
-  # Dispatch, and an Envoy address nothing listens on.
+  # The read runs as a run does: the label's HOME and profile, no caller variable but the spend
+  # collector's (spend_env), an empty cwd, no Dispatch, and an Envoy address nothing listens on.
   probe=$P/superpowers-probe
   mkdir -p "$probe/cwd" "$probe/tmp"
+  local spend
+  mapfile -t spend < <(spend_env)
   (
     cd "$probe/cwd" &&
       env -i HOME="$P/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
         MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}" OMP_PROFILE="$profile" \
-        PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
+        PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 ${spend[@]+"${spend[@]}"} \
+        timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
         mise x "$pin" -- "$omp" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
         --session-dir "$probe/sessions" </dev/null
   ) >"$probe/out.txt" 2>&1 || fail "the read of skill://writing-plans under profile $profile failed; see $probe/out.txt"
@@ -558,8 +604,8 @@ install_superpowers() {
 }
 
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
-# label's profile, the run's stand-ins first on PATH, its own TMPDIR, and nothing else from the
-# caller's environment.
+# label's profile, the run's stand-ins first on PATH, its own TMPDIR, the spend collector's
+# variables the caller sets (spend_env), and nothing else from the caller's environment.
 base_env() {
   mkdir -p "$R/tmp"
   cp -a "$P/home" "$R/home"
@@ -574,6 +620,7 @@ base_env() {
     echo "PI_NO_TITLE=1"
     echo "SKILL_SCENARIO_RUN=$R"
     echo "PATH=$R/bin:$PATH"
+    spend_env
   } >"$R/pane.env"
 }
 
@@ -1294,6 +1341,8 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
+  # The spend collector's variables, by name alone, and its host (spend_docker_args).
+  mapfile -t -O "${#extra[@]}" extra < <(spend_docker_args)
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
   # failed pull names itself. The registry answers one request of a batch badly now and then (a
   # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
