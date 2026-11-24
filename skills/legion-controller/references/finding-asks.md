@@ -48,16 +48,18 @@ An answer that arrives while no controller runs never wakes you. A reference pub
 2. **Take the open asks.** `dispatch open-asks --project <PROJECT>` lists every open ask; an ask on a closed issue is not listed. Follow those on the report issue, and take each whose question opens `Clear defect from ` as above. On another issue, a question opening `Finding from ` or `Clear defect from ` is a role's own-issue ask: take a clear defect the same way; move a finding to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
 3. **List the answered asks still waiting on you**, for the report issue and then each issue of one snapshot of `dispatch issues --project <PROJECT> --status needs_review --all` (never paged):
 
+   Read `/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1` into `asks` with the read in `skill://legion-controller/references/session.md`. If the read fails, stop with `Dispatch read failed`. Then:
+
    ```text
-   asks=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says.
 4. **List the clear defects nobody took yet:**
 
+   Read `/api/v1/issues/<REPORT KEY>/comments` into `notes` with the read in `skill://legion-controller/references/session.md`. If the read fails, stop with `Dispatch read failed`. Then:
+
    ```text
-   notes=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
    ```
 

@@ -16,8 +16,9 @@ With no `failure.at`, end the key `generation <n>` (`issues.<ISSUE>.generation`)
 
 1. **Find your earlier ask for this key:**
 
+   Read `/api/v1/issues/<root>/comments` into `notes` with the read in `skill://legion-controller/references/session.md`. If the read fails, stop with `Dispatch read failed`. Then:
+
    ```text
-   notes=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
    ```
 
