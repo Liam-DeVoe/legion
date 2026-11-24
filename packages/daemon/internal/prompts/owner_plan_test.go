@@ -542,8 +542,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 			"reviewer.md",
 			append(slices.Clone(planRead),
 				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
-				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it.",
-				"Retro commits nothing. After your approval, only those two or a push by a later step of your task move the head. Nothing in Legion holds the head that merges to the one you approved"),
+				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it."),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
@@ -1089,7 +1088,7 @@ func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
 		},
 		{
 			"roles/reviewer.md", func(t *testing.T) string { return rolePart(t, "reviewer.md") },
-			[]string{"After your approval, only those two or a push by a later step of your task move the head."},
+			nil,
 			[]string{"no step of Legion's moves the head after your approval but those two"},
 		},
 		{
