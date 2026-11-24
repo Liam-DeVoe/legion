@@ -1,12 +1,10 @@
-// The rules this workspace's TypeScript reads another service's HTTP status by. `outage` decides
-// whether the same request may be answered if it is asked again: Dispatch's keyed writes
-// (`retriesUnderKey`), the Dispatch and Envoy clients, the Legion daemon's client and the claim
-// boot all read it here. Go's half is `httpoutage.Is` (packages/envoy/httpoutage), the same set.
-// `mayHaveReachedServer` decides whether a failed request may have reached the server and taken
-// effect, which the Dispatch client, Dispatch's page, the Envoy client and the Legion daemon's
-// client read.
-// `retryAfterMs` reads the wait an answer's `Retry-After` asks for.
-// It imports nothing, so any module of the contract can read it.
+// The rules this workspace's TypeScript reads another service's HTTP status by: `outage`, whether
+// the same request may be answered if it is asked again, whose Go half is `httpoutage.Is`
+// (packages/envoy/httpoutage), the same set; `mayHaveReachedServer`, whether a failed request may
+// have reached the server and taken effect; and `retryAfterMs`, the wait an answer's
+// `Retry-After` asks for. This file names none of its readers, so no list of them goes stale: a
+// search for imports of `http-status` finds them. It imports nothing, so any module of the
+// contract, and a script outside any workspace, can read it.
 
 /**
  * Whether `status` is a server that could not answer the request now, so the same request may be
