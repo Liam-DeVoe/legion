@@ -232,6 +232,16 @@ check "fails rather than hold the head pending to its timeout" "$(is "$status" 1
 check "after three reads in a row" "$(is "$(reads_made)" 3)"
 check "says why" "$(contains "$out" 'no job of this approval-time run is open and approval / ci-ok has not concluded on attempt 1, 3 reads in a row')"
 
+echo "case: the caller has not started, waiting in its concurrency group for an older run to cancel"
+# Test pull request #5347: a second approval's run (45392143357) listed no job of the caller for
+# 39 s while the first one's run cancelled.
+reset
+reads "$self" "$self" "$self" "$self" "$self;approval / changes|in_progress|-|1" \
+  "$self;approval / changes|completed|success|1;approval / ci-ok|completed|success|1"
+run_hold
+check "is waited for, not read as a run that ended" "$(is "$status" 0)"
+check "through every read" "$(is "$(reads_made)" 6)"
+
 echo "case: a moment with every job ended and the verdict not yet created"
 reset
 reads "$self;approval / changes|completed|success|1" "$self;approval / changes|completed|success|1" \

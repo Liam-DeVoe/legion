@@ -30,9 +30,10 @@
 #          itself is ci.yaml's own ci-ok job, called as `<CALLER> / ci-ok`, whose check run GitHub
 #          creates only once every job it needs has ended. So this job waits for that job and
 #          concludes as it did: success exits 0, anything else exits 1. A run that ends with no
-#          verdict of this attempt (no job of it left open, LARGE_PR_HOLD_ENDED_READS reads in a
-#          row) fails too, so a run that never reaches ci.yaml's ci-ok cannot hold the head
-#          pending until this job's timeout.
+#          verdict of this attempt (a job of it listed, none left open, LARGE_PR_HOLD_ENDED_READS
+#          reads in a row) fails too, so a run that never reaches ci.yaml's ci-ok cannot hold the
+#          head pending until this job's timeout; a run whose caller has not started yet (it waits
+#          in its concurrency group while an older approval's run cancels) is waited for.
 #
 # Its inputs, from the step's env:
 #   label: GH_TOKEN, and GITHUB_EVENT_PATH and GITHUB_REPOSITORY as Actions sets them.
@@ -134,7 +135,7 @@ label() {
 hold() {
   need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT CALLER
   local poll=${LARGE_PR_HOLD_POLL_SECONDS:-60} ended_reads=${LARGE_PR_HOLD_ENDED_READS:-3}
-  local want="$CALLER / ci-ok" ended=0 jobs verdict others open
+  local want="$CALLER / ci-ok" ended=0 jobs verdict others listed open
   local route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
   echo "waiting for $want, the verdict of this approval-time run (attempt $GITHUB_RUN_ATTEMPT)"
   while true; do
@@ -143,6 +144,7 @@ hold() {
       verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
       others=$(awk -F'\t' -v attempt="$GITHUB_RUN_ATTEMPT" -v want="$want" \
         '$1 != "ci-ok" && $1 != want && $4 == attempt' <<<"$jobs" | wc -l)
+      listed=$(awk -F'\t' -v want="$want" '$1 != "ci-ok" && $1 != want' <<<"$jobs" | wc -l)
       open=$(awk -F'\t' -v want="$want" '$1 != "ci-ok" && $1 != want && $2 != "completed"' <<<"$jobs" | wc -l)
       if [ -n "$verdict" ]; then
         local status conclusion attempt url
@@ -160,8 +162,10 @@ hold() {
       fi
       # No verdict of this attempt yet. GitHub creates ci.yaml's ci-ok only once its needs have
       # ended, so a moment with every other job completed and no verdict is normal; the same
-      # reading several reads in a row is a run that will not reach one.
-      if [ "$open" -eq 0 ]; then
+      # reading several reads in a row is a run that will not reach one. A run with no job of
+      # CALLER listed yet has not started it: the caller waits in its concurrency group while an
+      # older approval's run cancels, and this job waits with it.
+      if [ "$listed" -gt 0 ] && [ "$open" -eq 0 ]; then
         ended=$((ended + 1))
         if [ "$ended" -ge "$ended_reads" ]; then
           echo "::error::no job of this approval-time run is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails"

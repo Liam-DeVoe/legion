@@ -1611,9 +1611,12 @@ review's run that waited for a runner held the required pr-title pending, and th
 the pull request only once it passed (dispatch://INFRA-1825). Legion's merger enqueues with
 `enqueuePullRequest`, which adds a pull request only when it can be added at once, and waits for
 a required check still running (packages/daemon/internal/prompts/roles/merger.md, steps 4 and
-6). What is left is the seconds between the approval and GitHub creating the run; each approval
-of a large pull request names it, as the time from the review's submission to the ci-ok check
-run's creation.
+6). What is left is the seconds between the approval and GitHub creating the run. On test pull
+request #5347 that was 4 s and 6 s (reviews 6038732981 and 6039038013: submitted 11:55:46Z and
+12:17:05Z, ci-ok jobs created 11:55:50Z and 12:17:11Z), and the rollup read PENDING 9 s after
+the first. Over the 384 queue entries of the 228 pull requests merged from 2026-11-23 to
+2026-11-24 12:00Z, the shortest time from an approval to the next entry was 7 s, and 2 entries
+came within 10 s of theirs, both enqueued by the coordinator.
 
 Why a run that tests nothing leaves no passing ci-ok. A skipped job's check run is a passing
 required check, so a skipped job named ci-ok on a head whose own ci-ok is red would read as
@@ -1623,9 +1626,13 @@ all (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of
 check run carries the expression's text. The name repeats the job's whole condition besides, so
 it reads `ci-ok` only where the job runs even if it were evaluated.
 
-One group per pull request holds the runs that test, and a newer approval's run cancels the
-older one's, whose head is the same or older; every other review's run is a group of its own, so
-a comment posted during the approval-time run cancels nothing.
+A newer approval's suites cancel the older one's, whose head is the same or older, through a
+group on the `approval` job alone. A group on the whole run held the newer run with no job, so
+with no pending ci-ok, until the older run had finished cancelling: 39 s on #5347 (run
+45392143357 created 12:17:56Z, its ci-ok job 12:18:35Z). With the group on the job, the newer
+run's ci-ok is created with the run, and the older run's ci-ok fails once its suites are
+cancelled, under the newer one. Every other review's run starts no job, so a comment posted
+during the approval-time run cancels nothing.
 
 What it leaves as it was:
 
