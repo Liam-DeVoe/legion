@@ -198,18 +198,23 @@ const releaseBeforeTaskText = "Make the change the issue asks for."
 // (seedPlanInReviewing): its task at step 2, the reviewer's, with the counts of one round that
 // requested changes, and the claims of its architect and its reviewer each a launch that release
 // began in the session it recorded. This release's daemon boots on it and resumes both. The
-// reviewer's approval moves the issue into its retro, the step after the review on the plan's line
+// reviewer requests changes once more, the implementer implements again, and the reviewer's approval
+// moves the issue into its retro, the step after the review on the plan's line
 // `implementing reviewing retro merging`; the retro rates the plan 4, and the merge ends the walk at
-// done. Each claim keeps its session, the task keeps its counts, and the read of the project on
-// Dispatch lists the issue with the retro's rating and its reason. The control, every run, is a
-// second issue seeded the same with its rows of issue_plans, plan_tasks and plan_steps deleted
-// before the boot: it walks today's line, the approval moves it to accepting, and the same check of
-// the move into the retro must fail on it.
+// done. Each claim keeps its session, the task's counts go on from the ones the release before
+// left (pass 2, rounds 2 and two moves back from reviewing to implementing, where counts read from
+// zero would show 1, 1 and one), and the read of the project on Dispatch lists the issue with the
+// retro's rating and its reason. The control, every run, is a second issue seeded the same with
+// its rows of issue_plans, plan_tasks and plan_steps deleted before the boot: it walks today's
+// line, the approval moves it to accepting, and the same check of the move into the retro must
+// fail on it.
 func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 	t.Parallel()
 	r := newReleaseBeforeRig(t)
 	walked := r.walks[0]
 	r.on(walked.key)
+	r.review("CHANGES_REQUESTED", phase.Implementing)
+	r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Reviewing)
 	if err := r.approvedIntoRetro(); err != nil {
 		t.Fatal(err)
 	}
@@ -229,9 +234,9 @@ func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 		walked.key).Scan(&state, &pass, &rounds, &moves); err != nil {
 		t.Fatalf("read the task a of %s: %v", walked.key, err)
 	}
-	if state != string(record.TaskDone) || pass != 1 || rounds != 1 || moves != `{"reviewing-implementing": 1}` {
-		t.Fatalf("%s's task a is %s with pass %d, rounds %d and the moves back %s at done, want done with the 1, 1 and %s the release before left",
-			walked.key, state, pass, rounds, moves, `{"reviewing-implementing": 1}`)
+	if state != string(record.TaskDone) || pass != 2 || rounds != 2 || moves != `{"reviewing-implementing": 2}` {
+		t.Fatalf("%s's task a is %s with pass %d, rounds %d and the moves back %s at done, want done with the 1, 1 and one the release before left, each one more for the round this release ran: 2, 2 and %s",
+			walked.key, state, pass, rounds, moves, `{"reviewing-implementing": 2}`)
 	}
 	r.waitPlansRead("the rating of "+walked.key+"'s retro", func(read projectPlansRead) error {
 		for _, listed := range read.Issues {
