@@ -41,13 +41,18 @@ const (
 // phaseFinishedUrgency is Low for the architect where the daemon has already started the next
 // phase: the phase of an implementer, a tester or a merger, a reviewer's request for changes (a
 // move to implementing), the design gate's opening (a move out of admitted) and the architect's
-// own backward move out of accepting. A planner's phase and a reviewer's approval are Med, and
-// so is a reviewer's phase that names no phase it moved to, as a row of an older daemon does.
+// own backward move out of accepting. A move into accepting is Med whoever finished, since no
+// worker runs there and the architect's acceptance is the next act (an owner's plan can put
+// acceptance:owner right after the implementer or the tester, and a merger's move back goes
+// there). A planner's phase and a reviewer's approval are Med, and so is a reviewer's phase that
+// names no phase it moved to, as a row of an older daemon does.
 func phaseFinishedUrgency(reader claim.Role, v Variant) Urgency {
 	if reader != claim.RoleArchitect {
 		return Med
 	}
 	switch {
+	case v.To == phase.Accepting:
+		return Med
 	case v.Phase == phase.Admitted:
 		return Low
 	case v.Role == claim.RoleImplementer, v.Role == claim.RoleTester, v.Role == claim.RoleMerger:
