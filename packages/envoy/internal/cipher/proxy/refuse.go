@@ -59,6 +59,7 @@ const (
 	codeTargetRefused      = "TARGET_REFUSED"
 	codeTargetRepositories = "TARGET_REPOSITORIES_REFUSED"
 	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
+	codeMintedOnly         = "MINTED_ONLY"
 	codeGrantRefused       = "GRANT_REFUSED"
 	codeGrantUnreadable    = "GRANT_UNREADABLE"
 )
@@ -81,11 +82,12 @@ const (
 //     secret the store no longer holds, a mint the secret's own minter refused, a profile's scope
 //     that minter refused (secrets.ErrMintNarrowingRefused, which the release hands over as it
 //     is), a target the live profile does not hold, a value whose shape the airlock cannot take
-//     apart - is 403 in those words. No retry clears one of them, so telling a command to make
-//     the call again would be untrue, and none of them carries anything of the store the read
-//     went to. Which errors those are is the read's own package to say (requests.IsRefusal),
-//     since a sentinel added there would be missed by a list kept here; the seven named here have
-//     a code of their own, and any other is GRANT_REFUSED.
+//     apart, a stored secret under a dpop block - is 403 in those words. No retry clears one of
+//     them, so telling a command to make the call again would be untrue, and none of them
+//     carries anything of the store the read went to. Which errors those are is the read's own
+//     package to say (requests.IsRefusal), since a sentinel added there would be missed by a
+//     list kept here; the eight named here have a code of their own, and any other is
+//     GRANT_REFUSED.
 //   - A release the broker refused because it could not learn whether Dispatch calls the
 //     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
 //     own fixed words under the code the API port answers it with: nothing is released while
@@ -129,6 +131,8 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 		return http.StatusForbidden, codeTargetRefused, err.Error()
 	case errors.Is(err, requests.ErrAirlockValueShape):
 		return http.StatusForbidden, codeValueShape, err.Error()
+	case errors.Is(err, requests.ErrMintedOnly):
+		return http.StatusForbidden, codeMintedOnly, err.Error()
 	case requests.IsRefusal(err):
 		return http.StatusForbidden, codeGrantRefused, err.Error()
 	}

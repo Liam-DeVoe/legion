@@ -1,7 +1,7 @@
 // packages/envoy/internal/cipher/proxy/prefix_alone_test.go
 //
 // The leftover-placeholder refusal (leftoverPlaceholder) is about placeholders: the prefix and the
-// PlaceholderLength letters and digits the broker mints after it. A request whose path or query
+// placeholder.Length letters and digits the broker mints after it. A request whose path or query
 // holds the prefix with no placeholder after it - a code search for the prefix itself, which an
 // agent working on the broker makes - carries no proxy password and must reach the service.
 package proxy
@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
 // TestThePrefixWithNoPlaceholderAfterItIsNotRefused: the prefix alone, and the prefix followed by
@@ -23,8 +23,8 @@ func TestThePrefixWithNoPlaceholderAfterItIsNotRefused(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	client := r.client(workerPlaceholder)
 	for i, query := range []string{
-		requests.PlaceholderPrefix + " repo:acme-org/x",
-		requests.PlaceholderPrefix + "abc repo:acme-org/x",
+		placeholder.Prefix + " repo:acme-org/x",
+		placeholder.Prefix + "abc repo:acme-org/x",
 	} {
 		answer, body := r.get(client, "https://"+boundHost+"/search/code?q="+url.QueryEscape(query), "Authorization", "Bearer "+workerPlaceholder)
 		if answer.StatusCode != http.StatusOK {
@@ -39,7 +39,7 @@ func TestThePrefixWithNoPlaceholderAfterItIsNotRefused(t *testing.T) {
 		}
 	}
 
-	unknown := requests.PlaceholderPrefix + "unknownunknownunknownunknownunkn"
+	unknown := placeholder.Prefix + "unknownunknownunknownunknownunkn"
 	answer, _ := r.get(client, "https://"+boundHost+"/search/code?q="+url.QueryEscape(unknown), "Authorization", "Bearer "+workerPlaceholder)
 	if answer.StatusCode != http.StatusForbidden {
 		t.Fatalf("a whole placeholder no grant holds answered %d; want 403 PLACEHOLDER_NOT_SWAPPED", answer.StatusCode)

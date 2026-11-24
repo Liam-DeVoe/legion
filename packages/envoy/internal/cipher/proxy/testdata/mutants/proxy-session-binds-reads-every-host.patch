@@ -6,8 +6,8 @@
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -123,7 +123,8 @@
- // for, cannot fail for a read of other grants.
+@@ -125,7 +125,8 @@
+ // failed check can still answer such a call 503, failing closed.
  func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
  	names := s.boundEntries(host, port)
 -	if len(names) == 0 {

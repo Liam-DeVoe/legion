@@ -115,12 +115,14 @@ func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnect
 	return false, nil
 }
 
-// otherGrantsBinding is the live grants of own's enrollment, but own, that hold a name an entry
-// binds to host on port (ProxyGrantsOfEnrollment with boundEntries' names). The broker checks
-// only those, so a grant that could bind nothing here - whose project check may need Dispatch,
-// which may not answer - never decides a call to this host, and a host no entry binds reads
-// nothing at all: a tunnel to a package registry, or to a git host the session holds no secret
-// for, cannot fail for a read of other grants.
+// otherGrantsBinding is the live grants of own's enrollment, but own, that hold a placeholder of a
+// name an entry binds to host on port (ProxyGrantsOfEnrollment with boundEntries' names). The
+// broker reads and checks only those, so a grant that holds no such placeholder - whose project
+// check may need Dispatch, which may not answer - is not read for a call to this host, and a host
+// no entry binds reads nothing at all: a tunnel to a package registry, or to a git host the session
+// holds no secret for, cannot fail for a read of other grants. A grant that holds such a
+// placeholder is read and checked whole, a name of it its operator withheld included, so its
+// failed check can still answer such a call 503, failing closed.
 func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
 	names := s.boundEntries(host, port)
 	if len(names) == 0 {

@@ -7,13 +7,14 @@
 
 --- a/packages/envoy/internal/cipher/proxy/leftover.go
 +++ b/packages/envoy/internal/cipher/proxy/leftover.go
-@@ -83,7 +83,8 @@
- 			return ""
- 		}
- 		rest = rest[i:]
--		if placeholder := placeholderAt(rest); len(placeholder) == len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
-+		// MUTANT: the prefix alone is read as a placeholder.
-+		if placeholder := placeholderAt(rest); len(placeholder) >= len(requests.PlaceholderPrefix) {
- 			return placeholder
- 		}
- 		rest = rest[len(requests.PlaceholderPrefix):]
+@@ -148,8 +148,9 @@
+ 		opening += word + 1
+ 	}
+ 	end := opening + placeholder.Length
++	// MUTANT: the prefix alone, or with fewer than Length characters after it, is a placeholder.
+ 	if end > len(text) || !alphabetOnly(text[opening:end]) {
+-		return ""
++		return text[:opening]
+ 	}
+ 	return text[:end]
+ }

@@ -496,11 +496,28 @@ psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 # k1
 ###############################################################################################
 
+# k1_python prints the interpreter python3 names, asked in this script's environment, for k1's
+# scanner to run on by that path. The scanner starts agent-secrets by name, and the one that must
+# answer is the stack's own build, first on this script's PATH once start_stack has evaluated the
+# banner's `export PATH`. The first python3 on PATH can be a version manager's shim that starts the
+# interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
+# environment, put that environment's PATH in front of the entries put first, so the scanner would
+# run an installed agent-secrets and not this checkout's.
+k1_python() {
+	local python
+	python="$(python3 -I -c 'import sys; print(sys.executable)')" || return 1
+	[[ "$python" == /* && -x "$python" ]] || {
+		echo "airlock-check: python3 did not report an absolute executable path: $python" >&2
+		return 1
+	}
+	printf '%s\n' "$python"
+}
+
 # k1_case runs one of k1's two commands under the scanner and judges the five places.
 # bound is true when the name's profile has a proxy block, which is the check itself; false is
 # its negative control, where the same run must find the value in env.txt and in the environment.
 k1_case() { # <name> <label> <value> <bound true|false>
-	local name="$1" label="$2" value="$3" bound="$4"
+	local name="$1" label="$2" value="$3" bound="$4" python
 	local dir="$WORK_DIR/k1-$label"
 	mkdir -p "$dir"
 	printf '%s' "$value" | od -An -tx1 -v | tr -d ' \n' >"$dir/needles"
@@ -512,7 +529,8 @@ env > env.txt
 : > ready
 sleep 5
 EOF
-	python3 "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
+	python="$(k1_python)"
+	"$python" "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
 		agent-secrets "$name" -- sh "$dir/command.sh" 2>"$dir/cli.err" || true
 	K1_EXIT="$(jq -r '.exit' "$dir/scan.json")"
 	K1_MEM="$(jq -r '.memory_hits[0]' "$dir/scan.json")"
@@ -1188,10 +1206,11 @@ k6_clients() {
 # page sends a browser to the stack's issuer, which signs the approver in with no form to fill,
 # and the decision is posted back with an Origin header, which the page requires. curl's own
 # cookie jar cannot be used - both cookies are Secure and this broker is on http - so each
-# Set-Cookie is read out of the headers and sent back by hand. The form's hidden fields are all
-# posted back, each profile_digest among them: an approval names the fingerprint of each profile
-# the page printed, and the broker refuses one that names none as "Profile changed" and decides
-# nothing.
+# Set-Cookie is read out of the headers and sent back by hand. Every printed and every
+# profile_digest field of the form is posted back: the page token is a MAC over every record the
+# page printed, so an approval that names fewer is refused 403 PAGE_TOKEN_INVALID, and an approval
+# names the fingerprint of each profile the page printed, so one that names fewer is refused as
+# "Profile changed". Either way nothing is decided.
 approve_record() { # <record id>
 	local rec="$1" d="$WORK_DIR/approve"
 	mkdir -p "$d"
@@ -1206,18 +1225,23 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field digest
+	local field value
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	# One profile_digest field per profile the page printed, each "<record> <name> <digest>".
-	local digests=()
-	while IFS= read -r digest; do
-		digests+=(--data-urlencode "profile_digest=$digest")
+	# Every value of a hidden field the page may print more than once, all on one line of its form:
+	# one printed field per record, and one profile_digest field per profile, each "<record> <name>
+	# <digest>".
+	local printed=() digests=()
+	while IFS= read -r value; do
+		printed+=(--data-urlencode "printed=$value")
+	done < <(grep -o 'name="printed" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
+	while IFS= read -r value; do
+		digests+=(--data-urlencode "profile_digest=$value")
 	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
+		"${printed[@]+"${printed[@]}"}" --data-urlencode token@- \
 		"${digests[@]+"${digests[@]}"}" \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"

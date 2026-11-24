@@ -15,4 +15,4 @@
 +	if found && fallback.holdsPlaceholder {
  		return fallback, true, nil
  	}
- 	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID)
+ 	others, err := s.otherGrantsBinding(ctx, own, host, port)

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -31,9 +32,9 @@ import (
 // A second grant of the rig's enrollment, and one grant of another enrollment, each holding one
 // stored secret of its own.
 const (
-	secondName        = "SECOND_TOKEN"
-	secondValue       = "the-real-second-token"
-	secondGrantID     = "grant-00000002"
+	peerName          = "SECOND_TOKEN"
+	peerValue         = "the-real-second-token"
+	peerGrantID       = "grant-00000002"
 	foreignName       = "FOREIGN_TOKEN"
 	foreignValue      = "the-real-foreign-token"
 	foreignGrantID    = "grant-00000003"
@@ -45,9 +46,9 @@ const (
 )
 
 var (
-	secondPlaceholder  = requests.PlaceholderPrefix + "secondsecondsecondsecondsecond02"
-	foreignPlaceholder = requests.PlaceholderPrefix + "foreignforeignforeignforeignfor3"
-	chatPlaceholder    = requests.PlaceholderPrefix + "chatchatchatchatchatchatchatcha4"
+	peerPlaceholder    = placeholder.Prefix + "secondsecondsecondsecondsecond02"
+	foreignPlaceholder = placeholder.Prefix + "foreignforeignforeignforeignfor3"
+	chatPlaceholder    = placeholder.Prefix + "chatchatchatchatchatchatchatcha4"
 )
 
 // addGrant is one more live grant the rig's broker holds: placeholder opens it, it holds name's
@@ -67,7 +68,7 @@ func (r *rig) addGrant(placeholder, grantID, enrollmentID, name, value string) {
 func enrollmentRules() proxyrules.Rules {
 	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: secondName, Hosts: []string{boundHost}, Headers: []string{"x-second"}},
+		{Name: peerName, Hosts: []string{boundHost}, Headers: []string{"x-second"}},
 		{Name: foreignName, Hosts: []string{boundHost, tunnelHost}, Headers: []string{"x-foreign"}},
 		{Name: chatName, Hosts: []string{chatHost}, Headers: []string{"authorization"}},
 	}}
@@ -84,21 +85,21 @@ func enrollmentRules() proxyrules.Rules {
 // TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused).
 func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules()})
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
 	client := r.client(workerPlaceholder)
 
-	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
+	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+peerPlaceholder)
 	seen := r.requests()
 	if len(seen) != 1 {
 		t.Fatalf("the service saw %d requests; want the second grant's one", len(seen))
 	}
-	if got, want := seen[0].Header.Get("X-Second"), "Token "+secondValue; got != want {
+	if got, want := seen[0].Header.Get("X-Second"), "Token "+peerValue; got != want {
 		t.Fatalf("the service saw X-Second %q; want %q: the request carried the second grant's placeholder on the first grant's connection", got, want)
 	}
 	line := r.logs.callsAtLeast(t, 1)[0]
-	if line.fields["grant"] != secondGrantID || line.fields["secret"] != secondName || line.fields["enrollment"] != testEnrollID {
-		t.Fatalf("the call logged %v; want grant %s, secret %s, enrollment %s", line.fields, secondGrantID, secondName, testEnrollID)
+	if line.fields["grant"] != peerGrantID || line.fields["secret"] != peerName || line.fields["enrollment"] != testEnrollID {
+		t.Fatalf("the call logged %v; want grant %s, secret %s, enrollment %s", line.fields, peerGrantID, peerName, testEnrollID)
 	}
 
 	r.get(client, "https://"+boundHost+"/v1/own", "Authorization", "Bearer "+workerPlaceholder)
@@ -114,8 +115,8 @@ func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarrie
 	}
 
 	r.get(client, "https://"+boundHost+"/v1/foreign", "X-Foreign", "Token "+foreignPlaceholder)
-	r.grants.refuseConnection(secondPlaceholder, requests.ErrGrantNotLive)
-	r.get(client, "https://"+boundHost+"/v1/ended", "X-Second", "Token "+secondPlaceholder)
+	r.grants.refuseConnection(peerPlaceholder, requests.ErrGrantNotLive)
+	r.get(client, "https://"+boundHost+"/v1/ended", "X-Second", "Token "+peerPlaceholder)
 	if seen := r.requests(); len(seen) != 2 {
 		t.Fatalf("the service saw %d requests; want the two above alone: another enrollment's placeholder and an ended grant's are swapped by no grant of this session", len(seen))
 	}
@@ -131,11 +132,11 @@ func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T)
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
 	r.trust.AddCert(r.service.Authority().Certificate())
 
-	answer, body := r.get(r.client(chatPlaceholder), "https://"+boundHost+"/v1/repos", "X-Second", "Token "+secondPlaceholder)
+	answer, body := r.get(r.client(chatPlaceholder), "https://"+boundHost+"/v1/repos", "X-Second", "Token "+peerPlaceholder)
 	if answer.StatusCode != http.StatusOK {
 		t.Fatalf("the call answered %d %q; want 200", answer.StatusCode, body)
 	}
@@ -143,14 +144,14 @@ func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T)
 	if len(seen) != 1 {
 		t.Fatalf("the service saw %d requests; want one", len(seen))
 	}
-	if got, want := seen[0].Header.Get("X-Second"), "Token "+secondValue; got != want {
+	if got, want := seen[0].Header.Get("X-Second"), "Token "+peerValue; got != want {
 		t.Fatalf("the service saw X-Second %q; want %q: a live grant of the session binds the host, so the CONNECT is read and the placeholder swapped", got, want)
 	}
 	if tunnels := r.logs.tunnels(); len(tunnels) != 0 {
 		t.Fatalf("the proxy logged %d tunnel(s); want none to a host a grant of the session binds", len(tunnels))
 	}
-	if grant := r.logs.callsAtLeast(t, 1)[0].fields["grant"]; grant != secondGrantID {
-		t.Errorf("the call logged grant %v; want %s, whose placeholder it carried", grant, secondGrantID)
+	if grant := r.logs.callsAtLeast(t, 1)[0].fields["grant"]; grant != peerGrantID {
+		t.Errorf("the call logged grant %v; want %s, whose placeholder it carried", grant, peerGrantID)
 	}
 
 	for _, host := range []string{tunnelHost, echoHost} {
@@ -194,8 +195,8 @@ func TestPlainHTTPToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRefused(t *testin
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
-	answer, body := r.get(r.client(chatPlaceholder), "http://"+boundHost+"/v1/things", "X-Second", "Token "+secondPlaceholder)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
+	answer, body := r.get(r.client(chatPlaceholder), "http://"+boundHost+"/v1/things", "X-Second", "Token "+peerPlaceholder)
 	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "plain http") {
 		t.Fatalf("plain http to a host the session's second grant binds answered %d %q; want 403 refusing plain http", answer.StatusCode, body)
 	}
@@ -216,7 +217,7 @@ func TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant(t *testing.T) {
 		t.Fatalf("a CONNECT and a request of the connection's own grant read the enrollment's grants %d time(s); want none", reads)
 	}
 	r.grants.failEnrollmentReads(databaseDown)
-	answer, body := r.get(client, "https://"+boundHost+"/v1/things", "X-Second", "Token "+secondPlaceholder)
+	answer, body := r.get(client, "https://"+boundHost+"/v1/things", "X-Second", "Token "+peerPlaceholder)
 	if answer.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("a request whose grant could not be read answered %d %q; want 503", answer.StatusCode, body)
 	}
@@ -237,7 +238,7 @@ func TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant(t *testing.T) {
 // which leaves the stream running on the ended grant's value.
 func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules(), Watch: watchFast})
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	ended := streamStandIn(r)
 	client := r.client(workerPlaceholder)
 	client.Timeout = 0
@@ -247,7 +248,7 @@ func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("X-Second", "Token "+secondPlaceholder)
+	request.Header.Set("X-Second", "Token "+peerPlaceholder)
 	answer, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("the streamed call through the proxy: %v", err)
@@ -257,7 +258,7 @@ func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.
 	if line, err := reader.ReadString('\n'); err != nil || line != "a line of the stream\n" {
 		t.Fatalf("the stream's first line is %q (%v), want the service's", line, err)
 	}
-	if got := r.requests()[0].Header.Get("X-Second"); got != "Token "+secondValue {
+	if got := r.requests()[0].Header.Get("X-Second"); got != "Token "+peerValue {
 		t.Fatalf("the service received X-Second %q, want the second grant's value", got)
 	}
 	// While the second grant lives the call goes on, for many watch intervals: the watcher reads
@@ -271,7 +272,7 @@ func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.
 		t.Fatalf("the proxy cut the call while its grant lives: %v", cuts[0].fields)
 	}
 
-	r.grants.refuseConnection(secondPlaceholder, requests.ErrGrantNotLive)
+	r.grants.refuseConnection(peerPlaceholder, requests.ErrGrantNotLive)
 	cut := time.Now()
 	_, err = io.Copy(io.Discard, reader)
 	if took := time.Since(cut); err == nil || errors.Is(err, context.DeadlineExceeded) || took > cutWait {
@@ -289,8 +290,8 @@ func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.
 	if len(cuts) != 1 {
 		t.Fatalf("the proxy logged %d lines for the cut, want 1", len(cuts))
 	}
-	if got := cuts[0].fields["grant"]; got != secondGrantID {
-		t.Errorf("the cut logged grant %v, want %s", got, secondGrantID)
+	if got := cuts[0].fields["grant"]; got != peerGrantID {
+		t.Errorf("the cut logged grant %v, want %s", got, peerGrantID)
 	}
 }
 
@@ -311,14 +312,17 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 		endedSameGrant  = "grant-00000005"
 		endedOtherGrant = "grant-00000006"
 	)
-	endedSame := requests.PlaceholderPrefix + "endedsameendedsameendedsameended"
-	endedOther := requests.PlaceholderPrefix + "endedotherendedotherendedotheren"
-	unknown := requests.PlaceholderPrefix + "unknownunknownunknownunknownunkn"
+	endedSame := placeholder.Prefix + "endedsameendedsameendedsameended"
+	endedOther := placeholder.Prefix + "endedotherendedotherendedotheren"
+	unknown := placeholder.Prefix + "unknownunknownunknownunknownunkn"
+	// A minted capability's placeholder (placeholder.MintedPrefix), which its own host's dpop
+	// path swaps and no other request's.
+	minted := placeholder.MintedPrefix("dispatch") + "mintedmintedmintedmintedmintedmi"
 	r := newRig(t, Options{Rules: enrollmentRules()})
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
 	r.addGrant(endedSame, endedSameGrant, testEnrollID, workerName, "the-real-worker-token-of-the-ended-grant")
-	r.addGrant(endedOther, endedOtherGrant, testEnrollID, secondName, "the-real-second-token-of-the-ended-grant")
+	r.addGrant(endedOther, endedOtherGrant, testEnrollID, peerName, "the-real-second-token-of-the-ended-grant")
 	r.grants.refuseConnection(endedSame, requests.ErrGrantNotLive)
 	r.grants.refuseConnection(endedOther, requests.ErrGrantNotLive)
 	client := r.client(workerPlaceholder)
@@ -343,7 +347,7 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 		{"the own grant's placeholder in the path", "/v1/things/" + workerPlaceholder,
 			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
 		{"a second live grant's placeholder beside the own grant's", "/v1/things",
-			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Second", "Token " + secondPlaceholder}, secondGrantID},
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Second", "Token " + peerPlaceholder}, peerGrantID},
 		{"a placeholder no grant holds", "/v1/things",
 			[]string{"Authorization", "Bearer " + unknown}, ""},
 		// No boundary before the prefix: a placeholder written right after a letter would go
@@ -353,6 +357,12 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 			[]string{"Authorization", "Bearer " + workerPlaceholder}, ""},
 		{"a placeholder written right after a letter in a header", "/v1/things",
 			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Note", "x" + unknown}, ""},
+		// A minted capability's placeholder: the prefix, its kind's word and a hyphen, then the
+		// 32. The named revert: proxy-leftover-stored-form-only.
+		{"a minted capability's placeholder in a header no entry names", "/v1/things",
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Note", minted}, ""},
+		{"a minted capability's placeholder in the query", "/v1/things?capability=" + minted,
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, ""},
 		// The query read pair by pair: an escape that is no escape elsewhere in it does not hide a
 		// placeholder one of whose letters is written as an escape.
 		{"the own grant's placeholder, one letter escaped, in a query with a bad escape", "/v1/things?bad=%zz&k=" +
@@ -392,14 +402,14 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 	}
 
 	r.get(client, "https://"+boundHost+"/v1/own", "Authorization", "Bearer "+workerPlaceholder)
-	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
+	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+peerPlaceholder)
 	seen := r.requests()
-	if len(seen) != 2 || seen[0].Header.Get("Authorization") != "Bearer "+workerValue || seen[1].Header.Get("X-Second") != "Token "+secondValue {
+	if len(seen) != 2 || seen[0].Header.Get("Authorization") != "Bearer "+workerValue || seen[1].Header.Get("X-Second") != "Token "+peerValue {
 		t.Fatalf("the controls reached the service as %v; want the own grant's and the second grant's values swapped in", seen)
 	}
 	// The prefix with no whole placeholder after it is no placeholder, in a header or inside a
 	// Basic credential, so it travels as the command wrote it.
-	prefixOnly := requests.PlaceholderPrefix + "abc and the docs"
+	prefixOnly := placeholder.Prefix + "abc and the docs"
 	r.get(client, "https://"+boundHost+"/v1/note", "Authorization", "Bearer "+workerPlaceholder, "X-Note", prefixOnly, "X-Second", gitBasic(prefixOnly))
 	seen = r.requests()
 	if len(seen) != 3 || seen[2].Header.Get("X-Note") != prefixOnly || seen[2].Header.Get("X-Second") != gitBasic(prefixOnly) {
@@ -420,7 +430,7 @@ func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testin
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	r.grants.connections = map[string]requests.AirlockConnection{}
 	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
 	chat, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Hosts: []string{chatHost}, Authority: r.service.Authority()})
 	if err != nil {
 		t.Fatalf("the stand-in %s: %v", chatHost, err)
@@ -461,7 +471,7 @@ func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testin
 	if answer.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("CONNECT to %s, which only another grant of the session binds, answered %d with the enrollment read failing; want 503", boundHost, answer.StatusCode)
 	}
-	if answer, body := r.get(r.client(chatPlaceholder), "https://"+chatHost+"/v1/plain", "X-Second", "Token "+secondPlaceholder); answer.StatusCode != http.StatusServiceUnavailable {
+	if answer, body := r.get(r.client(chatPlaceholder), "https://"+chatHost+"/v1/plain", "X-Second", "Token "+peerPlaceholder); answer.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("a request carrying another grant's placeholder answered %d %q with the enrollment read failing; want 503", answer.StatusCode, body)
 	}
 	if reads := r.grants.enrollmentReads(); reads != 2 {
@@ -469,35 +479,53 @@ func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testin
 	}
 }
 
-// TestAGrantThatCannotBindTheHostDoesNotDecideTheCall: the session holds a third grant whose one
-// name is bound to chatHost alone, and that grant's own check fails - its project check while
-// Dispatch cannot answer. A CONNECT to boundHost, which only the second grant of the session binds,
-// is still read and its request swapped, since the third grant holds no name bound to boundHost and
-// is never read for it. The control, in the same run: a CONNECT to chatHost from a password whose
-// grant binds nothing there reads the third grant, and is refused 503. The named revert:
+// TestAGrantThatCannotBindTheHostDoesNotDecideTheCall: the session holds a grant whose one name is
+// bound to tunnelHost alone, and that grant's own check fails - its project check while Dispatch
+// cannot answer. Two calls to boundHost carry the peer grant's placeholder, and neither reads the
+// failing grant, since it holds no name bound to boundHost:
+//
+//   - one on a connection whose password's grant binds nothing on boundHost, so the CONNECT is
+//     decrypted on sessionBinds' read of the session's other grants, and the request is handled on
+//     handledFor's;
+//   - one on a connection whose password's grant binds boundHost, so the CONNECT reads nothing and
+//     the request is handled on handledFor's read alone.
+//
+// Each is read and swapped. The control, in the same run: a CONNECT to tunnelHost from a password
+// whose grant binds nothing there reads the failing grant, and is refused 503. The named revert:
 // proxy-other-grants-every-name, which reads every grant of the session for any bound host.
 func TestAGrantThatCannotBindTheHostDoesNotDecideTheCall(t *testing.T) {
-	const failingGrant = "grant-00000009"
-	failing := requests.PlaceholderPrefix + "failingfailingfailingfailingfail"
-	r := newRig(t, Options{Rules: enrollmentRules()})
-	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
-	r.addGrant(failing, failingGrant, testEnrollID, chatName, "the-real-chat-token")
+	const (
+		failingGrant = "grant-00000009"
+		failingName  = "FAILING_TOKEN"
+		chatGrant    = "grant-00000008"
+	)
+	failing := placeholder.Prefix + "failingfailingfailingfailingfail"
+	r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{
+		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
+		{Name: peerName, Hosts: []string{boundHost}, Headers: []string{"x-second"}},
+		{Name: chatName, Hosts: []string{chatHost}, Headers: []string{"authorization"}},
+		{Name: failingName, Hosts: []string{tunnelHost}, Headers: []string{"authorization"}},
+	}}})
+	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)
+	r.addGrant(chatPlaceholder, chatGrant, testEnrollID, chatName, "the-real-chat-token")
+	r.addGrant(failing, failingGrant, testEnrollID, failingName, "the-real-failing-token")
 	r.grants.failGrantCheck(failingGrant, databaseDown)
-	r.addresses[chatHost] = []netip.Addr{netip.MustParseAddr("93.184.216.39")}
 
-	answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
-	if answer.StatusCode != http.StatusOK {
-		t.Fatalf("a request to %s carrying the second grant's placeholder answered %d %q while a grant bound only to %s fails its check; want 200", boundHost, answer.StatusCode, body, chatHost)
-	}
-	if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("X-Second") != "Token "+secondValue {
-		t.Fatalf("the service saw %v; want the second grant's value swapped in", seen)
+	for i, password := range []string{chatPlaceholder, workerPlaceholder} {
+		answer, body := r.get(r.client(password), "https://"+boundHost+"/v1/second", "X-Second", "Token "+peerPlaceholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("call %d to %s carrying the peer grant's placeholder answered %d %q while a grant bound only to %s fails its check; want 200", i+1, boundHost, answer.StatusCode, body, tunnelHost)
+		}
+		if seen := r.requests(); len(seen) != i+1 || seen[i].Header.Get("X-Second") != "Token "+peerValue {
+			t.Fatalf("after call %d the service saw %v; want the peer grant's value swapped in", i+1, seen)
+		}
 	}
 
-	answer, conn, _ := r.connectRaw(net.JoinHostPort(chatHost, "443"), basic(workerPlaceholder))
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(tunnelHost, "443"), basic(chatPlaceholder))
 	if conn != nil {
 		conn.Close()
 	}
 	if answer.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("CONNECT to %s, which only the failing grant binds, answered %d; want 503", chatHost, answer.StatusCode)
+		t.Fatalf("CONNECT to %s, which only the failing grant binds, answered %d; want 503", tunnelHost, answer.StatusCode)
 	}
 }

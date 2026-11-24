@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
 // placeholderLeft is the words a request that still carries a placeholder after the swap is
@@ -109,37 +109,59 @@ func headerPlaceholder(v string) string {
 }
 
 // placeholderIn is the first placeholder text holds, and "" when it holds none. A placeholder is
-// one as the broker mints it: requests.PlaceholderPrefix and then PlaceholderLength letters and
-// digits of PlaceholderAlphabet. The prefix with fewer of them after it is no placeholder and
-// opens nothing - a code search for the prefix itself is one - so it is not read as one. A whole
-// placeholder is, whether or not a grant holds it: the broker deletes an ended grant's rows, so a
-// placeholder it no longer knows and one it never minted cannot be told apart.
+// one as the broker mints it (placeholderAt): a secret's release, placeholder.Prefix and Length
+// letters and digits of Alphabet, and a minted capability's grant, the same after a kind's word
+// and hyphen (placeholder.MintedPrefix). The prefix with fewer of them after it is no placeholder
+// and opens nothing - a code search for the prefix itself is one - so it is not read as one. A
+// whole placeholder is, whether or not a grant holds it: the broker deletes an ended grant's rows,
+// so a placeholder it no longer knows and one it never minted cannot be told apart.
 //
-// It scans the default prefix alone, the one prefix every placeholder has today. A kind that sets
-// a prefix of its own (placeholder_prefix) adds that prefix to what this scans, or a placeholder of
-// that kind left after the swap would go upstream.
+// It scans placeholder.Prefix alone, the one prefix every placeholder has today, a minted kind's
+// among them. A kind that sets a prefix of its own (placeholder_prefix) adds that prefix to what
+// this scans, or a placeholder of that kind left after the swap would go upstream.
 func placeholderIn(text string) string {
 	for rest := text; ; {
-		i := strings.Index(rest, requests.PlaceholderPrefix)
+		i := strings.Index(rest, placeholder.Prefix)
 		if i < 0 {
 			return ""
 		}
 		rest = rest[i:]
-		if placeholder := placeholderAt(rest); len(placeholder) == len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
-			return placeholder
+		if found := placeholderAt(rest); found != "" {
+			return found
 		}
-		rest = rest[len(requests.PlaceholderPrefix):]
+		rest = rest[len(placeholder.Prefix):]
 	}
 }
 
-// placeholderAt is what text opens with of a placeholder: the prefix and the letters and digits of
-// PlaceholderAlphabet after it, at most PlaceholderLength of them.
+// placeholderAt is the whole placeholder text opens with, and "" when it opens with none: the
+// prefix; where 1 to MaxMintedWord lower-case letters and a hyphen follow it, that minted kind's
+// word and hyphen, as the log mask reads one; and then Length characters of Alphabet, whatever
+// follows them. A release's placeholder holds no hyphen, so a word is read only where a minted
+// kind's prefix put one.
 func placeholderAt(text string) string {
-	end := len(requests.PlaceholderPrefix)
-	for end < len(text) && end-len(requests.PlaceholderPrefix) < requests.PlaceholderLength && strings.IndexByte(requests.PlaceholderAlphabet, text[end]) >= 0 {
-		end++
+	opening := len(placeholder.Prefix)
+	word := 0
+	for word < placeholder.MaxMintedWord && opening+word < len(text) && 'a' <= text[opening+word] && text[opening+word] <= 'z' {
+		word++
+	}
+	if word > 0 && opening+word < len(text) && text[opening+word] == '-' {
+		opening += word + 1
+	}
+	end := opening + placeholder.Length
+	if end > len(text) || !alphabetOnly(text[opening:end]) {
+		return ""
 	}
 	return text[:end]
+}
+
+// alphabetOnly is whether every byte of s is one of placeholder.Alphabet.
+func alphabetOnly(s string) bool {
+	for i := range len(s) {
+		if strings.IndexByte(placeholder.Alphabet, s[i]) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // placeholderGrant is the grant the broker minted placeholder for, live or ended, which the

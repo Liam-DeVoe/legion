@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -140,23 +141,23 @@ func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
-	placeholder := release.Airlock.ProxyPassword
-	named := func(what, placeholder, want string) {
+	held := release.Airlock.ProxyPassword
+	named := func(what, text, want string) {
 		t.Helper()
-		if got, err := m.ProxyPlaceholderGrant(t.Context(), placeholder); err != nil || got != want {
+		if got, err := m.ProxyPlaceholderGrant(t.Context(), text); err != nil || got != want {
 			t.Fatalf("ProxyPlaceholderGrant(%s) = %q, %v; want %q", what, got, err, want)
 		}
 	}
-	named("a live grant's placeholder", placeholder, grantID)
-	named("a placeholder the broker never minted", PlaceholderPrefix+"neverMintedByThisBrokerAtAll0000", "")
+	named("a live grant's placeholder", held, grantID)
+	named("a placeholder the broker never minted", placeholder.Prefix+"neverMintedByThisBrokerAtAll0000", "")
 	if err := m.RevokeGrant(t.Context(), grantID, enr); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	named("an ended grant's placeholder before the sweep", placeholder, grantID)
+	named("an ended grant's placeholder before the sweep", held, grantID)
 	if _, err := m.deleteSpentPlaceholders(t.Context()); err != nil {
 		t.Fatalf("the sweep: %v", err)
 	}
-	named("an ended grant's placeholder after the sweep", placeholder, "")
+	named("an ended grant's placeholder after the sweep", held, "")
 }
 
 // grantIDs is each grant's id, in the order given.

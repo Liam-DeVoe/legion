@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -99,7 +100,7 @@ func TestTheTokenIsTheAccountsThePathNames(t *testing.T) {
 // the ended grant; the new grant's placeholder on the same connection is swapped, the control.
 func TestARenewedGitHubGrantsEndedPlaceholderIsRefused(t *testing.T) {
 	const endedGrant = "grant-00000007"
-	ended := requests.PlaceholderPrefix + "renewedrenewedrenewedrenewedrene"
+	ended := placeholder.Prefix + "renewedrenewedrenewedrenewedrene"
 	r := newRig(t, Options{Rules: githubRules()})
 	r.useGitHubAppGrant()
 	r.grants.setConnection(ended, requests.AirlockConnection{
