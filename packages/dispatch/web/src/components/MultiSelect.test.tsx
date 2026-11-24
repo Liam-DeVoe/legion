@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-// fireEvent also gives one row's press below a click with no pointer press before it, which
-// user-event has no form for either.
+// fireEvent also gives one row's press below a click with no pointer press before it, and a turn
+// of the wheel over a list below, which user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -14,6 +14,7 @@ import {
   pickNamed,
   pressesTriggerOn,
 } from "../__tests__/list-picks";
+import { installResizeObserver } from "../__tests__/scroll-box";
 import { MENU_TRIGGER_SELECTOR } from "./key-targets";
 import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
@@ -195,29 +196,34 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
 /**
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
- * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot to
- * its bottom while it is drawn; each option is 44 px tall, under the text box at its place among
- * the options the list draws when it is measured, moved up by the panel's `scrollTop`, which stops
- * at both ends of the scroll, as a browser's does. `trigger` stands above the panel, so the panel
- * does not close as one hanging off nothing (`AnchoredPanel`). Answers the panel.
+ * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot or a
+ * menu's line of keys, 61 px tall too, to its bottom while it is drawn - but for a menu's line on
+ * a coarse pointer, which follows the options (`ListMenu`); each option is 44 px tall, under the
+ * text box at its place among the options the list draws when it is measured, moved up by the
+ * panel's `scrollTop`, which stops at both ends of the scroll, as a browser's does. A case that
+ * cuts the panel's box shorter sets its `clientHeight`, which the foot that sticks and the end of
+ * the scroll follow. `trigger` stands above the panel, so the panel does not close as one hanging
+ * off nothing (`AnchoredPanel`). Answers the panel.
  */
 function layOutList(trigger: HTMLElement): HTMLElement {
   const listbox = screen.getByRole("listbox");
   const box = listbox.parentElement;
   const head = screen.getByRole("combobox").parentElement;
   if (box === null || head === null) throw new Error("the list is drawn outside its panel");
-  const foot = screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
+  const foot =
+    screen.queryByRole("button", { name: /^Clear / })?.parentElement ??
+    within(box).queryByText(/to choose · Esc to close$/);
+  const sticks = foot?.classList.contains("sticky") === true;
   const drawn = () => [...listbox.querySelectorAll('[role="option"]')];
-  const shown = 286;
   let scrolled = 0;
   Object.defineProperties(box, {
-    clientHeight: { configurable: true, get: () => shown },
+    clientHeight: { configurable: true, get: () => 286 },
     clientTop: { configurable: true, get: () => 1 },
     scrollTop: {
       configurable: true,
       get: () => scrolled,
       set: (value: number) => {
-        const end = 61 + drawn().length * 44 + (foot === null ? 0 : 61) - shown;
+        const end = 61 + drawn().length * 44 + (foot === null ? 0 : 61) - box.clientHeight;
         scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
       },
     },
@@ -225,7 +231,15 @@ function layOutList(trigger: HTMLElement): HTMLElement {
   trigger.getBoundingClientRect = () => new DOMRect(0, 52, 120, 44);
   box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 288);
   head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
-  if (foot !== null) foot.getBoundingClientRect = () => new DOMRect(1, 101 + shown - 61, 254, 61);
+  if (foot !== null) {
+    foot.getBoundingClientRect = () =>
+      new DOMRect(
+        1,
+        sticks ? 101 + box.clientHeight - 61 : 162 + 44 * drawn().length - scrolled,
+        254,
+        61
+      );
+  }
   for (const option of drawn()) {
     option.getBoundingClientRect = () =>
       new DOMRect(1, 162 + 44 * drawn().indexOf(option) - scrolled, 254, 44);
@@ -404,6 +418,117 @@ test("a single pick opens with its picked option shown whole below its text box,
     scrolls.mockRestore();
     lists.restore();
     view.unmount();
+  }
+});
+
+// The issue's Assignee list reads its people only once it is opened: it opened on Unassigned and
+// the assignee, and when the people came the assignee moved to its place among everyone, still
+// the active option, below the five rows its box shows, where Enter took it unseen. Each change of
+// the options shows the option the list opened on whole again, the list's own box alone
+// scrolled, and so does a change of the box's own size: where the window has too little room, the
+// panel cuts its box in a commit after the one that showed the option. That lasts until the reader
+// moves on in the list: after an arrow, a word typed in the text box or a scroll of their own, a
+// change of the options or of the box leaves the list where it is.
+test("a single pick keeps the option it opened on shown whole as its options and its box change, until the reader moves on in the list", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const before = ["Triage", "Needs review"];
+  const host = (options: string[]) => <SingleHost initial="Needs review" options={options} />;
+  const view = render(host(before));
+  const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    // The option the list marks active at each moment, and how far it has scrolled then: the box
+    // shows 61-286 px of its content, Needs review stands at 325-369 among the eight statuses,
+    // and at 369-413 with one more option before it.
+    const seen: [string, string, number | undefined][] = [];
+    const shown = (moment: string) =>
+      seen.push([
+        moment,
+        activeName(screen.getByRole("combobox", { name: "Search epics" })),
+        lists.box()?.scrollTop,
+      ]);
+    // Opens the list on `options`, the two options unless named, after closing it and taking its
+    // options to them: the layout gives a box to the rows the open draws alone.
+    const reopen = async (options = before) => {
+      await user.keyboard("{Escape}");
+      view.rerender(host(options));
+      await user.click(trigger);
+    };
+    await user.click(trigger);
+    shown("opened on two options");
+    view.rerender(host(STATUSES));
+    shown("the eight statuses come");
+    view.rerender(host(["Draft", ...STATUSES]));
+    shown("one more comes before it");
+
+    // An arrow marks Triage active, and the statuses come.
+    await reopen();
+    await user.keyboard("{ArrowUp}");
+    view.rerender(host(STATUSES));
+    shown("an arrow, then the statuses");
+
+    // A word typed and erased leaves the search as it began, and the statuses come. Both options
+    // hold the word, so the rows the list laid out stay drawn under it.
+    await reopen();
+    await user.keyboard("e{Backspace}");
+    view.rerender(host(STATUSES));
+    shown("a word typed, then the statuses");
+
+    // The statuses come; the reader turns the wheel over the list, back to its top, and one
+    // more option comes before Needs review.
+    await reopen();
+    view.rerender(host(STATUSES));
+    shown("opened again, the statuses come");
+    const box = lists.box();
+    if (box === null) throw new Error("the list was never laid out");
+    // A turn of the wheel, which user-event has no form for.
+    fireEvent.wheel(box, { deltaY: -100 });
+    box.scrollTop = 0;
+    view.rerender(host(["Draft", ...STATUSES]));
+    shown("the reader's scroll, then one more");
+
+    // The window leaves the panel too little room, so it cuts the list's box from 286 px of what
+    // it holds to 264 (`AnchoredPanel`), and what watches the box hears of it.
+    const cut = () => {
+      const panel = lists.box();
+      if (panel === null) throw new Error("the list was never laid out");
+      Object.defineProperty(panel, "clientHeight", { configurable: true, get: () => 264 });
+      panel.getBoundingClientRect = () => new DOMRect(0, 100, 256, 266);
+      sizes.resize(panel);
+    };
+    // The statuses come, and the panel is cut: at 83 the cut box shows 144-347 px of its content
+    // below its text box, and Needs review, at 325-369, ends below that.
+    await reopen();
+    view.rerender(host(STATUSES));
+    cut();
+    shown("the statuses, then the panel cut");
+
+    // The list opens on the statuses with Needs review shown whole at 83, an arrow marks Testing
+    // active, whole at 281-325, and the panel is cut.
+    await reopen(STATUSES);
+    await user.keyboard("{ArrowUp}");
+    cut();
+    shown("the statuses, an arrow, then the panel cut");
+
+    expect(seen).toEqual([
+      ["opened on two options", "Needs review", 0],
+      ["the eight statuses come", "Needs review", 83],
+      ["one more comes before it", "Needs review", 127],
+      ["an arrow, then the statuses", "Triage", 0],
+      ["a word typed, then the statuses", "Triage", 0],
+      ["opened again, the statuses come", "Needs review", 83],
+      ["the reader's scroll, then one more", "Needs review", 0],
+      ["the statuses, then the panel cut", "Needs review", 105],
+      ["the statuses, an arrow, then the panel cut", "Testing", 83],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+    sizes.restore();
   }
 });
 
@@ -1978,17 +2103,19 @@ const pressTriggerOnB = pressesTriggerOn("b", "[data-menu-trigger]");
 const MENU_MARKS: ListMarks = { trigger: { "data-menu-trigger": "" } };
 
 /** A pick that takes D5's rules as a host draws one: a row the reader is on, whose `b` opens the
- *  list; the pick, a snooze's, a priority's or a status's; every value it handed its host; what
- *  closed it each time; another control, which counts its own presses; and words on the page,
- *  which take no focus. */
+ *  list; the pick, a snooze's, a priority's or a status's, on its own options unless `options`
+ *  names others; every value it handed its host; what closed it each time; another control, which
+ *  counts its own presses; and words on the page, which take no focus. */
 function MenuHost({
   ariaDisabled,
   kind = "snooze",
+  options,
   snoozed = false,
   value,
 }: {
   ariaDisabled?: boolean;
   kind?: MenuKind;
+  options?: string[];
   snoozed?: boolean;
   value?: string;
 }) {
@@ -2015,7 +2142,7 @@ function MenuHost({
         onPick={(picked) => setHanded((before) => [...before, picked])}
         open={open}
         optionLabel={kind === "snooze" ? (option) => SNOOZE_LABELS[option] : undefined}
-        options={optionsOf(kind, snoozed)}
+        options={options ?? optionsOf(kind, snoozed)}
         searchLabel={`Search ${LABELS[kind].toLocaleLowerCase()}`}
         value={value}
       />
@@ -2298,6 +2425,185 @@ test("the arrows, Home and End move the highlight and write nothing", async () =
     expect(handed()).toBe("");
   } finally {
     view.unmount();
+  }
+});
+
+/** The status's choices, after five more that a change of the menu's choices puts before them. */
+const MORE_CHOICES = [
+  "Draft",
+  "Proposed",
+  "Approved",
+  "Planned",
+  "Ready",
+  ...optionsOf("status", false),
+];
+
+/**
+ * The status menu of an issue in Needs review, laid out as `layOutList` lays a list out from the
+ * open's first measure (`layOutListsAsOpened`), with what watches its box. Its box shows 286 px
+ * of what it holds, and the rows stand whole in it between the text box and the line of keys
+ * stuck to its bottom, at 61-225 px of its content; Needs review stands at 325-369 among the
+ * eight choices, so the open scrolls the box to 144. On a coarse pointer the line of keys follows
+ * the choices, and the rows stand whole down to the box's bottom, at 61-286 px. `cut` cuts the
+ * box of the open list to 264 px, as `AnchoredPanel` cuts a panel the window has too little room
+ * for, and tells what watches it of it; `rerender` draws the menu again, on `options` where named.
+ */
+function keptStatusMenu(): {
+  readonly box: () => HTMLElement | null;
+  readonly cut: () => void;
+  readonly rerender: (options?: string[]) => void;
+  readonly restore: () => void;
+} {
+  const sizes = installResizeObserver();
+  const host = (options?: string[]) => (
+    <MenuHost kind="status" options={options} value="Needs review" />
+  );
+  const view = render(host());
+  const lists = layOutListsAsOpened(menuTrigger("status"));
+  return {
+    box: lists.box,
+    cut: () => {
+      const box = lists.box();
+      if (box === null) throw new Error("the list was never laid out");
+      Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 264 });
+      box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 266);
+      sizes.resize(box);
+    },
+    rerender: (options) => view.rerender(host(options)),
+    restore: () => {
+      lists.restore();
+      view.unmount();
+      sizes.restore();
+    },
+  };
+}
+
+// A menu keeps the row it opened on shown whole while its box or its choices change, as every
+// single pick keeps the option it opened on, until the reader moves on in the list. A digit is
+// the reader's move (R5: a menu's digit writes its choice). The status has no digit, so `1` writes
+// nothing and the list stays open, and a cut of its box or a change of its choices after it leaves
+// the list where it is: cut at 144, the box shows the rows whole at 205-347 px of its content,
+// above the line of keys, and Needs review ends below that.
+test("a menu's digit ends the keep of the row it opened on, so a change of its box or its choices after it leaves the list where it is", async () => {
+  const user = userEvent.setup();
+  const menu = keptStatusMenu();
+  try {
+    // The row the menu highlights at each moment, and how far its box has scrolled then.
+    const seen: [string, string | undefined, number | undefined][] = [];
+    const shown = (moment: string) =>
+      seen.push([moment, highlightedRow(menuBox()), menu.box()?.scrollTop]);
+    await user.click(menuTrigger("status"));
+    shown("opened");
+    menu.cut();
+    shown("the box cut");
+
+    await user.keyboard("{Escape}");
+    await user.click(menuTrigger("status"));
+    await user.keyboard("1");
+    menu.cut();
+    shown("1, then the box cut");
+    menu.rerender(MORE_CHOICES);
+    shown("1, then five more choices");
+
+    expect(seen).toEqual([
+      ["opened", "Needs review", 144],
+      ["the box cut", "Needs review", 166],
+      ["1, then the box cut", "Needs review", 144],
+      ["1, then five more choices", "Needs review", 144],
+    ]);
+    expect(handed()).toBe("");
+  } finally {
+    menu.restore();
+  }
+});
+
+// Home and End move a menu's highlight (R5), and the reader on from the row it opened on: after
+// either, a change of the menu's choices or of its box leaves the list where it is, even where
+// that moves the row they highlighted out of the box's view. End shows Retro whole at the end of
+// the scroll, 188, and Home Triage at the top.
+test("Home and End end the keep of the row a menu opened on, so a change of its choices or its box after them leaves the list where it is", async () => {
+  const user = userEvent.setup();
+  const menu = keptStatusMenu();
+  try {
+    const seen: [string, string | undefined, number | undefined][] = [];
+    const shown = (moment: string) =>
+      seen.push([moment, highlightedRow(menuBox()), menu.box()?.scrollTop]);
+    await user.click(menuTrigger("status"));
+    shown("opened");
+    await user.keyboard("{End}");
+    shown("End");
+    menu.rerender(MORE_CHOICES);
+    shown("End, then five more choices");
+    menu.cut();
+    shown("End, then the box cut");
+
+    await user.keyboard("{Escape}");
+    menu.rerender();
+    await user.click(menuTrigger("status"));
+    await user.keyboard("{Home}");
+    shown("Home");
+    menu.rerender(MORE_CHOICES);
+    shown("Home, then five more choices");
+
+    expect(seen).toEqual([
+      ["opened", "Needs review", 144],
+      ["End", "Retro", 188],
+      ["End, then five more choices", "Retro", 188],
+      ["End, then the box cut", "Retro", 188],
+      ["Home", "Triage", 0],
+      ["Home, then five more choices", "Triage", 0],
+    ]);
+    expect(handed()).toBe("");
+  } finally {
+    menu.restore();
+  }
+});
+
+// On a phone a tap on a choice lands on the choice it is aimed at (R15, the tester's round 16):
+// the press on it ends the keep of the row the menu opened on, so a cut of the box under the
+// finger or a change of the choices scrolls no other choice under it before the press is over.
+// The focus the open gives the list on a coarse pointer is the open's own and no move of the
+// reader's, and the keep holds through it. The open shows Needs review whole above the box's
+// bottom, at 83; cut, the box shows the rows whole at 144-347 px of its content, and Needs review
+// ends below that.
+test("on a phone a press on a choice ends the keep of the row the menu opened on, and the focus the open gives its list does not", async () => {
+  const user = userEvent.setup();
+  const restore = onCoarsePointer();
+  const menu = keptStatusMenu();
+  try {
+    const seen: [string, string | undefined, number | undefined][] = [];
+    const shown = (moment: string) =>
+      seen.push([moment, highlightedRow(menuBox()), menu.box()?.scrollTop]);
+    await tap(user, menuTrigger("status"));
+    expect(screen.getByRole("listbox", { name: "Status options" })).toHaveFocus();
+    shown("opened");
+    menu.cut();
+    shown("the box cut");
+
+    await user.keyboard("{Escape}");
+    await tap(user, menuTrigger("status"));
+    // The finger down on Testing, not lifted yet.
+    await user.pointer({
+      keys: "[TouchA>]",
+      target: screen.getByRole("option", { name: "Testing" }),
+    });
+    shown("a press on Testing");
+    menu.cut();
+    shown("a press on Testing, then the box cut");
+    menu.rerender(MORE_CHOICES);
+    shown("a press on Testing, then five more choices");
+
+    expect(seen).toEqual([
+      ["opened", "Needs review", 83],
+      ["the box cut", "Needs review", 105],
+      ["a press on Testing", "Needs review", 83],
+      ["a press on Testing, then the box cut", "Needs review", 83],
+      ["a press on Testing, then five more choices", "Needs review", 83],
+    ]);
+    expect(handed()).toBe("");
+  } finally {
+    menu.restore();
+    restore();
   }
 });
 

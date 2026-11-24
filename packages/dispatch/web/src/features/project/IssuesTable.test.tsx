@@ -9,7 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
-import { installResizeObserver } from "../../__tests__/scroll-box";
+import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
@@ -1800,6 +1800,8 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
     box.dispatchEvent(new Event("scroll", { bubbles: false }));
     window.dispatchEvent(new Event("scroll"));
   });
+  // The scroll ends on the table's own timer, inside `act`; its end reads no layout either.
+  await endWindowScroll();
   expect(measured.filter((name) => name === "issues-table-scroll" || name === "THEAD")).toEqual([]);
 });
 

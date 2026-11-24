@@ -117,6 +117,48 @@ function coarsePointer(): boolean {
   return window.matchMedia("(pointer: coarse)").matches;
 }
 
+/** Scrolls the list's box - the panel its sticky text box `head` stands at the top of - the least
+ *  that shows the row of id `rowId` whole between that text box and `foot`, the panel's foot while
+ *  one is drawn, or the box's own bottom where none is or where the foot follows the rows (a menu
+ *  on a coarse pointer), so a row already whole scrolls nothing. Only the box scrolls, never the
+ *  window (`scrollToShow`). The list's one scroll of its own: `MultiSelect`'s layout effect that
+ *  shows the highlighted row calls it, and so does what watches the box for an open that keeps
+ *  that row shown (`Opening`). */
+function showRow(
+  rowId: string | undefined,
+  head: HTMLElement | null,
+  foot: HTMLElement | null
+): void {
+  const row = rowId === undefined ? null : document.getElementById(rowId);
+  const box = head?.parentElement ?? null;
+  if (row === null || head === null || box === null) return;
+  const top = head.getBoundingClientRect().bottom;
+  const boxBottom = shownSpan(box).bottom;
+  const bottom = Math.min(foot?.getBoundingClientRect().top ?? boxBottom, boxBottom);
+  scrollToShow(box, row.getBoundingClientRect(), { bottom, top });
+}
+
+/** What an open shows whole and keeps shown (`MultiSelect`'s `opening`): the highlight and the
+ *  search it starts with (`active`, `query`); the rows it last showed that highlight among
+ *  (`among`), null until the commit that draws that search and highlight, since the open's own
+ *  commit still draws the ones the list last closed on; and what watches the list's box for a
+ *  change of its size (`resized`), null until the open's effects have run. From that commit the
+ *  open keeps its highlighted row shown until the reader moves on in the list or it closes. An
+ *  open that highlights no row of its own keeps nothing: a multi-select's, a single pick's with
+ *  no value, and a typed character's, whose highlight falls to the first row it matches. */
+interface Opening {
+  readonly active: string | undefined;
+  among: readonly string[] | null;
+  readonly query: string;
+  resized: ResizeObserver | null;
+}
+
+/** Ends what an open keeps shown (`Opening`), and stops watching the list's box for it. */
+function letGo(opening: { current: Opening | null }): void {
+  opening.current?.resized?.disconnect();
+  opening.current = null;
+}
+
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -452,13 +494,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // step picks the row it highlights, and the text it puts in the search box. A press of the
   // trigger opens it as a click does, on the value picked with an empty search.
   const openedBy = useRef<{ readonly key?: string; readonly query: string } | undefined>(undefined);
-  // The search and the highlight an open starts with, from the open until the commit that draws
-  // them: the open's own commit still draws the ones the list last closed on (the layout effect
-  // that shows the highlighted row, below).
-  const opening = useRef<{ readonly active: string | undefined; readonly query: string } | null>(
-    null
-  );
-  // The highlighted row that layout effect last showed whole, by its element's id.
+  // What an open shows whole and keeps shown (`Opening`): the search and the highlight it starts
+  // with, from the open until the reader moves on in the list or it closes; null while it keeps
+  // nothing.
+  const opening = useRef<Opening | null>(null);
+  // The highlighted row the layout effect below last showed whole, by its element's id.
   const shownRow = useRef<string | undefined>(undefined);
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
   // D5's rules, which a single pick takes whole or not at all (`ListMenu`).
@@ -592,26 +632,32 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // opened it says: the character typed on the closed trigger in the text box, with its first
   // match highlighted as typing into the box highlights it, or the row a move key steps to
   // (`keysOnTrigger`) - before the open paints: the search the list last closed on would otherwise
-  // narrow the rows its first frame draws. The row it highlights is then shown whole (`opening`,
-  // the layout effect below). The panel hands the focus to the search unless the host hands it in
-  // itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list rather than
-  // to the box, with no scroll, here, before the panel's own effect starts to follow the focus
+  // narrow the rows its first frame draws. The row it highlights is then shown whole, and kept
+  // shown until the reader moves on in the list or the close ends that (`opening`, the layout
+  // effect below). The panel hands the focus to the search unless the host hands it in itself
+  // (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list rather than to the
+  // box, with no scroll, here, before the panel's own effect starts to follow the focus
   // (`AnchoredPanel`): the layout effect below alone decides where the panel stands scrolled. The
   // engine's own scroll of the list box it focuses centred that box in the panel, which put the
   // status's first choice under the text box and its last under the foot line on a phone (the
   // tester's round 16).
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      letGo(opening);
+      return;
+    }
     const by = openedBy.current;
     openedBy.current = undefined;
-    const opened = {
+    const opened: Opening = {
       active:
         by === undefined
           ? opensOn.current
           : by.key === undefined
             ? undefined
             : stepTo(by.key, opensWith.current, opensOn.current),
+      among: null,
       query: by?.query ?? "",
+      resized: null,
     };
     setQuery(opened.query);
     setActiveValue(opened.active);
@@ -641,7 +687,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // scrolls the least that shows the row whole between the sticky text box and the foot - the
   // sticky foot, or the panel's own bottom where the foot follows the rows (a menu on a coarse
   // pointer) - so a row already whole scrolls nothing. Only the panel's own box scrolls, never the
-  // window (`scrollToShow`). Laid out before the browser paints, so the row is never drawn out of
+  // window (`showRow`). Laid out before the browser paints, so the row is never drawn out of
   // sight first. A row is shown as the highlight moves onto it (`shownRow`), and the row an open
   // highlights - the first choice of a menu of acts, else the value picked, or the row the key
   // that opened it names - in the commit that draws the open's own search and highlight
@@ -649,22 +695,30 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // draws the ones the list last closed on, and the open's setting of its own draws them in the
   // commit right after it, before anything paints. So a list that closed on a search opens with
   // its picked row shown whole among every option again, not where it stood among the few that
-  // search left.
+  // search left. From that commit the open keeps its row shown until the reader moves on in the
+  // list or the list closes: every later commit that changes the rows shows the highlighted row
+  // whole again, whether its row changed there or not, and so does a change of the list box's own
+  // size (the effect below). The issue's Assignee list reads its people only once it is opened,
+  // so it opens on Unassigned and the assignee, and when the people came the assignee moved to its
+  // place among everyone, still the highlighted row, below the rows its box shows. Each move of
+  // the reader's in the list ends that before the row it moves to is shown (`letGo`): an arrow,
+  // Home or End, a menu's digit, a word typed, a press or a tap in the list outside its text box,
+  // and a scroll of their own (the effect below). An open that highlights no row of its own keeps
+  // nothing (`Opening`).
   useLayoutEffect(() => {
     const opened = opening.current;
-    if (opened !== null) {
+    if (opened !== null && opened.among === null) {
       if (opened.query !== query || opened.active !== activeValue) return;
-      opening.current = null;
+      if (opened.active === undefined) letGo(opening);
+      else opened.among = rows;
+    } else if (
+      opened !== null &&
+      (opened.among?.length !== rows.length || opened.among.some((row, at) => row !== rows[at]))
+    ) {
+      opened.among = rows;
     } else if (activeId === shownRow.current) return;
     shownRow.current = activeId;
-    const row = activeId === undefined ? null : document.getElementById(activeId);
-    const head = headRef.current;
-    const box = head?.parentElement ?? null;
-    if (row === null || head === null || box === null) return;
-    const top = head.getBoundingClientRect().bottom;
-    const boxBottom = shownSpan(box).bottom;
-    const bottom = Math.min(footRef.current?.getBoundingClientRect().top ?? boxBottom, boxBottom);
-    scrollToShow(box, row.getBoundingClientRect(), { bottom, top });
+    showRow(activeId, headRef.current, footRef.current);
   });
 
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
@@ -753,6 +807,59 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (pressed && focusLost()) inputRef.current?.focus();
   });
 
+  // While the open keeps its row shown (`opening`), a change of the list box's own size shows it
+  // whole again, by the list's one scroll of its own (`showRow`): where the window has too little
+  // room for the panel, the panel cuts its box to that room (`AnchoredPanel`) in a commit after the
+  // one that showed the row, and a box cut shorter can leave the row cut at its bottom. What
+  // watches the box stops as the open lets go of the row (`letGo`) and as the list closes.
+  //
+  // The reader's own scroll of the list ends what the open keeps shown, so a later change of the
+  // rows or of the box leaves the list where they put it: a turn of the wheel or a touch dragged
+  // over it; a press on it outside its text box - a tap on a row or anywhere in the list on a
+  // phone, a press on its scrollbar, a middle button's autoscroll, a drag that selects its words
+  // past its edge; a key that can scroll it - PageUp or PageDown, even from its text box, or any
+  // key while the focus is in the list but not in its text box; and the focus reaching a row, as a
+  // screen reader's cursor puts it there, which the panel scrolls into the box's view
+  // (`AnchoredPanel`). Heard on the list's box in the capture phase, before anything inside it can
+  // stop them, and passively, so no scroll waits on them. The list's own keys in its text box end
+  // it in the handler that takes them (`handleKeyDown`), and a word typed in the box's
+  // `onChange`. Nothing the open does itself ends it: a menu's focus on its list on a coarse
+  // pointer (`opensBare`) and the panel's on the text box come before this effect listens, and no
+  // scroll of the box is heard as one, the list's showing of its row and the panel's own alike.
+  useEffect(() => {
+    const head = headRef.current;
+    const box = head?.parentElement ?? null;
+    const kept = opening.current;
+    if (!open || kept === null || kept.active === undefined || head === null || box === null) {
+      return;
+    }
+    const resized = new ResizeObserver(() => showRow(shownRow.current, head, footRef.current));
+    resized.observe(box);
+    kept.resized = resized;
+    const moved = () => letGo(opening);
+    const outsideHead = (event: Event) => {
+      if (!(event.target instanceof Node && head.contains(event.target))) moved();
+    };
+    const keyed = (event: globalThis.KeyboardEvent) => {
+      const paging = event.key === "PageUp" || event.key === "PageDown";
+      if (paging || event.target !== inputRef.current) moved();
+    };
+    const heard = { capture: true, passive: true };
+    box.addEventListener("wheel", moved, heard);
+    box.addEventListener("touchmove", moved, heard);
+    box.addEventListener("pointerdown", outsideHead, heard);
+    box.addEventListener("focusin", outsideHead, heard);
+    box.addEventListener("keydown", keyed, heard);
+    return () => {
+      resized.disconnect();
+      box.removeEventListener("wheel", moved, true);
+      box.removeEventListener("touchmove", moved, true);
+      box.removeEventListener("pointerdown", outsideHead, true);
+      box.removeEventListener("focusin", outsideHead, true);
+      box.removeEventListener("keydown", keyed, true);
+    };
+  }, [open]);
+
   // The text box's keys, and a menu's list's own while it holds the focus (on a coarse pointer).
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
@@ -774,16 +881,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       return;
     }
     // A menu's digit is the list's before the text box takes it: it writes its own choice at
-    // once, whatever the box has narrowed, and a digit no choice has writes nothing.
+    // once, whatever the box has narrowed, and a digit no choice has writes nothing. Either way
+    // the reader has moved on from the row the list opened on, which is no longer kept shown
+    // (`letGo`), so a list a digit leaves open stays where it is as its box or its rows change.
     if (menu !== undefined && plain && isMenuDigit(event.key)) {
       event.preventDefault();
+      letGo(opening);
       const value = menu.keys[event.key];
       if (value !== undefined && options.includes(value)) choose(value);
       return;
     }
     // The arrows move the highlight, and in a menu Home and End do too, where they would move the
     // caret; ArrowLeft and ArrowRight stay the caret's. Each scrolls the list the least that shows
-    // the option it marks (the layout effect above).
+    // the option it marks (the layout effect above), and moves the reader on from the row the
+    // list opened on, which is no longer kept shown (`letGo`), before the row it moves to is shown.
     if (
       event.key === "ArrowDown" ||
       event.key === "ArrowUp" ||
@@ -795,6 +906,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       const next = stepTo(event.key, rows, activeRow);
       if (next !== undefined) {
         event.preventDefault();
+        letGo(opening);
         setActiveValue(next);
       }
       return;
@@ -965,6 +1077,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
+                // A word typed moves the reader on from the option the list opened on, which is
+                // no longer kept shown (`letGo`), even once the search is back where it began.
+                letGo(opening);
                 setQuery(event.target.value);
                 setActiveValue(undefined);
                 onQueryChange?.(event.target.value);

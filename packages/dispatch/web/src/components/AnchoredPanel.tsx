@@ -71,7 +71,8 @@ export function shownSpan(box: Element): Span {
  *  where it ends below, and not at all where it stands whole. It sets the box's own `scrollTop`
  *  rather than call `scrollIntoView`, which scrolls the window too. A panel's rule for the
  *  control the focus reaches in it (`scrollPanelToShow`) and the shared list's for the option
- *  its highlight marks, whatever moved the highlight (`MultiSelect`), both end here. */
+ *  its highlight marks, whatever moved the highlight, and the one an open keeps shown while its
+ *  rows and its box change (`MultiSelect`'s `showRow`), both end here. */
 export function scrollToShow(box: Element, span: Span, shown: Span): void {
   if (span.top < shown.top) box.scrollTop -= shown.top - span.top;
   else if (span.bottom > shown.bottom) box.scrollTop += span.bottom - shown.bottom;

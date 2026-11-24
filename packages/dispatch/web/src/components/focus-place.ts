@@ -14,10 +14,13 @@ import { ROW_SELECTOR } from "./row-marker";
  * rule, `ROW_SELECTOR`. Every component that hands its focus off arms the hand-off with its own
  * press, at its root (`armOnPress`), and a loss is the reader's only while a press that armed it
  * is still live there (`causedByReader`, `pressOnRowMark`): on the lost control, inside any row
- * around it, or inside the dialog, panel or selection bar it was lost from. One hand-off works
- * from a record of its own instead, and asks none of this: ControlRow's chips hand-off, which
- * keeps the click that took a chip or **Clear filters** off (`ControlRow`'s `handOff`) until what
- * was clicked has left the page. A hold on what answers the press keeps it live (`holdHandOff`),
+ * around it, or inside the dialog, panel or selection bar it was lost from. Some hand-offs work
+ * from a record of their own instead, and ask none of this, among them ControlRow's chips
+ * hand-off, which keeps the last click inside a chip's box or on **Clear filters**, whether or
+ * not it took anything off (`ControlRow`'s `handOff`), until what was clicked has left the page,
+ * and the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
+ * `focusAfterPin`), which keeps a pin made from the row holding the focus until the commit that
+ * draws it. A hold on what answers the press keeps it live (`holdHandOff`),
  * and so does its control's own hold, up to the write deadline and only until a hold on what
  * answers the press has begun: a control still held once that hold has ended says only that
  * there is nothing left to do. Where no hold on what answers the press begins - a step of
@@ -452,9 +455,10 @@ function countBefore(controls: readonly Element[], node: Node): number {
  *  next frame. The element that has left the page is checked as well, so an engine that names it
  *  until its focus fixup is read the same way. A list (`MultiSelect`), as it closes over its own
  *  text box and after a press on one of its rows, and the Inbox's hand-off of a focus its reading
- *  column's question took with it (`Inbox.tsx`) ask it. A component's hand-off (`useFocusPlace`)
- *  and ControlRow's chips hand-off ask `focusOnDocument()` instead, the body alone, which agrees
- *  with this after a removal, since every engine names the body at once then (measured above). */
+ *  column's question took with it (`Inbox.tsx`) ask it. A component's hand-off (`useFocusPlace`),
+ *  ControlRow's chips hand-off and the selection bar's (`SelectionBar`), among others, ask
+ *  `focusOnDocument()` instead, the body alone, which agrees with this after a removal, since
+ *  every engine names the body at once then (measured above). */
 export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
@@ -1163,12 +1167,15 @@ function pressPlaces(element: Element): Element[] {
  * in a list portalled out of the selection bar is a press in the bar. A loss the reader caused
  * keeps the hand-off that pulls the focus to the control now at the lost one's place; one they did
  * not - a live update taking a row away, a refetch emptying a bar - and every loss with nothing
- * armed leaves the focus on the body, and scrolls nothing. Every component hand-off that can move
- * the focus to another row reads this one rule but one: the Agents page's follow of a row the
- * reader's own pin moved (`AgentsPage`'s `focusAfterPin`), which runs only in the commit after
- * that pin, from its own record of it, and hands a focused control of the moved row the reader
- * cannot see whole to the row now at that row's place (`controlsLikeRow`). A hand-off to the lost
- * control's own row, as AskCard's is, is no move to another row.
+ * armed leaves the focus on the body, and scrolls nothing. A component hand-off that can move the
+ * focus to another row reads this one rule unless it answers its own press without it, as these
+ * do, for example: the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
+ * `focusAfterPin`), which runs only in the commit after that pin, from its own record of it, and
+ * hands a focused control of the moved row the reader cannot see whole to the row now at that
+ * row's place (`controlsLikeRow`); and the issue page's Unpin (`IssuePins`), which hands the
+ * focus to the next pin's link, else the one before, else the section's heading, in the press
+ * itself, before its row goes. A hand-off to the lost control's own row, as AskCard's is, is no
+ * move to another row.
  */
 export function causedByReader(element: Element): boolean {
   return armed !== null && pressPlaces(element).some((place) => pressMadeIn(place));

@@ -3,6 +3,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { endWindowScroll } from "../../__tests__/scroll-box";
 import type { DeliveryPR } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -203,6 +204,8 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
     expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#200");
     await user.keyboard("{Home}");
     scrolledTo(0);
+    // The last scroll ends on the table's own timer: inside `act`, before the row reads on.
+    await endWindowScroll();
     expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#1");
 
     await user.keyboard("{Enter}");
