@@ -35,8 +35,8 @@ const (
 // database (benchtime), which DISPATCH_BENCH_DATABASE_URL names, and skips without it: a tool,
 // whose command is the file's tool line. It is a benchmark and not a test because its pairs hold
 // only on a seed of 0.03 or more, which takes minutes to write, and no CI job's time holds that;
-// internal/dispatch/docs' statement timings stay tests, which envoy-go runs; refs' pairs are its
-// own BenchmarkStatementTimings, a tool, since a runner's load turned them over.
+// internal/dispatch/docs' and refs' pairs are each package's own BenchmarkStatementTimings, a
+// tool, since a runner's load turned refs' over and brought docs' within 2% of it.
 // search_bench_test.go and related_recall_test.go are gated the same way.
 //
 // Which protocol each statement is under, and why:

@@ -44,9 +44,11 @@
 // It is an ordinary package rather than a _test.go file because all three statement-owning
 // packages (api, refs, docs) run it and Go cannot share test-only code across packages, which is
 // why store/storetest is one too. Every entry point skips while DISPATCH_BENCH_DATABASE_URL is
-// unset, the gate api/search_bench_test.go and api/related_recall_test.go already use, so a
-// measurement runs only where that variable names a seeded database: in CI, envoy-go's
-// statement-timing step, which seeds one on the job's Postgres and sets it for that step alone.
+// unset, the gate api/search_bench_test.go and api/related_recall_test.go already use, so it runs
+// only where that variable names a seeded database: each package's BenchmarkStatementTimings, a
+// tool its author runs, and in CI envoy-go's statement-timing step, which seeds one on the job's
+// Postgres, sets it for that step alone and runs docs' and refs' TestStatementTimings, which time
+// nothing and check what those packages' pairs read.
 package benchtime
 
 import (
@@ -262,10 +264,9 @@ func (r *Runner) Report(t testing.TB, name string, before, after Statement) {
 	})
 }
 
-// run runs f under name as a subtest of t, with go test's own Run for either kind of caller: the
-// TestStatementTimings of internal/dispatch/docs and refs are tests, and the
-// BenchmarkStatementTimings of internal/dispatch/api and refs are benchmarks, tools. Either way -v
-// prints each measurement by name.
+// run runs f under name as a subtest of t, with go test's own Run for either kind of caller: a
+// test or a benchmark. Each pair and each side is measured by a BenchmarkStatementTimings, of
+// internal/dispatch/api, docs or refs, a tool. Either way -v prints each measurement by name.
 func run(t testing.TB, name string, f func(testing.TB)) {
 	t.Helper()
 	switch caller := t.(type) {

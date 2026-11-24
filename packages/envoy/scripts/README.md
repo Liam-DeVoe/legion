@@ -1261,13 +1261,14 @@ These are INFRA-325's own measurements: every changed statement's plan and time 
 Both run against the seeded measurement database `cmd/dispatch-seed` fills, never against a test database and never against production.
 `DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `go-envoy-held` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale 0.01, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
 `internal/dispatch/api`'s two measurements, below, are tools, run by the author of a change to those statements on a seed of 0.03 or more: at the largest scale that job's time allows, their bounds do not hold.
-So is `internal/dispatch/refs`' `BenchmarkStatementTimings`, which measures every pair of that package on a seed of 1, the scale they were sized at; its `TestStatementTimings` times nothing, and checks at 0.01 the subjects and statements those pairs read.
+So are `internal/dispatch/refs`' `BenchmarkStatementTimings`, which measures every pair of that package on a seed of 1, the scale they were sized at, and `internal/dispatch/docs`' `BenchmarkStatementTimings`, which measures that package's six anchor reads on a seed of 0.01 or more: a runner's load decides those pairs' verdicts.
+Each package's `TestStatementTimings` times nothing, and checks at 0.01 the subjects and statements its pairs read.
 No CI step runs the write routes' measurement.
 
 ### The statement timings
 
 `internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries its own `statement_timing_test.go`.
-`internal/dispatch/docs` holds its own as a test, `TestStatementTimings`; `internal/dispatch/refs` holds its pairs as a benchmark, `BenchmarkStatementTimings`, in `statement_timing_bench_test.go`, and checks their statements untimed in `TestStatementTimings`; `internal/dispatch/api` holds its own as a benchmark, `BenchmarkStatementTimings`; each benchmark is a tool its file's tool line names.
+`internal/dispatch/docs` and `internal/dispatch/refs` each hold their pairs as a benchmark, `BenchmarkStatementTimings`, in `statement_timing_bench_test.go`, and check them untimed in `TestStatementTimings`; `internal/dispatch/api` holds its own as a benchmark, `BenchmarkStatementTimings`; each benchmark is a tool its file's tool line names.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
 The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
@@ -1276,6 +1277,9 @@ The runner records the server settings it found and the subjects it bound (the l
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
   ./internal/dispatch/refs ./internal/dispatch/docs
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+  go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 30m \
+  ./internal/dispatch/docs
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database at 1> \
   go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 60m \
   ./internal/dispatch/refs

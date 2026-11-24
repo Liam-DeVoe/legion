@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -17,11 +16,16 @@ import (
 // mark the document carries. Twenty is the size of a large edit's set.
 const anchoredMarkTimingLimit = 20
 
-// TestStatementTimings measures this package's changed anchor reads on the seeded measurement
-// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI sets that variable in one
+// TestStatementTimings checks, on the seeded measurement database (benchtime), which
+// DISPATCH_BENCH_DATABASE_URL names, what this package's statement timings rest on, and times
+// nothing: the seed holds the anchored document and marks anchored on it (anchoredMarkIDs), and
+// each pair's two texts, run once over the arguments both sides bind, answer the same rows
+// (requireSameAnchorReadRows), so each pair is two texts of one read. CI sets that variable in one
 // step, envoy-go's statement-timing step, which seeds the database and runs this test by name;
 // every other run skips it. api/search_bench_test.go and api/related_recall_test.go are gated the
-// same way.
+// same way. Every pair below is measured by BenchmarkStatementTimings, a tool: a pair's verdict is
+// the order of two medians, which a runner's load decides (statement_timing_bench_test.go says
+// what was read).
 //
 // All six reads are protocol 1 pairs: openAnchoredMarks over asks and over comments, the two
 // reads of edits.go (rejectUnindexedTableMarks, rejectLiveTableAnchors) and the two of
@@ -31,42 +35,65 @@ const anchoredMarkTimingLimit = 20
 // 20261101182419 to 20261101182522 - and what each read gained is the uuid comparison beside
 // its text comparison, which is what makes the index eligible at all; the two mutation.go
 // pairs' before texts also take main's `for share`, which the new texts dropped. One schema
-// therefore holds both sides, and the pair is the committed regression check: the before text
-// cannot use the index, so the day a read loses that comparison its median goes back to the
-// before text's and the pair fails.
+// therefore holds both sides, and the pair measures the gain: the before text cannot use the
+// index, so the day a read loses that comparison its median goes back to the before text's and
+// the pair fails. Untimed, TestAnchorReadsSearchTheirTablesAnchorIndex holds each read to its
+// index in every run of the package.
 //
 // Each pair's before text is the oracle anchor_reads_test.go already holds - the text the
 // release before this change ran - read from there rather than copied a second time: two copies
 // of one statement drift apart, and that oracle is what the package's equality test is held to.
 func TestStatementTimings(t *testing.T) {
+	statementTimings(t, false)
+}
+
+// statementTimings reads the subjects and checks every pair TestStatementTimings describes, and
+// with measure true times each pair after its check (BenchmarkStatementTimings).
+func statementTimings(t testing.TB, measure bool) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	document := runner.Subjects().AnchoredDocument
 	markIDs := anchoredMarkIDs(t, runner, document)
 	for _, read := range anchorReads() {
+		requireSameAnchorReadRows(t, runner, read, document, markIDs)
+		if !measure {
+			continue
+		}
 		// The new text adds no parameter: it reads $1 twice, once as text and once as a uuid, so
 		// both sides of a pair bind exactly the same arguments.
-		arguments := anchorReadTimingArguments(read.query, document, markIDs)
+		arguments := anchorReadValues(read.query, document, markIDs)
 		runner.Pair(t, "docs."+read.name,
 			benchtime.Statement{SQL: read.oracle, Args: arguments},
 			benchtime.Statement{SQL: read.query, Args: arguments})
 	}
 }
 
-// anchorReadTimingArguments are what a read binds: the document, and the mark ids for a read
-// that names marks. The read's own text says which it is, as anchorReadArguments reads it for
-// the plan test.
-func anchorReadTimingArguments(statement, document string, markIDs []string) []any {
-	if !strings.Contains(statement, "$2") {
-		return []any{document}
+// requireSameAnchorReadRows runs read's two texts once each over the document and the marks, on
+// the runner's connection in one transaction it rolls back, as benchtime's explain runs a pair's
+// sides (two of the before texts end in `for share`), and fails unless both answer the same
+// rows, as TestAnchorReadsReturnTheRowsMainsStatementsDo holds them to on its fixture: two texts
+// that answer different rows are no pair of one read's texts. It logs how many rows they
+// answered.
+func requireSameAnchorReadRows(t testing.TB, runner *benchtime.Runner, read anchorRead, document string, markIDs []string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := runner.Conn().Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of docs.%s: %v", read.name, err)
 	}
-	return []any{document, markIDs}
+	defer func() { _ = tx.Rollback(ctx) }()
+	after := anchorReadRows(t, ctx, tx, read.query, document, markIDs, read.ordered)
+	before := anchorReadRows(t, ctx, tx, read.oracle, document, markIDs, read.ordered)
+	if !slices.Equal(after, before) {
+		t.Errorf("docs.%s: the after text answered\n%v\nwant the before text's rows\n%v", read.name, after, before)
+	}
+	benchtime.Logf(t, "docs.%s: both texts answer %d rows", read.name, len(before))
 }
 
 // anchoredMarkIDs are mark ids the document actually carries, taken through each table's anchor
 // index rather than by the text comparison this change is about: the subject read of a
 // measurement must not itself read two tables whole, and it would warm pages unevenly between
 // the sides of the first pair.
-func anchoredMarkIDs(t *testing.T, runner *benchtime.Runner, document string) []string {
+func anchoredMarkIDs(t testing.TB, runner *benchtime.Runner, document string) []string {
 	t.Helper()
 	ctx := context.Background()
 	var markIDs []string

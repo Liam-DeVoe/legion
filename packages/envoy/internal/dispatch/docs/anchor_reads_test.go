@@ -182,6 +182,16 @@ func anchorReadArguments(statement string) (parameters, literals []string) {
 	return anchorReadParameters, []string{document, "'{a-mark,another-mark}'"}
 }
 
+// anchorReadValues are what a read binds: the document, and the mark ids for a read that names
+// marks. The read's own text says which it is, as anchorReadArguments reads it for the plan
+// test.
+func anchorReadValues(statement, document string, markIDs []string) []any {
+	if !strings.Contains(statement, "$2") {
+		return []any{document}
+	}
+	return []any{document, markIDs}
+}
+
 // anchorFixture is one document with every anchored row shape the reads must tell apart, and
 // the mark ids and document they are read by.
 type anchorFixture struct {
@@ -271,8 +281,8 @@ func TestAnchorReadsReturnTheRowsMainsStatementsDo(t *testing.T) {
 	ctx := context.Background()
 	for _, read := range anchorReads() {
 		t.Run(read.name, func(t *testing.T) {
-			got := anchorReadRows(t, ctx, fixture, read.query, read.ordered)
-			want := anchorReadRows(t, ctx, fixture, read.oracle, read.ordered)
+			got := anchorReadRows(t, ctx, fixture.database.Pool, read.query, fixture.document, fixture.markIDs, read.ordered)
+			want := anchorReadRows(t, ctx, fixture.database.Pool, read.oracle, fixture.document, fixture.markIDs, read.ordered)
 			if !slices.Equal(got, want) {
 				t.Fatalf("%s returned\n%v\nwant main's rows\n%v", read.name, got, want)
 			}
@@ -283,16 +293,12 @@ func TestAnchorReadsReturnTheRowsMainsStatementsDo(t *testing.T) {
 	}
 }
 
-// anchorReadRows runs statement over the fixture and returns one string per row. Rows of a
-// statement whose own order the plan does not fix are sorted, so two plans over the same rows
-// are compared by the rows alone.
-func anchorReadRows(t *testing.T, ctx context.Context, fixture anchorFixture, statement string, ordered bool) []string {
+// anchorReadRows runs statement through q over document, with markIDs for a read that names marks
+// (anchorReadValues), and returns one string per row. Rows of a statement whose own order the
+// plan does not fix are sorted, so two plans over the same rows are compared by the rows alone.
+func anchorReadRows(t testing.TB, ctx context.Context, q Queryer, statement, document string, markIDs []string, ordered bool) []string {
 	t.Helper()
-	arguments := []any{fixture.document}
-	if strings.Contains(statement, "$2") {
-		arguments = append(arguments, fixture.markIDs)
-	}
-	rows, err := fixture.database.Pool.Query(ctx, statement, arguments...)
+	rows, err := q.Query(ctx, statement, anchorReadValues(statement, document, markIDs)...)
 	if err != nil {
 		t.Fatalf("run %q: %v", statement, err)
 	}
