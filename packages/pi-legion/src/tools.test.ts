@@ -199,7 +199,7 @@ const STOP_TASK_TERMS = {
 } as const;
 
 /** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code its text gives. */
+ * each refusal code below. Its text gives one more, SIGNOFF_NOT_THE_OWNERS, which no term pins. */
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [

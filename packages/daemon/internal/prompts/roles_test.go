@@ -478,6 +478,9 @@ func TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy(t *tes
 // keeps its phrases a pattern, so that a grep for one over this directory finds prompt text and
 // never this test. The skills half of this rule, over skills/ and the plugin the Claude Code roles
 // load, is packages/pi-legion/src/skills-guard.test.ts.
+//
+// The check of `wait` reads only the parts that hold the call shape below. Where no part holds it,
+// the check read nothing and would pass on any text, so the test fails then.
 func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T) {
 	retired := []string{
 		"interrupts" + " your turn",
@@ -487,6 +490,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 		"one foreground" + " command",
 		"blocking" + ": true",
 	}
+	const dispatch = `task(agent="`
+	dispatching := 0
 	for _, dir := range []string{"go", "roles"} {
 		parts := goParts
 		if dir == "roles" {
@@ -502,7 +507,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 					t.Errorf("%s says %q, which does not hold: nothing interrupts a turn and background work is on", part, phrase)
 				}
 			}
-			if strings.Contains(text, `task(agent="`) {
+			if strings.Contains(text, dispatch) {
+				dispatching++
 				if !strings.Contains(text, "`wait`") {
 					t.Errorf("%s dispatches a task subagent and never names `wait`, the tool that reads a job's result", part)
 				}
@@ -512,6 +518,9 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", dir, err)
 		}
+	}
+	if dispatching == 0 {
+		t.Fatalf("no markdown part of go/ or roles/ holds %s, so the check of `wait` read no part: a dispatch in another shape is not read", dispatch)
 	}
 }
 

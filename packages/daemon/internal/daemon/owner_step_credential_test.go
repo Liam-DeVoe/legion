@@ -43,6 +43,7 @@ func slotCalls(rt *fake.Runtime, token claim.Token) []string {
 //  5. A notice owner-step of step 1 that runs after the task moved to step 2, whose run ended with
 //     the move, finishes unpublished, with one log line, and asks the runtime nothing.
 func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	stepOne := record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}
 	r := newOwnerHoldRig(t, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer:owner", "reviewer")

@@ -123,14 +123,14 @@ func (r *ownerHoldRig) told(t *testing.T, payload record.OutboxPayload) error {
 	return err
 }
 
-// published is the kind of each notice published, in order.
+// published is the topic each notice was published to, in order.
 func (r *ownerHoldRig) published() []string {
 	_, delivered := r.pub.snapshot()
-	kinds := make([]string, 0, len(delivered))
+	topics := make([]string, 0, len(delivered))
 	for _, d := range delivered {
-		kinds = append(kinds, d.topic)
+		topics = append(topics, d.topic)
 	}
-	return kinds
+	return topics
 }
 
 // ownerStepStale is the line the executor logs for an owner-step that finished undelivered, the
@@ -159,6 +159,7 @@ func staleUnread(t *testing.T, logged, of string) {
 // ended (the architect's App is what the slot holds wherever the owner does no step), and the
 // notice of step 1 at step 3 (both steps are the implementer's).
 func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
+	t.Parallel()
 	retro := record.NoticeStep{Task: "a", Kind: "retro", Place: 0, Starts: 1}
 
 	t.Run("the owner's retro, running then ended", func(t *testing.T) {
@@ -218,6 +219,7 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 // The control: the hold that asked the slot of every owner-step held the acceptance's notice on
 // the pod's update round, and the phase-finished behind it.
 func TestAnOwnersStepWhoseAppTheSlotHoldsWaitsForNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("the acceptance of the default steps", func(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 4}, "implementer", "tester", "reviewer", "acceptance:owner")
 		r.started(t, "step", 4, false)
@@ -259,6 +261,7 @@ func TestAnOwnersStepWhoseAppTheSlotHoldsWaitsForNothing(t *testing.T) {
 // The control: the hold that told a step of the owner's own App without asking the slot published
 // the acceptance while the owner's gh still acted as the implement App.
 func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
+	t.Parallel()
 	r := newOwnerHoldRig(t, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "acceptance:owner")
 	r.started(t, "step", 1, true)
 	r.started(t, "step", 2, false)
@@ -297,6 +300,7 @@ func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
 // The control: the write-back that waited for nothing let the notice publish before the write,
 // and wrote the slot for step 3's App, which step 3's owner-step wrote again.
 func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
+	t.Parallel()
 	t.Run("the notice after the write-back", func(t *testing.T) {
 		r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "reviewer")
 		r.started(t, "step", 1, true)
@@ -392,6 +396,7 @@ func (r *ownerHoldRig) writtenBack(t *testing.T) {
 // and writes nothing; and at the retro of `implementer reviewer`, which its implementer does, a
 // write-back of the owner's slot writes it, as wherever the owner does no step.
 func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	retro := record.NoticeStep{Task: "a", Kind: "retro", Place: 0, Starts: 1}
 	notice := record.Notice{Kind: record.OwnerStepNotice, Phase: phase.Retro, Reason: "LEGION-1 retro. Task: a.", OwnerStep: &retro}

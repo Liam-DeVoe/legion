@@ -14,6 +14,7 @@ import (
 // owner-step of LEGION-3 reaches LEGION-3's architect, and the phase-finished of LEGION-3, in the
 // same tree and the same claims, reaches LEGION-2's.
 func TestAnOwnerStepGoesToTheArchitectOfItsIssue(t *testing.T) {
+	t.Parallel()
 	const project = "legion"
 	issue := func(key, parent string) record.Issue {
 		i := record.Issue{Key: key, Tree: "LEGION-1", Project: project}

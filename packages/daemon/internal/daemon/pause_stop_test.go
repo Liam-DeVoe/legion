@@ -450,6 +450,7 @@ func (r *pauseRig) wantBackstopOf(role claim.Role, armed bool) {
 // reports. The control is the role read from the phase alone, which names nobody at accepting or
 // at step, the implementer at implementing, and never the owner.
 func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range pauseStopPlaces {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPauseRig(t, tc.role)
@@ -469,6 +470,7 @@ func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
 // with what the outbox's cancel gives the store (releaseCancelPause). The control is the stop's:
 // the role read from the phase alone.
 func TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range pauseStopPlaces {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPauseRig(t)
