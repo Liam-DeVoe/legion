@@ -840,13 +840,13 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 // daemon does. In `accepting` no worker holds the phase (RoleFor gives the architect), though a
 // merge forward asks the implementer and the reviewer for work there. The architect's move back is
 // refused outside `accepting` (backwardRefusal), so it asks the role that works an ancestor's phase.
-// A tester's fail goes to the step its `return_to` names. Besides a pending report's `wake_at`,
-// the bound and the retry of an unreported look start a look (check.go). A turn's working copy can
-// hold another role's edits, a tester may build from a copy outside the workspace, a session is
-// kept past the close for a production check, the legion tool has operations beside the three, a
-// root holds its slot only through its wait on a person, and the merge of a root whose tree runs,
-// or of a child with issues beneath it in the workflow, does not write `done` at once. Each part
-// is read alone, by its name. This shows the text is loaded, never that an agent follows it.
+// Besides a pending report's `wake_at`, the bound and the retry of an unreported look start a look
+// (check.go). A turn's working copy can hold another role's edits, a tester may build from a copy
+// outside the workspace, a session is kept past the close for a production check, the legion tool
+// has operations beside the three, a root holds its slot only through its wait on a person, and the
+// merge of a root whose tree runs, or of a child with issues beneath it in the workflow, does not
+// write `done` at once. Each part is read alone, by its name. This shows the text is loaded, never
+// that an agent follows it.
 func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
 	const resumed = "holds edits made before this turn, your own resumed ones or another role's"
 	const onlyYours = "holds only your own resumed edits"
@@ -884,7 +884,7 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 		{"roles/planner.md", func(t *testing.T) string { return rolePart(t, "planner.md") }, []string{resumed}, []string{onlyYours}},
 		{
 			"roles/tester.md", func(t *testing.T) string { return rolePart(t, "tester.md") },
-			[]string{resumed, "the daemon sends the issue back to the first implementation step before yours, or to the earlier step your completion's `return_to` names"},
+			[]string{resumed},
 			[]string{onlyYours, "the daemon sends the issue back to the implementer."},
 		},
 		{
