@@ -39,16 +39,11 @@ describe("renderInbound shows a Dispatch payload as readDispatchPayload reads it
         own
       );
       // A card the renderer skips, or a notice it writes in place of a card, comes only of an
-      // event it read.
-      const card: unknown = rendered.skip ? undefined : decode(rendered.content);
-      const unrecognised =
-        typeof card === "object" &&
-        card !== null &&
-        "envoy" in card &&
-        typeof card.envoy === "object" &&
-        card.envoy !== null &&
-        "unrecognised" in card.envoy &&
-        card.envoy.unrecognised === "payload";
+      // event it read; a notice decodes to a string, which holds no `envoy`.
+      const card = rendered.skip
+        ? undefined
+        : (decode(rendered.content) as { envoy?: Record<string, unknown> } | null);
+      const unrecognised = card?.envoy?.["unrecognised"] === "payload";
       if (unrecognised === (kind === "event")) disagreements.push(`${name} (${kind})`);
       if (kind === "event") events += 1;
     }
