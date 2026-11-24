@@ -357,7 +357,7 @@ jobs:
         run: .github/scripts/leg-verdict.sh 'daemon-go (1/3)' 'daemon-go (2/3)' 'daemon-go (3/3)'
       - *report
 
-  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
+  # why: .github/ci-notes/ci.md#why-the-race-step-runs-in-legs-of-its-own
   daemon-go-race:
     name: ${{ 'daemon-go / daemon-go-race' }}
     needs: [changes, go-daemon]

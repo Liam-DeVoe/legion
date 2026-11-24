@@ -608,24 +608,11 @@ typechecks that ran beside these tests are the tooling-checks job's, in the same
 
 ## Two jobs that call one file
 
-ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half. test and tooling-checks call
-ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, and envoy-infra-go
-and envoy-infra-build call ci-job-envoy-infra-go.yaml. Such a file holds one job per caller and
-takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
-caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
-id. A call runs the one job named for its caller, and the other reads `skipped` under it.
-
-.github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
-ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
-named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
-under a second caller would read files that caller's filter is never held to, and a caller with
-no job of its own there runs nothing its filter is held to.
-.github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
-gates find their steps there. Each half keeps a filter of its own, and both name the shared
-file, so a change to it selects both. dispatch-browser.yaml has two callers too,
-dispatch-browser and dispatch-browser-pr, but every job of it runs under either: it takes the
+ci.yaml calls 4 unique reusable workflows, within the 10 .github/scripts/check-workflow-files.sh
+allows it (its rule 5), and no file is shared between a job and its held half: each held half of
+a split suite (scripts-held, pi-held, envoy-held, web-cold) is a job of ci.yaml that runs its
+job's action. The one file two jobs call is dispatch-browser.yaml, whose callers are
+dispatch-browser and dispatch-browser-pr, and every job of it runs under either: it takes the
 caller's id as `job` for its artifact names, its read of its own jobs and its report, never to
 pick a job
 (.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
@@ -640,9 +627,8 @@ scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eva
 typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
-The job shares ci-job-test.yaml with the test job
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file) and fails open as
-that job does (.github/ci-notes/ci.md#the-fail-open-jobs-and-what-they-buy-while-changes-is-broken).
+It is the scripts job's tooling-checks leg (.github/actions/scripts/tooling-checks) and fails open
+as that job does (.github/ci-notes/ci.md#the-fail-open-jobs-and-what-they-buy-while-changes-is-broken).
 
 ## The go-daemon job
 
@@ -657,6 +643,25 @@ The daemon's Go suite runs in three legs of go-daemon: at two, one leg's -run wo
 (.github/actions/go-daemon says how each leg's bounds are read); daemon-go carries its old
 check-run name. Its Postgres service runs ghcr.io/cybermonklabs/legion/ci, the copy of
 pgvector/pgvector (.github/ci-images.yaml).
+
+## Why the race step runs in legs of its own
+
+go-daemon runs the race step in two legs of its own, daemon-go-race (1/2) and (2/2), beside its
+three plain legs, as main runs it in a daemon-go-race job beside daemon-go (#5077), and the
+daemon-go-race carrier keeps that job's check-run name, `daemon-go / daemon-go-race`. The plain
+legs' package list is every package of the module less the race step's five (and the text
+checks), as .github/actions/go-daemon builds both from one list, so the two steps share no
+package and nothing orders them.
+
+In one job their times added up. Over the 158 green daemon-go jobs of ci.yaml runs on 2026-11-22
+from 13:46Z to 18:10Z (jobs API; the sample is the job list read at 18:57Z), the race step took
+26.8 min at the median (36.3 at most) and the plain step 12.0 (15.0), after 1.4 min of setup, for
+a job of 41.0 min. At the same time, the race job alone sets the wall time, and the second runner
+costs the setup it repeats, about 1.4 min.
+
+The split makes no test do less work. The race step's time is one package's: internal/daemon took
+1,352 s of the step's 1,422 s in run 45048924209, and the four other packages of the step ended
+inside it. That package's tests are where the rest of the time is.
 
 ## The carriers
 
@@ -869,14 +874,14 @@ service on a job whose other steps would start it for nothing.
 
 ## The pi-legion plugin's suite and its build
 
-Two jobs over packages/pi-legion, both calling ci-job-pi-legion.yaml
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file). pi-legion runs
+Two jobs over packages/pi-legion. pi-held, named `pi-legion / pi-legion`, runs
 the plugin's test suite with what only it needs - jj, the pinned Oh My Pi, Go and the go-daemon
 restore for daemon-pane's `go run`, and the NATS service controller-start-omp.test.ts's role
 claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone. It is a slow
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
-`pi_legion` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
-pi-legion-build builds contracts, typechecks the plugin and packs it as the release does,
+`pi-held` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
+The pi job's pi-legion-build leg builds contracts, typechecks the plugin and packs it as the
+release does,
 uploading the tarball as `pi-legion-pr`: a build and a typecheck, which a pull request runs
 (0.8 minutes), on ubuntu-24.04-arm, since it installs no Oh My Pi.
 
@@ -1054,8 +1059,8 @@ percentile as the one job it was), held back behind its `envoy_infra_go` output
 the tests the tag adds, one call per package: envoy-infra-build's "Unit test envoy-infra" step
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
-ci_job_reads.py's TAG_RUNS holds envoy-infra-build's filter to every file the natslive step
-reads, so a change that starts the tagged run starts the untagged one with it. The gcp
+envoy-held is ci-areas.yaml's go-envoy area under another name (`envoy-held: *gea`), so a change
+that starts the tagged run starts the untagged one with it. The gcp
 natslive tests pull no image: they install helm, nats-server, the config reloader and the
 exporter with go install, at the versions the clustered hub runs, and render the vendored chart
 in gcp/testdata. The per-target compile runs in the lint job's notices step.

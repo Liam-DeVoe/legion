@@ -202,8 +202,8 @@ const (
 // take no new work, so the work goes to an issue of the tree whose pull request is still open, or
 // to a person.
 //
-// It names no notice kind: a phase worker's session holds no notice, and the end-to-end proof
-// fails a run where one reads as if it did (scripts/e2e/lib/workflow.sh, worker_notices).
+// It names no notice kind: a phase worker's session holds no notice, so a news text that read as
+// one would say something of the session that is not so.
 func RenderNews(news News) string {
 	var paragraphs []string
 	if news.OpeningOwed {

@@ -122,8 +122,8 @@ export function isSeededReadMark(
 
 /** The sync message a document frame carries - its document, its y-protocols subtype and its
  *  update or state vector - or `undefined` for a frame of another message type (awareness,
- *  authentication). A frame is `<document name><message type><payload>` (Hocuspocus's framing, as
- *  `e2e/acceptance/socket-scope.ts` writes it). */
+ *  authentication). A frame is `<document name><message type><payload>` (Hocuspocus's
+ *  framing). */
 function syncMessage(
   frame: Uint8Array
 ): { document: string; subtype: number; payload: Uint8Array } | undefined {

@@ -94,7 +94,7 @@ describe.skipIf(withoutMasks)("where the mask can be read", () => {
   );
 
   // A non-interactive shell's `&` job is started with SIGINT and SIGQUIT ignored, as
-  // e2e/visual-run.sh and e2e/acceptance/with-harness.sh start e2e/harness-up.ts.
+  // e2e/visual-run.sh starts e2e/harness-up.ts.
   test(
     "a process started ignoring SIGINT arms no SIGINT listener",
     async () => {

@@ -478,9 +478,9 @@ jobs:
           key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
-      # envoy-go-build's vet, its env and its script as that step has them (ci_job_reads.py's
-      # darwin_vet_script is the text check-ci-filters.sh holds that step to), so the entry holds
-      # each tag set it vets.
+      # envoy-go-build's vet (.github/actions/go-envoy/envoy-go-build, a darwin vet of
+      # ci_pins.DARWIN_VETS, which check-ci-layout.sh's rule 20 holds to its tag sets), its env and
+      # its script as that step has them, so the entry holds each tag set it vets.
       - name: Vet the envoy module for darwin, as envoy-go-build does
         env:
           GOCACHE: ${{ runner.temp }}/go-build-darwin

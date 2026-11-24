@@ -702,10 +702,10 @@ func TestTheSummarySaysAMembersNewsWaitsWhileItsHolderHoldsATaskItHasNotTaken(t 
 }
 
 // No news text names a notice kind as a notice does. A phase worker's session holds no notice:
-// every kind is an architect's or the controller's, and the end-to-end proof fails a run whose
-// worker session holds a delivery reading `summary: <kind> on …` (scripts/e2e/lib/workflow.sh,
-// worker_notices). So no kind of more than one word appears anywhere, and no kind appears in the
-// form a notice's summary takes. A kind of one word is an English word as well — "held", which
+// every kind is an architect's or the controller's, so a worker session that held a delivery
+// reading `summary: <kind> on …` would read as holding one. So no kind of more than one word
+// appears anywhere, and no kind appears in the form a notice's summary takes. A kind of one word
+// is an English word as well — "held", which
 // the gate's own opening sentence says of a merge and which names a phase — and may stand as one.
 // The kinds are the record's own, asked of its validation one word at a time (noticeKind), so a
 // kind added to the record is held here with no list to keep.

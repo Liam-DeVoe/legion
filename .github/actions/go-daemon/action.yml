@@ -11,8 +11,8 @@ description: >-
   `daemon-go / daemon-go` and passes only when those three passed (.github/scripts/leg-verdict.sh).
   The two daemon-go-race legs run the race step over those five packages, split between them the
   same way, as main's daemon-go-race job runs it beside daemon-go
-  (.github/ci-notes/ci-job-daemon-go.md says why), and ci.yaml's daemon-go-race job carries that
-  job's check-run name, `daemon-go / daemon-go-race`.
+  (.github/ci-notes/ci.md#why-the-race-step-runs-in-legs-of-its-own says why), and ci.yaml's
+  daemon-go-race job carries that job's check-run name, `daemon-go / daemon-go-race`.
 
   Three plain legs, where the measured times would hold two: go-test-split.sh hands go test one
   -run of the leg's share, and the plain step's share of two legs is about 136 KB of test names,

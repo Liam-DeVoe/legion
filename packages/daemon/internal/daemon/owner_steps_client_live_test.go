@@ -333,7 +333,7 @@ const versionFile = "packages/daemon/internal/api/version.go"
 
 // olderClient builds the plugin of the release before: the commit releaseBefore names, taken with
 // `git archive` into a directory of the run's own and given node_modules of its own with
-// `bun install --frozen-lockfile`, as busy-relaunch-delivery.sh builds its base tree.
+// `bun install --frozen-lockfile`.
 func (l *ownerStepsClientLive) olderClient() {
 	t := l.t
 	t.Helper()

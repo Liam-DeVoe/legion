@@ -8,7 +8,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { rowLimit, watch, whether } from "./bounded-subprocess";
 
 // What e2e/harness-up.ts over the stack pool does with a Ctrl-C followed by a SIGTERM, which is
-// what e2e/visual-run.sh and e2e/acceptance/with-harness.sh send it on a person's Ctrl-C: the
+// what e2e/visual-run.sh sends it on a person's Ctrl-C: the
 // terminal's SIGINT reaches the whole foreground group, harness-up among them, and the script's
 // EXIT trap then sends harness-up a SIGTERM (`kill "$harness"`). Measured against a real stack
 // before this row, harness-up stopped it twice at once, once for each signal, and the second stop
@@ -80,7 +80,7 @@ plugin({
 
 for (const row of [
   {
-    // e2e/visual-run.sh and e2e/acceptance/with-harness.sh start harness-up as a background job
+    // e2e/visual-run.sh starts harness-up as a background job
     // of a non-interactive shell, which starts it with SIGINT and SIGQUIT ignored.
     name: "a Ctrl-C and then a SIGTERM to e2e/harness-up.ts started as visual-run.sh starts it, a shell's background job, stop its stack once",
     shell: 'ulimit -c 0; "$@" & wait $!',

@@ -59,8 +59,7 @@
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves), FAKE_ENVOY_PORT (the harness's fake Envoy listener, e2e/fake-envoy.ts, whose
 # session fixture this driver adds role-less sessions, one of them stopped and one whose sends it
-# refuses, and two holders of a role to, and which claims that role on the bus - as
-# block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
+# refuses, and two holders of a role to, and which claims that role on the bus), and optionally
 # DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in. Each unmet input
 # is exit 2. The server must read the harness's fake broker (run-server.sh's default) for G13.
 #

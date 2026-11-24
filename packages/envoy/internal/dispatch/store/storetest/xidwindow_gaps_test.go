@@ -12,8 +12,9 @@ import (
 )
 
 // These tests are of the rig's judgment of gaps, which the race build does not make, so they are
-// out of it: envoy-go's plain step "Test what the race build cannot run at all or at full size"
-// runs them, by name, as ci_job_reads.py derives that step from this file's tag.
+// out of it: go-envoy-held's envoy-go leg runs them, by name, in its step "Test what the race
+// build cannot run at all or at full size" (.github/actions/go-envoy-held/envoy-go), and
+// .github/scripts/check-test-reach.sh fails a test of this file that no step runs.
 
 // A Linux build does not promise a schedstat file: gVisor exposes neither /proc/self/schedstat
 // nor /proc/thread-self/schedstat. Nor does it promise that a thread, or the process's memory, can

@@ -84,7 +84,7 @@
 # podReplacementPolicy Failed, so a pod lost with its machine is followed by a whole new attempt
 # and never by a second one beside it; no service account token; the worker container's security
 # context (uid, gid and fsGroup 1000, no privilege escalation, every capability dropped, the
-# RuntimeDefault seccomp profile), as leak-guard-image-job.sh's Job on this image has it; requests
+# RuntimeDefault seccomp profile); requests
 # equal to limits; and the image reference and its
 # org.opencontainers.image.revision label on the container's environment, for the probe to print.
 # The label is read with `crane config` where this pod has crane, and is printed as unread where it
@@ -456,7 +456,7 @@ $(map_yaml "      " annotations "${annotations[@]}")
       runtimeClassName: gvisor               # the cause measured is gVisor's
       nodeSelector:
 ${selector_yaml}      securityContext:
-        # The worker container's own, as leak-guard-image-job.sh's Job on this image has it.
+        # The worker container's own.
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
