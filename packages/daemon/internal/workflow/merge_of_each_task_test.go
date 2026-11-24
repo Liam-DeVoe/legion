@@ -419,3 +419,125 @@ func TestEachDoorFromTheTasksLeavesThroughOnePlace(t *testing.T) {
 		})
 	}
 }
+
+// A root parked and then set done while its tree lingers opens the check of each merge of its run.
+// LEGION-208, a root of one task a, is parked at triage at a's review, with its pull request #42
+// open: its tree lingers, and a is left at its review. A person merges #42, which moves no task, and
+// then sets the root done: it holds one check, of #42's merge, whose first look is a wake of the
+// checking role's suspended claim.
+//
+// The fault it catches is a merge of a lingering root never checked in production (its control:
+// the leave of a lingering root returning before it reads its merges, under which it holds none).
+func TestARootParkedThenSetDoneInItsLingerChecksItsMerge(t *testing.T) {
+	pool := migratedPool(t)
+	engine, logged := loggedEngine()
+	root := stepRoot(t, pool, phase.Reviewing)
+	seedTasksAt(t, pool, root.Key, root.Generation,
+		taskAt{id: "a", steps: []string{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(2), number: 42})
+	apply := applyFacts(t, pool, engine)
+	mustSpend(t, "the park", apply("root-triage", statusMove(root.Key, "", "triage", 2)))
+	if parked := issueOf(t, pool, engine, root.Key); !parked.Lingers() {
+		t.Fatalf("premise: %s after its park does not linger", root.Key)
+	}
+	mustSpend(t, "the merge of #42", apply("merged-a", mergedFact(42, "a")))
+	checksAre(t, pool, root.Key)
+	logged.Reset()
+	mustSpend(t, "the done", apply("root-done", statusMove(root.Key, "", "done", 3)))
+	checksAre(t, pool, root.Key, "merge-a")
+	if !strings.Contains(logged.String(), "production check opened") || !strings.Contains(logged.String(), "firstLook=wake") {
+		t.Fatalf("the log of the done = %q, want the check opened with its first look a wake", logged.String())
+	}
+}
+
+// An issue in merging is finished where each task that stands at its merge has its pull request
+// merged, read on the issue as the store holds it, with no copy for a task. Of a and c, each merging
+// by itself and each at its merge: with a's pull request merged and c's open the phase is not
+// finished, and with both merged it is, and its worker is then owed no turn. With a done at its merge
+// and c at its merge with its pull request open it is not finished. An issue with no plan rows in
+// merging, its one pull request merged, is finished, as before tasks had merges of their own.
+//
+// The fault it catches is a merger started again, or one owed a turn, for a merge GitHub already
+// made, or one not started for a merge still to come (its control: the phase read from the pull
+// request of the task of a copy, which the stored issue does not name, so it is never finished).
+func TestAnIssueInMergingIsFinishedWhenEachTaskAtItsMergeMerged(t *testing.T) {
+	finished := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) (bool, bool) {
+		t.Helper()
+		var done, owed bool
+		onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) (err error) {
+			if done, err = PhaseFinished(ctx, engine.store, tx, issue); err != nil {
+				return err
+			}
+			_, owed, err = PhaseWorkerOwedTurn(ctx, engine.store, tx, issue, claim.RoleMerger)
+			return err
+		})
+		return done, owed
+	}
+	for _, tc := range []struct {
+		name   string
+		a      taskAt
+		merged bool
+		want   bool
+	}{
+		{"a's merged and c's open", taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merged: true}, false, false},
+		{"both merged", taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merged: true}, true, true},
+		{"a done at its merge and c's open", taskAt{id: "a", state: record.TaskDone, place: atMerge, number: 42, merged: true}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Merging)
+			seedTasksAt(t, pool, root.Key, root.Generation, tc.a,
+				taskAt{id: "c", state: record.TaskRunning, place: atMerge, number: 45, merged: tc.merged})
+			done, owed := finished(t, pool, engine, root.Key)
+			if done != tc.want || owed == tc.want {
+				t.Fatalf("%s's merging is finished %t, its merger owed a turn %t, want finished %t", root.Key, done, owed, tc.want)
+			}
+		})
+	}
+	t.Run("no plan rows", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Merging)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
+			Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge-42", Failing: []string{}})
+		if done, _ := finished(t, pool, engine, root.Key); !done {
+			t.Fatalf("%s, with no plan rows, its one pull request merged, is not finished, want finished", root.Key)
+		}
+	})
+}
+
+// A merge GitHub already made starts no merger, whatever another task's merge waits for. Of a and c,
+// each merging by itself, a stands at its merge with its pull request #42 open, and a person merged
+// c's #45 while c stood at its retro. c's retro passes, and c reaches its merge on its merged pull
+// request: the step record of c's merge names no agent, no merger is started, and c is done.
+//
+// The fault it catches is a merger handed a merge GitHub already made (its control: the start of
+// c's merge reading whether the issue's merging is finished, which a's open pull request keeps not
+// finished, so the merger is named for c's merge).
+func TestAMergeGitHubMadeStartsNoMergerWhileAnotherTaskWaitsAtItsMerge(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Retro)
+	seedTasksAt(t, pool, root.Key, root.Generation,
+		taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42},
+		taskAt{id: "c", state: record.TaskRunning, place: atRetro, number: 45, merged: true})
+	taskMoves(t, pool, engine, root.Key, "c", TriggerRetroCompleted, "")
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "c", record.TaskDone, atMerge)
+	var merges []record.StepRecord
+	for _, write := range stepWrites(t, pool, root.Key) {
+		if write.Task == "c" && write.Kind == record.PlaceMerge {
+			merges = append(merges, write)
+		}
+	}
+	if len(merges) == 0 {
+		t.Fatalf("the step records of %s hold no merge of c", root.Key)
+	}
+	for _, write := range merges {
+		if write.Agent != "" {
+			t.Fatalf("the step record of c's merge names the agent %q, want none: GitHub made the merge", write.Agent)
+		}
+	}
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleMerger); len(starts) != 0 {
+		t.Fatalf("the merger's starts of %s = %+v, want none", root.Key, starts)
+	}
+}
