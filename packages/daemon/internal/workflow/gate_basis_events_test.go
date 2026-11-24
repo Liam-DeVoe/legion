@@ -61,10 +61,15 @@ func latestOf(act intake.DispatchArtifact) dispatch.Approval {
 	return approval
 }
 
+// theWait is LEGION-208's spec step waiting on ask-100 as registeredPending registers it, at the
+// engine's clock (basisEngineNow): the one step each read below is taken for (intake.BasisStep).
+var theWait = []intake.BasisStep{{Issue: gatedRoot, Step: record.DesignStepSpec, Ask: "ask-100", RegisteredAt: basisEngineNow}}
+
 // readOf is the read of Dispatch the daemon's preparation sets on a cue (intake.BasisRead) when
-// Dispatch shows approval for LEGION-100's document and ancestor for its issue.
+// Dispatch shows approval for LEGION-100's document and ancestor for its issue, taken for
+// LEGION-208's wait (theWait).
 func readOf(approval dispatch.Approval, ancestor intake.AncestorRead) *intake.BasisRead {
-	return &intake.BasisRead{Approval: approval, Ancestor: ancestor}
+	return &intake.BasisRead{Approval: approval, Ancestor: ancestor, For: theWait}
 }
 
 // current is act carrying the read its preparation makes when act is the last thing done to
@@ -161,9 +166,13 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 	}
 	withdrawn := closed(basisPerson)
 	withdrawn.Withdrawn, withdrawn.BasisRead = true, readOf(requestClosed(), intake.AncestorRead{Status: record.DoneStatus, HandedOver: true})
+	// The withdrawal applied after the ancestor's reopen, which left ask-100 closed: the read shows
+	// the ancestor at work, so the close names no acceptance of it.
+	reopened := closed(basisPerson)
+	reopened.Withdrawn = true
 	ancestorAt := func(status string, labelled bool) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: status, Title: "ancestor", Rank: "T", HandedOver: labelled,
-			AncestorRead: &intake.AncestorRead{Status: status, HandedOver: labelled}}
+			AncestorRead: &intake.AncestorRead{Status: status, HandedOver: labelled}, ReadFor: theWait}
 	}
 	for _, tc := range []struct {
 		name    string
@@ -182,6 +191,8 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 			act: "user:alice closed approval request ask-100 of version 4"},
 		{name: "the ancestor's close, which withdraws the request", fact: withdrawn,
 			act: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. Its close withdrew approval request ask-100 of version 4 of the primary document of LEGION-100"},
+		{name: "the ancestor's close, which withdraws the request, read after its reopen", fact: reopened,
+			act: "user:alice closed approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec), as resolved, with no approval of that version."},
 		{name: "the ancestor done", fact: ancestorAt("done", true), act: "Dispatch shows LEGION-100 done"},
 		{name: "the ancestor in Dispatch's retro", fact: ancestorAt("retro", true), act: "Dispatch shows LEGION-100 retro"},
 		{name: "the ancestor without the legion label", fact: ancestorAt("in_progress", false), act: "LEGION-100 no longer carries the legion label."},
@@ -231,7 +242,7 @@ func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) 
 		{"a session's close of the request", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc,
 			State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61), BasisRead: readOf(requestClosed(), ancestorAtWork)}},
 		{"the ancestor done", intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: "done", Title: "ancestor", Rank: "T", HandedOver: true,
-			AncestorRead: &intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}}},
+			AncestorRead: &intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, ReadFor: theWait}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _, _ := registeredPending(t)

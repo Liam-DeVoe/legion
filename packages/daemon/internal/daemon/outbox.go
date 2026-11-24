@@ -4069,7 +4069,7 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
 	}
-	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID)
+	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID, nil)
 	if err != nil {
 		return err
 	}

@@ -291,6 +291,8 @@ func requireLegionIssueNotFound(t *testing.T, handler http.Handler, key string) 
 // what both show (R1: "the card and the answer agree on the phase, the roles in a turn and the
 // slot"), one sentence each, none where they agree. The card's roles are the roles in a turn,
 // sorted by name, so they are held to the answer's roles whose state is `working` in that order.
+// Both name the issues the admission block holds this one on (legion.Admission.BlockersOf), so
+// the two lists must be one list in one order.
 func legionCardDisagreements(card legionBoardCard, answer wireLegionIssue) []string {
 	state := answer.State
 	if state == nil {
@@ -313,6 +315,9 @@ func legionCardDisagreements(card legionBoardCard, answer wireLegionIssue) []str
 	if !sameLegionValue(card.Slot, state.Slot) {
 		disagreements = append(disagreements, fmt.Sprintf("%s's card holds slot %s, its answer slot %s",
 			card.Key, showLegionValue(card.Slot), showLegionValue(state.Slot)))
+	}
+	if !slices.Equal(card.BlockedBy, state.BlockedBy) {
+		disagreements = append(disagreements, fmt.Sprintf("%s's card is blocked by %v, its answer by %v", card.Key, card.BlockedBy, state.BlockedBy))
 	}
 	return disagreements
 }

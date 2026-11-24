@@ -137,7 +137,9 @@ type Rework struct {
 	MedianReviewRounds float64 `json:"median_review_rounds"`
 	// SentBackShare is the share of finished issues moved from testing, reviewing, accepting,
 	// retro, merging or awaiting merge back to implementing at least once (sentBackPhases), a wait
-	// in awaiting_children between the two included (sentBackOnce).
+	// in awaiting_children between the two included (sentBackOnce). Before observations it also
+	// counts a stop for children out of testing, reviewing or accepting, which the status history
+	// cannot tell from a send-back (sentBackOnce says why).
 	SentBackShare float64 `json:"sent_back_share"`
 	// HoursAfterFirstReview is the implementing and testing hours after the first review, across
 	// the finished issues, and its median per issue.
@@ -616,6 +618,10 @@ var sentBackPhases = []string{
 // part from there on, as the review rounds beside it are. Before observations the move is the
 // status's (sentBackStatuses): `needs_review` is the status of both reviewing and accepting,
 // `retro` the status of both retro and merging, and `in_progress` the status of implementing.
+// `in_progress` is the status of awaiting_children as well (the daemon's phaseStatus, in
+// packages/daemon/internal/workflow/table.go), so a stop for an open child out of testing,
+// reviewing or accepting writes the same move of status as a send-back, and before observations
+// it is counted as one: the statuses cannot tell the two apart.
 // On the observed part a stretch of `implementing` is compared with the closest stretch before it
 // whose phase is not `awaiting_children`: a failed test or a review that requests changes while a
 // Dispatch child of the issue is open moves it into awaiting_children first, and the return from

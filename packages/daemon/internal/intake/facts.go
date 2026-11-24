@@ -140,10 +140,12 @@ type DispatchIssue struct {
 	// (ConsumerSpec.PrepareBasis) for an event that shows the issue leaving R1's first condition
 	// while a step of another root waits on its approval request (workflow's PendingBasisCue):
 	// the workflow ends such a wait from this read alone, never from the event, which a late
-	// delivery or a replay can apply after a later event moved the issue back. Nil for every
-	// other fact, and for one nothing prepared, which the workflow answers by queueing the
-	// step's pending-basis seed.
+	// delivery or a replay can apply after a later event moved the issue back. ReadFor is the
+	// steps that read was taken for (BasisStep). Nil for every other fact, and for one nothing
+	// prepared, which the workflow answers by queueing the step's pending-basis seed, as it does
+	// for a step ReadFor does not name.
 	AncestorRead *AncestorRead
+	ReadFor      []BasisStep
 }
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
@@ -297,10 +299,11 @@ type DispatchArtifact struct {
 	StatusChangedSeq int64
 	// BasisRead is Dispatch's state now of the document and of its issue, read when the fact is
 	// prepared (ConsumerSpec.PrepareBasis) for an event of a document that a step of another root
-	// waits on, closed, for a person's approval of (workflow's PendingBasisCue): the workflow opens
-	// or ends that wait from this read alone, never from the event. Nil for every other fact, and
-	// for one nothing prepared, which the workflow answers by queueing the step's pending-basis
-	// seed.
+	// waits on, closed, for a person's approval of (workflow's PendingBasisCue), with the steps it
+	// was read for (BasisRead.For): the workflow opens or ends such a wait from this read alone,
+	// never from the event. Nil for every other fact, and for one nothing prepared, which the
+	// workflow answers by queueing the step's pending-basis seed, as it does for a step the read
+	// was not taken for.
 	BasisRead *BasisRead
 }
 
@@ -389,10 +392,43 @@ type AncestorRead struct {
 // workflow's PendingBasisCue) and in the step's pending-basis seed (PendingBasisRead), and the
 // workflow opens or ends the wait from it alone, never from the event that cued it: an event
 // delivered late, or replayed, says what Dispatch was when it was written, and the read says what
-// Dispatch is.
+// Dispatch is. For is the steps a cue's preparation took the read for (BasisStep), the only ones
+// the workflow judges by it; a seed's read is its one step's, and names none.
 type BasisRead struct {
 	Approval dispatch.Approval
 	Ancestor AncestorRead
+	For      []BasisStep
+}
+
+// BasisStep names one step a cue's preparation read Dispatch for (ConsumerSpec.PrepareBasis): the
+// root (Issue), its step, the ancestor's request it waits on and the daemon's time of the
+// registration that made the wait (record.GateBasis.RegisteredAt, which a registration of the
+// same request again keeps). The read on a fact is judged only for the steps it names
+// (BasisRead.For, DispatchIssue.ReadFor, BasisStep.Names): a step registered after the
+// preparation read the store, or registered since on another request, is none of them, and
+// reads Dispatch through its own seed.
+type BasisStep struct {
+	Issue        string
+	Step         record.DesignStep
+	Ask          string
+	RegisteredAt time.Time
+}
+
+// BasisStepOf names gate, a step that waits on an ancestor's request, as a preparation records it
+// (BasisStep).
+func BasisStepOf(gate record.DesignGate) BasisStep {
+	step := BasisStep{Issue: gate.Issue, Step: gate.Step.OrSpec()}
+	if gate.PendingOnBasis() {
+		step.Ask, step.RegisteredAt = gate.Basis.Pending.Ask, gate.Basis.RegisteredAt
+	}
+	return step
+}
+
+// Names says whether s names gate as it stands now (BasisStepOf), the registration's time taken
+// as an instant.
+func (s BasisStep) Names(gate record.DesignGate) bool {
+	now := BasisStepOf(gate)
+	return s.Issue == now.Issue && s.Step == now.Step && s.Ask == now.Ask && s.RegisteredAt.Equal(now.RegisteredAt)
 }
 
 // PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
@@ -504,10 +540,12 @@ func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 //
 // BasisRead is Dispatch's state now of the document the ask asks a person to approve and of its
 // issue, read when the fact is prepared (ConsumerSpec.PrepareBasis) for a close that a step of
-// another root waiting on this request takes as a cue (workflow's PendingBasisCue): the workflow
-// ends that wait from this read alone, never from the close, which a late delivery or a replay can
-// apply after the issue's reopen opened the request again. Nil for every other fact, and for one
-// nothing prepared, which the workflow answers by queueing the step's pending-basis seed.
+// another root waiting on this request takes as a cue (workflow's PendingBasisCue), with the steps
+// it was read for (BasisRead.For): the workflow ends such a wait from this read alone, never from
+// the close, which a late delivery or a replay can apply after the issue's reopen opened the
+// request again. Nil for every other fact, and for one nothing prepared, which the workflow
+// answers by queueing the step's pending-basis seed, as it does for a step the read was not taken
+// for.
 type DispatchAskClosed struct {
 	Key       string
 	Ask       string

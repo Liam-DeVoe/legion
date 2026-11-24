@@ -39,14 +39,18 @@ func (d *countedBasisDispatch) GetIssue(ctx context.Context, key string) (dispat
 
 // The daemon's preparation reads Dispatch for an event only where it is a cue for a step waiting
 // on an ancestor's approval request (workflow.PendingBasisCue), and sets what it read on the fact,
-// which is otherwise the one decoded: a document event at the basis version or a newer one, other
-// than that version's own version event, reads the document's approval and the ancestor's issue;
-// so does a close of the request other than a person's answer; an event that shows the ancestor
-// leaving R1's first condition reads the ancestor's issue alone. Every other event reads nothing:
-// the basis version's version event, an older version's review, another document's event, an
-// answer, another request's close, an event that shows the ancestor at work, another issue's
-// leave, and any event of a document a step stands open on rather than waits on. A failed read
-// fails the preparation, naming what it read, so the event is delivered again.
+// with the steps it read for (intake.BasisStep, here the root's one waiting step), the fact being
+// otherwise the one decoded: a document event at the basis version or a newer one, other than that
+// version's own version event, reads the document's approval and the ancestor's issue; so does a
+// close of the request other than a person's answer; an event that shows the ancestor leaving
+// R1's first condition reads the ancestor's issue alone. Where the preparation holds the ancestor's
+// issue already, it reads it no second time: a person's approval carrying Dispatch's view of its
+// issue (prepareArtifact's), and an observed issue event, which is that view. Every other event
+// reads nothing: the basis version's version event, an older version's review, another
+// document's event, an answer, a close of a question or of another request, an event that shows
+// the ancestor at work, another issue's leave, and any event of a document a step stands open on
+// rather than waits on. A failed read fails the preparation, naming what it read, so the event is
+// delivered again.
 func TestPrepareBasisReadsDispatchOnlyForACue(t *testing.T) {
 	person := dispatch.Actor{Kind: "user", ID: "alice"}
 	review := func(kind intake.DispatchArtifactKind, version int) intake.DispatchArtifact {
@@ -66,6 +70,12 @@ func TestPrepareBasisReadsDispatchOnlyForACue(t *testing.T) {
 	// What Dispatch shows: ask-100 open on version 4, and the ancestor at work.
 	shown := dispatch.Approval{IssueKey: basisSeedAncestor, State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}
 	read := &intake.BasisRead{Approval: shown, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true}}
+	withView := review(intake.DispatchArtifactApproved, 4)
+	withView.Issue = &dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", HandedOver: true}
+	observedDone := issue(basisSeedAncestor, "done", true)
+	observedDone.Observed = true
+	question := closed("ask-q", "resolved")
+	question.Kind = record.AskQuestion
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -79,6 +89,7 @@ func TestPrepareBasisReadsDispatchOnlyForACue(t *testing.T) {
 		failureNaming string
 	}{
 		{name: "a person's approval of the version", fact: review(intake.DispatchArtifactApproved, 4), approvals: 1, issues: 1, basisRead: read},
+		{name: "a person's approval that carries its issue's view", fact: withView, approvals: 1, basisRead: read},
 		{name: "a changes request on the version", fact: review(intake.DispatchArtifactChangesRequested, 4), approvals: 1, issues: 1, basisRead: read},
 		{name: "a newer version", fact: review(intake.DispatchArtifactVersion, 5), approvals: 1, issues: 1, basisRead: read},
 		{name: "the version's own version event", fact: review(intake.DispatchArtifactVersion, 4)},
@@ -90,8 +101,10 @@ func TestPrepareBasisReadsDispatchOnlyForACue(t *testing.T) {
 		}()},
 		{name: "a close of the request", fact: closed("ask-100", "resolved"), approvals: 1, issues: 1, basisRead: read},
 		{name: "a person's answer of the request", fact: closed("ask-100", "answered")},
+		{name: "a close of a question", fact: question},
 		{name: "a close of another request", fact: closed("ask-9", "resolved")},
 		{name: "the ancestor done", fact: issue(basisSeedAncestor, "done", true), issues: 1, ancestorRead: &intake.AncestorRead{Status: "in_progress", HandedOver: true}},
+		{name: "the ancestor done, observed as Dispatch shows it", fact: observedDone, ancestorRead: &intake.AncestorRead{Status: "done", HandedOver: true}},
 		{name: "the ancestor at work", fact: issue(basisSeedAncestor, "in_progress", true)},
 		{name: "another issue done", fact: issue("LEGION-300", "done", true)},
 		{name: "an approval of a document a step stands open on", fact: review(intake.DispatchArtifactApproved, 4), open: true},
@@ -124,21 +137,36 @@ func TestPrepareBasisReadsDispatchOnlyForACue(t *testing.T) {
 			if tc.failureNaming != "" {
 				return
 			}
+			// The read names the root's waiting step as the store holds it.
+			readFor := []intake.BasisStep{intake.BasisStepOf(rig.gate())}
 			want := tc.fact
 			switch fact := want.(type) {
 			case intake.DispatchArtifact:
-				fact.BasisRead = tc.basisRead
+				fact.BasisRead = readTakenFor(tc.basisRead, readFor)
 				want = fact
 			case intake.DispatchAskClosed:
-				fact.BasisRead = tc.basisRead
+				fact.BasisRead = readTakenFor(tc.basisRead, readFor)
 				want = fact
 			case intake.DispatchIssue:
 				fact.AncestorRead = tc.ancestorRead
+				if tc.ancestorRead != nil {
+					fact.ReadFor = readFor
+				}
 				want = fact
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("prepareBasis = %#v, want %#v: the fact as decoded, with the read set only for a cue", got, want)
+				t.Fatalf("prepareBasis = %#v, want %#v: the fact as decoded, with the read and the steps it was read for set only for a cue", got, want)
 			}
 		})
 	}
+}
+
+// readTakenFor is read, nil for none, taken for steps (intake.BasisRead.For).
+func readTakenFor(read *intake.BasisRead, steps []intake.BasisStep) *intake.BasisRead {
+	if read == nil {
+		return nil
+	}
+	taken := *read
+	taken.For = steps
+	return &taken
 }

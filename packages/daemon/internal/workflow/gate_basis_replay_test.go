@@ -3,10 +3,12 @@ package workflow
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -228,7 +230,7 @@ func TestACueWithNoReadQueuesThePendingBasisSeedAndChangesNothing(t *testing.T) 
 func TestALateAncestorDoneEndsNoWaitWhileDispatchShowsItOpen(t *testing.T) {
 	done := func(read intake.AncestorRead) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: basisAncestor, Seq: 70, Type: "issue.updated", Status: record.DoneStatus, Title: "ancestor", Rank: "T",
-			HandedOver: true, AncestorRead: &read}
+			HandedOver: true, AncestorRead: &read, ReadFor: theWait}
 	}
 
 	t.Run("the read shows the ancestor reopened", func(t *testing.T) {
@@ -245,5 +247,79 @@ func TestALateAncestorDoneEndsNoWaitWhileDispatchShowsItOpen(t *testing.T) {
 		apply("done", done(intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}))
 
 		ended(t, pool, "Dispatch shows LEGION-100 done, so LEGION-100 is accepted.")
+	})
+}
+
+// A cue's read decides only the steps its preparation read Dispatch for (intake.BasisStep): a
+// step that came to wait on the ancestor between that read and the fact's apply is judged by a
+// read of its own, its pending-basis seed, and never by a read taken before it waited. Here the
+// preparation read Dispatch for LEGION-208's wait on ask-100 and found that wait's end: the
+// person's changes request on version 4, ask-100 closed, or the ancestor done. Before the fact
+// takes the lock, LEGION-209 registers a step on version 4 (on ask-200, which the architect opened
+// on that version after the changes request and the reopen, or on ask-100 itself, registered
+// from a read before its close). LEGION-208's wait ends as the read shows, and LEGION-209's stays,
+// with its seed queued, though the stale read would end it. The same holds for LEGION-208 itself
+// registered again on ask-200 after the read: the read was for its wait on ask-100.
+func TestACuesReadDecidesOnlyTheStepsItWasReadFor(t *testing.T) {
+	const later, laterDoc = "LEGION-209", "artifact-209"
+	reason := "name the rollback path"
+	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 62, reason)
+	for _, tc := range []struct {
+		name string
+		ask  string
+		fact intake.Fact
+		act  string
+	}{
+		{name: "the person's changes request", ask: "ask-200", fact: current(changes),
+			act: `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`},
+		{name: "a session's close of the request", ask: "ask-100", fact: intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
+			Artifact: basisDoc, State: "resolved", Actor: basisPerson, Mark: askSeq(61), BasisRead: readOf(requestClosed(), ancestorAtWork)},
+			act: "user:alice closed approval request ask-100 of version 4"},
+		{name: "the ancestor done", ask: "ask-200", fact: intake.DispatchIssue{Key: basisAncestor, Seq: 70, Type: "issue.updated", Status: record.DoneStatus,
+			Title: "ancestor", Rank: "T", HandedOver: true, AncestorRead: &intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, ReadFor: theWait},
+			act: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			seedIssue(t, pool, record.Issue{Key: later, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: later, Project: "LEGION", Title: "later", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "V",
+				HandedOver: true, LastDispatchSeq: 1})
+			waiting := pendingBasis()
+			waiting.RegisteredAt = basisEngineNow.Add(time.Hour)
+			seedGate(t, pool, record.PendOnBasis(record.DesignGate{Issue: later, ArtifactID: laterDoc, LatestVersion: 4}, *waiting, tc.ask))
+
+			apply("cue", tc.fact)
+
+			ended(t, pool, tc.act)
+			if gate := gatesOf(t, pool, later)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != tc.ask || record.GateOpen(gate) {
+				t.Errorf("the spec step of %s = %#v, want it still pending on %s: the read was not taken for it", later, gate, tc.ask)
+			}
+			if got := noticesOfKind(t, pool, later, "basis-ended"); len(got) != 0 {
+				t.Errorf("basis-ended notices of %s = %#v, want none", later, got)
+			}
+			want := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: laterDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: tc.ask, Generation: 1}
+			if seeds := pendingSeeds(t, pool, later); len(seeds) != 1 || seeds[0] != want {
+				t.Errorf("pending-basis seeds of %s = %#v, want its own read, %#v", later, seeds, want)
+			}
+		})
+	}
+
+	t.Run("the step registered again on another request", func(t *testing.T) {
+		pool, _, apply := registeredPending(t)
+		again := pendingBasis()
+		again.Pending = &record.PendingBasis{Ask: "ask-200"}
+		apply("register-on-ask-200", onBasis(again, 7))
+
+		apply("cue", current(changes))
+
+		if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-200" || record.GateOpen(gate) {
+			t.Fatalf("the spec step = %#v, want it still pending on ask-200: the read was taken for its wait on ask-100", gate)
+		}
+		if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 0 {
+			t.Fatalf("basis-ended notices = %#v, want none", got)
+		}
+		if seeds := pendingSeeds(t, pool, gatedRoot); len(seeds) != 3 || seeds[2].Ask != "ask-200" {
+			t.Fatalf("pending-basis seeds = %#v, want the two registrations' and the cue's on ask-200", seeds)
+		}
 	})
 }
