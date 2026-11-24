@@ -280,3 +280,53 @@ func TestTheAskAgainOfTheOwnerCoversTheHoldWhereTheOwnerWorksTheStep(t *testing.
 		})
 	}
 }
+
+// A completion at the head a merge forward replaced, while the merge forward of the head that merge
+// left is asked and has not landed, is told to wait for the landing only where its claim was sent
+// the ask's hold as a message of its own (mergedForwardRefusal): the worker of the step the task
+// stands at (mergeForwardHold), whose hold the ask did not cover. LEGION-208 in reviewing, its pull
+// request at h2, the merge of h1 forward landed at h2 and the merge of h2 asked, and the reviewer's
+// completion at h1:
+//   - the owner at its own reviewer step, held by the ask of a fresh implementer: it waits;
+//   - a fresh reviewer, held the same way: it waits;
+//   - the owner that was asked the merge itself, whose ask covered its hold: it does not wait, since
+//     it pushes the merge and is sent no landed;
+//   - one keyed agent asked the merge and at the reviewer's step, whose ask covered its hold: the
+//     same.
+//
+// The first two are the controls of the last two: the same completion where the hold went as a
+// message of its own is told to wait.
+func TestARefusedCompletionWaitsForTheLandingOnlyWhereItsClaimWasSentTheHold(t *testing.T) {
+	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+	implementer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleImplementer))
+	reviewer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer))
+	keyed := agentToken(t, "implementer")
+	ownersStep := record.Issue{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Phase: phase.Reviewing, PlaceRole: claim.RoleArchitect, StepRole: claim.RoleReviewer}
+	freshStep := record.Issue{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer}
+	for _, tc := range []struct {
+		name  string
+		issue record.Issue
+		asked claim.Token
+		by    claim.Token
+		wait  bool
+	}{
+		{name: "the owner at its step, held by the ask of a fresh implementer", issue: ownersStep, asked: implementer, by: owner, wait: true},
+		{name: "a fresh reviewer, held by the ask of a fresh implementer", issue: freshStep, asked: implementer, by: reviewer, wait: true},
+		{name: "the owner at its step, asked the merge itself", issue: ownersStep, asked: owner, by: owner},
+		{name: "one keyed agent asked the merge and at the reviewer's step", issue: freshStep, asked: keyed, by: keyed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := &record.PullRequest{Repo: "sjawhar/legion", Number: 42, State: record.PullRequestOpen, HeadSHA: "h2",
+				MergeForward: &record.MergeForward{Head: "h2", Base: "main", Phase: phase.Reviewing, Agent: tc.asked, Why: record.ConflictCheckNotGreen,
+					Earlier: []record.LandedMergeForward{{Head: "h1", Landed: "h2"}}}}
+			result, fenced := mergedForwardRefusal(tc.issue, claim.RoleReviewer, tc.by, phase.Reviewing, "h1", pr)
+			if !fenced || result.Refusal == nil {
+				t.Fatalf("the completion at h1 was taken (%+v), want it refused: this case proves nothing", result)
+			}
+			awaits := "the merge of main forward onto head h2 is asked and has not landed"
+			if got := strings.Contains(result.Refusal.Message, awaits); got != tc.wait {
+				t.Fatalf("the refusal reads %q; want it to tell the role to wait for the landing: %t", result.Refusal.Message, tc.wait)
+			}
+		})
+	}
+}
