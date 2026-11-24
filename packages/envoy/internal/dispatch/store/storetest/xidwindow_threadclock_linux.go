@@ -228,6 +228,10 @@ const (
 // second node, as "0-5" or "0,2" does, where one node reads as "0"). On one node, or with it off,
 // no page of the process is ever moved for it.
 var xidNUMABalancing = sync.OnceValue(func() bool {
+	// PLANT detector (scratch): the detector reads every machine as balanced.
+	if os.Getenv("PLANT") == "detector" {
+		return true
+	}
 	setting, err := os.ReadFile("/proc/sys/kernel/numa_balancing")
 	if err != nil || string(bytes.TrimSpace(setting)) == "0" {
 		return false
@@ -258,11 +262,18 @@ func xidHoldThread() (release func(), held bool) {
 		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0); errno != 0 {
 		return func() {}, false
 	}
-	if _, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyLocal, 0, 0); errno != 0 {
+	local := uintptr(xidMempolicyLocal)
+	// PLANT einval (scratch): a mode no kernel has, so set_mempolicy answers EINVAL.
+	if os.Getenv("PLANT") == "einval" {
+		local = 99
+	}
+	if _, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, local, 0, 0); errno != 0 {
+		os.Stderr.WriteString("PLANT: the hold's set_mempolicy answered " + errno.Error() + "\n")
 		return func() {}, false
 	}
 	return func() {
-		if mode == xidMempolicyDefault {
+		// PLANT norestore (scratch): the let-go always puts back the default.
+		if mode == xidMempolicyDefault || os.Getenv("PLANT") == "norestore" {
 			unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
 			return
 		}
@@ -306,7 +317,12 @@ func xidHoldThread() (release func(), held bool) {
 // fault in as the tracer writes them, which can fail a gap the code did not make, never pass one.
 func xidHoldMemory() bool {
 	balancing := xidNUMABalancing()
-	maps, err := os.ReadFile("/proc/self/maps")
+	path := "/proc/self/maps"
+	// PLANT mapsunread (scratch): the hold reads a file that is not there.
+	if os.Getenv("PLANT") == "mapsunread" {
+		path = "/proc/self/maps-planted-missing"
+	}
+	maps, err := os.ReadFile(path)
 	if err != nil {
 		return !balancing
 	}
@@ -323,7 +339,8 @@ func xidHoldMemory() bool {
 		if xidTracerMapping(line) {
 			unix.Syscall(unix.SYS_MADVISE, start, end-start, unix.MADV_POPULATE_WRITE)
 		}
-		if balancing {
+		// PLANT memcall (scratch): the hold calls mbind whatever NUMA balancing does, and heeds it.
+		if balancing || os.Getenv("PLANT") == "memcall" {
 			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
 			if errno == unix.EPERM || errno == unix.ENOSYS {
 				held = false
