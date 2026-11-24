@@ -1854,6 +1854,10 @@ The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and 
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
 
+**A column that holds a credential, or a hash of one, is named before its release reaches a deployment's production.**
+A migration that adds such a column names it, in its pull request, to whoever keeps the list of columns that the deployment's read-only database login does not read.
+That login reads each table a later migration adds from the moment the table exists, so a column nobody listed is readable through it from the first deploy of the release that adds it.
+
 A migration added from now on is named `<UTC timestamp>_<name>.up.sql`, the timestamp the moment its author created it, `YYYYMMDDHHMMSS` (`date -u +%Y%m%d%H%M%S`), with its census as `<same timestamp>_<name>.census.sql`.
 The numbered versions are the sequence the set grew up with;
 every one of those files keeps the number it landed with, and no number is added again:
@@ -2413,9 +2417,10 @@ It follows `0139_related_checks` and `0140_issue_embedding_spec`, which already 
 Migrations `0145_events_person_words` and `0146_comment_deliveries_session` add two partial indexes for `GET /api/v1/agents/{session_id}/answers` (`sessionanswers.List`, Routes below), which every agent host reads on every model request.
 `0145` created `events_person_words` on `events (created_at desc, id desc)` where the actor is a person and the type is `ask.answered`, `comment.created`, `message.created` or `message.answered`, and `20261111002445_drop_events_person_words` drops it:
 the route reads a fifth type now and takes that window through `events_person_words_with_declines` (`20261111002444`, below) instead.
-Through whichever index the release holds, the route reads the window's human events of those types, newest first, and keeps those whose `published_destinations` hold the session's own topic.
-A GIN index on `published_destinations` would find the session's events directly, but the outbox appends each topic it published an event to that array, and every such append would then also write the new element's entry into the index:
+Through either of those indexes, the releases before `20261124005058` read the window's human events of those types, newest first, and kept those whose `published_destinations` hold the session's own topic.
+A GIN index of `published_destinations` over every event would find the session's events directly, but the outbox appends each topic it published an event to that array, and every such append would then also write the new element's entry into the index:
 a write load every outbox append would pay for a read only this route makes.
+That holds for an index of every row, and not for the partial GIN index `20261124005058` creates (below), which takes an entry only for a person's event of the five types.
 `0146` creates `comment_deliveries_session` on `comment_deliveries (session_id, created_at desc)` where `session_id` is not null:
 the route reads the session's mentions created since an hour before its window as one range of it.
 Each of these two was a plain `create index` inside the runner's transaction, so it held `SHARE` on its table while it built: writes to it wait, reads do not.
@@ -2431,6 +2436,26 @@ the release before this one reads `ask.answered`, `comment.created`, `message.cr
 `drop index` takes `ACCESS EXCLUSIVE` on `events` for the instant it unlinks the index, inside the runner's transaction, so every read and write of an event waits behind it for that moment, and it reads no row of the table.
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `events`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
+
+Migration `20261124005058_events_person_words_destinations` creates `events_person_words_destinations` on `events using gin (published_destinations, created_at) with (fastupdate = off)`, partial on the predicate of `events_person_words_with_declines`: a person's event of the five types.
+The answers route (`sessionanswers.List`) tests the session's topic with `published_destinations @> array[<topic>]`, which GIN's `array_ops` serves, where no GIN operator class serves `= any`;
+the column is `not null` (`0020_outbox_retry`), and for an array that is not null the two tests hold for the same rows.
+So one index condition holds both the session's topic and the window's start, and the read reads only the session's events in its window: no event that only other sessions' topics received, and no delivery to the session older than the window.
+`events_person_words_with_declines` stays: a pod of the release before tests `= any` and reads through it while this release rolls out.
+The index takes entries only for a person's event of the five types, at its insert and when the outbox writes the event's array, so the outbox's writes of every other event write nothing to it.
+`fastupdate` is off: with GIN's pending list on, every search also reads the whole list beside the index, this read runs on every model request of every agent host, and the inserts that match the predicate are few, so each of them writes its entries into the index at once.
+The operator class of `created_at` in a GIN index is `btree_gin`'s, which migration `20261124002258_btree_gin` creates, and a deploy applies `20261124002258` before the deploy that applies this migration:
+a pending migration that creates an extension takes the concurrent index exemption from every later pending migration, so the census refuses this build beside it while `events` is above the table limit ("Pre-deploy census" below).
+The build runs `concurrently`, outside the runner's transaction, for the reason `20261111002444` gives, and a start applies it before it serves, so its build is time the server is down at the deploy that carries it.
+Its census answers `0`.
+
+Migration `20261124005151_events_parked_moves` creates `events_parked_moves` on `events (issue_key, seq)`, partial on the conditions `parkedMoveLateral` (`internal/dispatch/api/priority_queries.go`) writes on the event: `type = 'issue.updated'`, `payload->'changed' @> '"status"'::jsonb` and `payload->>'status' in ('icebox', 'backlog')`.
+That lateral reads when a parked issue was moved into `backlog` or `icebox`, for the parked fault of `GET /api/v1/priorities` and for the listing's `?moved=true`.
+Postgres uses a partial index only where the query's conditions imply its predicate, so the predicate is written as the lateral writes its conditions and the lateral's text does not change;
+a change to `model.IssueStatusesParked` needs a new index whose predicate holds the new list.
+Through the index the lateral reads the issue's moves backwards from the newest and stops at the first, where before it read every event of each parked issue and sorted them.
+It is built `concurrently` too, after `20261124002258`, and a start applies it before it serves, so its build adds to the time the server is down at the deploy that carries it.
+Its census answers `0`.
 
 Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
 the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
@@ -4624,6 +4649,7 @@ Each item below names a path with its method and identity, then its purpose.
   What people wrote that Dispatch delivered to one session, newest first:
   each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
   a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent or queued message deliveries, and its sent or queued comment deliveries (mentions).
+  The read finds the session's events in its window through the partial GIN index `events_person_words_destinations` (`20261124005058`, Database migrations above), whose one index condition holds the session's topic and the window's start.
   Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
   Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, whoever asked it, and its `owner`, `ref` and `href`.
   A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own:
