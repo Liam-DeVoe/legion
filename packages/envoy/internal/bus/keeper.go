@@ -214,11 +214,12 @@ func answeredRequests(stream string, info *nats.StreamInfo, from int, err error)
 }
 
 // serverAnswered reports whether err is the server's own answer to a JetStream request: an API
-// error, a stream that is not there among them. A wait that ran out (unanswered) is no answer,
-// and neither is any other error a client makes up for itself.
+// error, a stream that is not there among them (nats.ErrStreamNotFound unwraps to its
+// *nats.APIError). A wait that ran out (unanswered) is no answer, and neither is any other error a
+// client makes up for itself.
 func serverAnswered(err error) bool {
 	var apiErr *nats.APIError
-	return err != nil && !unanswered(err) && (errors.As(err, &apiErr) || errors.Is(err, nats.ErrStreamNotFound))
+	return !unanswered(err) && errors.As(err, &apiErr)
 }
 
 // grantRefused reports whether err is the server's refusal of a keeper request under the
