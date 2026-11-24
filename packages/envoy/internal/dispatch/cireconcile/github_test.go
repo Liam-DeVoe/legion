@@ -429,7 +429,7 @@ func queryNumber(values url.Values, name string, fallback int) int {
 // client is a githubapp.Client on a throwaway key, pointed at this stand-in, obeying and
 // recording the shared rate limits as every Dispatch process's client does. It reads a limit's
 // wait against the passes' clock and bounds the limit's write on recordClock (limitClock), and
-// its own bound on each call is past any run (githubapptest.RequestTimeoutPastTheRun): so a call
+// its calls end at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): so a call
 // the stand-in holds (hold, holdQuery) ends only where the test moves the passes' clock to the
 // pass's bound or a caller's deadline, or where the caller cancels it.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
@@ -438,7 +438,7 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits),
 		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}),
-		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+		githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(f.t)))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}

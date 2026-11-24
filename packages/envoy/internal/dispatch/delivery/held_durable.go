@@ -50,6 +50,11 @@ const (
 	intakeHoldMargin = 2 * time.Second
 )
 
+// IntakeHoldTTLFloor is the TTL an intake's hold must exceed (IntakeBounds.HoldTTL): its renewal
+// interval and its margin together, the least duty.TryHold takes with them, since a TTL no longer
+// than that leaves no renewal time to be confirmed before the hold reports itself lost.
+const IntakeHoldTTLFloor = intakeHoldRenew + intakeHoldMargin
+
 // intakeHoldName names the hold a process delivers from durable under. Its token records what the
 // next holder needs (intakeHoldToken).
 func intakeHoldName(durable string) string { return "delivery-intake-" + durable }
@@ -243,6 +248,22 @@ type heldDurable struct {
 	// intakeMessageTimeout, which newHeldDurable gives it, and a test's own, set before Run, as
 	// clock is.
 	messageTimeout time.Duration
+	// messageDeadline is the end a test gives one message's handling and one run's read in place
+	// of messageTimeout after each began (IntakeBounds.MessageDeadline); its zero value,
+	// production's, keeps messageTimeout. The ack wait still derives from messageTimeout.
+	messageDeadline clock.Deadline
+	// holdTTL is how long this intake's hold lasts on the database's clock after each take and
+	// renewal (duty.HoldOptions.TTL): intakeHoldTTL, which newHeldDurable gives it, and a test's
+	// own (IntakeBounds.HoldTTL), set before Run. holdCallDeadline is the end a test gives each
+	// try's read and take of the hold and each read of the durable (takeHold, lookupDurable) in
+	// place of intakeHoldRenew on holdClock (IntakeBounds.HoldCallDeadline); its zero value,
+	// production's, keeps intakeHoldRenew.
+	holdTTL          time.Duration
+	holdCallDeadline clock.Deadline
+	// stopDeadline is the end a test gives this intake's stop in place of intakeStopBudget after
+	// Run's ctx ends (stopContext, IntakeBounds.StopDeadline); its zero value, production's, keeps
+	// intakeStopBudget.
+	stopDeadline clock.Deadline
 	// holdClock is the time the durable's hold runs on: this intake's tries for it every
 	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound on
 	// each try's read and take of the hold and on each read of the durable (takeHold,
@@ -284,6 +305,7 @@ func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() n
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
 		config: config, name: config().Durable, key: key, handle: handle,
 		clock: clock.Real(), holdClock: clock.Real(), messageTimeout: intakeMessageTimeout,
+		holdTTL: intakeHoldTTL,
 	}
 }
 
@@ -317,7 +339,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
-	stopping, release := stopContext(ctx, d.clock)
+	stopping, release := stopContext(ctx, d.clock, d.stopDeadline)
 	defer release()
 	defer d.stop(stopping)
 	// The tries tick on a clock.Ticker durableBindInterval apart from the run's start, and the
@@ -397,11 +419,15 @@ func (d *heldDurable) attempt(ctx context.Context) {
 	duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
 }
 
-// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew on the hold's
-// clock (heldDurable.holdClock), the clock the try or the check that reads it runs on.
+// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew on the
+// hold's clock (heldDurable.holdClock), the clock the try or the check that reads it runs on, or by
+// the end a test gave it (holdCallDeadline).
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
-	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownTimeout).
-	lookup, cancel := clock.WithShownTimeout(d.holdClock, ctx, intakeHoldRenew)
+	bounded, cancelBound := d.holdCallDeadline.WithTimeout(d.holdClock, ctx, intakeHoldRenew)
+	defer cancelBound()
+	// nats.go is shown a deadline it can read: a fake's is its own, and no end shows none
+	// (clock.WithShownDeadline).
+	lookup, cancel := clock.WithShownDeadline(bounded)
 	defer cancel()
 	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
 }
@@ -413,10 +439,11 @@ const heldElsewhere = "dispatch delivery: NATS consumer held by another process;
 // records, and reports whether this intake holds it now. duty.TryHold records its own token as it
 // takes a lapsed hold, so the lapsed hold's token is read first (duty.HoldToken). The read and the
 // take are bounded together by intakeHoldRenew on the hold's clock (heldDurable.holdClock), the
-// clock the try runs on.
+// clock the try runs on, or by the end a test gave them (holdCallDeadline), and the hold takes
+// holdTTL (intakeHoldTTL in production).
 func (d *heldDurable) takeHold(ctx context.Context) bool {
 	holdName := intakeHoldName(d.name)
-	bounded, cancel := d.holdClock.WithTimeout(ctx, intakeHoldRenew)
+	bounded, cancel := d.holdCallDeadline.WithTimeout(d.holdClock, ctx, intakeHoldRenew)
 	defer cancel()
 	token, live, err := duty.HoldToken(bounded, d.leases, holdName)
 	switch {
@@ -430,7 +457,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		return false
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
-		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token, Clock: d.holdClock,
+		TTL: d.holdTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token, Clock: d.holdClock,
 	})
 	if err != nil {
 		if ctx.Err() == nil {

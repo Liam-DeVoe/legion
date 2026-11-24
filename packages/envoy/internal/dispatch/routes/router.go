@@ -33,6 +33,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -171,6 +172,12 @@ type AppContextOptions struct {
 	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
 	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// TestHookDeadline is the end a test gives a test-hook call's waits; the zero value keeps the
+	// server's ten seconds. See api.Deps.TestHookDeadline.
+	TestHookDeadline clock.Deadline
+	// GitHubRequestDeadline is the end a test gives each call of the API's GitHub App client; the
+	// zero value keeps githubapp.RequestTimeout. See api.DepsInput.GitHubRequestDeadline.
+	GitHubRequestDeadline clock.Deadline
 	// ListenerCallDeadline is the end a test gives every listener call's window; the zero value
 	// keeps envoy.CallWindow. See api.DepsInput.ListenerCallDeadline.
 	ListenerCallDeadline envoy.CallDeadline
@@ -246,6 +253,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,
+		GitHubRequestDeadline:  opts.GitHubRequestDeadline,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
@@ -255,6 +263,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
+		TestHookDeadline:       opts.TestHookDeadline,
 		ListenerCallDeadline:   opts.ListenerCallDeadline,
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,

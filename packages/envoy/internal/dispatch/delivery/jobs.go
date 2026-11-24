@@ -238,7 +238,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := j.clock.WithTimeout(j.ctx, j.messageTimeout)
+	ctx, cancel := j.messageDeadline.WithTimeout(j.clock, j.ctx, j.messageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }

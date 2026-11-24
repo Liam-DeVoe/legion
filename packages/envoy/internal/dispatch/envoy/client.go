@@ -303,56 +303,35 @@ type Client struct {
 const CallWindow = 5 * time.Second
 
 // CallDeadline is the end a test gives every listener call's window in place of CallWindow after
-// the call began: the moment its own waits give up (testwait.GiveUpAt), so a call the test's
-// stand-in listener holds ends when the test would give up on it and not before, or no end at
-// all for a test binary run under -timeout 0, whose waits have none. Its zero value is
-// production's, CallWindow. CallsEndAt makes one; String and ParseCallDeadline are the form a
-// test hands a Dispatch process (cmd/dispatch's DISPATCH_TEST_LISTENER_CALL_DEADLINE).
+// the call began: a clock.Deadline, the moment the test's own waits give up (testwait.GiveUpAt),
+// so a call the test's stand-in listener holds ends when the test would give up on it and not
+// before, or no end at all for a test binary run under -timeout 0, whose waits have none. Its zero
+// value is production's, CallWindow. CallsEndAt makes one; String and ParseCallDeadline are the
+// form a test hands a Dispatch process (cmd/dispatch's DISPATCH_TEST_LISTENER_CALL_DEADLINE), the
+// one form every DISPATCH_TEST_*_DEADLINE setting takes (clock.ParseDeadline).
 type CallDeadline struct {
-	at        time.Time
-	unbounded bool
+	end clock.Deadline
 }
-
-// callDeadlineNone is CallDeadline's written form for no end at all.
-const callDeadlineNone = "none"
 
 // CallsEndAt is the CallDeadline at end, or no end at all when bounded is false: what
-// testwait.GiveUpAt answers, under -timeout 0 with bounded false. A bounded end is a moment; the
-// zero time, which would read as production's CallWindow, panics.
+// testwait.GiveUpAt answers, under -timeout 0 with bounded false (clock.DeadlineAt, which panics
+// on a bounded zero time, which would read as production's CallWindow).
 func CallsEndAt(end time.Time, bounded bool) CallDeadline {
-	if !bounded {
-		return CallDeadline{unbounded: true}
-	}
-	if end.IsZero() {
-		panic("envoy: CallsEndAt with a bounded end needs a moment, not the zero time")
-	}
-	return CallDeadline{at: end}
+	return CallDeadline{end: clock.DeadlineAt(end, bounded)}
 }
 
-// String is the deadline's written form: its moment in RFC 3339 with nanoseconds, "none" for no
-// end, and "" for the zero value, which leaves CallWindow.
-func (d CallDeadline) String() string {
-	switch {
-	case d.unbounded:
-		return callDeadlineNone
-	case d.at.IsZero():
-		return ""
-	}
-	return d.at.Format(time.RFC3339Nano)
-}
+// String is the deadline's written form (clock.Deadline.String): its moment in RFC 3339 with
+// nanoseconds, "none" for no end, and "" for the zero value, which leaves CallWindow.
+func (d CallDeadline) String() string { return d.end.String() }
 
-// ParseCallDeadline reads String's form back: "none", or a moment in RFC 3339. Anything else,
-// the empty string among it, is an error, since only a test sets a deadline and it always sets
-// one of the two.
+// ParseCallDeadline reads String's form back, through the one parser of a test's deadline
+// (clock.ParseDeadline): "none", or a moment in RFC 3339, and anything else an error.
 func ParseCallDeadline(value string) (CallDeadline, error) {
-	if value == callDeadlineNone {
-		return CallDeadline{unbounded: true}, nil
+	end, err := clock.ParseDeadline(value)
+	if err != nil {
+		return CallDeadline{}, fmt.Errorf("a listener call deadline: %w", err)
 	}
-	at, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil || at.IsZero() {
-		return CallDeadline{}, fmt.Errorf("a listener call deadline is an RFC 3339 moment or %q, not %q", callDeadlineNone, value)
-	}
-	return CallDeadline{at: at}, nil
+	return CallDeadline{end: end}, nil
 }
 
 // Option configures a Client.
@@ -448,15 +427,9 @@ func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 }
 
 // callWindow is one call's window from ctx: CallWindow on the client's clock, or the end a test
-// set (WithCallDeadline) on that clock, or none at all.
+// set (WithCallDeadline) on that clock, or none at all (clock.Deadline.WithTimeout).
 func (c *Client) callWindow(ctx context.Context) (context.Context, context.CancelFunc) {
-	switch {
-	case c.callDeadline.unbounded:
-		return context.WithCancel(ctx)
-	case !c.callDeadline.at.IsZero():
-		return c.clock.WithDeadline(ctx, c.callDeadline.at)
-	}
-	return c.clock.WithTimeout(ctx, CallWindow)
+	return c.callDeadline.end.WithTimeout(c.clock, ctx, CallWindow)
 }
 
 // windowedBody is an answer's body whose Close also ends the window roundTrip opened for its call.

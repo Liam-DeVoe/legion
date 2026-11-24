@@ -99,8 +99,8 @@ type headWriteProcess struct {
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
 // the first one until the row releases it or the handler making it is abandoned. That read is
 // where a handler can be held for this row: everything after it is the head write, which is the
-// failure under test. The client's own bound on that read is past any run
-// (githubapptest.RequestTimeoutPastTheRun), so only the row's release or the handler's own end
+// failure under test. The client's own bound on that read is the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), so only the row's release or the handler's own end
 // ends it while the row stages its next step. The intake's message timeout is past the run too
 // (ackWaitPastTheRun): the row's envelope must reach the keeper by the take-over's recreate at the
 // ack floor, never by the server's redelivery at the ack wait.
@@ -130,7 +130,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *head
 		}
 		mustEncode(t, w, []any{})
 	})
-	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })

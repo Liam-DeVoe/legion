@@ -105,15 +105,52 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
-	return startIntakes(ctx, connect, pool, leases, github, broker, settingsWake, pushes, attributor, clock.Real(), intakeMessageTimeout)
+//
+// bounds replace production's bounds for a test process (IntakeBounds); a deployment passes none.
+// Only the first is read.
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor, bounds ...IntakeBounds) (stop func(), err error) {
+	return startIntakes(ctx, connect, pool, leases, github, broker, settingsWake, pushes, attributor, clock.Real(), intakeMessageTimeout, bounds...)
+}
+
+// IntakeBounds replace production's bounds on both intakes StartIntakes runs, for a test that runs
+// them where it cannot move their clocks: cmd/dispatch's test settings, and its in-process shutdown
+// rows. A zero field keeps production's bound, so the zero value is what a deployment runs.
+type IntakeBounds struct {
+	// HoldTTL replaces intakeHoldTTL (15 s): how long an intake's hold lasts on the database's
+	// clock after each take and renewal (heldDurable.holdTTL). The hold is still renewed every
+	// intakeHoldRenew and reports itself lost intakeHoldMargin before it lapses, so a TTL must
+	// exceed IntakeHoldTTLFloor, or every take fails (duty.TryHold); a holder that dies is replaced
+	// only once the TTL has passed after its last renewal.
+	HoldTTL time.Duration
+	// HoldCallDeadline is the end a test gives each try's read and take of an intake's hold and
+	// each read of its durable, in place of intakeHoldRenew (5 s) after each began
+	// (heldDurable.holdCallDeadline); zero is production's.
+	HoldCallDeadline clock.Deadline
+	// MessageDeadline is the end a test gives one message's handling and the job intake's read of
+	// one run, in place of intakeMessageTimeout (a minute) after each began
+	// (heldDurable.messageDeadline); zero is production's. The durable's ack wait still derives
+	// from intakeMessageTimeout (intakeAckWait), five minutes.
+	MessageDeadline clock.Deadline
+	// StopDeadline is the end a test gives the intakes' stop, in place of intakeStopBudget (15 s)
+	// after ctx ends, before the stop gives the handlers still running up (heldDurable.stopDeadline,
+	// stopContext); zero is production's.
+	StopDeadline clock.Deadline
+}
+
+// apply sets each bound b names on d, leaving the rest as they are.
+func (b IntakeBounds) apply(d *heldDurable) {
+	if b.HoldTTL > 0 {
+		d.holdTTL = b.HoldTTL
+	}
+	d.holdCallDeadline, d.messageDeadline, d.stopDeadline = b.HoldCallDeadline, b.MessageDeadline, b.StopDeadline
 }
 
 // startIntakes is StartIntakes with the clock both intakes run on (heldDurable.clock) and their
 // message timeout (heldDurable.messageTimeout): clock.Real and intakeMessageTimeout from
 // StartIntakes, and a test's clocktest.Fake, which moves the intakes' stop deadlines only when the
-// test moves it, and a timeout of the test's own.
-func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor, c clock.Clock, messageTimeout time.Duration) (stop func(), err error) {
+// test moves it, and a timeout of the test's own. The first of bounds applies after both, to each
+// intake.
+func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor, c clock.Clock, messageTimeout time.Duration, bounds ...IntakeBounds) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -134,6 +171,10 @@ func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, c, settings)
 	job.messageTimeout = messageTimeout
+	if len(bounds) > 0 {
+		bounds[0].apply(&intake.heldDurable)
+		bounds[0].apply(&job.heldDurable)
+	}
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })

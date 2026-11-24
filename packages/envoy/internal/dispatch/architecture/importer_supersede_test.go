@@ -142,7 +142,7 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL, githubapp.WithLimits(limits),
-		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+		githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}

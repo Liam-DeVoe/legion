@@ -99,6 +99,12 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// ShutdownDrainDeadline is the end a test gives the drain Shutdown spends on document work, in
+	// place of ShutdownDrainBudget (9 s) after it began; the zero value is production's. Only a
+	// test process sets another (cmd/dispatch: DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE, under the
+	// test hooks): its give-up, for an end-to-end row whose settlement at shutdown waits on a step
+	// of the row's own.
+	ShutdownDrainDeadline clock.Deadline
 	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
 	// a published write's loss check (publishedLossTimeout, recordPublishedLoss), VerifyMark's
 	// wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
@@ -181,6 +187,8 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// shutdownDrain is Deps.ShutdownDrainDeadline.
+	shutdownDrain clock.Deadline
 	// clock is Deps.Clock, the real clock when that is nil: what a room query's wait, its flush
 	// answer's timeout and an answer's send bound run on (roomQueries), a published write's loss
 	// check (publishedLossTimeout), VerifyMark's wait for a mark (markWait), the compaction queue's
@@ -928,6 +936,7 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	shutdownDrain := deps.ShutdownDrainDeadline
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -970,6 +979,7 @@ func New(deps Deps) *Service {
 		clock:             serviceClock,
 		excerptClock:      deps.Clock,
 		editNoticeQuiet:   editNoticeQuiet,
+		shutdownDrain:     shutdownDrain,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1210,7 +1220,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
 // is left of the caller's deadline, so a caller's deadline has to exceed it. It runs on the
-// service's clock (Deps.Clock), so a test drives it with a fake.
+// service's clock (Deps.Clock), so a test drives it with a fake; Deps.ShutdownDrainDeadline ends it
+// at a test process's give-up instead, which no fake reaches.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1282,7 +1293,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.shutdownDrain.WithTimeout(s.clock, ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

@@ -342,11 +342,11 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 // the stored jobs stay finished and the run's jobs stay complete.
 func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	t.Parallel()
-	// githubapp's own bound on a call runs on the wall clock, so this row's client takes one past
-	// any run (githubapptest.RequestTimeoutPastTheRun): only the row's release may end the read
-	// GitHub holds, which then lands after the run ended. At githubapp.RequestTimeout (20 s), a slow
-	// run would end the held read first, and the client would ask again, so the row would pass with
-	// no late read landing.
+	// githubapp's own bound on a call runs on the wall clock, so this row's client ends a call only
+	// at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): only the row's release may
+	// end the read GitHub holds, which then lands after the run ended. At githubapp.RequestTimeout
+	// (20 s), a slow run would end the held read first, and the client would ask again, so the row
+	// would pass with no late read landing.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -362,7 +362,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	}
 	fake.mu.Unlock()
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun)), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t))), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	// The move that fires the read returns once the read has, which waits at GitHub for the row's
 	// release, so it is made off the test goroutine (clocktest.Fake.StartMove). The row joins it,
@@ -488,8 +488,8 @@ func (c *concurrentJobClock) fireAll() (join func(t testing.TB)) {
 // at most reconcilePartialConcurrency runs' jobs at a time, and reads every run once. Unbounded, it
 // opened one listing per run at once, which past GitHub's 100 concurrent requests rate-limits the
 // App. The held listings do not watch the request's context, so the client's own bound on a call is
-// past any run (githubapptest.RequestTimeoutPastTheRun): at githubapp.RequestTimeout (20 s) it
-// would give each held listing up and ask again, and GitHub would see more listings at once than
+// the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): at githubapp.RequestTimeout (20 s)
+// it would give each held listing up and ask again, and GitHub would see more listings at once than
 // there are slots.
 func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	t.Parallel()
@@ -516,7 +516,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 			{"name": "build", "started_at": "2026-09-03T12:00:00Z", "completed_at": "2026-09-03T12:04:00Z", "conclusion": "success"},
 		}})
 	})
-	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handlers it holds.
 	t.Cleanup(releaseOnce)
@@ -573,9 +573,9 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	}
 	// The slot holders' listings wait on held, and the listing of the run that waited, the first
 	// to reach GitHub once every slot holder has, on waited. The client's own bound on a call is
-	// past any run (githubapptest.RequestTimeoutPastTheRun), so only the row's release or the read's
-	// own deadline ends a held listing: at githubapp.RequestTimeout (20 s) the slot holders' reads
-	// would end while the row stages its next step and hand their slots to the waiting run early.
+	// the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the row's release or the
+	// read's own deadline ends a held listing: at githubapp.RequestTimeout (20 s) the slot holders'
+	// reads would end while the row stages its next step and hand their slots to the waiting run early.
 	held, waited := make(chan struct{}), make(chan struct{})
 	releaseHeld, releaseWaited := sync.OnceFunc(func() { close(held) }), sync.OnceFunc(func() { close(waited) })
 	var mu sync.Mutex
@@ -605,7 +605,7 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	}
 
 	clock := newConcurrentJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun)), clock, nil)
+	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t))), clock, nil)
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
@@ -746,11 +746,12 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	jobs.ctx = runCtx
 
 	// The durable as a take-over leaves it, created here because Run is not what binds it, but for
-	// its ack wait, an hour, so that only a hand-back reaches the next holder within the row. It
+	// its ack wait, a day, so that only a hand-back reaches the next holder within the row: staged
+	// state for the server's clock, longer than any -timeout CI gives this package, not a wait. It
 	// starts at new messages (jobConsumerConfig), so a durable an earlier row left on the
 	// package's shared stream is recreated and handed this row's events alone.
 	wanted := jobConsumerConfig()
-	wanted.AckWait = time.Hour
+	wanted.AckWait = 24 * time.Hour
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 		t.Fatalf("delete the job durable: %v", err)
 	}

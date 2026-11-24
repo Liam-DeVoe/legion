@@ -356,8 +356,8 @@ func writeStatus(w http.ResponseWriter, status int) {
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
-// pointed at it, whose own bound on each call is past any run
-// (githubapptest.RequestTimeoutPastTheRun): so a read the fake holds (releasableHold) ends only
+// pointed at it, whose calls end at the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp): so a read the fake holds (releasableHold) ends only
 // where the row releases it, moves the importer's clock to the flight's deadline, closes the
 // importer, or ends.
 func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
@@ -369,7 +369,7 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base,
-		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+		githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}
@@ -1540,7 +1540,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 // A flight stops its deadline as it ends (flight's cancel), so a deadline still pending is a
 // flight nothing ended before the move, whose held read then ends on that deadline. A read that
 // ended first on another bound, such as the GitHub client's own on each call
-// (githubapptest.RequestTimeoutPastTheRun), ends the flight with context.DeadlineExceeded too,
+// (githubapptest.RequestDeadlineAtTheGiveUp), ends the flight with context.DeadlineExceeded too,
 // and with "deadline" in last_error, so only this check tells that end from the flight's own.
 func moveToTheFlightsDeadline(t *testing.T, clock *clocktest.Fake, deadline time.Time, flight string) {
 	t.Helper()

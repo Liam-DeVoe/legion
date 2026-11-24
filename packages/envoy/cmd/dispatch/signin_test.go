@@ -25,7 +25,7 @@ import (
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
-	pool.DelayRevocation(time.Hour)
+	pool.DelayRevocation(stagedPastTheRun)
 	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL()})
 	signIn := signInFlow(boot)
 	database := storetest.Open(t)

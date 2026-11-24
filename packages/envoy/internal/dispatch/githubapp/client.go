@@ -336,6 +336,14 @@ func WithRequestTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.requestTimeout = timeout }
 }
 
+// WithRequestDeadline ends each API call the client sends at deadline, a test's give-up or no end
+// (clock.Deadline), in place of the client's own bound after the call began; the zero value keeps
+// that bound, which is what a deployment runs. It is for a test whose stand-in for GitHub holds a
+// call for as long as the test's own waits last.
+func WithRequestDeadline(deadline clock.Deadline) Option {
+	return func(c *Client) { c.requestDeadline = deadline }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -359,6 +367,9 @@ type Client struct {
 	// requestTimeout bounds each API call the client sends (send): RequestTimeout unless
 	// WithRequestTimeout replaces it.
 	requestTimeout time.Duration
+	// requestDeadline is the end a test gave each call in place of requestTimeout
+	// (WithRequestDeadline); its zero value, production's, keeps requestTimeout.
+	requestDeadline clock.Deadline
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -385,6 +396,13 @@ type Client struct {
 	// installationRepos caches ListInstallationRepositoriesByID's own answer per installation id,
 	// for the same reason.
 	installationRepos *ttlCache[int64, []string]
+}
+
+// RequestDeadline is the end a test gave each API call the client sends (WithRequestDeadline), the
+// zero value where none was given. cmd/dispatch's settings tests read it off each client main
+// builds.
+func (c *Client) RequestDeadline() clock.Deadline {
+	return c.requestDeadline
 }
 
 // installationsCacheKey is the one key installations (a single answer, not per-installation)
@@ -1014,7 +1032,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	bounded, cancel := c.requestDeadline.WithTimeout(clock.Real(), ctx, c.requestTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {

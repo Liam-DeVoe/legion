@@ -425,7 +425,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := in.clock.WithTimeout(handling, in.messageTimeout)
+	ctx, cancel := in.messageDeadline.WithTimeout(in.clock, handling, in.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope

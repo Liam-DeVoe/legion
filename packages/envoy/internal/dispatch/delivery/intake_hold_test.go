@@ -378,8 +378,8 @@ func awaitTakeOver(t *testing.T, tries *clocktest.Fake, taken func() bool, failu
 // its own, storetest.SecondProcess) and natsURL's server, until the test ends or its stop is
 // called. Its GitHub answers every pull request 404 after counting it, which the intake logs and
 // acknowledges, and holds the fetch of each number block reports true until the handler's context
-// ends or the test's end. The client's own bound on that fetch is past any run
-// (githubapptest.RequestTimeoutPastTheRun), so a row stages its next step while the fetch is held.
+// ends or the test's end. The client's own bound on that fetch is the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), so a row stages its next step while the fetch is held.
 // options are added to its NATS client's own.
 func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, options ...bus.ConnectOption) *intakeProcess {
 	t.Helper()
@@ -419,7 +419,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
-	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })

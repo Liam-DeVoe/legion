@@ -191,16 +191,23 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
 // answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
 // which no budget inside stopGrace could wait out. It runs on the intake's clock
-// (heldDurable.clock), so a test moves a fake past it rather than shrinking it.
+// (heldDurable.clock), so a test of this package moves a fake past it rather than shrinking it, and
+// a test that starts the intakes from another package, on the real clock, ends it at its give-up
+// (IntakeBounds.StopDeadline, heldDurable.stopDeadline).
 const intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that
-// ends intakeStopBudget after ctx does on c, armed by ctx's end, so everything of the stop -- a
-// take-over under way at that moment, the handler wait, the drain's wait -- runs under one
-// deadline counted from it. release frees it, for run to defer.
-func stopContext(ctx context.Context, c intakeClock) (stopping context.Context, release func()) {
+// ends intakeStopBudget after ctx does on c, or at the end a test gave it (stop, a
+// clock.Deadline), armed by ctx's end, so everything of the stop -- a take-over under way at that
+// moment, the handler wait, the drain's wait -- runs under one deadline counted from it. release
+// frees it, for run to defer.
+func stopContext(ctx context.Context, c intakeClock, stop clock.Deadline) (stopping context.Context, release func()) {
 	stopping, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	disarm := context.AfterFunc(ctx, func() { c.AfterFunc(intakeStopBudget, cancel) })
+	disarm := context.AfterFunc(ctx, func() {
+		if span, bounded := stop.Within(c, intakeStopBudget); bounded {
+			c.AfterFunc(span, cancel)
+		}
+	})
 	return stopping, func() {
 		disarm()
 		cancel()

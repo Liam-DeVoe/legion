@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -340,10 +341,23 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 // there and never because the test was slow to; on clock.Real it is Healthy, and so it is on a nil
 // c.
 func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
+	return p.HealthyOnBy(ctx, c, clock.Deadline{})
+}
+
+// HealthyOnBy is HealthyOn with its bound the end a test process gave it (d, a clock.Deadline) in
+// healthProbeTimeout's place: the zero value keeps healthProbeTimeout, a moment bounds the read
+// there on c, and no end bounds it not at all. cmd/dispatch's shutdown passes its probes' deadline
+// (DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE), the zero value in a deployment.
+func (p *Pool) HealthyOnBy(ctx context.Context, c clock.Clock, d clock.Deadline) (int, error) {
 	if c == nil {
 		c = clock.Real()
 	}
-	return p.healthyWithin(ctx, c, healthProbeTimeout)
+	bound, bounded := d.Within(c, healthProbeTimeout)
+	if !bounded {
+		// No end: a bound past any read, as clock.WithShownDeadline shows one.
+		bound = time.Duration(math.MaxInt64)
+	}
+	return p.healthyWithin(ctx, c, bound)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not

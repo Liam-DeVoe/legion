@@ -31,16 +31,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -2179,7 +2182,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 						"DISPATCH_TEST_HOOKS":            "1",
 						"DISPATCH_TEST_ROSTER_UNCACHED":  value,
 						"ENVOY_URL":                      listener.URL,
-						"DISPATCH_TEST_ROUTE_ROSTER_TTL": time.Hour.String(),
+						"DISPATCH_TEST_ROUTE_ROSTER_TTL": stagedPastTheRun.String(),
 					}), routes.AppContextOptions{Store: storetest.Open(t), Lifetime: t.Context()})
 					for range 2 {
 						response := httptest.NewRecorder()
@@ -2260,6 +2263,126 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HTTP_DRAIN_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_HTTP_DRAIN_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.HTTPDrainDeadline })
+			// Its reader: the stop serveUntilStopped runs, whose wait for the requests in flight it ends.
+			if got := stopBoundsOf(boot).httpDrain; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_HTTP_DRAIN_DEADLINE: the stop's drain ends at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.DocumentShutdownDeadline })
+			// Its readers: the document service main builds, whose drain it ends, and the stop, whose
+			// timeout around the service's Shutdown it ends.
+			if got := documentDeps(boot, docs.Deps{}).ShutdownDrainDeadline; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE: docs.Deps.ShutdownDrainDeadline = %q, want %q", got, testDeadline)
+			}
+			if got := stopBoundsOf(boot).documentDrain; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE: the stop's document timeout ends at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.ShutdownProbeDeadline })
+			// Its reader: the stop's health probes (silence.bound).
+			if got := stopBoundsOf(boot).probe; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE: the stop's probes end at %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE": func(t *testing.T) {
+			testHookDeadlineReachesBoot(t, "DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.DashboardPublishDeadline })
+		},
+		"DISPATCH_TEST_READ_HEADER_DEADLINE": func(t *testing.T) {
+			testHookDeadlineReachesBoot(t, "DISPATCH_TEST_READ_HEADER_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.ReadHeaderDeadline })
+			// Its reader: the server main runs. Unset, production's ten seconds; a moment, the span to it
+			// from the server's making; none, net/http's no timeout.
+			if server := httpServerFor(resolveWith(t, map[string]string{}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout != readHeaderTimeout {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE unset: ReadHeaderTimeout = %v, want readHeaderTimeout (%v)", server.ReadHeaderTimeout, readHeaderTimeout)
+			}
+			later := clock.DeadlineAt(time.Now().Add(time.Hour), true)
+			if server := httpServerFor(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": later.String()}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout <= 59*time.Minute || server.ReadHeaderTimeout > time.Hour {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE an hour away: ReadHeaderTimeout = %v, want the span to it", server.ReadHeaderTimeout)
+			}
+			if server := httpServerFor(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": "none"}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout >= 0 {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE=none: ReadHeaderTimeout = %v, want a negative one, net/http's none", server.ReadHeaderTimeout)
+			}
+		},
+		"DISPATCH_TEST_GITHUB_REQUEST_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_GITHUB_REQUEST_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.GitHubRequestDeadline })
+			// Its readers: every App client main builds, each read off the client itself - the API's
+			// (which the intakes and the architecture import share), the CI reconcile's and the
+			// webhook redelivery sweep's - with none where the setting is unset. Neither pass runs
+			// anything, so an empty store is every database they need.
+			_, pemText := githubapptest.Key(t)
+			app := &auth.AppConfig{ClientID: "Iv1.request-deadline", PEM: pemText}
+			_, url := testnats.Start(t)
+			client := startDispatchStream(t, []string{url}, nil)
+			for _, row := range []struct {
+				boot bootConfig
+				want string
+			}{{resolveWith(t, map[string]string{}), ""}, {boot, testDeadline.String()}} {
+				appCtx, err := appContextFor(t, row.boot, routes.AppContextOptions{App: app, Lifetime: t.Context()})
+				if err != nil {
+					t.Fatalf("build the app context: %v", err)
+				}
+				reconciler, err := ciReconciler(client, &store.Store{}, app, "", "", cireconcile.Interval, &registeredInstance{}, refs.Renames{}, gitHubClientOptions(row.boot.GitHubRequestDeadline)...)
+				if err != nil || reconciler == nil {
+					t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+				}
+				sweeper, err := webhookSweeper(client, &store.Store{}, app, "", 1, gitHubClientOptions(row.boot.GitHubRequestDeadline)...)
+				if err != nil || sweeper == nil {
+					t.Fatalf("build the webhook sweeper: %+v, %v", sweeper, err)
+				}
+				swept, _ := sweeper.GitHub.(*githubapp.Client)
+				for name, got := range map[string]clock.Deadline{
+					"the API's":              appCtx.GitHub().RequestDeadline(),
+					"the CI reconcile's":     reconciler.GitHub.RequestDeadline(),
+					"the redelivery sweep's": swept.RequestDeadline(),
+				} {
+					if got.String() != row.want {
+						t.Errorf("GitHubRequestDeadline %q: %s App client ends each call at %q, want %q", row.boot.GitHubRequestDeadline, name, got, row.want)
+					}
+				}
+			}
+			// redeliver-webhooks reads it as the server does, refusing it without the hooks before it
+			// opens anything.
+			var stdout, stderr bytes.Buffer
+			if code := runSubcommand(context.Background(), []string{"redeliver-webhooks", "--since", "1h"}, envGetter(map[string]string{
+				"DATABASE_URL":                          "postgres://127.0.0.1:1/unused",
+				"DISPATCH_TEST_GITHUB_REQUEST_DEADLINE": "none",
+			}), &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_GITHUB_REQUEST_DEADLINE") {
+				t.Errorf("redeliver-webhooks with DISPATCH_TEST_GITHUB_REQUEST_DEADLINE and no hooks: exit %d, stdout %q, want 1 and the refusal", code, stdout.String())
+			}
+		},
+		"DISPATCH_TEST_HOOK_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_HOOK_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.TestHookDeadline })
+			if got := appContextOptions(boot, routes.AppContextOptions{}).TestHookDeadline; got.String() != testDeadline.String() {
+				t.Errorf("DISPATCH_TEST_HOOK_DEADLINE: the router is handed TestHookDeadline = %q, want %q", got, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_INTAKE_HOLD_TTL": func(t *testing.T) {
+			const long = time.Hour
+			boot := testHookDurationReachesBoot(t, "DISPATCH_TEST_INTAKE_HOLD_TTL", long, func(boot bootConfig) time.Duration { return boot.IntakeHoldTTL })
+			if bounds := intakeBoundsOf(boot); bounds.HoldTTL != long || !bounds.HoldCallDeadline.IsZero() || !bounds.MessageDeadline.IsZero() || !bounds.StopDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_HOLD_TTL=%v: the intakes are handed %+v, want HoldTTL alone", long, bounds)
+			}
+			// A TTL no longer than the hold's renewal and margin would fail every take.
+			for _, short := range []string{delivery.IntakeHoldTTLFloor.String(), "1s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_INTAKE_HOLD_TTL": short},
+					fmt.Sprintf("DISPATCH_TEST_INTAKE_HOLD_TTL=%q (expected a Go duration longer than %v", short, delivery.IntakeHoldTTLFloor))
+			}
+		},
+		"DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.IntakeHoldCallDeadline })
+			if bounds := intakeBoundsOf(boot); bounds.HoldCallDeadline.String() != testDeadline.String() || bounds.HoldTTL != 0 || !bounds.MessageDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE: the intakes are handed %+v, want HoldCallDeadline %q alone", bounds, testDeadline)
+			}
+		},
+		"DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE": func(t *testing.T) {
+			boot := testHookDeadlineReachesBoot(t, "DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE", func(boot bootConfig) clock.Deadline { return boot.IntakeMessageDeadline })
+			if bounds := intakeBoundsOf(boot); bounds.MessageDeadline.String() != testDeadline.String() || bounds.HoldTTL != 0 || !bounds.HoldCallDeadline.IsZero() {
+				t.Errorf("DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE: the intakes are handed %+v, want MessageDeadline %q alone", bounds, testDeadline)
+			}
+		},
 	}
 	for _, row := range settings {
 		test, ok := cases[row.Name]
@@ -2275,18 +2398,69 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 	}
 }
 
+// testDeadline is the moment the deadline settings' cases set, as a test's give-up is written.
+var testDeadline = clock.DeadlineAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true)
+
+// testHookDeadlineReachesBoot is the part every test-only deadline setting's case shares: unset,
+// field reads the zero value, production's; set with DISPATCH_TEST_HOOKS=1 to testDeadline or to
+// none, field reads it; a value that is not an RFC 3339 moment or none refuses startup naming the
+// setting (clock.ParseDeadline), and so does any value without the hooks. It answers the boot
+// testDeadline resolved to, for the case to hand to the setting's reader.
+func testHookDeadlineReachesBoot(t *testing.T, name string, field func(bootConfig) clock.Deadline) bootConfig {
+	t.Helper()
+	if got := field(resolveWith(t, map[string]string{})); !got.IsZero() {
+		t.Errorf("%s unset: the boot reads %q, want the zero value (production's)", name, got)
+	}
+	if got := field(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "none"})); got.String() != "none" {
+		t.Errorf("%s=none: the boot reads %q, want none", name, got)
+	}
+	boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: testDeadline.String()})
+	if got := field(boot); got.String() != testDeadline.String() {
+		t.Errorf("%s=%q: the boot reads %q", name, testDeadline, got)
+	}
+	for _, invalid := range []string{"not-a-moment", "5s", "2026-11-24"} {
+		refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+			fmt.Sprintf("%s=%q (expected an RFC 3339 moment or none)", name, invalid))
+	}
+	refusedWith(t, map[string]string{name: "none"}, "DISPATCH_TEST_HOOKS=1 required")
+	return boot
+}
+
+// testHookDurationReachesBoot is the part every test-only duration setting's case shares: unset,
+// field reads zero, production's; set to value with DISPATCH_TEST_HOOKS=1, field reads value; a
+// value that is not a positive Go duration refuses startup naming the setting, and so does any
+// value without the hooks. It answers the boot the set value resolved to, for the case to hand to
+// the setting's reader.
+func testHookDurationReachesBoot(t *testing.T, name string, value time.Duration, field func(bootConfig) time.Duration) bootConfig {
+	t.Helper()
+	if got := field(resolveWith(t, map[string]string{})); got != 0 {
+		t.Errorf("%s unset: the boot reads %v, want 0 (production's)", name, got)
+	}
+	boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: value.String()})
+	if got := field(boot); got != value {
+		t.Errorf("%s=%v: the boot reads %v, want %v", name, value, got, value)
+	}
+	for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+		refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+			fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+	}
+	refusedWith(t, map[string]string{name: value.String()}, "DISPATCH_TEST_HOOKS=1 required")
+	return boot
+}
+
 // Every setting the document service takes from boot reaches the service main builds
-// (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
+// (newDocumentService, through documentDeps): boot's eight values, each one distinct, are each
 // found on the dependencies the service is built from.
 func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	boot := bootConfig{
-		SettleDelay:       11 * time.Second,
-		MarkWait:          12 * time.Second,
-		UnrecordedMarkTTL: 13 * time.Second,
-		EditNoticeQuiet:   14 * time.Second,
-		MaxLiveRooms:      15,
-		MaxDocConnections: 16,
-		TestHooksEnabled:  true,
+		SettleDelay:              11 * time.Second,
+		MarkWait:                 12 * time.Second,
+		UnrecordedMarkTTL:        13 * time.Second,
+		EditNoticeQuiet:          14 * time.Second,
+		MaxLiveRooms:             15,
+		MaxDocConnections:        16,
+		TestHooksEnabled:         true,
+		DocumentShutdownDeadline: testDeadline,
 	}
 	got := documentDeps(boot, docs.Deps{})
 	for _, field := range []struct {
@@ -2300,6 +2474,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		{"MaxLiveRooms", got.MaxLiveRooms, boot.MaxLiveRooms},
 		{"MaxDocConnections", got.MaxDocConnections, boot.MaxDocConnections},
 		{"TestHooks", got.TestHooks, boot.TestHooksEnabled},
+		{"ShutdownDrainDeadline", got.ShutdownDrainDeadline, boot.DocumentShutdownDeadline},
 	} {
 		if field.got != field.want {
 			t.Errorf("docs.Deps.%s = %v, want boot's %v: documentDeps drops the setting", field.name, field.got, field.want)

@@ -170,6 +170,12 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// TestHookDeadline is the end a test gives one test-hook call's wait for this process's own
+	// listener and every other process's acknowledgement, one hook's local action and one
+	// acknowledgement's send, in place of testHookTimeout (ten seconds) after each began
+	// (test_hooks_fanout.go). Zero is production's; only a test process sets another
+	// (cmd/dispatch: DISPATCH_TEST_HOOK_DEADLINE, under the test hooks): its give-up.
+	TestHookDeadline clock.Deadline
 	// IdempotencyLease replaces how long a keyed request's first run holds its key before a
 	// repeat may run it again (contracts.IdempotencyLease), which the run renews every third of
 	// it and the delivery sweep reads as the keyed handler does (keyLease, keyLeaseRenewal). Zero
@@ -296,6 +302,11 @@ type DepsInput struct {
 	// zero keeps githubapp.RequestTimeout, which is what cmd/dispatch leaves it at. A test whose
 	// stand-in for GitHub holds a read while the test moves a fake clock sets one past any run.
 	GitHubRequestTimeout time.Duration
+	// GitHubRequestDeadline is the end a test gives each call of the GitHub client in place of its
+	// own bound (githubapp.WithRequestDeadline); zero keeps githubapp.RequestTimeout, which is
+	// production's. Only a test process sets another (cmd/dispatch:
+	// DISPATCH_TEST_GITHUB_REQUEST_DEADLINE): its give-up.
+	GitHubRequestDeadline clock.Deadline
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -322,6 +333,8 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// TestHookDeadline replaces the ten seconds a test-hook call waits; see Deps.TestHookDeadline.
+	TestHookDeadline clock.Deadline
 	// ListenerCallDeadline is the end a test gives every listener call's window in
 	// envoy.CallWindow's place (envoy.WithCallDeadline); the zero value, a deployment's, keeps
 	// CallWindow. Only a test process sets another (cmd/dispatch:
@@ -401,6 +414,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.GitHubRequestTimeout > 0 {
 		githubOptions = append(githubOptions, githubapp.WithRequestTimeout(input.GitHubRequestTimeout))
 	}
+	if !input.GitHubRequestDeadline.IsZero() {
+		githubOptions = append(githubOptions, githubapp.WithRequestDeadline(input.GitHubRequestDeadline))
+	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {
 		return Deps{}, err
@@ -439,6 +455,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		TestHookDeadline:       input.TestHookDeadline,
 		HorizonStallAfter:      input.HorizonStallAfter,
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		ListenerRosterUncached: input.ListenerRosterUncached,
