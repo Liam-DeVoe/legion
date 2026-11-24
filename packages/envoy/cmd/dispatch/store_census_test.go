@@ -1,14 +1,26 @@
 //go:build basebuild
 
-// The three acceptance tests of this tag are this change's acceptance runs:
-// TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
-// (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit
-// BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
-// needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
-// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
-// one bound that needs neither a database nor that commit and takes milliseconds.
-// They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
+// The basebuild tag holds per-change tools, not standing tests. Each is run at a child's head
+// against that child's own base, which the child's Verification document names, never on main's
+// own head: this file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read
+// cost of the INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those
+// branches carry). Each builds the server at the commit BASELINE_SHA names (baseBuild,
+// testbaseline.Commit) and compares it with this build, so it needs a checkout that holds that
+// commit, and takes from 2 to 45 minutes on an issue pod. graph_cost_test.go holds the two arms,
+// the clock and the order statistic they share, and write_cost_test.go the document generator and
+// corpus writers; the cost tests that drove those on this tree's branches are gone from main (no
+// Verification of an open child names them), and their helpers stay for those branches to rewrite.
+//
+// Pick BASELINE_SHA as the child's Verification does: the fork point with main for a branch that
+// lands on main, the parent's head for a child stacked on it (testbaseline). On main's own head,
+// where the store already exists, the census tool refuses by name at the growth pass
+// (requireTheSizingRunsBeforeTheMigration): it reads a store over a database the base build has
+// already migrated to the store, so no kind is absent to read. cybermonklabs/legion#4173 carries
+// the product change that lets the census read the store only over a database migrated to the
+// build under test (graphcensus.storeAbsence); until it lands, run the census tool against a
+// pre-store base.
+//
+// They carry a build tag of their own and no CI job runs it: each is run on the pod, one at a
 // time and by name, as
 //
 //	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
