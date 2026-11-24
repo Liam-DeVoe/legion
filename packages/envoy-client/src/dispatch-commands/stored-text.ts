@@ -3,9 +3,9 @@
 // another spelling, read from the store's own parse and render. `dispatch artifact` and its dry run
 // both make it, chosen by one function (`artifactTextCheck`, which `artifactCommand` and
 // `artifactDryRun` in documents.ts call), so the two answer alike. A document's bytes, a `--path`
-// file's or those of inline text read from a file or stdin, are refused in the upload's order,
-// their size first and then the first U+0000 or byte that is not UTF-8, by one function
-// (`documentBytesRefusal`).
+// file's or those of inline text, given in the argument itself or read from a file or stdin, are
+// refused in the upload's order, their size first and then the first U+0000 or byte that is not
+// UTF-8, by one function (`documentBytesRefusal`).
 import { resolve as resolvePath } from "node:path";
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
@@ -116,22 +116,27 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
  * bytes that order passes: first the size (`documentTooLarge`), and then the first U+0000 or
  * byte that is not UTF-8, whichever comes first (`unstorableBytes`), in Dispatch's own code,
  * words and count, under `field`. `field` is the field the upload names: `file` for a `--path`
- * file (`documentFileRead`), `content` for inline text a flag read from a file or stdin
- * (`documentFileTextRefusal`, and `runDispatchCli` for bytes that are not UTF-8). Each calls this,
- * so the same bytes get the same refusal but for the field, whichever way they are given.
+ * file (`documentFileRead`), `content` for inline text, given in the argument itself or read by a
+ * flag from a file or stdin (`documentFieldRefusal`, and `runDispatchCli` for bytes that are not
+ * UTF-8). Each calls this, so the same bytes get the same refusal but for the field, whichever way
+ * they are given.
  */
 export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
   return documentTooLarge(bytes) ?? unstorableBytes(field, bytes);
 }
 
 /**
- * The refusal of a Markdown document's `text`, read for `field` from a file or stdin and decoded
- * by the strict read (`readFileText`), or undefined for text Dispatch stores: the refusal of the
- * bytes it was read from (`fileTextBytes`) by `documentBytesRefusal`. The strict read decodes
- * UTF-8 alone, so only the text's size or a U+0000 can refuse it, and the text is encoded and
- * scanned again only where its UTF-8 is past the bytes one document holds or it holds a U+0000.
+ * The refusal of a Markdown document's `text` for `field`, given in the argument itself or read
+ * from a file or stdin and decoded by the strict read (`readFileText`), or undefined for text
+ * Dispatch stores: the refusal of the text's UTF-8 (`fileTextBytes`, which for a text read is the
+ * bytes it was read from) by `documentBytesRefusal`. The strict read decodes UTF-8 alone, and a
+ * text given in the argument is a string, which encodes to UTF-8, so only the text's size or a
+ * U+0000 can refuse it. A text given in argv can be neither past the bytes one document holds,
+ * since Linux holds one argument to 128 KiB, nor hold a U+0000; an in-process caller of
+ * `runDispatchCli` can give either. The text is encoded and scanned again only where its UTF-8 is
+ * past the bytes one document holds or it holds a U+0000.
  */
-export function documentFileTextRefusal(field: string, text: string): Error | undefined {
+export function documentFieldRefusal(field: string, text: string): Error | undefined {
   return Buffer.byteLength(text, "utf8") > MARKDOWN_DOCUMENT_MAX_BYTES || text.includes("\u0000")
     ? documentBytesRefusal(field, fileTextBytes(text))
     : undefined;
@@ -154,8 +159,10 @@ export function uploadedFile(cwd: string, path: string): BunFile {
 /**
  * What the check of an upload's `--path` file found (`documentFileRead`):
  * - `passed`: the check passes the file. `bytes` are its bytes where Dispatch stores it as a
- *   Markdown document, which the call checks and sends, and undefined for a file Dispatch stores
- *   as its bytes, which is not read.
+ *   Markdown document, which `runDispatchCli` hands the dry run's step and the call
+ *   (`uploadBytes`), and undefined for a file that is not read: one Dispatch stores as its bytes,
+ *   and one that is neither a regular file nor a directory (a FIFO, a device, a socket), whose read
+ *   can wait forever. The call uploads such a file unchecked, and Dispatch's upload judges it.
  * - `refused`: Dispatch's own refusal of the file's text, which the call throws.
  * - `unread`: the file could not be read, and `error` is the read's own error. That is no refusal
  *   of the text: the call throws it when it reads the file.
@@ -170,12 +177,19 @@ export type DocumentFileRead =
  * stores as a Markdown document once and refuses its text in Dispatch's own words, in its upload's
  * order, before anything is asked. Dispatch stores an upload as a document exactly when the type
  * it declares is `text/markdown`, its parameters and its case aside; any other file is not read.
- * The bytes checked are `held` where the caller holds them, or else the file's own: a file whose
- * size is past the bytes one document holds (`documentTooLarge`) is refused before it is read, and
- * the bytes in hand by `documentBytesRefusal`, which refuses bytes past that size, from a file
- * whose size could not be read or that grew since, and then the first U+0000 or byte that is not
- * UTF-8 in them. `runDispatchCli` checks the file with this once the flags are read, and the call
- * and its dry run (`documentFileBytes`) check the bytes it read.
+ * The bytes checked are `held` where the caller holds them, or else the file's own. A file whose
+ * stat says it is neither a regular file nor a directory (a FIFO, a character or block device, a
+ * socket, or a link to one) is not read either: its size says nothing of what a read returns, and
+ * a read of a FIFO no process writes to waits forever. It passes with no bytes, as a file Dispatch
+ * stores as its bytes does, and the call uploads it unchecked, for Dispatch's upload to judge. A
+ * directory is read, and the read fails (`unread`). A file whose size is past the bytes one
+ * document holds (`documentTooLarge`) is refused before it is read, and the bytes in hand by
+ * `documentBytesRefusal`, which refuses bytes past that size, from a file whose size could not be
+ * read or that grew since, and then the first U+0000 or byte that is not UTF-8 in them.
+ * `runDispatchCli` checks the file with this once the flags are read, and the dry run's step
+ * (`documentFileBytes`) checks the bytes it read. The call checks those bytes too, save where
+ * AskGate, which reviews the call, read the file a second time for its digest: the call then
+ * checks and sends the bytes that read took in their place.
  */
 export async function documentFileRead(
   file: BunFile,
@@ -186,11 +200,11 @@ export async function documentFileRead(
   }
   let bytes = held;
   if (bytes === undefined) {
-    const size = await file.stat().then(
-      (stats) => stats.size,
-      () => undefined
-    );
-    const tooLarge = size === undefined ? undefined : documentTooLarge(size);
+    const stats = await file.stat().catch(() => undefined);
+    if (stats !== undefined && !stats.isFile() && !stats.isDirectory()) {
+      return { kind: "passed", bytes: undefined };
+    }
+    const tooLarge = stats === undefined ? undefined : documentTooLarge(stats.size);
     if (tooLarge !== undefined) return { kind: "refused", refusal: tooLarge };
     try {
       bytes = await file.bytes();

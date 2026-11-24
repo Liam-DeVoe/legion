@@ -9,8 +9,8 @@ body: |-
   passes. It stores nothing. The call and its dry run refuse a document's text past the document
   limit (1 MiB of UTF-8), inline, read from `--content-file` or stdin, or in a `--path` file whose
   path ends in .md or .markdown, with Dispatch's own `CAP_EXCEEDED` message before they ask the
-  round trip or upload. Read from `--content-file`, from stdin or from such a file, it is refused
-  once the flags are read, before the arguments are checked and before anything that needs
+  round trip or upload. Given inline, read from `--content-file` or stdin, or in such a file, it is
+  refused once the flags are read, before the arguments are checked and before anything that needs
   Dispatch, so the call and its dry run refuse it alike with no Dispatch configured too; a file
   past the limit is refused by its size before it is read. They refuse a text whose round trip answer
   Dispatch marks as its refusal of the text (`Dispatch-Text-Refusal`), at any status, with
@@ -27,9 +27,9 @@ body: |-
   new document's checks. An answer it does not mark is no answer about the text. Blank inline text,
   other than the empty string, is asked too, for a refusal alone and never for its spelling. The
   call and its dry run refuse a U+0000 or a byte that is not UTF-8 in such a Markdown file, and in
-  a text read from `--content-file` or stdin, in the words the upload of a Markdown file refuses it
-  with, in that same place, so they refuse it alike with no Dispatch configured too. The
-  dry run then sends such a file's bytes to their own round trip
+  a text given inline or read from `--content-file` or stdin, in the words the upload of a Markdown
+  file refuses it with, in that same place, so they refuse it alike with no Dispatch configured
+  too. The dry run then sends such a file's bytes to their own round trip
   (`POST /api/v1/markdown/file-round-trip`), and takes its refusal alone, never a spelling, since
   the call stores a Markdown file as the store spells it; a file stored as its bytes is asked
   nothing. Each of these refusals exits 1. The call
@@ -48,6 +48,7 @@ body: |-
   Dispatch says the token is no longer live, it presents a fresh token once.
   `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then asks Dispatch nothing and
   checks the arguments alone, as it did before; it still refuses first, once the flags are read, a
-  text read from `--content-file`, from stdin or from a Markdown `--path` file for its bytes.
+  text given inline, read from `--content-file` or stdin, or in a Markdown `--path` file, for its
+  bytes.
   It leaves a `dispatch result` record's dry run as it was, asking Dispatch for the pull-request
   body line, as it did before too.

@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
@@ -718,20 +719,32 @@ interface RefusedBytes {
 }
 
 /** For each row, expects `dispatch artifact` to refuse its bytes alike (`refusedAlike`) in `env`,
- *  read from `--content-file <file>` and from stdin under `content`, and from a markdown `--path`
- *  file under `file`. */
+ *  read from `--content-file <file>` and from stdin under `content`, given inline as `--content`
+ *  under `content` where the bytes are UTF-8, and from a markdown `--path` file under `file`. The
+ *  inline text is an in-process caller's: argv carries no U+0000 and no argument past 128 KiB, but
+ *  a caller of `runDispatchCli` can hand it either. */
 async function uploadRefusedEveryWay(
   rows: readonly RefusedBytes[],
   env: Record<string, string | undefined> = omp
 ): Promise<void> {
   const file = join(stateDir, "text");
   const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
   for (const row of rows) {
     writeFileSync(file, row.bytes);
     writeFileSync(join(stateDir, "x.md"), row.bytes);
     const inline = row.stdout("content");
     await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, row.name, env);
     await refusedAlike(UPLOAD, row.bytes, inline, row.name, env);
+    let text: string | undefined;
+    try {
+      text = utf8.decode(row.bytes);
+    } catch {
+      // Bytes that are not UTF-8 are no text, so no caller can give them inline.
+    }
+    if (text !== undefined) {
+      await refusedAlike([...upload, "--content", text], Buffer.of(), inline, row.name, env);
+    }
     await refusedAlike(
       [...upload, "--path", "x.md"],
       Buffer.of(),
@@ -1598,18 +1611,21 @@ describe("the dispatch CLI", () => {
   };
 
   // INFRA-4224 R3 (spec v27): for the same bytes, `dispatch artifact --content-file <file>`,
-  // `--content-file -` (stdin) and a markdown `--path` file get the same refusal, in the order the
-  // `--path` file's upload refuses it (`documentBytesRefusal`): the size first, then the first
-  // U+0000 or byte that is not UTF-8, whichever comes first in the bytes, whether or not the bytes
-  // are UTF-8. Dispatch's words name the field the upload names: `content` for inline text, `file`
-  // for a `--path` file. The dry run and the call print the same stdout and exit 1, and neither
-  // sends anything: no round trip is asked. The first three texts are the rows of
+  // `--content-file -` (stdin), `--content <text>` where the bytes are UTF-8, and a markdown
+  // `--path` file get the same refusal, in the order the `--path` file's upload refuses it
+  // (`documentBytesRefusal`): the size first, then the first U+0000 or byte that is not UTF-8,
+  // whichever comes first in the bytes, whether or not the bytes are UTF-8. Dispatch's words name
+  // the field the upload names: `content` for inline text, `file` for a `--path` file. The dry run
+  // and the call print the same stdout and exit 1, and neither sends anything: no round trip is
+  // asked. Inline text holding U+0000, which only an in-process caller can give, is checked as a
+  // text read is (review round 13 of INFRA-4224): its dry run once passed it, since this fake's
+  // round trip keeps the text. The first three texts are the rows of
   // packages/envoy/internal/dispatch/api/testdata/text-refusals.json whose `command` is
   // ["inline"], and the fourth its row of UTF-8 holding U+0000. Any other command's field is no
   // document: a comment's body is refused at its first U+0000 or byte that is not UTF-8 only for
   // bytes that are not UTF-8, and its UTF-8 holding U+0000 the command does not refuse. The dry run
   // passes it, and the call sends it to Dispatch as read, which answers it.
-  test("an upload's bytes from --content-file, stdin or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
+  test("an upload's bytes from --content-file, stdin, inline --content or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
     const nulFirst = Buffer.from([0x41, 0x00, 0x42, 0xff]);
     await uploadRefusedEveryWay([
       {
@@ -1639,13 +1655,16 @@ describe("the dispatch CLI", () => {
 
   // INFRA-4224 R3: with Dispatch off (no Dispatch in the environment and no envoy.json), the dry
   // run and the call refuse the same bytes from `--content-file <file>`, `--content-file -`
-  // (stdin) and a markdown `--path` file alike, as they do with Dispatch on: UTF-8 holding U+0000,
-  // a text of UTF-8 past the bytes one document holds, and bytes that are not UTF-8, each with
-  // exit 1 and the same stdout but for the field, nothing on stderr, and no request. Each is
-  // refused once the flags are read, before anything that needs Dispatch, so no client is built
-  // and the call is never refused for Dispatch being off; a file these checks pass is (the test of
-  // the dry run's warning with Dispatch off).
-  test("with Dispatch off an upload's bytes from --content-file, stdin or a markdown --path file are refused alike by the dry run and the call", async () => {
+  // (stdin), `--content <text>` where the bytes are UTF-8, and a markdown `--path` file alike, as
+  // they do with Dispatch on: UTF-8 holding U+0000, a text of UTF-8 past the bytes one document
+  // holds, and bytes that are not UTF-8, each with exit 1 and the same stdout but for the field,
+  // nothing on stderr, and no request. Each is refused once the flags are read, before anything
+  // that needs Dispatch, so no client is built and the call is never refused for Dispatch being
+  // off; a file these checks pass is (the test of the dry run's warning with Dispatch off). The
+  // inline text is an in-process caller's (review round 13 of INFRA-4224): its call once exited 2
+  // for Dispatch being off where its dry run refused the size with exit 1, or passed the U+0000
+  // with a warning.
+  test("with Dispatch off an upload's bytes from --content-file, stdin, inline --content or a markdown --path file are refused alike by the dry run and the call", async () => {
     const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
     await uploadRefusedEveryWay(
       [
@@ -1687,6 +1706,26 @@ describe("the dispatch CLI", () => {
       stderr: "",
     });
     expect(requests).toEqual([]);
+  });
+
+  // A markdown --path file that is neither a regular file nor a directory is not read, as a file
+  // Dispatch stores as its bytes is not (review round 13 of INFRA-4224): a FIFO stats with size 0,
+  // and the check made once the flags are read waited forever on its read, so AskGate's own dry run
+  // (DISPATCH_DRY_RUN_LOCAL=1) hung where it had returned at once. With the variable and without
+  // it, the dry run prints the arguments, writes nothing on stderr and sends no request: the dry
+  // run's step asks no file round trip about a file it holds no bytes of. A read that waits fails
+  // the test by its timeout.
+  test("an upload's dry run of a markdown --path file that is a FIFO prints the arguments without reading it, with DISPATCH_DRY_RUN_LOCAL=1 and without", async () => {
+    execFileSync("mkfifo", [join(stateDir, "f.md")]);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--path", "f.md", "--dry-run"];
+    const json = `${JSON.stringify({ issue: "DSP-1", name: "a.md", path: "f.md" }, null, 2)}\n`;
+    for (const local of ["1", undefined]) {
+      requests.length = 0;
+      const named = `DISPATCH_DRY_RUN_LOCAL=${local ?? "unset"}`;
+      const dry = await run(argv, { ...omp, DISPATCH_DRY_RUN_LOCAL: local });
+      expect(dry, named).toEqual({ code: 0, stdout: json, stderr: "" });
+      expect(requests, named).toEqual([]);
+    }
   });
 
   // INFRA-4224: the call of a markdown --path file asks the file round trip about the bytes it

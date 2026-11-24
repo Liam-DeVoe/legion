@@ -20,8 +20,8 @@ import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-co
 import { loginCommand } from "./dispatch-commands/login";
 import {
   documentBytesRefusal,
+  documentFieldRefusal,
   documentFileRead,
-  documentFileTextRefusal,
   uploadedFile,
 } from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
@@ -85,9 +85,9 @@ export interface DispatchCliIo {
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
  *  refusal), or text this CLI refuses in Dispatch's own refusal once the flags are read, before it
  *  asks: bytes that are not UTF-8 in a file or stdin a flag read, and a Markdown document's text
- *  past the bytes one document holds or holding U+0000 or a byte that is not UTF-8, read from a
- *  file or stdin or from a Markdown `--path` file. Any other argument this CLI refuses before any
- *  request is USAGE, whether the argv named a command or not. */
+ *  past the bytes one document holds or holding U+0000 or a byte that is not UTF-8, given inline,
+ *  read from a file or stdin, or in a Markdown `--path` file. Any other argument this CLI refuses
+ *  before any request is USAGE, whether the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -352,36 +352,44 @@ export async function runDispatchCli(
   // that is off, any client), so the dry run and the call refuse a text from this one step alike,
   // with Dispatch on or off and whether or not DISPATCH_DRY_RUN_LOCAL is set, in Dispatch's own
   // refusal and with its exit code, and send nothing. The command's table entry names the fields
-  // held to a Markdown document's rule (`DispatchCommand.documentFileFields`, `documentPathField`).
-  // Such a field read from a file or stdin is refused as the upload of a Markdown `--path` file of
-  // the same bytes refuses it, the size first, then the first U+0000 or byte that is not UTF-8
-  // (`documentBytesRefusal`), whether or not the bytes are UTF-8; a text the strict read decoded
-  // can fail only for its size or a U+0000 (`documentFileTextRefusal`). Any other field read from
-  // a file or stdin is no document, so it is refused only for bytes that are not UTF-8 (an
-  // `unstorable` parse), at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`); a
-  // U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are not UTF-8 hold such a
-  // byte, so each finds a refusal. The file the command uploads is checked as its upload is
-  // (`documentFileRead`), which reads it once, only where Dispatch stores it as a Markdown
-  // document, and refuses it in the same order: past the bytes one document holds by its size,
-  // then by the bytes read, then at the first U+0000 or byte that is not UTF-8. The bytes it read
-  // are handed on (`uploadBytes`), so the dry run's step and the call check and send those bytes
-  // and do not read the file again. A file it cannot read is no refusal of its text, so it is left
-  // to what comes after: the argument check, and then the dry run's step, where it runs, and the
-  // call, which read the file and throw the read's own error.
+  // held to a Markdown document's rule (`DispatchCommand.documentFields`, `documentPathField`).
+  // Such a field's text, given inline or read from a file or stdin, is refused as the upload of a
+  // Markdown `--path` file of the same bytes refuses it, the size first, then the first U+0000 or
+  // byte that is not UTF-8 (`documentBytesRefusal`), whether or not the bytes read are UTF-8; a
+  // text the strict read decoded, and one given inline, can fail only for its size or a U+0000
+  // (`documentFieldRefusal`). A text given in argv can be neither past 1 MiB, since Linux holds one
+  // argument to 128 KiB, nor hold a U+0000; an in-process caller's can, and is refused here as a
+  // text read from a file is, so the dry run and the call refuse it alike with Dispatch off too.
+  // Any other field read from a file or stdin is no document, so it is refused only for bytes that
+  // are not UTF-8 (an `unstorable` parse), at their first U+0000 or byte that is not UTF-8
+  // (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are
+  // not UTF-8 hold such a byte, so each finds a refusal. The file the command uploads is checked
+  // as its upload is (`documentFileRead`), which reads it once, only where Dispatch stores it as a
+  // Markdown document, and refuses it in the same order: past the bytes one document holds by its
+  // size, then by the bytes read, then at the first U+0000 or byte that is not UTF-8. The bytes it
+  // read are handed on (`uploadBytes`). The dry run's step checks those bytes and does not read the
+  // file again. The call checks and sends them too, save where AskGate reviews it (`gatedWrite`,
+  // with AskGate on for this session): AskGate's check reads the file a second time for its
+  // digest, and the call sends the bytes that read took in place of these, which
+  // `documentFileBytes` checks again before they are sent. A file it cannot read is no refusal of
+  // its text, so it is left to what comes after: the argument check, and then the dry run's step,
+  // where it runs, and the call, which read the file and throw the read's own error. It does not
+  // read a FIFO, a device or a socket, whose read can wait forever, so the dry run's step asks
+  // Dispatch nothing about it, and the call uploads it unchecked, for Dispatch's upload to judge.
   const command = dispatchCommands[parsed.tool as DispatchToolName];
-  const documentFileFields = command?.documentFileFields ?? [];
+  const documentFields = command?.documentFields ?? [];
   if (parsed.kind === "unstorable") {
     const { tool, field, bytes } = parsed;
-    const refusal = (documentFileFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
+    const refusal = (documentFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
       field,
       bytes
     );
     return refuse(messageFor(refusal), REFUSED, tool);
   }
-  for (const field of documentFileFields) {
+  for (const field of documentFields) {
     const text = parsed.args[field];
-    if (typeof text !== "string" || !parsed.fileFields.includes(field)) continue;
-    const refusal = documentFileTextRefusal(field, text);
+    if (typeof text !== "string") continue;
+    const refusal = documentFieldRefusal(field, text);
     if (refusal !== undefined) return refuse(messageFor(refusal), REFUSED, parsed.tool);
   }
   const uploadPath =

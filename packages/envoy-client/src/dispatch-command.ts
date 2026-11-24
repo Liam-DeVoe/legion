@@ -27,8 +27,7 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A file's or stdin's text is `io.readText`'s, which the `dispatch` entry reads as bytes that must
  * be UTF-8 (`readFileText`): bytes that are not refuse the command in Dispatch's own words (an
- * `unstorable` parse, which `runDispatchCli` refuses). A call names each field a file or stdin set
- * (`fileFields`), for `runDispatchCli`'s check of a Markdown document's text.
+ * `unstorable` parse, which `runDispatchCli` refuses).
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
  * A flag of `PREFIXED_FLAGS` adds an item to an array of text behind a prefix, in argv order with
@@ -114,10 +113,6 @@ export type ParsedCommand =
       readonly tool: string;
       readonly args: Record<string, unknown>;
       readonly dryRun: boolean;
-      /** Each field a `--<field>-file` or `--<field>-json-file` flag set from a file or stdin, in
-       *  argv order, for `runDispatchCli`'s check of a Markdown document's text
-       *  (`DispatchCommand.documentFileFields`). */
-      readonly fileFields: readonly string[];
     }
   | { readonly kind: "help"; readonly tool?: string }
   | {
@@ -471,8 +466,6 @@ export function parseCommand(
   let stdinFlag: string | undefined;
   // The field and the bytes of the first file or stdin a flag read whose bytes are not UTF-8.
   let unstorable: { readonly field: string; readonly bytes: Uint8Array } | undefined;
-  // Each field a file or stdin set, in argv order.
-  const fileFields: string[] = [];
 
   const read = (flag: string, field: string, path: string): string | undefined => {
     if (path === STDIN) {
@@ -483,9 +476,7 @@ export function parseCommand(
       stdinFlag = flag;
     }
     try {
-      const text = io.readText(path);
-      fileFields.push(field);
-      return text;
+      return io.readText(path);
     } catch (error) {
       if (error instanceof NotUtf8Error) {
         // The field is claimed, as a field read whole is, so a field given twice is still refused
@@ -668,7 +659,7 @@ export function parseCommand(
       : { kind: "refused", tool, problems };
   }
   if (unstorable !== undefined) return { kind: "unstorable", tool, ...unstorable };
-  return { kind: "call", tool, args, dryRun, fileFields };
+  return { kind: "call", tool, args, dryRun };
 }
 
 function appendedItem(
