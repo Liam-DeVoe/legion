@@ -16,8 +16,8 @@
 // variable reads `NAME=value`, and in a file in the forms a log, a URL or an env file writes. The
 // scan must find it in each, so the read it refuses to skip is a read that can find something.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -362,6 +362,8 @@ test("a file over 16 MiB is read whole: a token at its end and one across a chun
 });
 
 test("a file the scan could not read makes it UNKNOWN, exit 3, naming the file, though other files were read", async () => {
+  // Root reads a file of mode 000, so this case has nothing to show there.
+  if (process.getuid?.() === 0) return;
   const dir = join(work, "box-unreadable");
   mkdirSync(join(dir, "box"), { recursive: true });
   const locked = join(dir, "box", "locked.log");
@@ -380,4 +382,81 @@ test("a file the scan could not read makes it UNKNOWN, exit 3, naming the file, 
   } finally {
     chmodSync(locked, 0o600);
   }
+});
+
+/** A private EC key as a JWK, and the RFC 7638 thumbprint of its public half, as the broker logs
+ *  a binding. */
+function bindingKey(): { readonly jwk: Record<string, string>; readonly jkt: string } {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const jwk = privateKey.export({ format: "jwk" }) as Record<string, string>;
+  const pub = publicKey.export({ format: "jwk" }) as Record<string, string>;
+  const jkt = createHash("sha256")
+    .update(JSON.stringify({ crv: pub["crv"], kty: pub["kty"], x: pub["x"], y: pub["y"] }))
+    .digest("base64url");
+  return { jwk, jkt };
+}
+
+/** `n` characters of words and spaces, a filler that holds no credential. */
+const words = (n: number): string => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
+
+for (const [shape, contents] of [
+  ["a small JSON document", (jwk: object) => JSON.stringify({ key: jwk })],
+  [
+    "one compact JSON document of 9 MiB, the key near its end",
+    (jwk: object) => JSON.stringify({ log: words(9 * 1024 * 1024), key: jwk }),
+  ],
+  [
+    "JSONL whose 200 KiB line, the key in it, crosses the 8 MiB mark",
+    (jwk: object) =>
+      `${words(8 * 1024 * 1024 - 100 * 1024)}\n${JSON.stringify({ log: words(100 * 1024), key: jwk, tail: words(100 * 1024) })}\n${words(1000)}\n`,
+  ],
+] as const) {
+  test(`a private key kept as a JWK in ${shape} is found by its thumbprint`, {
+    timeout: 120_000,
+  }, async () => {
+    const { jwk, jkt } = bindingKey();
+    const dir = join(work, `box-jwk-${shape.length}`);
+    mkdirSync(join(dir, "box"), { recursive: true });
+    writeFileSync(join(dir, "box", "record.json"), contents(jwk));
+    const { answer, exitCode, stderr } = await scanCase(`jwk-${shape.length}`, "box", {
+      log: mintedLine(sha256(brokerShapedToken()), jkt),
+      paths: ["box"],
+      pids: READABLE,
+    });
+    expect(exitCode, stderr).toBe(0);
+    expect(answer["key_matches"]).toEqual([jkt]);
+  });
+}
+
+test("a run of 1 MiB of hex characters with no dot is scanned in seconds, not minutes", {
+  timeout: 60_000,
+}, async () => {
+  const dir = join(work, "box-hex-run");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  writeFileSync(join(dir, "box", "blob.log"), `${randomBytes(512 * 1024).toString("hex")}\n`);
+  const started = performance.now();
+  const { exitCode, stderr } = await scanCase("hex-run", "box", {
+    log: LOGGED,
+    paths: ["box"],
+    pids: READABLE,
+  });
+  const seconds = (performance.now() - started) / 1000;
+  expect(exitCode, stderr).toBe(0);
+  expect(seconds).toBeLessThan(15);
+});
+
+test("a dangling symbolic link holds no data: it is named, not read, and leaves the scan clean", async () => {
+  const dir = join(work, "box-dangling");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  const link = join(dir, "box", "dangling");
+  symlinkSync(join(dir, "box", "no-such-target"), link);
+  const { answer, exitCode, stderr } = await scanCase("dangling", "box", {
+    log: LOGGED,
+    paths: ["box"],
+    pids: READABLE,
+  });
+  expect(exitCode, stderr).toBe(0);
+  expect(answer["result"]).toBe("clean");
+  expect(answer["files_skipped"]).toEqual([]);
+  expect(answer["dangling_links"]).toEqual([link]);
 });

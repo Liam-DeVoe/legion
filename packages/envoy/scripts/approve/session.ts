@@ -33,6 +33,7 @@
 import { createHash, createPrivateKey } from "node:crypto";
 import {
   closeSync,
+  lstatSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -246,16 +247,34 @@ async function approveThenRevoked(): Promise<void> {
   });
 }
 
+/** What a walk of the named paths found: every file to read, every path it could not read, and
+ *  every symbolic link whose target does not exist, which holds no data to read. */
+interface Walk {
+  readonly files: string[];
+  readonly skipped: string[];
+  readonly dangling: string[];
+}
+
 /**
- * Every file under `path`, depth first, into `into`, whatever its size (`fileChunks` reads a large
- * one in pieces); a path or a directory that cannot be read into `skipped`, named, never dropped.
+ * Every file under `path`, depth first, into `walk.files`, whatever its size (`fileChunks` reads a
+ * large one in pieces). A path or a directory that cannot be read goes into `walk.skipped`, named,
+ * never dropped. A symbolic link is followed to what it names; one whose target does not exist
+ * holds no data, and goes into `walk.dangling`, named.
  */
-function files(path: string, into: string[], skipped: string[]): void {
+function files(path: string, walk: Walk): void {
   let stat: Stats;
   try {
     stat = statSync(path);
-  } catch {
-    skipped.push(path);
+  } catch (error) {
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    let link = false;
+    try {
+      link = lstatSync(path).isSymbolicLink();
+    } catch {
+      // the path itself does not exist
+    }
+    if (missing && link) walk.dangling.push(path);
+    else walk.skipped.push(path);
     return;
   }
   if (stat.isDirectory()) {
@@ -263,31 +282,41 @@ function files(path: string, into: string[], skipped: string[]): void {
     try {
       entries = readdirSync(path);
     } catch {
-      skipped.push(path);
+      walk.skipped.push(path);
       return;
     }
-    for (const entry of entries) files(join(path, entry), into, skipped);
+    for (const entry of entries) files(join(path, entry), walk);
   } else if (stat.isFile()) {
-    into.push(path);
+    walk.files.push(path);
   }
 }
 
 /** The size of a piece of a file the scan reads at once, and how far each piece reaches back
  *  into the one before it: far more than any credential the scan looks for (a broker token is 87
- *  characters, an EC private key's PEM a few hundred, escaped in a JSON string a little more), so
- *  a credential that crosses a piece's end is whole in the next piece. */
+ *  characters, an EC private key's PEM a few hundred and its JWK a flat object of a few hundred,
+ *  escaped in a JSON string a little more), so a credential that crosses a piece's end is whole in
+ *  the next piece. A JSON document or line larger than a piece is never whole in one, so the scan
+ *  reads keys out of each flat object rather than out of whole documents (`take`). */
 const CHUNK_BYTES = 8 * 1024 * 1024;
 const CHUNK_OVERLAP = 64 * 1024;
 
+/** The one buffer every piece of every file is read into. */
+const CHUNK_BUFFER = Buffer.allocUnsafe(CHUNK_BYTES);
+
 /** Each piece of the file at `path` in turn, as Latin-1 text, so a file of any size is read
- *  whole without holding it all: pieces of `CHUNK_BYTES` that reach `CHUNK_OVERLAP` back. */
+ *  whole without holding it all: pieces of `CHUNK_BYTES` that reach `CHUNK_OVERLAP` back, each
+ *  filled until it is full or the file ends (a read returns no byte). */
 function* fileChunks(path: string): Generator<string> {
   const fd = openSync(path, "r");
   try {
-    const buffer = Buffer.alloc(CHUNK_BYTES);
     for (let at = 0; ; at += CHUNK_BYTES - CHUNK_OVERLAP) {
-      const got = readSync(fd, buffer, 0, CHUNK_BYTES, at);
-      yield buffer.toString("latin1", 0, got);
+      let got = 0;
+      while (got < CHUNK_BYTES) {
+        const read = readSync(fd, CHUNK_BUFFER, got, CHUNK_BYTES - got, at + got);
+        if (read === 0) break;
+        got += read;
+      }
+      yield CHUNK_BUFFER.toString("latin1", 0, got);
       if (got < CHUNK_BYTES) return;
     }
   } finally {
@@ -408,8 +437,10 @@ async function scan(): Promise<void> {
   // JSON or shell string writes a line ending, a quote or a slash in decoded, so a PEM key a file
   // keeps as one JSON string (a sign-in record's box_key) reads as PEM; with a URL's
   // percent-encoding and a form's `+` for a space decoded (urlDecoded), so a token in a logged query
-  // or form body reads as itself; and each string value of every JSON document or line in it,
-  // which may itself hold JSON or PEM. Each form of the text is read once.
+  // or form body reads as itself; each flat JSON object in it, for a private key kept as a JWK,
+  // which a piece holds whole as the overlap holds a PEM key; and, where the text holds a whole
+  // JSON document or line, each of its string values, which may itself hold JSON or PEM. Each form
+  // of the text is read once.
   const take = (root: string): void => {
     const seen = new Set<string>();
     const queue = [root];
@@ -422,16 +453,12 @@ async function scan(): Promise<void> {
       // HMAC strategy writes `%s.%s`), so the base64url pattern finds only its halves, and an `=`
       // inside the class would take the `NAME=` before a token as part of it.
       for (const match of text.matchAll(/[A-Za-z0-9._~+/-]{20,}=*/g)) token68.add(match[0]);
-      // The broker token's own shape, two base64url parts joined by `.`: token68 takes a `/`,
-      // `+`, `~` or `.` before a token as part of it, as in a URL path or `DPoP+<token>`, and this
-      // does not.
-      for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g))
-        token68.add(match[0]);
       // The broker token is exactly 43 base64url characters, a `.`, and 43 more (32 bytes each,
       // authelia's HMAC strategy), so the 43 characters on each side of every `.` are a candidate,
-      // whatever run the token is glued to (`cache_<token>`, `<uuid>.<token>`): the patterns above
-      // take such a run as part of the token. A lookahead, so each `.` gives one candidate. A token
-      // that is itself encoded again, base64 of it among them, is outside k31's forms and not read.
+      // whatever is before or after it (`cache_<token>`, `<uuid>.<token>`, `/v1/<token>`,
+      // `DPoP+<token>`): the patterns above take such a run as part of the token. A lookahead, so
+      // each `.` gives one candidate, in time linear in the text. A token that is itself encoded
+      // again, base64 of it among them, is outside k31's forms and not read.
       for (const match of text.matchAll(/(?=([A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}))/g))
         token68.add(match[1] as string);
       for (const block of text.matchAll(
@@ -442,6 +469,18 @@ async function scan(): Promise<void> {
           keys.set(JSON.stringify(key), key);
         } catch {
           // not a key this runtime reads; counted as no key
+        }
+      }
+      // A JWK is a flat object of a few hundred bytes: each flat object holding a "d" member is
+      // read on its own, so a key inside a document or a line no piece holds whole is still found.
+      for (const flat of text.matchAll(/\{[^{}]{1,16384}\}/g)) {
+        if (!flat[0].includes('"d"')) continue;
+        try {
+          const found: Jwk[] = [];
+          privateJwks(JSON.parse(flat[0]), found);
+          for (const key of found) keys.set(JSON.stringify(key), key);
+        } catch {
+          // not JSON
         }
       }
       for (const chunk of [text, ...text.split("\n")]) {
@@ -461,14 +500,16 @@ async function scan(): Promise<void> {
   };
   // Every file under every named path, each read whole in pieces (fileChunks). A path, a
   // directory or a file that could not be read is named in files_skipped, and makes the scan
-  // UNKNOWN: a file it did not read is a file it cannot call clean.
+  // UNKNOWN: a file it did not read is a file it cannot call clean. A symbolic link whose target
+  // does not exist holds no data; it is named in dangling_links and read as nothing.
   const read: string[] = [];
   const skipped: string[] = [];
+  const dangling: string[] = [];
   for (const path of paths) {
-    const under: string[] = [];
-    files(path, under, skipped);
+    const walk: Walk = { files: [], skipped, dangling };
+    files(path, walk);
     let readHere = 0;
-    for (const file of under) {
+    for (const file of walk.files) {
       try {
         for (const piece of fileChunks(file)) take(piece);
         read.push(file);
@@ -563,6 +604,7 @@ async function scan(): Promise<void> {
     ...(unknown.length > 0 ? { unknown } : {}),
     files_read: read.length,
     files_skipped: skipped,
+    dangling_links: dangling,
     candidates: candidates.size,
     base64url: base64url.size,
     token68: token68.size,
