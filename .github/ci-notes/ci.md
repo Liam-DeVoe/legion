@@ -1808,9 +1808,10 @@ ci.yaml jobs call holds a job named for any of its callers, each caller must hav
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-.github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
-gates find their steps there. Each half keeps a filter of its own, and both name the shared
-file, so a change to it selects both. dispatch-browser.yaml has two callers too,
+.github/scripts/ci_job_reads.py's SHARED_FILE maps each job whose steps are in another job's
+file (each new half, and listener-multiprocess) to that job, so its gates find their steps there.
+Each caller keeps a filter of its own, and both name the shared file, so a change to it selects
+both. dispatch-browser.yaml has two callers too,
 dispatch-browser and dispatch-browser-pr, but every job of it runs under either: it takes the
 caller's id as `job` for its artifact names, its read of its own jobs and its report, never to
 pick a job

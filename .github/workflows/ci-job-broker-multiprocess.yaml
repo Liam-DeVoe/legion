@@ -8,8 +8,10 @@ name: CI job broker-multiprocess
 # .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
-# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, and so do the
+# filters of envoy-go and envoy-go-race, which run the two packages' untagged tests
+# (ci_job_reads.py's TAG_RUNS), so a change to these steps selects those four jobs, where a
+# change to ci.yaml selects every job.
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of

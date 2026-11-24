@@ -42,7 +42,7 @@ inside its own file a comment names the filter, the anchor, the glob or the path
 a grep resolves. at()'s third argument, and a gate's `workflow`, is the workflow file
 that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
 each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
-steps, or, for the half of a split job SHARED_FILE names, the file of the other half. The one
+steps, or, for a job SHARED_FILE names, the file of the job it shares one with. The one
 gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
 docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
 own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
@@ -2597,9 +2597,9 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:175-234 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:160-215 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok.sh:121 sources it, and the harness drives it with a stand-in gh: it is what reads "
+         "ci-ok.sh:113 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
         (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:104 sources it for its bounded gh reads"),
     ]),

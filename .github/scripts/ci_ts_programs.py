@@ -21,7 +21,7 @@ workspace).
 def at(job: str, step: str, held_by: str = "") -> str:
     """A `why` naming a step of a ci.yaml job, in the file that holds it: ci.yaml's job of that
     id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are, or, for
-    the half of a split job, the file of the other half, `held_by` (ci_job_reads.py's
+    a job whose steps are in another job's file, that job's file, `held_by` (ci_job_reads.py's
     SHARED_FILE). A job whose steps are in a file of another name writes its own `why`, as the
     docs row does."""
     return f"ci-job-{held_by or job}.yaml's {job} job: {step}"
