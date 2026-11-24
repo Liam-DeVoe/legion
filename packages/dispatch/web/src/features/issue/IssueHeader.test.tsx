@@ -421,6 +421,18 @@ test("a closed issue's title is its heading alone, with no Edit title button", a
   }
 });
 
+// The details line scrolls sideways, and Firefox makes a box that scrolls a Tab stop of its own,
+// which here would read as nothing: the line's controls are its stops.
+test("the details line that scrolls sideways is no Tab stop of its own", async () => {
+  const { unmount } = header();
+  try {
+    await editTitleButton();
+    expect(screen.getByTestId("issue-metadata-rail")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    unmount();
+  }
+});
+
 // The header's pin, read against the viewer's state as Dispatch holds it before and after the pin.
 
 /** The issue the pin rows' header draws: unclaimed, at the root of its project, with no

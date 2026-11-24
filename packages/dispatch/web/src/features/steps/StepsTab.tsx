@@ -160,7 +160,7 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
           the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
           corners. */}
       <div className={`overflow-hidden rounded-xl border ${card}`}>
-        <TableShell fadeTrailing label={`Steps of task ${task}`} size="dense">
+        <TableShell fadeTrailing label={`Steps of task ${task}`} size="dense" wordsAlone>
           <TableHead>
             {COLUMNS.map((column) => (
               <TableHeadCell key={column}>{column}</TableHeadCell>

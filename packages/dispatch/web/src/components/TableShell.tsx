@@ -170,6 +170,10 @@ export interface TableShellProps {
    *  edge, as the tablist and the details rail do, so a cut column reads as more to scroll rather
    *  than as clipped text (`useScrollEnds`). */
   readonly fadeTrailing?: boolean;
+  /** Whether the rows hold words and figures alone, no control the keyboard reaches, as the
+   *  Pipeline page's slowest jobs and an issue's Steps do. Such a box is a region named for its
+   *  table, the Tab stop a keyboard reader scrolls it from (`TableShell`). */
+  readonly wordsAlone?: boolean;
 }
 
 /**
@@ -185,6 +189,13 @@ export interface TableShellProps {
  * what its text *is* - a key, a figure, a count nobody needs to read first - and the shell says
  * what that looks like.
  *
+ * A box that scrolls is a Tab stop of its own - Firefox's for any such box, and every engine's
+ * where it holds no control - and one with no role and no name reads as nothing. A box of words
+ * alone (`wordsAlone`) is that stop, as a region with the table's own name, since it is the one
+ * way a keyboard reader scrolls it. Any other box is no Tab stop (`tabIndex={-1}`): its rows'
+ * controls are the stops that bring each row into view, and the arrow keys scroll the box from
+ * any of them.
+ *
  * Not to be confused with `DataTable.tsx`'s `TableHeaderCell`, which is the sorting, filtering,
  * resizable header cell `DataTable` draws.
  */
@@ -195,20 +206,25 @@ export function TableShell({
   label,
   size = "comfortable",
   stickyHead = false,
+  wordsAlone = false,
 }: TableShellProps): ReactNode {
   const recipe = RECIPE[size];
   const style = useMemo(() => ({ size, stickyHead }), [size, stickyHead]);
   const ends = useScrollEnds();
+  // A section with a name is a region; any other box is a `div`, out of the Tab order.
+  const Box = wordsAlone ? "section" : "div";
   return (
-    <div
+    <Box
+      aria-label={wordsAlone ? label : undefined}
       className={joined(recipe.wrapper, className ?? "", fadeTrailing ? ends.fade : "")}
       data-control={CONTROL.tableShell}
       ref={fadeTrailing ? ends.ref : undefined}
+      tabIndex={wordsAlone ? undefined : -1}
     >
       <table aria-label={label} className={recipe.table}>
         <TableStyleContext value={style}>{children}</TableStyleContext>
       </table>
-    </div>
+    </Box>
   );
 }
 

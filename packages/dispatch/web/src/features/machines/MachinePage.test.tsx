@@ -171,6 +171,19 @@ test("picking a window puts it in the address and draws it", async () => {
   }
 });
 
+// The strip scrolls sideways where its picks are wider than the page, and Firefox makes a box
+// that scrolls a Tab stop of its own, which here would read as nothing: each pick is a link, the
+// strip's stops.
+test("the window strip is no Tab stop of its own", async () => {
+  const machine = renderMachine([session(id("a"), PLACE)]);
+  try {
+    await screen.findAllByTestId("window-pick");
+    expect(screen.getByTestId("window-strip")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    machine.close();
+  }
+});
+
 test("a window id two servers both hold picks one window, on the server whose strip it was picked in", async () => {
   const user = userEvent.setup();
   // Each server holds a `@0` and a `@1`, which is what tmux gives: it numbers windows per

@@ -220,9 +220,12 @@ function ServerPart({
       <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="machine-windows-with-agents">
         {WINDOWS_WITH_AGENTS}
       </p>
+      {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: each
+          window's pick is a link, the stop that brings it into view. */}
       <ul
         className="mt-2 mb-3 flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]"
         data-testid="window-strip"
+        tabIndex={-1}
       >
         {windows.map((entry) => {
           const current = entry.window.windowId === drawn?.window.windowId;

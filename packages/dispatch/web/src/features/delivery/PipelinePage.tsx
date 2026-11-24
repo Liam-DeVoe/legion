@@ -199,7 +199,12 @@ export function PipelineView({
         {(checks.slowest_jobs ?? []).length === 0 ? (
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
         ) : (
-          <TableShell className="mt-1 max-w-6xl" label="PR CI: slowest jobs" size="compact">
+          <TableShell
+            className="mt-1 max-w-6xl"
+            label="PR CI: slowest jobs"
+            size="compact"
+            wordsAlone
+          >
             <TableHead>
               <TableHeadCell>Job</TableHeadCell>
               <TableHeadCell align="right">Today median</TableHeadCell>

@@ -85,6 +85,39 @@ test("the table takes the caller's name, and the box its layout class and the co
   }
 });
 
+// Firefox makes a box that scrolls a Tab stop of its own, and every engine one that holds no
+// control. A box whose rows hold controls is no stop: the controls are. A box of words alone is
+// the stop, as a region with its table's name, not a stop that reads as nothing.
+test("a box of words alone is a region named for its table, and a box of controls no Tab stop of its own", () => {
+  const controls = render(<Projects rows={["CORE"]} />);
+  try {
+    expect(shell()).toHaveAttribute("tabindex", "-1");
+    expect(shell()).not.toHaveAttribute("role");
+    expect(screen.queryByRole("region")).toBeNull();
+  } finally {
+    controls.unmount();
+  }
+  const words = render(
+    <TableShell label="Per day" size="tight" wordsAlone>
+      <TableHead>
+        <TableHeadCell>Day</TableHeadCell>
+      </TableHead>
+      <TableBody>
+        <TableRow>
+          <TableCell>2026-09-05</TableCell>
+        </TableRow>
+      </TableBody>
+    </TableShell>
+  );
+  try {
+    expect(screen.getByRole("region", { name: "Per day" })).toBe(shell());
+    expect(shell()).not.toHaveAttribute("tabindex");
+    expect(screen.getByRole("table", { name: "Per day" })).toBeDefined();
+  } finally {
+    words.unmount();
+  }
+});
+
 test("a header cell is a column header, and a row's data attributes and cells are the caller's", () => {
   const view = render(<Projects rows={["CORE"]} />);
   try {

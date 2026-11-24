@@ -462,6 +462,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           label="Per day (UTC), newest first"
           size="tight"
           stickyHead
+          wordsAlone
         >
           <TableHead>
             <TableHeadCell>Day</TableHeadCell>

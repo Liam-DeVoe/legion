@@ -504,6 +504,28 @@ test("without the lanes prop the board renders the flat columns, no lane heading
   }
 });
 
+// Firefox makes a box that scrolls a Tab stop of its own, and every engine one that holds no
+// control, as a lane with no card does: a stop that reads as nothing. The roving keys reach each
+// column, rail and card, so neither the board's box nor a lane's is a Tab stop.
+test("the board's box that scrolls sideways is no Tab stop of its own, flat or in lanes", async () => {
+  const flat = renderBoard({}, undefined, laneIssues);
+  try {
+    await screen.findByRole("region", { name: "Project board" });
+    expect(screen.getByTestId("board-scroll-container")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    flat.cleanup();
+  }
+  const laned = renderBoard({}, undefined, laneIssues, "/projects/CORE", true);
+  try {
+    await screen.findByRole("region", { name: "P0 lane" });
+    const boxes = screen.getAllByTestId("board-lane-scroll-container");
+    expect(boxes.length).toBeGreaterThan(1);
+    for (const box of boxes) expect(box).toHaveAttribute("tabindex", "-1");
+  } finally {
+    laned.cleanup();
+  }
+});
+
 test("within a lane, Shift+L moves a card to the next status in the same lane without touching priority", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();

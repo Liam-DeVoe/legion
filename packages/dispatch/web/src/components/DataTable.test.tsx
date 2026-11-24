@@ -304,6 +304,15 @@ test("draws the rows it is given, of a type that is not an issue, under its labe
   expect(screen.getByText("3 of 3 deploys")).toBeInTheDocument();
 });
 
+// Firefox makes a box that scrolls a Tab stop of its own, which here would read as nothing: the
+// header's controls and the rows are the stops, so the box is out of the Tab order.
+test("the box that scrolls is no Tab stop of its own", async () => {
+  draw(<Deploys />);
+
+  await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(screen.getByTestId("deploys-scroll")).toHaveAttribute("tabindex", "-1");
+});
+
 test("sorts by a column's value when its header is pressed", async () => {
   const user = userEvent.setup();
   draw(<Deploys />);

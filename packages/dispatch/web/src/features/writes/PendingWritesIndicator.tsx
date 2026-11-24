@@ -256,41 +256,35 @@ export function PendingWritesIndicator(): ReactNode {
         </p>
       )}
       {named.length === 0 ? null : (
-        <ul className={`max-h-48 space-y-1 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}>
-          {named.map((row) => {
-            const uploaded = uploadedPercent(row);
-            return (
-              <li
-                className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
-                data-pending-write={row.id}
-                key={row.id}
-              >
-                {row.status === "refused" ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
-                    </span>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.retry(row.id)}
-                      type="button"
-                    >
-                      Retry
-                    </button>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.discard(row.id)}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  </>
-                ) : heldForSignOut(row) ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {row.label} — Waiting for a sign-out in another tab
-                    </span>
-                    {waitingToSend(row) ? (
+        // A box that scrolls is a Tab stop of its own in Firefox, so it is a region with a name,
+        // not a stop that reads as nothing: a row of an upload in progress or of a write held for
+        // a sign-out holds no control, and a list of only those has no other stop to scroll it
+        // from. Its name is not the panel's, "Pending changes", so the two regions read apart.
+        <section
+          aria-label="Each pending change"
+          className={`max-h-48 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}
+        >
+          <ul className="space-y-1">
+            {named.map((row) => {
+              const uploaded = uploadedPercent(row);
+              return (
+                <li
+                  className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
+                  data-pending-write={row.id}
+                  key={row.id}
+                >
+                  {row.status === "refused" ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${dangerText}`}>
+                        Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
+                      </span>
+                      <button
+                        className={secondaryButtonCompact}
+                        onClick={() => writes.retry(row.id)}
+                        type="button"
+                      >
+                        Retry
+                      </button>
                       <button
                         className={secondaryButtonCompact}
                         onClick={() => writes.discard(row.id)}
@@ -298,37 +292,52 @@ export function PendingWritesIndicator(): ReactNode {
                       >
                         Discard
                       </button>
-                    ) : null}
-                  </>
-                ) : waitingToSend(row) ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {row.label} — Waiting to send
-                    </span>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.discard(row.id)}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
-                      {uploaded === undefined
-                        ? row.label
-                        : `${row.label} — Uploading… ${uploaded}%`}
-                    </span>
-                    {row.status === "late" ? (
-                      <StopTrying onStop={() => writes.stop(row.id)} stopping={row.stopping} />
-                    ) : null}
-                  </>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                    </>
+                  ) : heldForSignOut(row) ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {row.label} — Waiting for a sign-out in another tab
+                      </span>
+                      {waitingToSend(row) ? (
+                        <button
+                          className={secondaryButtonCompact}
+                          onClick={() => writes.discard(row.id)}
+                          type="button"
+                        >
+                          Discard
+                        </button>
+                      ) : null}
+                    </>
+                  ) : waitingToSend(row) ? (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {row.label} — Waiting to send
+                      </span>
+                      <button
+                        className={secondaryButtonCompact}
+                        onClick={() => writes.discard(row.id)}
+                        type="button"
+                      >
+                        Discard
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className={`min-w-0 flex-1 ${textSecondaryOnSurface}`}>
+                        {uploaded === undefined
+                          ? row.label
+                          : `${row.label} — Uploading… ${uploaded}%`}
+                      </span>
+                      {row.status === "late" ? (
+                        <StopTrying onStop={() => writes.stop(row.id)} stopping={row.stopping} />
+                      ) : null}
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </section>
   );

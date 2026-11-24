@@ -704,11 +704,14 @@ export function IssueHeader({
         {/* The details line scrolls sideways rather than widening the page, and at a phone width
             its cut lands inside an item - the Labels control alone is wider than the rail. The
             fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
-            would hide the last item instead. */}
+            would hide the last item instead. No Tab stop of its own, which Firefox gives a box
+            that scrolls, with no name: its controls are the stops that bring each part of the
+            line into view, and the arrow keys scroll it from any of them. */}
         <div
           className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
+          tabIndex={-1}
         >
           {whoseTurn === null ? null : (
             <span

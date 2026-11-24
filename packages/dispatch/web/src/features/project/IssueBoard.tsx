@@ -314,9 +314,13 @@ const BoardLaneRow = memo(function BoardLaneRow({
         {laneLabel(boardLane.lane)}
         <Pill>{count}</Pill>
       </h2>
+      {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name, and every
+          engine where a lane holds no card: `h`/`l` and `j`/`k` rove the focus over its columns,
+          rails and cards, which brings each into view (`IssueBoard`'s registry rows). */}
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
         data-testid="board-lane-scroll-container"
+        tabIndex={-1}
       >
         <div className="flex w-max items-stretch gap-4">
           {boardLane.columns.map((column) =>
@@ -835,9 +839,11 @@ export function IssueBoard({
                 ))}
               </div>
             ) : (
+              // No Tab stop of its own, as a lane's row has none (`BoardLaneRow`).
               <div
                 className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
                 data-testid="board-scroll-container"
+                tabIndex={-1}
               >
                 <div className="flex w-max items-stretch gap-4">
                   {columns.map((column) =>

@@ -796,6 +796,9 @@ export function DataTable<Row>({
 
   return (
     <>
+      {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
+          header's sort, filter and grip of each column and the row keys' rows are the stops that
+          bring each part into view, and the arrow keys scroll the box from any of them. */}
       <div
         className={`min-w-0 overflow-auto rounded-xl border ${borderDefault}`}
         ref={layout.attachBox}
@@ -806,6 +809,7 @@ export function DataTable<Row>({
           height: layout.boxHeight,
           scrollPaddingTop: 64,
         }}
+        tabIndex={-1}
       >
         <ViewportAnchor
           item={names.rowAttribute}

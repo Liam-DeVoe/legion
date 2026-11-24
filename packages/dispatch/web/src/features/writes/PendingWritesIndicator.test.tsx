@@ -635,7 +635,10 @@ function scrollAway(away: RegExp): () => void {
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    if (this.matches('[data-testid="pending-writes"] ul')) return new DOMRect(0, 400, 400, 192);
+    // The box the named writes scroll in, under the panel's status line.
+    if (this.matches('[data-testid="pending-writes"] .overflow-y-auto')) {
+      return new DOMRect(0, 400, 400, 192);
+    }
     if (this.matches("button") && this.textContent === "Elsewhere") {
       return new DOMRect(0, -200, 80, 28);
     }
@@ -882,6 +885,31 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
       "Dispatch has not confirmed 1 change — still trying"
     );
     expect(indicator.textContent).not.toContain("Uploading…");
+  } finally {
+    unmount();
+    realClock();
+  }
+});
+
+// The list of named writes scrolls once it is taller than its box, and Firefox makes a box that
+// scrolls a Tab stop of its own. A row of an upload in progress holds no control, so the box is
+// the stop a keyboard reader scrolls such rows from: a region with a name, not one that reads as
+// nothing, and not the panel's own name.
+test("the box the named writes scroll in is a region with a name of its own", async () => {
+  jest.useFakeTimers();
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    indicatorWrite(writes, "Upload of spec.md", "POST", (bounds) => {
+      bounds.progress?.(40, 100);
+      return Promise.withResolvers<never>().promise;
+    });
+    await settle();
+    const indicator = screen.getByRole("region", { name: "Pending changes" });
+    const box = within(indicator).getByRole("region", { name: "Each pending change" });
+    expect(box).toHaveTextContent("Upload of spec.md — Uploading… 40%");
+    expect(within(box).queryByRole("button")).toBeNull();
+    expect(box).not.toHaveAttribute("tabindex");
   } finally {
     unmount();
     realClock();
