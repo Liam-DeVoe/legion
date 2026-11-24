@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -489,6 +490,124 @@ func TestForkBesideRunsOnlyWhereABusyRunIsRefused(t *testing.T) {
 		skip, fail := busyRunVerdict(row.answer, row.ci)
 		if (skip == "") != (row.skip == "") || !strings.Contains(skip, row.skip) || (fail == "") != (row.fail == "") || !strings.Contains(fail, row.fail) {
 			t.Errorf("%s: busyRunVerdict = skip %q, fail %q; want skip with %q, fail with %q", row.what, skip, fail, row.skip, row.fail)
+		}
+	}
+}
+
+// recorder is a testing.TB that keeps what a helper of this package reports rather than failing
+// the test that runs it. Its Fatalf ends the goroutine it is called on, as testing.T's does. It
+// sets no other method of testing.TB, so a helper that calls one panics.
+type recorder struct {
+	testing.TB
+	errors, fatals []string
+}
+
+func (r *recorder) Helper() {}
+
+func (r *recorder) Errorf(format string, args ...any) {
+	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+func (r *recorder) Fatalf(format string, args ...any) {
+	r.fatals = append(r.fatals, fmt.Sprintf(format, args...))
+	runtime.Goexit()
+}
+
+// record runs report with a recorder on a goroutine of its own, which the recorder's Fatalf ends,
+// and answers the recorder once report has returned or ended.
+func record(report func(testing.TB)) *recorder {
+	r := &recorder{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		report(r)
+	}()
+	<-done
+	return r
+}
+
+// RunsBeside's trials go on past each run refused as busy (an error that is ETXTBSY, wrapped or
+// not), and fail the test at the end, naming how many runs were refused of how many and the first
+// refusal's error. Any other error fails the test at once, naming the run and the error, and no
+// run follows it. Trials of which none was refused pass.
+func TestRunsBesideCountsTheRunsRefusedAsBusy(t *testing.T) {
+	t.Parallel()
+	busy := func(i int) error {
+		return &os.PathError{Op: "fork/exec", Path: fmt.Sprintf("/tmp/program-%d", i), Err: syscall.ETXTBSY}
+	}
+	for _, row := range []struct {
+		what           string
+		runs           int
+		answer         func(i int) error
+		ran            int
+		errors, fatals []string
+	}{
+		{"no run refused", 5, func(int) error { return nil }, 5, nil, nil},
+		{"two runs refused", 6, func(i int) error {
+			switch i {
+			case 1:
+				return busy(1)
+			case 4:
+				return fmt.Errorf("install the check: %w", busy(4))
+			}
+			return nil
+		}, 6, []string{"2 of 6 runs were refused as busy (ETXTBSY) while the process forked; the first: fork/exec /tmp/program-1: text file busy"}, nil},
+		{"another error after a refusal", 6, func(i int) error {
+			switch i {
+			case 1:
+				return busy(1)
+			case 3:
+				return &os.PathError{Op: "fork/exec", Path: "/tmp/program-3", Err: syscall.EACCES}
+			}
+			return nil
+		}, 4, nil, []string{"run 4 of 6: fork/exec /tmp/program-3: permission denied"}},
+	} {
+		var ran []int
+		got := record(func(t testing.TB) {
+			countBusyRuns(t, row.runs, func(i int) error {
+				ran = append(ran, i)
+				return row.answer(i)
+			})
+		})
+		var want []int
+		for i := range row.ran {
+			want = append(want, i)
+		}
+		if !slices.Equal(ran, want) || !slices.Equal(got.errors, row.errors) || !slices.Equal(got.fatals, row.fatals) {
+			t.Errorf("%s: ran %v, errors %q, fatals %q; want ran %v, errors %q, fatals %q", row.what, ran, got.errors, got.fatals, want, row.errors, row.fatals)
+		}
+	}
+}
+
+// RequireGuarded fails the test once where Unguarded names a write, saying how many it named, each
+// as file:line, and the writer to write each with; where Unguarded refuses the root, saying what it
+// could not read under which root; and passes a module root where Unguarded names nothing.
+func TestRequireGuardedFailsNamingEachWrite(t *testing.T) {
+	t.Parallel()
+	const test = "package beside\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n"
+	written := t.TempDir()
+	writeUnder(t, written, "go.mod", "module example.com/written\n")
+	writeUnder(t, written, "beside/beside.go", "package beside\n\nimport \"os\"\n\n"+
+		"func Install(name string) error { return os.WriteFile(name, nil, 0o755) }\n")
+	writeUnder(t, written, "beside/beside_test.go", test)
+	clean := t.TempDir()
+	writeUnder(t, clean, "go.mod", "module example.com/clean\n")
+	writeUnder(t, clean, "beside/beside_test.go", test)
+	noModule := t.TempDir()
+	writeUnder(t, noModule, "beside/beside_test.go", test)
+	for _, row := range []struct {
+		what, root string
+		fatal      []string
+	}{
+		{"a module with one write", written, []string{"1 writes of a file that runs can meet a fork beside it:\n\tbeside/beside.go:5\n",
+			"write each with programfile.Write, or with testexec.WriteFile in a test", `"A file a test runs"`}},
+		{"a root with no go.mod", noModule, []string{"read the module's Go files: ", noModule, "holds no go.mod"}},
+		{"a module with no write", clean, nil},
+	} {
+		got := record(func(t testing.TB) { RequireGuarded(t, row.root) })
+		if len(got.errors) != 0 || len(got.fatals) != min(len(row.fatal), 1) ||
+			len(got.fatals) == 1 && slices.ContainsFunc(row.fatal, func(part string) bool { return !strings.Contains(got.fatals[0], part) }) {
+			t.Errorf("%s: RequireGuarded reported errors %q, fatals %q; want one fatal holding each of %q, or none if that is empty", row.what, got.errors, got.fatals, row.fatal)
 		}
 	}
 }
