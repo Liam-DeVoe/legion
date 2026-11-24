@@ -1,4 +1,4 @@
-name: Run one leg's tests on the kind rig
+name: Run one leg of the kind job
 description: >-
   The steps of a leg of ci.yaml's kind job after the worker image's download: the leg's tests by
   name, each on a kind rig it brings up on the runner with Agent Sandbox's controller and gVisor, a
@@ -12,18 +12,18 @@ description: >-
 
   `leg` chooses the one test step that runs, each a step below of its own with its -run, so a
   reader of the file sees which tests each leg runs: rig the rig's measuring test; shares the
-  share test; burstable-and-sweep the burstable pod and controller sweep tests; runtime-<group>
-  one group of TestStage4aSandboxRuntimeLive (live_test.go's liveGroups), each group in exactly
-  one leg's -run; and tree-claude, tree-stage4b, tree-stage4b-restart, tree-stage4b-address,
-  tree-stage4b-move and tree-stage4b-controller one whole-tree test of internal/daemon each. Both
-  of go-daemon's Go steps skip every one of these tests by name, so each runs once per run of the
-  router, here. Each step runs through .github/scripts/go-test.sh, whose retry reruns a failed
-  root test once on a merge group; the runtime legs turn it off (GO_TEST_RETRY=off), since a rerun
-  of the root test would drop the group the leg's -run selects and run every group. A failed test
-  leaves the cluster's pods, Sandboxes, events, logs, the Agent Sandbox controller's log, the fake
-  GitHub's requests and the test's own logs under kind-logs, and every test leaves there its TLS
-  stand-ins' requests, each with its body, and each node's containerd journal, which the last step
-  uploads.
+  share test; burstable the burstable pod test; sweep the controller orphan sweep test;
+  runtime-<group> one group of TestStage4aSandboxRuntimeLive (live_test.go's liveGroups), each
+  group in exactly one leg's -run; and tree-claude, tree-stage4b, tree-stage4b-restart,
+  tree-stage4b-address, tree-stage4b-move and tree-stage4b-controller one whole-tree test of
+  internal/daemon each. Both of go-daemon's Go steps skip every one of these tests by name, so
+  each runs once per run of the router, here. Each step runs through .github/scripts/go-test.sh,
+  whose retry reruns a failed root test once on a merge group; the runtime legs turn it off
+  (GO_TEST_RETRY=off), since a rerun of the root test would drop the group the leg's -run selects
+  and run every group. A failed test leaves the cluster's pods, Sandboxes, events, logs, the Agent
+  Sandbox controller's log, the fake GitHub's requests and the test's own logs under kind-logs,
+  and every test leaves there its TLS stand-ins' requests, each with its body, and each node's
+  containerd journal, which the last step uploads.
 
   Each test step's process runs in a cgroup of its own, legion-test, through the step shell
   legion-test-shell (.github/scripts/test-fence.sh), as the runner's user: an iptables and an
@@ -36,6 +36,17 @@ description: >-
   events since the rule began, and fails on a missing match, a refusal or a pull. The cluster's own
   pulls go to ghcr.io and the rig's registry alone, each named at the teardown, and its pods
   resolve no name but cluster.local's and the rig's stand-ins' (scripts/e2e/lib/kind-sandbox.sh).
+
+  The rig needs disk that the runner image's unused toolchains hold, and their deletion took 50 to
+  122 s in CI run 45300865457, so a step at the start renames them into one directory and deletes
+  that in the background, beside the set-up and the fetches, and the step before the fence waits
+  for it and fails if it failed.
+
+  leak-guard is no kind test and brings up no rig, no fence and no cluster: it loads the archive
+  into the runner's Docker and runs the leak guard's test (scripts/e2e/leak-guard-image-probe.sh)
+  in the image, as worker-image.yaml's step after its build does, and every step of the rig is
+  passed over. It is a leg of its own so that the kind-image job, which every other leg waits on,
+  ends at its upload.
 inputs:
   leg:
     description: The leg of ci.yaml's kind job, the part of its check-run name after `kind / `.
@@ -43,21 +54,60 @@ inputs:
 runs:
   using: composite
   steps:
+    # A merge group has no worker-image job, so this is where the leak guard of the image the kind
+    # legs run is tested: the image's `git` and `jj` wrappers send each push through the pre-push
+    # hook to `legion leak-check`, and a run with the wrappers taken off PATH is its control (the
+    # probe's header says what each arm holds). The archive is loaded into the runner's Docker
+    # through zstd, as internal/kindtest loads it, and the image runs by the tag the kind-image
+    # job's build gave it, never pulled, as the user it names, one CHECK line per check.
+    - name: Leak guard test of the built image
+      if: inputs.leg == 'leak-guard'
+      shell: bash
+      env:
+        ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
+        KIND_WORKER_IMAGE: legion-worker:kind
+      run: |
+        zstd --decompress --stdout --long=31 "$ARCHIVE" | docker load
+        docker run --rm --pull never --entrypoint /bin/bash \
+          --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro" \
+          "$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
+
     # The rig holds the worker image, several gigabytes, in Docker, in the registry and in the
     # node's containerd while it loads it (internal/kindtest drops Docker's copies once the
     # registry has them), so the runner image's Android SDK, .NET, Haskell and CodeQL toolchains,
-    # which no step here uses, go first; `df -h` before and after says what that gave, and the
-    # rig's measuring test logs it again before the rig and with the rig up. What the rig runs
-    # beside Go and git is the runner image's own, and nothing installs it: Docker, kubectl, zstd
-    # (gVisor's release is a .tar.zstd), curl, GNU tar and sha512sum, as actions/runner-images'
-    # Ubuntu2404-Readme.md lists them; the rig builds kind itself with `go install`.
-    # internal/kindtest fails naming any of them it cannot find on PATH.
-    - name: Free the runner's disk of toolchains the rig does not use
+    # which no step here uses, go. Each directory is renamed into one directory of the root file
+    # system, which moves no byte (a directory elsewhere fails the step, since mv would copy it),
+    # and a background `sudo rm -rf` of that directory writes its exit status to a file when it
+    # ends, so the steps up to the fence run beside it. `df -h /` here and after the wait says what
+    # that gave, and the rig's measuring test logs it again before the rig and with the rig up.
+    # What the rig runs beside Go and git is the runner image's own, and nothing installs it:
+    # Docker, kubectl, zstd (gVisor's release is a .tar.zstd), curl, GNU tar and sha512sum, as
+    # actions/runner-images' Ubuntu2404-Readme.md lists them; the rig builds kind itself with
+    # `go install`. internal/kindtest fails naming any of them it cannot find on PATH.
+    - name: Start deleting the toolchains the rig does not use
+      if: inputs.leg != 'leak-guard'
       shell: bash
+      env:
+        TRASH: /legion-kind-trash
+        DELETION: ${{ runner.temp }}/kind-toolchains-deletion
       run: |
         df -h /
-        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-        df -h /
+        sudo mkdir "$TRASH"
+        for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+          [ -e "$dir" ] || continue
+          if [ "$(stat -c %d "$dir")" != "$(stat -c %d "$TRASH")" ]; then
+            echo "::error::$dir is not on the file system of $TRASH, so mv would copy it"
+            exit 1
+          fi
+          sudo mv "$dir" "$TRASH/"
+        done
+        (
+          status=0
+          sudo rm -rf "$TRASH" || status=$?
+          echo "$status" >"$DELETION.part"
+          mv "$DELETION.part" "$DELETION.status"
+        ) >"$DELETION.log" 2>&1 </dev/null &
+        echo "deleting $TRASH in the background (process $!)"
 
     # A runtime group's setup packs this checkout's pi-envoy and pi-legion through
     # scripts/e2e/lib/pack-plugin.sh, which builds each bundle over the installed workspace.
@@ -76,12 +126,14 @@ runs:
     # `legion` every pod's launcher and the fence's worker-shim are, and Dispatch, the Envoy
     # listener and natsd from packages/envoy.
     - id: setup-go
+      if: inputs.leg != 'leak-guard'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
         cache: false
 
-    - uses: ./.github/actions/install-gotestsum
+    - if: inputs.leg != 'leak-guard'
+      uses: ./.github/actions/install-gotestsum
 
     # The two tarballs the implementer's install fetches by the Claude Code pin's lock, its main
     # package and linux-x64's, which the rig's npm stand-in serves to the pods, so no pod reaches
@@ -102,6 +154,7 @@ runs:
     # gVisor's release held to its sha512, the node and registry images, and the kind network the
     # rule names (kind_sandbox_fetch), and every module the tests' builds read, through go.work.
     - name: Fetch what the rig runs
+      if: inputs.leg != 'leak-guard'
       shell: bash
       run: |
         note() { printf '   %s\n' "$*"; }
@@ -110,11 +163,37 @@ runs:
         kind_sandbox_fetch "$RUNNER_TEMP/kind-fetched"
         (cd packages/daemon && go mod download)
 
+    # The deletion the step at the start began, which the set-up and the fetches above ran beside:
+    # the test starts with that disk free, and a deletion that failed fails the leg here, with its
+    # output, rather than in its test. It ended in at most 122 s in CI run 45300865457; 10 minutes
+    # bounds a deletion that hangs.
+    - name: Wait for the toolchains' deletion
+      if: inputs.leg != 'leak-guard'
+      shell: bash
+      env:
+        DELETION: ${{ runner.temp }}/kind-toolchains-deletion
+      run: |
+        started=$SECONDS
+        if ! timeout 10m bash -c 'until [ -e "$1.status" ]; do sleep 1; done' wait "$DELETION"; then
+          echo "::error::the deletion of the runner's toolchains did not end within 10 minutes"
+          cat "$DELETION.log"
+          exit 1
+        fi
+        echo "waited $((SECONDS - started)) s for the deletion"
+        cat "$DELETION.log"
+        df -h /
+        status=$(cat "$DELETION.status")
+        if [ "$status" != 0 ]; then
+          echo "::error::sudo rm -rf of the runner's toolchains exited $status"
+          exit 1
+        fi
+
     # From here each test step runs in the cgroup legion-test, as the runner's user, so it reads
     # and writes the checkout, the runner's temporary directory and the caches the steps above
     # filled; its outbound connections reach loopback and the kind network's bridge alone.
     - id: fence
       name: Fence the test process to loopback and the kind network
+      if: inputs.leg != 'leak-guard'
       shell: bash
       run: .github/scripts/test-fence.sh fence --network kind
 
@@ -145,16 +224,27 @@ runs:
       run: ../../.github/scripts/go-test.sh --jsonfile kind-shares-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestShareVolumesMountInAnIssuePodLive)$'
 
     # internal/daemon's two other live tests, which launch issue pods and a project controller
-    # the same way, with small explicit reservations.
-    - name: Run the burstable pod and controller sweep tests
-      if: inputs.leg == 'burstable-and-sweep'
+    # the same way, with small explicit reservations, a leg each: one after the other they made
+    # the longest leg of CI run 45300865457 (515 s and 396 s of its 20.9 minutes).
+    - name: Run the burstable pod test
+      if: inputs.leg == 'burstable'
       shell: legion-test-shell {0}
       working-directory: packages/daemon
       env:
         LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_FETCHED: ${{ runner.temp }}/kind-fetched
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-      run: ../../.github/scripts/go-test.sh --jsonfile kind-burstable-and-sweep-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive|TestTheControllerOrphanSweepLive)$'
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-burstable-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive)$'
+
+    - name: Run the controller orphan sweep test
+      if: inputs.leg == 'sweep'
+      shell: legion-test-shell {0}
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
+        LEGION_TEST_KIND_FETCHED: ${{ runner.temp }}/kind-fetched
+        LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile kind-sweep-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestTheControllerOrphanSweepLive)$'
 
     # The Sandbox runtime's live test, one group of its checks a leg by -run alone, against a
     # restricted identity of the cluster's own, PostgreSQL in the cluster and this repository's
@@ -322,7 +412,7 @@ runs:
       shell: bash
       run: .github/scripts/test-fence.sh report --docker-events
 
-    - if: always()
+    - if: always() && inputs.leg != 'leak-guard'
       uses: ./.github/actions/go-test-upload
       with:
         name: kind-${{ inputs.leg }}-test
@@ -336,7 +426,7 @@ runs:
     # beside them. The name carries no run attempt and the upload overwrites, so a re-run's
     # evidence replaces the earlier attempt's.
     - name: Upload the rig's evidence
-      if: always()
+      if: always() && inputs.leg != 'leak-guard'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: kind-${{ inputs.leg }}-logs

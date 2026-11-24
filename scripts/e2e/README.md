@@ -179,6 +179,7 @@ Every script here but two is a step of a job of `ci.yaml`, and that job gives it
   Each of these scripts takes Oh My Pi, and Claude Code, Codex CLI, Chromium or Postgres where it uses them, from the job, starts its own NATS and, where it calls a model, its own model stand-in, and prints one `CHECK` line for each check it makes.
 
 - `leak-guard-image-probe.sh` is a step of the `worker-image` job, which runs it inside the image it has just built.
+  In the merge queue, which runs no `worker-image`, it is the step of the `leak-guard` leg of the `kind` job, which runs it inside the image the `kind-image` job built.
 
 - `step-records-read.sh` and `plan-ratings-read.sh` are tools, not tests:
   an operator runs each after the merge against a deployed Dispatch, with the operator's own credential, and its header says for which decision.

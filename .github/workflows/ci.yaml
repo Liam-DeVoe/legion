@@ -401,10 +401,9 @@ jobs:
   kind-image:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.kind == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    name: ${{ matrix.name }}
+    name: ${{ 'kind / image' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy: {fail-fast: false, matrix: {name: [kind / image]}}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -421,8 +420,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [rig, shares, burstable-and-sweep, runtime-root, runtime-secrets, runtime-roles, runtime-adopt, runtime-image, runtime-issues, runtime-pod-update, runtime-pod-update-fleet, tree-claude, tree-stage4b, tree-stage4b-restart, tree-stage4b-address, tree-stage4b-move, tree-stage4b-controller]
-        include: [{leg: rig, t: 25}, {leg: tree-claude, t: 36}, {leg: tree-stage4b, t: 39}, {leg: tree-stage4b-restart, t: 38}, {leg: tree-stage4b-address, t: 37}, {leg: tree-stage4b-move, t: 36}, {leg: tree-stage4b-controller, t: 37}]
+        leg: [rig, shares, burstable, sweep, runtime-root, runtime-secrets, runtime-roles, runtime-adopt, runtime-image, runtime-issues, runtime-pod-update, runtime-pod-update-fleet, tree-claude, tree-stage4b, tree-stage4b-restart, tree-stage4b-address, tree-stage4b-move, tree-stage4b-controller, leak-guard]
+        include: [{leg: rig, t: 25}, {leg: tree-claude, t: 36}, {leg: tree-stage4b, t: 39}, {leg: tree-stage4b-restart, t: 38}, {leg: tree-stage4b-address, t: 37}, {leg: tree-stage4b-move, t: 36}, {leg: tree-stage4b-controller, t: 37}, {leg: leak-guard, t: 20}]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}

@@ -642,15 +642,15 @@ type=gha,scope=worker-image`), into a docker archive each kind leg downloads
 worker-image build of its head to take the image from. It needs ci-images because its buildx
 driver pulls BuildKit's row of .github/ci-images.yaml, and carries `!cancelled()`, as
 tool-fallback does, so a ci-images job that `changes` skipped holds nothing back. It is the
-`kind / image` part it was, named by its matrix, and reads the kind output.
+`kind / image` part it was, named by an expression, and reads the kind output.
 
-Before the upload it runs scripts/e2e/leak-guard-image-probe.sh in the image it built, as
-worker-image.yaml's step after its build does: a merge group has no worker-image job, so this is
-where it tests the leak guard of the image its kind legs run. The docker load that step needs
-costs the kind chain its time.
+It ends at its upload. The leak guard's test (scripts/e2e/leak-guard-image-probe.sh), which a
+merge group runs in no worker-image job, ran here before the upload until CI run 45300865457,
+where it took 115 s of this job's 8.4 minutes, 99 of them the `docker load` it needs, all of it
+on the path every kind leg waits on; it runs on the kind job's leak-guard leg now.
 
 The archive is zstd's, whole: its layers left uncompressed by the build, then one zstd frame at
-level 3 with a 1 GiB window (`-T0 -3 --long=30`), which the probe and each kind leg's
+level 3 with a 1 GiB window (`-T0 -3 --long=30`), which the leak-guard leg and each kind leg's
 internal/kindtest decompress as `docker load` reads them (`zstd -dc --long=31`), zstd being the
 runner image's own. Until then the artifact was the build's archive of gzip layers, 2,343.7 MB,
 which zstd cannot shrink; each kind leg's download of it took 0.3 to 5.0 minutes in CI runs
@@ -677,9 +677,22 @@ rig 22.0 (it keeps 25), shares 35.8 and burstable-and-sweep 38.3 (40), tree-clau
 tree-stage4b-move 35.9 (36), tree-stage4b without the controller's restart 38.6 (39) and
 tree-stage4b-restart without the listener's move 37.2 (38). The two new tree legs have no run of
 their own yet; from their parts' times, tree-stage4b-controller 36.8 (37) and tree-stage4b-address
-36.3 (37).
+36.3 (37). burstable and sweep, burstable-and-sweep's two tests a leg each, keep its 40: each
+one's set-up, test step and rerun is less than the two tests' together.
 
-Each leg fetches what the rig runs first (kind's build, gVisor's release, the node and registry
+The leak-guard leg is no kind test: it downloads the archive as every leg does, loads it into the
+runner's Docker and runs scripts/e2e/leak-guard-image-probe.sh in the image, as worker-image.yaml's
+step after its build does, a merge group having no worker-image job, and brings up no rig, no
+fence and no cluster; the action passes every other step over for it. Its 20 minutes hold the
+download's own 10, the load and the test (115 s in kind-image) and the checkout.
+
+Each rig leg renames the runner image's Android SDK, .NET, Haskell and CodeQL toolchains into one
+directory and deletes that in the background as its first step, and the step before the fence
+waits for it, fails if it failed and prints `df -h /`. Run first, the deletion took 50 to 122 s of
+each leg in CI run 45300865457; beside the set-up and the fetches, about 65 s, a leg waits only for
+the rest. The download stays before it, a timed step of this job.
+
+Each rig leg fetches what the rig runs first (kind's build, gVisor's release, the node and registry
 images, the kind network, the Go modules) and then runs its test step in a cgroup of its own, as
 the runner's user, whose outbound connections, and those of every process it starts, reach
 loopback and the kind network's bridge alone (.github/scripts/test-fence.sh, an iptables and an
@@ -702,10 +715,15 @@ root and secrets groups, runtime-roles into roles and adopt, runtime-pod-update 
 and pod-update-fleet (live_test.go's liveGroups, each group in one leg's -run), tree-stage4b's
 controller restart into a test of its own, which reads nothing of the tree, and
 tree-stage4b-restart's move of the listener's address into a test of its own, as the stream's move
-is. Each new leg repeats the set-up, the compile and the in-test rig, 6 to 10 minutes. The merge
-queue runs the job, and a dispatched run with the input kind-and-agent-harness; a pull request
-never does, as #why-the-kind-rig-has-an-output-of-its-own says. Not fail-open: its tests were in
-no job that `changes` failing runs.
+is. Each new leg repeats the set-up, the compile and the in-test rig, 6 to 10 minutes. In CI run
+45300865457 the chain was 30.4 minutes: changes 0.2, ci-images 0.6, kind-image 8.4 and
+burstable-and-sweep 20.9, its two tests one after the other. So those two tests went to a leg
+each, the deletion of the toolchains off each leg's path and the leak guard's test out of
+kind-image: at that run's times kind-image takes 6.5 minutes and the longest leg, tree-stage4b,
+about 19.3, about 26.8 for the chain. The merge queue runs the job, and a dispatched run with the
+input kind-and-agent-harness; a pull request never does, as
+#why-the-kind-rig-has-an-output-of-its-own says. Not fail-open: its tests were in no job that
+`changes` failing runs.
 
 ## The private-names-port job, and the closure it took off the test filter
 

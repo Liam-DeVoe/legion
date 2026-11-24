@@ -7,10 +7,10 @@ description: >-
   compresses whole, and each leg of the kind job downloads that as the artifact
   kind-image-worker-image. The kind job runs on a merge group and on a dispatched run with the
   kind-and-agent-harness input, never on a pull request, so no run of it has a worker-image build
-  of its own head to take the image from. Before the upload, the leak guard's test
-  (scripts/e2e/leak-guard-image-probe.sh) runs in the image, loaded from the compressed archive,
-  as worker-image.yaml's step after its build runs it. The kind filter of .github/ci-areas.yaml
-  names every file the build and that test read.
+  of its own head to take the image from. The leak guard's test
+  (scripts/e2e/leak-guard-image-probe.sh) runs in that image on the kind job's leak-guard leg,
+  loaded from the archive, so it is off the path every other leg waits on. The kind filter of
+  .github/ci-areas.yaml names every file the build and that test read.
 runs:
   using: composite
   steps:
@@ -68,24 +68,6 @@ runs:
       run: |
         zstd -T0 -3 --long=30 --rm -q "$ARCHIVE" -o "$ARCHIVE.zst"
         ls -l "$ARCHIVE.zst"
-
-    # The leak guard's test inside the image this job built, as worker-image.yaml's step after its
-    # build runs it on the pushed digest: the image's `git` and `jj` wrappers send each push
-    # through the pre-push hook to `legion leak-check`, and a run with the wrappers taken off PATH
-    # is its control (the probe's header says what each arm holds). The compressed archive the
-    # kind legs download is loaded into the runner's Docker through zstd, as internal/kindtest
-    # loads it, and the image runs by the tag the build gave it, never pulled, as the user it
-    # names, one CHECK line per check.
-    - name: Leak guard test of the built image
-      shell: bash
-      env:
-        ARCHIVE: ${{ runner.temp }}/worker-image.tar.zst
-        KIND_WORKER_IMAGE: legion-worker:kind
-      run: |
-        zstd --decompress --stdout --long=31 "$ARCHIVE" | docker load
-        docker run --rm --pull never --entrypoint /bin/bash \
-          --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro" \
-          "$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
 
     # The archive is zstd's already, so the artifact stores it as it is. A day is long enough for
     # a re-run of the leg that reads it. The name holds no run attempt and the upload overwrites:

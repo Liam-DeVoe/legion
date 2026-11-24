@@ -20,7 +20,7 @@ A tool that a workflow step reaches through `bun run` and that runs package scri
 ### When CI runs each job
 
 The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image`.
-`worker-image` runs on the pull request and in the release; in the merge queue, the `kind-image` job builds the same image with the same probe.
+`worker-image` runs on the pull request and in the release; in the merge queue, the `kind-image` job builds the same image with the same image probe, and the `kind / leak-guard` leg runs the same leak-guard test in it.
 On a pull request, a job runs when its filter in `.github/ci-areas.yaml` matches a changed file, or when a changed file matches no filter, and the job is not held.
 The held jobs are the slow suites (`go-envoy-held` and the jobs that carry its legs' names), `agent-harness`, `airlock-arm` and the full browser lane: a pull request runs them only while it carries the label `full-ci`.
 `full-ci` runs no `kind`: no pull request runs `kind`.

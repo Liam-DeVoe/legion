@@ -389,12 +389,12 @@ IMAGE_FROM = {
         "Dockerfile packages/daemon/docker/worker.Dockerfile is in the reach above and whose FROM "
         "references this check reads, so the run fetches nothing a row must hold"
     ),
-    (".github/actions/kind/image/action.yml", "KIND_WORKER_IMAGE"): (
-        "the local tag of the worker image this same job just built into its docker archive and "
-        "loaded from it (its build step's `tags:`, legion-worker:kind), run with --pull never; "
-        "the image is this repository's own build of packages/daemon/docker/worker.Dockerfile, "
-        "which is in the reach above and whose FROM references this check reads, so the run "
-        "fetches nothing a row must hold"
+    (".github/actions/kind/action.yml", "KIND_WORKER_IMAGE"): (
+        "the local tag of the worker image the kind-image job built into its docker archive, which "
+        "the kind job's leak-guard leg downloaded and loaded (that build step's `tags:`, "
+        "legion-worker:kind), run with --pull never; the image is this repository's own build of "
+        "packages/daemon/docker/worker.Dockerfile, which is in the reach above and whose FROM "
+        "references this check reads, so the run fetches nothing a row must hold"
     ),
 }
 
