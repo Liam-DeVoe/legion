@@ -2,6 +2,7 @@ package embedqueue
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"time"
@@ -9,13 +10,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
+// callBound is the most one Embed call this queue makes may take, whatever the place: boundedCall
+// ends the call there through its context. It is Azure's own request timeout (azureRequestTimeout,
+// 60 s); Bedrock's SDK sets no bound of its own. Half claimWindow, it leaves a call that starts
+// with a fresh claim the other half to end in. A var, as renewClaimInterval is, so a test can
+// shrink it and see a call end at its bound in milliseconds.
+var callBound = 60 * time.Second
+
+// callSlack is how much of its claim a call that runs to callBound must still have when it ends:
+// time for the call to unwind once its context ends, for the renewal or the commit that follows,
+// and for a late timer on a loaded host.
+const callSlack = 15 * time.Second
+
 // claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
 // ProcessBatch call is working through - not just whatever subtree bisection is currently in,
 // since every row not yet committed or confirmed permanent is still this call's responsibility
-// until it returns - once renewClaimInterval has passed since the last renewal, so work slower
-// than claimWindow (a long bisection, or a single wait on the token budget or the pace; see
-// renewClaimInterval, reserveTokens' and embedDocuments' own doc comments) never loses its claim
-// to a concurrent scanner partway through. Best-effort: a failed renewal is logged and never
+// until it returns - once renewClaimInterval has passed since the last renewal, and before an
+// Embed call that could otherwise outlive it (renewBeforeCall), so work slower than claimWindow (a
+// long bisection, a single wait on the token budget or the pace, or a call that runs to callBound;
+// see renewClaimInterval, reserveTokens' and embedDocuments' own doc comments) never loses its
+// claim to a concurrent scanner partway through. Best-effort: a failed renewal is logged and never
 // aborts anything, since a row a concurrent scanner reclaims is merely processed twice, not
 // corrupted - commitEmbeddings' own content_hash-matched update already makes a doubly-claimed
 // row safe, just not free. A nil *claimRenewal (a caller with no claim to protect, such as a test
@@ -36,7 +50,20 @@ func newClaimRenewal(deps Deps, rows []pendingRow) *claimRenewal {
 
 // renew renews c's claim once it is due (due).
 func (c *claimRenewal) renew(ctx context.Context) {
-	if c == nil || ctx.Err() != nil || c.due() > 0 {
+	c.renewOnceOlderThan(ctx, renewClaimInterval)
+}
+
+// renewBeforeCall renews c's claim before an Embed call that, run to callBound, could end with the
+// claim within callSlack of claimWindow: once its age plus callBound plus callSlack reaches
+// claimWindow (45 s, where renew waits for 60 s). So however late after the last renewal a call
+// starts, it ends with its claim no older than claimWindow less callSlack.
+func (c *claimRenewal) renewBeforeCall(ctx context.Context) {
+	c.renewOnceOlderThan(ctx, claimWindow-callBound-callSlack)
+}
+
+// renewOnceOlderThan renews c's claim once age has passed since its last renewal (until).
+func (c *claimRenewal) renewOnceOlderThan(ctx context.Context, age time.Duration) {
+	if c == nil || ctx.Err() != nil || c.until(age) > 0 {
 		return
 	}
 	c.last = time.Now()
@@ -51,8 +78,39 @@ func (c *claimRenewal) due() time.Duration {
 	if c == nil {
 		return math.MaxInt64
 	}
-	return max(renewClaimInterval-time.Since(c.last), 0)
+	return c.until(renewClaimInterval)
 }
+
+// until is how long until age has passed since c's last renewal, and 0 once it has.
+func (c *claimRenewal) until(age time.Duration) time.Duration {
+	return max(age-time.Since(c.last), 0)
+}
+
+// boundedCall is an embedder each of whose calls the queue ends at callBound through the call's
+// context, whatever the place: Deps.Paced puts it inside the pace, and embedDocuments wraps an
+// unpaced embedder in it. A call the bound ended while its caller's context was live ran out of
+// time, which is an outage (embed.IsOutage), as a call that ran out of time inside the client is:
+// it does not speed the pace up as an answered call does, and a canary that meets it backs the
+// pace off.
+type boundedCall struct{ embed.Embedder }
+
+func (b boundedCall) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	call, cancel := context.WithTimeout(ctx, callBound)
+	defer cancel()
+	vectors, err := b.Embedder.Embed(call, texts, inputType)
+	if err != nil && ctx.Err() == nil && call.Err() != nil && !embed.IsOutage(err) && !embed.IsThrottled(err) {
+		return nil, callRanOut{fmt.Errorf("the call ran past the embedding queue's %v bound: %w", callBound, err)}
+	}
+	return vectors, err
+}
+
+// callRanOut marks a call boundedCall ended at callBound for embed.IsOutage, keeping its error's
+// text and letting errors.Is/As reach it.
+type callRanOut struct{ err error }
+
+func (e callRanOut) Error() string { return e.err.Error() }
+func (e callRanOut) Unwrap() error { return e.err }
+func (callRanOut) Outage() bool    { return true }
 
 // extendClaim pushes next_attempt_at of each of rows claimWindow past now, keeping scanPending's
 // claim on them.

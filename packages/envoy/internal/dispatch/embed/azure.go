@@ -37,8 +37,11 @@ const (
 	// 16,000 tokens/s) that is about 20 s, a third of the timeout. Measured: 320,000 bytes of hex
 	// (281,740 tokens, the densest text measured) took 8.6 s, and 288,000 of random CJK 5.8 s.
 	azureMaxBatchBytes = 320_000
-	// azureRequestTimeout bounds one Embed call, sign-in included, below embedqueue's claimWindow
-	// (2 minutes), so a hung call never outlives the claim on the rows it carries.
+	// azureRequestTimeout bounds one Embed call, sign-in included, for every caller: a live
+	// search's query embedding and the embedding queue's background calls alike. The queue also
+	// ends each of its own calls at the same 60 s through the call's context (embedqueue's
+	// callBound), whatever the place, and renews its claim on the rows a call carries first when
+	// the call could otherwise outlive it, so a hung background call never outlives that claim.
 	azureRequestTimeout = 60 * time.Second
 	// azureErrorBodyLimit bounds how much of a failed response is read for its error code.
 	azureErrorBodyLimit = 64 << 10

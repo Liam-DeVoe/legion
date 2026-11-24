@@ -675,9 +675,9 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	}
 }
 
-// shortenForTest sets *setting, a duration of the package a test may shrink (renewClaimInterval),
-// to d until t ends. No test of this package runs in parallel, so
-// nothing else reads the setting meanwhile.
+// shortenForTest sets *setting, a duration of the package a test may shrink (renewClaimInterval,
+// callBound), to d until t ends. No test of this package runs in parallel, so nothing else reads
+// the setting meanwhile.
 func shortenForTest(t *testing.T, setting *time.Duration, d time.Duration) {
 	t.Helper()
 	healthy := *setting
