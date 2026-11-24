@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -914,6 +915,14 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 	settledCommentDeliveries(t, database, created.ID)
 }
 
+// stagedAhead is how far past the database's now() a row of this package stages a time the
+// product judges against its own clock: a heartbeat, a lease, a claim, a run's ends_at, a close,
+// or a TTL the roster cache keeps an answer for. It is staged state for the product's clock, not a
+// wait: longer than any `go test -timeout` CI gives this package, so what the row staged reads as
+// not yet passed however long the run takes, where a stamp of now() would pass a minute or a few
+// seconds later on a loaded machine.
+const stagedAhead = 24 * time.Hour
+
 // ageAttempts moves the creation of the comments' attempts a claim lease and a second into the
 // past: the delivery sweep takes an attempt only once it has waited that long.
 func ageAttempts(t *testing.T, database *store.Store, commentIDs ...string) {
@@ -928,7 +937,9 @@ func ageAttempts(t *testing.T, database *store.Store, commentIDs ...string) {
 
 // A process that stops with mention sends still queued leaves their attempts pending with no
 // claim. The next process's delivery sweep sends such an attempt once it has waited a claim
-// lease, and leaves alone one whose claim is live, which another process's sender holds.
+// lease, and leaves alone one whose claim is live, which another process's sender holds. That
+// claim is staged stagedAhead past the database's now(), so the sweep reads it live however long
+// the row takes to reach it.
 func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *testing.T) {
 	t.Parallel()
 	listener, state := newMentionListener(t)
@@ -948,8 +959,8 @@ func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *tes
 		t.Fatal("a comment accepted while the process stopped had its attempt taken")
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		update comment_deliveries set claimed_at = now() where comment_id = $1
-	`, held.ID); err != nil {
+		update comment_deliveries set claimed_at = now() + make_interval(secs => $2) where comment_id = $1
+	`, held.ID, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("claim the held attempt as another live sender: %v", err)
 	}
 	ageAttempts(t, database, stranded.ID, held.ID)
@@ -1236,9 +1247,10 @@ func queuedAndInFlight(sender *mentionSender) (queued, inflight int) {
 
 // ageQueuedClaims moves every claim the sender holds on a send that has not started back by by,
 // on the attempt row and in the sender's own record together: what a lane held that long leaves
-// behind when nothing writes those claims again. A send in flight is left as it is, its try having
-// claimed its row for itself. It holds the sender's lock throughout, so no refresh records
-// anything until every row and its record agree again.
+// behind when nothing writes those claims again. A negative by moves them that far ahead instead,
+// which stages claims the database reads live however long a row runs (stagedAhead). A send in
+// flight is left as it is, its try having claimed its row for itself. It holds the sender's lock
+// throughout, so no refresh records anything until every row and its record agree again.
 func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender, by time.Duration) {
 	t.Helper()
 	sender.mu.Lock()
@@ -1270,27 +1282,30 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 	}
 }
 
-// awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
-// the last 5 s: the sender's refresh loop has written the claims it holds again.
-func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
+// awaitRefreshedClaims waits until every comment's attempt for target is under a claim a statement
+// wrote at or after since, a moment of the database's clock: the sender's refresh loop has written
+// the claims it holds again.
+func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string, since time.Time) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the sender to write the claims of %d queued attempts again", len(commentIDs)), func() (string, bool) {
-		refreshed := refreshedClaims(t, database, commentIDs, target)
-		return fmt.Sprintf("%d of %d queued attempts are still under the claim they aged to",
-			len(commentIDs)-refreshed, len(commentIDs)), refreshed == len(commentIDs)
+		refreshed := refreshedClaims(t, database, commentIDs, target, since)
+		return fmt.Sprintf("%d of %d queued attempts are still under a claim written before %s or staged ahead of the database's clock",
+			len(commentIDs)-refreshed, len(commentIDs), since.Format(time.RFC3339Nano)), refreshed == len(commentIDs)
 	})
 }
 
-// refreshedClaims is how many of the comments' attempts for target are under a claim written in
-// the last 5 s.
-func refreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) int {
+// refreshedClaims is how many of the comments' attempts for target are under a claim a statement
+// wrote at or after since and no later than this read: written since then, which a claim staged
+// ahead of the database's clock (ageQueuedClaims with a negative by) is not. The claim a statement
+// writes is its transaction's now(), so no time that passes after the write moves it out.
+func refreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string, since time.Time) int {
 	t.Helper()
 	var refreshed int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from comment_deliveries
 		where comment_id = any($1::uuid[]) and target = $2 and attempt = 1 and state = 'pending'
-		  and claimed_at > now() - interval '5 seconds'
-	`, commentIDs, target).Scan(&refreshed); err != nil {
+		  and claimed_at >= $3 and claimed_at <= clock_timestamp()
+	`, commentIDs, target, since).Scan(&refreshed); err != nil {
 		t.Fatalf("read the claims on the queued attempts: %v", err)
 	}
 	return refreshed
@@ -1306,15 +1321,22 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 
 // A recipient's comments reach it in the order they were accepted however long its first send is
 // held. The comments behind that send wait on the recipient's lane under the claim their attempts
-// committed with, and the sender's refresh loop (keepClaims) writes each of those claims again
-// before it lapses, so a lane held longer than a claim lease keeps them: a delivery sweep pass
-// that runs while every attempt is old enough to be owed takes none of them and sends nothing
-// past the send in flight. The claims age to just short of a lease: one a lease old with no
-// refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
-// TestALostRefreshNeverRevivesALapsedClaim covers. The refresh loop runs on a fake of its own
-// (withMentionClaimRefresh), which the row moves to the refresh the loop armed,
-// mentionClaimRefresh after it began: no claim is written again before that move, and every one
-// is after it.
+// committed with, and the sender's refresh loop (keepClaims) writes each of those claims again, so
+// a lane held longer than a claim lease keeps them: a delivery sweep pass that runs while every
+// queued attempt is old enough to be owed takes none of them and sends nothing past the send in
+// flight. The refresh loop runs on a fake of its own (withMentionClaimRefresh), which the row moves
+// to the refresh the loop armed, mentionClaimRefresh after it began: no claim is written again
+// before that move, and every one is after it, by a statement the row reads as written at or
+// after a moment of the database's clock taken before the move.
+//
+// Every claim the sweep and the refresh judge is staged stagedAhead past the database's now()
+// (ageQueuedClaims with a negative age), before the refresh and again before the sweep, so each
+// is live when it is judged however long the row takes: a claim the refresh wrote is live for one
+// lease after its write and no longer. That a lapsed claim is not written again is
+// TestALostRefreshNeverRevivesALapsedClaim's, and that the sweep takes the queued sends of a lane
+// whose claims lapsed is the row below's. The send in flight is held by the claim its own try
+// took, which no refresh writes (refreshHeldClaims) and which its settle must still carry, so its
+// attempt is staged as opened stagedAhead past the database's now(): no pass reads it owed.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	t.Parallel()
 	listener, state := newMentionListener(t)
@@ -1342,21 +1364,28 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 			t.Fatalf("the attempt of %s waiting on the held lane is not held by the sender", comment)
 		}
 	}
-	// The lane has now been held longer than a claim lease: every attempt was opened that long
-	// ago, and the claims the sender took on the sends waiting on it were last written all but a
-	// lease ago, so they lapse within seconds unless the refresh writes them again.
+	// The lane has now been held longer than a claim lease: every queued attempt was opened that
+	// long ago. The send in flight's attempt is opened ahead of the database's clock instead, and
+	// the queued claims are staged ahead of it, so only what the refresh writes decides the sweep.
 	comments := append([]string{sending}, queued...)
-	ageAttempts(t, database, comments...)
-	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-5*time.Second)
+	ageAttempts(t, database, queued...)
+	if _, err := database.Pool.Exec(context.Background(), `
+		update comment_deliveries set created_at = now() + make_interval(secs => $2) where comment_id = $1
+	`, sending, stagedAhead.Seconds()); err != nil {
+		t.Fatalf("open the attempt of the send in flight ahead of the database's clock: %v", err)
+	}
+	ageQueuedClaims(t, database, served.mentions, -stagedAhead)
+	since := testdb.ClockTimestamp(t, database.Pool)
 	refresh := refreshes.AwaitArmed(t, "the sender's claim refresh", 1)
 	if want := began.Add(mentionClaimRefresh); len(refresh) != 1 || !refresh[0].Equal(want) {
 		t.Fatalf("the sender's refresh loop armed %v, want its first refresh alone, at %v", refresh, want)
 	}
-	if refreshed := refreshedClaims(t, database, queued, "session:s1"); refreshed != 0 {
-		t.Fatalf("%d of the %d aged claims were written again before the refresh loop's clock reached its refresh", refreshed, len(queued))
+	if refreshed := refreshedClaims(t, database, queued, "session:s1", since); refreshed != 0 {
+		t.Fatalf("%d of the %d staged claims were written again before the refresh loop's clock reached its refresh", refreshed, len(queued))
 	}
 	refreshes.Set(refresh[0])
-	awaitRefreshedClaims(t, database, queued, "session:s1")
+	awaitRefreshedClaims(t, database, queued, "session:s1", since)
+	ageQueuedClaims(t, database, served.mentions, -stagedAhead)
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
 	}

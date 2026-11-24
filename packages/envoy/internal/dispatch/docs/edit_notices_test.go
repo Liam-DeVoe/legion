@@ -23,6 +23,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// stagedAhead is how far past the database's now() a row of this package stages a time the
+// service judges against the database's clock: a notice's quiet time, or an issue's close the
+// store's close margin is read against. It is staged state for the product's clock, not a wait:
+// longer than any `go test -timeout` CI gives this package, so what the row staged reads as not
+// yet passed however long the run takes, where the production thirty seconds or a minute would
+// pass on a loaded machine.
+const stagedAhead = 24 * time.Hour
+
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
 // database's own now() at the read beside its due time.
 type editNoticeRow struct {
@@ -150,10 +158,13 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
 // a settlement that waited on its locks writes a window that still has its whole quiet time to
-// run, so the card never goes out before the document has been quiet that long.
+// run, so the card never goes out before the document has been quiet that long. The quiet time is
+// stagedAhead here, so the notice is still inside it at the read and at the sweep however long the
+// row takes to reach them.
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -557,10 +568,13 @@ func TestEditNoticeSweepSendsNothingForANoticeMovedBehindItsClaim(t *testing.T) 
 	}
 }
 
-// A notice whose quiet time has not passed stays, and sends nothing.
+// A notice whose quiet time has not passed stays, and sends nothing. The quiet time is
+// stagedAhead, so the notice is still inside it at the sweep however long the row takes to reach
+// it.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "alice@example.com"}, replaceRun("First.", "First, edited."))

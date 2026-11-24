@@ -21,6 +21,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -1284,9 +1285,12 @@ func TestIsValidRole(t *testing.T) {
 	}
 }
 
+// The session cache counts ses_health until its TTL passes, so the TTL is staged at a day: state
+// for the registry's clock and the bucket's age, not a wait, longer than any `go test -timeout` CI
+// gives this package, so the count reads it however long the machine takes after the Put.
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	client := setupPublishTestClient(t)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(24*time.Hour))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -1710,14 +1714,26 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 // while the cache retains it, as the listener retains it for as long as the interest reaper can
 // still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
 // TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
+//
+// The session registry runs on a clock of the row's own (session.WithSessionClock), which stands
+// at the moment it was made until the row moves it: the heartbeat's Get right after its Put, the
+// expiry and the read are each judged at the moment the row set, so none passes or falls short of
+// its TTL by how long the machine took. The TTL is staged at a day, state for that clock and the
+// bucket's age and not a wait, longer than any `go test -timeout` CI gives this package, so
+// nats-server keeps the record while the row runs; the row moves the clock past it, then on past
+// the default retention to a moment the configured one still covers.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	const (
 		expired    = "ses_heartbeat_expired"
-		sessionTTL = time.Second
+		sessionTTL = 24 * time.Hour
 	)
+	clock := clocktest.New(time.Now())
 	registry, sessions := setupInterestLastSeenTest(t, []string{expired},
-		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(time.Minute))
+		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(3*sessionTTL), session.WithSessionClock(clock.Now))
 	beat := heartbeat(t, sessions, expired)
+	// Half a TTL past the heartbeat's own deadline, which is the record's write (nats-server's
+	// stamp of it, moments after the heartbeat) a TTL on.
+	clock.Set(time.UnixMilli(beat).Add(sessionTTL + sessionTTL/2))
 	testwait.Until(t, "the session to expire from the cache", func() (string, bool) {
 		entry, err := sessions.Get(expired)
 		if err != nil {
@@ -1725,7 +1741,9 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 		}
 		return fmt.Sprintf("still reads %+v", entry), false
 	})
-	time.Sleep(sessionTTL + 200*time.Millisecond)
+	// Two TTLs past the session's leaving: past the default retention (session.LastSeenMemory, or
+	// the TTL where that is longer) and inside the three TTLs WithLastSeenRetention keeps it.
+	clock.Advance(sessionTTL + sessionTTL/2)
 
 	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)

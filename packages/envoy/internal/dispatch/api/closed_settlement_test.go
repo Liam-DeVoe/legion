@@ -54,14 +54,16 @@ func closedSettlementHandlerSettlingAfter(t *testing.T, settle time.Duration) (h
 }
 
 // closeIssueThroughPatch closes issue through PATCH /api/v1/issues/{key} as alice, which withdraws
-// its open asks and sweeps its documents' ask blocks before it answers, and then moves the close a
-// minute ahead in the database: the issue reads closed, and the store's close margin admits a
-// browser's update its room takes from now on however long the test runs (observedBeforeClose).
+// its open asks and sweeps its documents' ask blocks before it answers, and then moves the close
+// stagedAhead ahead in the database: the issue reads closed, and the store's close margin admits a
+// browser's update its room takes from now on however long the test runs (observedBeforeClose). A
+// close a minute ahead admits only the updates taken within that minute and the margin.
 func closeIssueThroughPatch(t *testing.T, handler http.Handler, database *store.Store, issue string) {
 	t.Helper()
 	closeArtifactIssue(t, handler, issue)
-	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() + interval '1 minute' where key = $1`, issue); err != nil {
-		t.Fatalf("move the close of %s a minute ahead: %v", issue, err)
+	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() + make_interval(secs => $2) where key = $1`,
+		issue, stagedAhead.Seconds()); err != nil {
+		t.Fatalf("move the close of %s ahead of the database's clock: %v", issue, err)
 	}
 }
 

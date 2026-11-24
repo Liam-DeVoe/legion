@@ -313,6 +313,19 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 		if second == first {
 			t.Fatal("the renewal answered the very token that lapsed, want a token of its own")
 		}
+		// The renewed token lives this broker's shortAccessSeconds from its exchange, as the first
+		// did. Its expiry is staged a day on before the row introspects it, in the column the store
+		// keeps it by and in the stored session the provider judges a token's life from: state for
+		// the broker's clock, not a wait, longer than any `go test -timeout` CI gives this package,
+		// so the introspection reads the renewed token live however long the machine took since the
+		// exchange. The renewed token is the one with the later expiry; the first's has passed.
+		if tag, err := lapse.Exec(t.Context(), `update oauth_access_tokens
+			set expires_at = expires_at + interval '24 hours',
+			    request = jsonb_set(request, '{session,expires_at,access_token}',
+			        to_jsonb((request #>> '{session,expires_at,access_token}')::timestamptz + interval '24 hours'))
+			where expires_at = (select max(expires_at) from oauth_access_tokens)`); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("stage the renewed token's expiry a day on: %v (%d rows)", err, tag.RowsAffected())
+		}
 		status, body = renewal.introspect(t, second, apiToken)
 		if status != http.StatusOK || body["active"] != true || body["session"] != renewalSession {
 			t.Fatalf("introspection of the renewed token = %d %v, want 200, live, under the session %s", status, body, renewalSession)

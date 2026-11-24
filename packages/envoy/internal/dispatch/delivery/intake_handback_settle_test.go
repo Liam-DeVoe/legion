@@ -194,13 +194,14 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 // Both subtests hold a write on the holder's link from inside its stop's hand-back
 // (stopWithAHeldHandBack), move the holder's stop clock to the stop's deadline
 // (passStopDeadline), and wait for the stop to return with the hand-back pending and the hold live.
-// Two subtests:
-//   - a hand-back pending while the hold renews (the control): the hold renews past the expiry it had
-//     then, the link moves, and the hand-back reaches the server before the standby creates the
-//     durable.
-//   - a hand-back pending when the hold's renewals fail: the holder's hold runs on a fake the row
-//     moves, and its row is kept live on the database's clock until the row lapses it
-//     (keepHoldRowLive). The row refuses the holder's every database statement (cuttableLeases),
+// In both the holder's hold runs on a fake the row moves, and its row is kept live on the
+// database's clock until the row lapses it (keepHoldRowLive), so a renewal a loaded machine
+// stalls lapses nothing. Two subtests:
+//   - a hand-back pending while the hold renews (the control): the row moves the hold's clock
+//     through one renewal and reads it land (renewHoldOnItsClock), the link moves, and the
+//     hand-back reaches the server before the standby creates the durable.
+//   - a hand-back pending when the hold's renewals fail: the row refuses the holder's every
+//     database statement (cuttableLeases),
 //     moves the hold's clock to the loss deadline and past the wait the loss watcher arms for a
 //     flush's answer, until the sever has reset the holder's sockets (loseHoldUntilSevered, with
 //     bus.AfterSeverResetForTest: the close that follows the reset waits for the row's own lock,
@@ -216,7 +217,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 //     the order is what shows it.
 //
 // Each ends by requiring that the standby's consumer delivered each message the holder left once.
-// No step waits on a time but the control's own expiry: every wait is testwait's, which only guards
+// No step waits on a time: every wait is testwait's, which only guards
 // against an event that never comes. The negative control is the finalizer before the sever, which
 // returned at the lost hold and left the hand-back pending: the second subtest fails there, since no
 // wait for a flush's answer is armed on the lost hold's clock and no sever comes.
@@ -229,10 +230,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 		{name: "a hand-back pending when the hold's renewals fail", lose: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var holdClock *clocktest.Fake
-			if tc.lose {
-				holdClock = clocktest.New(time.Now())
-			}
+			holdClock := clocktest.New(time.Now())
 			row := stopWithAHeldHandBack(t, holdClock)
 			row.passStopDeadline(t)
 			testwait.Receive(t, "the holder's Run to return at its deadline while its hand-back is held", row.stopped)
@@ -243,9 +241,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 				t.Fatal("control: the stop released its hold with its hand-back pending")
 			}
 			if !tc.lose {
-				if !holdRenewedBeforeItsExpiry(t, row.pool) {
-					t.Fatal("control: the hold reached its expiry unrenewed while its hand-back was pending and its database reachable")
-				}
+				renewHoldOnItsClock(t, row)
 				row.thaw()
 				requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 				return

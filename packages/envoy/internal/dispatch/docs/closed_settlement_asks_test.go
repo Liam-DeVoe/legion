@@ -300,10 +300,11 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 // row, whatever that room reads (R2): the settlement goes by the issue row it reads under the
 // issue's owner lock (settlement.issueClosed), not by the room's record (roomState.closed). Task
 // B's room loads while DOC-1 is open and runs no room sync, so nothing tells B of the close, which
-// is written by SQL a minute ahead: the issue row reads closed from then on, and the store's close
-// margin admits B's browser's block however long the run takes (observedBeforeClose). B's own timer
-// settles the document; its record reads the issue open when the settlement holds the document's
-// owner lock, and the block is saved resolved with no row, its author recorded for the reopen.
+// is written by SQL stagedAhead ahead: the issue row reads closed from then on, and the store's
+// close margin admits B's browser's block however long the run takes (observedBeforeClose). B's
+// own timer settles the document; its record reads the issue open when the settlement holds the
+// document's owner lock, and the block is saved resolved with no row, its author recorded for the
+// reopen.
 func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	pair := newProcessPair(t)
 	ctx := context.Background()
@@ -323,7 +324,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 		}
 	}
 	b.settle = 20 * time.Millisecond
-	if _, err := pair.database.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+	if _, err := pair.database.Pool.Exec(ctx, `update issues set closed_at = now() + make_interval(secs => $1) where key = 'DOC-1'`, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("close DOC-1 in the database alone: %v", err)
 	}
 
@@ -358,7 +359,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 
 // An ask a settlement retracted when its block left is restored once its issue reopens, though
 // its block came back while the issue was closed (R2). alice deletes the block of an open ask,
-// and the settlement retracts the ask. DOC-1 then closes, written by SQL a minute ahead with
+// and the settlement retracts the ask. DOC-1 then closes, written by SQL stagedAhead ahead with
 // nothing telling the room, so the store's close margin admits alice's undo, which brings the
 // block back (observedBeforeClose). The settlement the resumption runs on the closed issue leaves
 // the ask retracted and saves its block resolved, and deletes the document's pending row. The
@@ -414,10 +415,10 @@ func TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved(t *te
 // settleReturnedAskBlockWhileClosed is the closed period of
 // TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen: alice deletes the block of
 // an open ask on the open issue, which a settlement retracts; DOC-1 closes in the database alone,
-// a minute ahead, so the close margin admits her undo, which brings the block back; and the
-// resumption settles the document on the closed issue, saving the block resolved and leaving the
-// ask retracted. It answers the service, the document and alice once that settlement has
-// committed, with the document owing nothing.
+// stagedAhead ahead, so the close margin admits her undo however long the run takes, which brings
+// the block back; and the resumption settles the document on the closed issue, saving the block
+// resolved and leaving the ask retracted. It answers the service, the document and alice once that
+// settlement has committed, with the document owing nothing.
 func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 	t.Helper()
 	service, artifactID := newTestService(t)
@@ -439,7 +440,7 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 		t.Fatalf("load the document's room while DOC-1 is open: %v", err)
 	}
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + make_interval(secs => $1) where key = 'DOC-1'`, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("close DOC-1 in the database alone: %v", err)
 	}
 	service.addConnection(artifactID, 2, alice)
@@ -534,7 +535,7 @@ func TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing(t *testing.T) {
 }
 
 // settleEditWhileClosed is the closed period of TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing:
-// DOC-1 closes in the database alone, a minute ahead, so the close margin admits alice's edit of
+// DOC-1 closes in the database alone, stagedAhead ahead, so the close margin admits alice's edit of
 // the document's one paragraph, and the resumption settles the document on the closed issue, which
 // keeps alice as its closed edit source. It answers the service, the document and alice once that
 // settlement has committed, with the document owing nothing and the settle delay an hour, so no
@@ -549,7 +550,7 @@ func settleEditWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 		t.Fatalf("load the document's room while DOC-1 is open: %v", err)
 	}
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + interval '1 minute' where key = 'DOC-1'`); err != nil {
+	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() + make_interval(secs => $1) where key = 'DOC-1'`, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("close DOC-1 in the database alone: %v", err)
 	}
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}

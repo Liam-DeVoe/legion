@@ -348,8 +348,9 @@ func TestAgentsListsAndIssueReadsWithinTheTTLShareOneListenerCall(t *testing.T) 
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	// A minute, not the deployment's five seconds, so a slow machine's reads stay inside it.
-	served.rosters.ttl = time.Minute
+	// The answer serves stagedAhead, not the deployment's five seconds, so a slow machine's reads
+	// stay inside it: the database judges the stored answer's expiry on its own clock.
+	served.rosters.ttl = stagedAhead
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
 
@@ -372,14 +373,14 @@ func TestAgentsListsAndIssueReadsWithinTheTTLShareOneListenerCall(t *testing.T) 
 // A listener that fails answers every agents list 503 ENVOY_UNAVAILABLE with the fetch's own
 // error, and is asked once within the silence window: the second list answers the kept failure
 // without asking again. A list after the window asking the listener again is the cache's own
-// rule (issue_route_status_cache_test.go). The window is a minute, so a loaded machine's second
+// rule (issue_route_status_cache_test.go). The window is stagedAhead, so a loaded machine's second
 // list still lands inside it.
 func TestAgentsAnswer503ThroughTheSilenceWindow(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	served.rosters.ttl, served.rosters.silenceTTL = time.Minute, time.Minute
+	served.rosters.ttl, served.rosters.silenceTTL = stagedAhead, stagedAhead
 	before := roster.lookups.Load()
 
 	for read := 1; read <= 2; read++ {
@@ -408,7 +409,9 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 		{"session_id":"c","title":"newest","machine_id":"box-c","last_seen":300}
 	]`)
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL})
-	served.rosters.ttl = time.Minute
+	// The answer serves stagedAhead, so every read below lands inside the one fetch's answer
+	// however slow the machine.
+	served.rosters.ttl = stagedAhead
 	key := routedIssueKey(t, handler, "role:sre")
 
 	const readers = 8

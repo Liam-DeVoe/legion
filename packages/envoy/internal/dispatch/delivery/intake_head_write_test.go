@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -295,19 +297,23 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 // The row above drives the sequence a running intake makes of that, where the stop the lost
 // hold starts has set its flag by the time the handler returns; this one holds the half that
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
-// reporting its hold lost.
+// reporting its hold lost. The hold and the delivery's reading of it run on a fake the row never
+// moves, so the control's hold has not passed its loss deadline (intakeHoldTTL less
+// intakeHoldMargin after the take, on that clock) however long the take took to return; the
+// lapse half ends it with Lapse, which sets that deadline to the fake's present.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
+	held := clocktest.New(time.Now())
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
-		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})
+		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Clock: held})
 	if err != nil {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
 		t.Fatal("the hold this row lapses is held by another process, though the row's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), clock: clock.Real(), subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: held, clock: clock.Real(), subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -256,12 +255,16 @@ func TestTransportFailureIsNotATypedError(t *testing.T) {
 
 // A projected token is rewritten in place by the kubelet, so the client sends what the file
 // holds now: the copy it cached stands until the cache lapses, and the next call after that
-// reads the file again.
+// reads the file again. The cache's life is staged at a day for the product's clock, not as a
+// wait: longer than any `go test -timeout` CI gives this package, so the call inside it reads the
+// cached copy however long the machine takes between the two calls, where the production
+// ciphertoken.AccountTokenCacheTTL would lapse on a loaded one. The row lapses it itself.
 func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 	path := tokenFile(t, "first-token")
 	client := New(server.URL, path)
+	client.Account.TTL = 24 * time.Hour
 
 	if _, err := client.Pending(context.Background(), "sjawhar"); err != nil {
 		t.Fatalf("the first call: %v", err)
@@ -276,7 +279,7 @@ func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 		t.Fatalf("the call inside the cache window: %v", err)
 	}
 	if captured.Auth != "Bearer first-token" {
-		t.Fatalf("Authorization = %q within %v of the read, want the cached Bearer first-token", captured.Auth, ciphertoken.AccountTokenCacheTTL)
+		t.Fatalf("Authorization = %q within %v of the read, want the cached Bearer first-token", captured.Auth, client.Account.TTL)
 	}
 
 	client.Account.TTL = 0

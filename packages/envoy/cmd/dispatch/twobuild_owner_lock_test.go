@@ -665,11 +665,15 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // held as the boot row above holds it (pauseLabelWrites). The registration waits for the gate
 // holding the registry's lock, which every heartbeat takes too, and is refused with 55P03 once its
 // lock_timeout has passed; the previous build then exits, as its main does when its
-// registration fails. This build's process does not lapse meanwhile: its row is never older than
-// the live window (processes.LiveWindow), its heartbeat gaps logged. Once the write has committed
-// with its label, the previous build, started again as its supervisor would, registers and
-// serves, and the label it adds is kept beside this build's. Without the bound the registration
-// waits for the write for as long as it is held, with every heartbeat of this build behind it.
+// registration fails. This build's heartbeats resume once the refusal lets the registry's lock
+// go: one lands while this build's PATCH still holds the gate, and its row is never gone. On the
+// clock (benchtime.OnTheClock) its row is never older than the live window (processes.LiveWindow)
+// either; that is a reading of the machine's clock, which a loaded machine's stall of this build's
+// heartbeat would fail on correct code, so every run logs the gaps and holds the landing alone.
+// Once the write has committed with its label, the previous build, started again as its
+// supervisor would, registers and serves, and the label it adds is kept beside this build's.
+// Without the bound the registration waits for the write for as long as it is held, with every
+// heartbeat of this build behind it.
 //
 // The row runs beside a build before the owner lock alone, reads the pairing as the boot row above
 // does (previousBuildOwnerLockProtocol), and skips beside a build at this tree's protocol for that
@@ -757,6 +761,20 @@ func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing
 	testwait.Receive(t, "the "+builds.previousName()+"'s registration to be refused at its lock_timeout while this build's PATCH is held", previous.Exited)
 	took := time.Since(waiting)
 	t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), took.Round(time.Millisecond))
+	// A heartbeat of this build lands after the refusal, while its PATCH still holds the gate: a
+	// statement whose now() comes after a moment of the database's clock read once the previous
+	// build had exited, so no time that passes before the PATCH is let go decides it.
+	var refused time.Time
+	if err := builds.database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&refused); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	testwait.Until(t, "a heartbeat of this build to land after the "+builds.previousName()+"'s refused registration, while this build's PATCH holds the gate", func() (string, bool) {
+		var beat time.Time
+		if err := builds.database.Pool.QueryRow(ctx, `select heartbeat_at from server_processes where instance = $1::uuid`, instance).Scan(&beat); err != nil {
+			t.Fatalf("read this build's heartbeat: %v", err)
+		}
+		return "this build's heartbeat stands at " + beat.Format(time.RFC3339Nano) + ", the refusal read at " + refused.Format(time.RFC3339Nano), beat.After(refused)
+	})
 	if lane == benchtime.OnTheClock && took > registrationGateBound+3*time.Second {
 		t.Errorf("the %s exited %s after its registration began to wait for the gate, want within its bound of %s and the exit", builds.previousName(), took.Round(time.Millisecond), registrationGateBound)
 	}
@@ -775,8 +793,8 @@ func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing
 	if watch.err != nil {
 		t.Errorf("read this build's heartbeat: %v", watch.err)
 	}
-	if watch.gone || watch.oldest >= processes.LiveWindow {
-		t.Errorf("this build's registration lapsed while the %s's registration waited: its row was %s old at its oldest (gone: %t), want under the live window %s",
+	if watch.gone || (lane == benchtime.OnTheClock && watch.oldest >= processes.LiveWindow) {
+		t.Errorf("this build's registration lapsed while the %s's registration waited: its row was %s old at its oldest (gone: %t), want it kept and, on the clock, under the live window %s",
 			builds.previousName(), watch.oldest.Round(time.Millisecond), watch.gone, processes.LiveWindow)
 	}
 	var earlier int

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -54,6 +55,22 @@ import (
 // broker's log line is read last, so that against a broker without the fix the test fails on the
 // refusal the pods met rather than on a missing line.
 func TestABrokerOutageLongerThanALease(t *testing.T) {
+	brokerOutageLongerThanALease(t, benchtime.EveryRun)
+}
+
+// TestASurvivorsRenewerRenewsBeforeHalfItsLease is the row above's service level: the survivor's
+// renewer renews nearer a third of its lease than a half, as leasetime.RenewAfter promises. The
+// gap is read between two expiries the broker stamped on the machine's clock, so it is the
+// runner's load as much as the renewer's schedule, and the row runs only in benchtime's timing
+// lane; that the renewer waits at least nearer a third than a quarter, which load can only
+// lengthen, is the row above's, which every run proves.
+func TestASurvivorsRenewerRenewsBeforeHalfItsLease(t *testing.T) {
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), brokerOutageLongerThanALease)
+}
+
+// brokerOutageLongerThanALease is the two rows above: the outage, and on the clock
+// (benchtime.OnTheClock) the survivor's renewal cadence below half its lease.
+func brokerOutageLongerThanALease(t *testing.T, lane benchtime.Lane) {
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -211,8 +228,10 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// run out a whole lease after the broker's moment of renewal (internal/cipher/enroll), so two
 	// renewals one after the other are as far apart as the expiries they wrote. The renewer renews
 	// once a third of what it holds has passed (leasetime.RenewAfter), so that gap is a third of a
-	// lease and the request that carried it, and the row reads it as the third, nearer that than
-	// a quarter or a half of one.
+	// lease and the request that carried it. Every run holds it nearer that than a quarter: the
+	// renewer waits a third of what it holds from the answer, which comes after the broker's stamp,
+	// so a loaded machine only lengthens the gap. That it is nearer a third than a half is a reading
+	// of the machine's clock, which a stall lengthens, held only on the clock (benchtime.OnTheClock).
 	t.Log("--- the survivor's renewer renews at a third of its lease")
 	renewedAfter := func(before time.Time) time.Time {
 		t.Helper()
@@ -225,8 +244,8 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	seen, _ := leaseOf(survivorID)
 	cadenceFrom := renewedAfter(seen)
 	gap := renewedAfter(cadenceFrom).Sub(cadenceFrom)
-	if promised := lease / leasetime.RenewDivisor; gap <= lease*7/24 || gap >= lease*5/12 {
-		t.Fatalf("the survivor's renewer renewed its lease %s after the renewal before it; want a third of its %s lease, %s (leasetime.RenewAfter), nearer that than a quarter or a half of one:\n%s",
+	if promised := lease / leasetime.RenewDivisor; gap <= lease*7/24 || (lane == benchtime.OnTheClock && gap >= lease*5/12) {
+		t.Fatalf("the survivor's renewer renewed its lease %s after the renewal before it; want a third of its %s lease, %s (leasetime.RenewAfter), nearer that than a quarter (and on the clock than a half) of one:\n%s",
 			gap, lease, promised, renewer.Output.String())
 	}
 	t.Logf("the survivor's renewer renewed its lease %s after the renewal before it: a third of its %s lease", gap, lease)
@@ -258,6 +277,10 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	renewerRunning("during the outage")
 
 	t.Log("--- a second broker serves the same database at the same address")
+	var restartingDB time.Time
+	if err := db.QueryRow(ctx, `select now()`).Scan(&restartingDB); err != nil {
+		t.Fatal(err)
+	}
 	restarted := serve()
 	restartedAt := time.Now()
 	t.Logf("the second broker listens %s after the first exited", restartedAt.Sub(stopped).Round(time.Millisecond))
@@ -279,8 +302,14 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		renewerRunning("after the restart")
 		return leaseRead{expires, now}, false
 	})
-	if left := renewed.expires.Sub(renewed.now); left < lease-2*time.Second || left > lease+time.Second {
-		t.Fatalf("the survivor's renewed lease runs %s past now, want about %s", left, lease)
+	// The renewal stamps a whole lease past the broker's moment of renewal, which came after the
+	// second broker was started (restartingDB) and before the poll that first read it
+	// (renewed.now): both are the database's moments, on the machine's one clock, so the lease is
+	// read against the renewal's own moment and not against the poll's, which a loaded machine
+	// makes late.
+	if written := renewed.expires.Add(-lease); written.Before(restartingDB) || written.After(renewed.now) {
+		t.Fatalf("the survivor's renewed lease runs to %s, a lease past %s; want a lease past a moment between the second broker's start %s and the read %s",
+			renewed.expires.Format(time.RFC3339Nano), written.Format(time.RFC3339Nano), restartingDB.Format(time.RFC3339Nano), renewed.now.Format(time.RFC3339Nano))
 	}
 	t.Logf("(2) renewed %s after the second broker listened, to %s past now", time.Since(restartedAt).Round(time.Millisecond), renewed.expires.Sub(renewed.now).Round(time.Millisecond))
 	renewerRunning("after it renewed")

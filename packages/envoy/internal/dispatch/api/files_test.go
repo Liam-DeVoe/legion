@@ -255,7 +255,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // this build's process, so it names this build's owner lock protocol ($1), as processes.Register
 // writes it. The other process registers before the issue is filed: the earlier build's insert
 // takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
-// the issue there is no document whose settlement could hold it.
+// the issue there is no document whose settlement could hold it. The two bucketless rows that keep
+// the bytes stage their heartbeat stagedAhead past the database's now(), so processes.Bucketless
+// reads each live at the upload however long the row takes to reach it; a heartbeat of now() is
+// live for processes.LiveWindow alone.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 	t.Parallel()
 	thisBuild := []any{store.OwnerLockProtocol}
@@ -264,8 +267,8 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		args         []any
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, $1)`, thisBuild, true},
-		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, nil, true},
+		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() + make_interval(secs => $2), $1)`, []any{store.OwnerLockProtocol, stagedAhead.Seconds()}, true},
+		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', now() + make_interval(secs => $1))`, []any{stagedAhead.Seconds()}, true},
 		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, $1)`, thisBuild, false},
 		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', $1)`, thisBuild, false},
 	} {

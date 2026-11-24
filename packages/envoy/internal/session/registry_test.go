@@ -101,9 +101,16 @@ func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T)
 	}
 }
 
+// stagedSessionTTL is the session TTL of a row whose verdict reads a registration back but is not
+// about its expiry: the bucket's age, which nats-server drops a record at, and the deadline Get
+// answers a row gone past (expiryFor). It is staged state for those clocks, not a wait: longer
+// than any `go test -timeout` CI gives this package, so a registration the row wrote still reads
+// back however long the machine takes, where ten seconds would pass on a loaded one.
+const stagedSessionTTL = 24 * time.Hour
+
 func TestSessionRegistry_PutAndGet(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -129,7 +136,7 @@ func TestSessionRegistry_PutAndGet(t *testing.T) {
 // session list read back from the bucket names them.
 func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -152,7 +159,7 @@ func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 // a predecessor can read whose instance that predecessor belongs to.
 func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -177,7 +184,7 @@ func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 // than with another instance's id it no longer belongs to.
 func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -624,11 +631,12 @@ func TestSessionRegistryDeleteIf_DeletesARegistrationNoNewerThanTheMoment(t *tes
 }
 
 // openRegistryForInstanceDelete opens a registry whose cache has caught up with its bucket, so a
-// conditional-delete test reads what it seeded and nothing else.
+// conditional-delete test reads what it seeded and nothing else. Its TTL is stagedSessionTTL, so
+// what a row seeded is still there to delete however long the row takes.
 func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -799,7 +807,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 
 func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}

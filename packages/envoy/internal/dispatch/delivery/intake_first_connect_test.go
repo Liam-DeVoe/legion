@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -124,7 +125,11 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 
 	// The run loop's first check of the durable, intakeHoldRenew into its run: the row brings it and
 	// waits for its line (DurableChecked), so a check that found the durable delivering elsewhere has
-	// logged its give-up by then.
+	// logged its give-up by then. The move brings the hold's renewal too, which the row reads below
+	// as an expiry intakeHoldTTL past a statement that ran after renewing, a moment of the
+	// database's clock taken before the move: an expiry judged against the database's now() at the
+	// read would pass intakeHoldTTL after the renewal, however correct the hold.
+	renewing := testdb.ClockTimestamp(t, pool)
 	checks.Advance(intakeHoldRenew)
 	testwait.Until(t, "the run loop's first check of the durable after the callback", func() ([]map[string]any, bool) {
 		records := logs()
@@ -142,15 +147,21 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 		t.Fatalf("once the run loop had checked it after the callback the durable is push-bound = %t on %q, want bound on %q, the subject this intake bound; the messages logged were %q",
 			info.PushBound, info.Config.DeliverSubject, firstSubject, loggedMessages(logs()))
 	}
-	var holder, token string
-	var live bool
-	if err := pool.QueryRow(ctx, "select holder::text, token, expires_at > now() from duty_holds where name = $1",
-		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&holder, &token, &live); err != nil {
-		t.Fatalf("read the durable's hold: %v", err)
+	type holdRead struct {
+		holder, token string
+		renewed       bool
 	}
-	if holder != intake.holder.String() || !live || parseIntakeHoldToken(token).subject != firstSubject {
-		t.Fatalf("the durable's hold names holder %s, live = %t, token %q; want this intake's %s, live, recording %q",
-			holder, live, token, intake.holder, firstSubject)
+	hold := testwait.Until(t, "the durable's hold to be renewed by the move, after "+renewing.Format(time.RFC3339Nano), func() (holdRead, bool) {
+		var read holdRead
+		if err := pool.QueryRow(ctx, "select holder::text, token, expires_at - make_interval(secs => $2) >= $3 from duty_holds where name = $1",
+			intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), renewing).Scan(&read.holder, &read.token, &read.renewed); err != nil {
+			t.Fatalf("read the durable's hold: %v", err)
+		}
+		return read, read.renewed
+	})
+	if hold.holder != intake.holder.String() || parseIntakeHoldToken(hold.token).subject != firstSubject {
+		t.Fatalf("the durable's hold names holder %s, renewed by the move, token %q; want this intake's %s, recording %q",
+			hold.holder, hold.token, intake.holder, firstSubject)
 	}
 
 	publishPullRequestEnvelope(t, observer, "acme", "widgets", firstConnectNumber, mergedPullRequest(firstConnectNumber))

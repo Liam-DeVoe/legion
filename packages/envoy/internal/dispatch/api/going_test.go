@@ -65,8 +65,10 @@ func (rig goingRig) frames(t *testing.T, requestID string) []string {
 	return rendered
 }
 
-// age moves the run's created_at and its ends_at back by the two durations, so a test can hold a
-// run the deadline or the TTL has passed without waiting for either.
+// age sets the run's created_at and its ends_at that far before the database's now(), so a test
+// can hold a run the deadline or the TTL has passed without waiting for either; a negative
+// duration sets it that far ahead instead, so a run stays inside its window however long the test
+// takes (stagedAhead).
 func (rig goingRig) age(t *testing.T, requestID string, created, ends time.Duration) {
 	t.Helper()
 	if _, err := rig.database.Pool.Exec(context.Background(), `
@@ -226,7 +228,9 @@ func TestAGoingRunTakesNoFrameOnceItHasEnded(t *testing.T) {
 // A run past its ends_at with no terminal frame is ended by the sweep, since the pod that was
 // answering it may have died and nobody is reading it: exactly the deadline's error, at the next
 // sequence. A second pass stores nothing more, a run already ended is untouched, and a run still
-// inside its window is left to run.
+// inside its window is left to run. That run's ends_at is staged stagedAhead past the database's
+// now(), so it is inside its window at both passes and at the read however long the row takes:
+// the window its record gives it, contracts.GoingRunWindow, is seconds long.
 func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRig(t)
@@ -244,6 +248,7 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	rig.age(t, ended.ID, time.Minute, time.Second)
 	endedFrames := rig.frames(t, ended.ID)
 	live := rig.record(t, "still thinking")
+	rig.age(t, live.ID, 0, -stagedAhead)
 
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)

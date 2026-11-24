@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -46,12 +47,15 @@ func keyedPost(ctx context.Context, server *httptest.Server, path, body, key str
 // the handler runs on past the client's giving up, and the client's repeat under its key is told
 // the first run is still going (409 KEY_IN_FLIGHT), then answered the first run's own stored
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
-// every repeat started again from nothing, so such a write could never land.
+// every repeat started again from nothing, so such a write could never land. The key's lease is
+// stagedKeyLease, so the first run holds its key however long the machine stalls its renewals:
+// on the deployment's lease a renewal stalled for two thirds of it would let a repeat take the key
+// over and run the write again.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
-	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
+	rig := newWritingRigWith(t, testServerOptions{idempotencyLease: stagedKeyLease}, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 		if run == 1 {
 			close(running)
 		}
@@ -126,7 +130,9 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 }
 
 // ageRequestKeyLease moves the lease of login's key by back by, as that much time passing with no
-// renewal does: the layer reads a lease as lapsed by its leased_at against the database's now().
+// renewal does: the layer reads a lease as lapsed by its leased_at against the database's now(). A
+// negative by moves it that far ahead instead, which stages a lease the layer reads live however
+// long a row runs (stagedAhead).
 func ageRequestKeyLease(t *testing.T, database *store.Store, login, key string, by time.Duration) {
 	t.Helper()
 	if tag, err := database.Pool.Exec(context.Background(), `
@@ -137,24 +143,35 @@ func ageRequestKeyLease(t *testing.T, database *store.Store, login, key string, 
 	}
 }
 
-// requestKeyLeased reports whether login's key holds a lease the layer reads as live.
-func requestKeyLeased(t *testing.T, database *store.Store, login, key string) bool {
+// awaitLeaseRenewedSince waits until login's key holds a lease a statement wrote at or after since,
+// a moment of the database's clock: a renewal that ran after that moment wrote it, which no time
+// passing afterwards undoes. A try that finds none reads the lease the row holds.
+func awaitLeaseRenewedSince(t *testing.T, database *store.Store, login, key string, since time.Time) {
 	t.Helper()
-	var live bool
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce(leased_at >= now() - make_interval(secs => $3), false)
-		from request_keys where login = $1 and idempotency_key = $2
-	`, login, key, contracts.IdempotencyLease.Seconds()).Scan(&live); err != nil {
-		t.Fatalf("read the lease of the key %s: %v", key, err)
-	}
-	return live
+	testwait.Until(t, "the running handler to renew the lease of the key "+key+" after "+since.Format(time.RFC3339Nano), func() (string, bool) {
+		var leased *time.Time
+		if err := database.Pool.QueryRow(context.Background(), `
+			select leased_at from request_keys where login = $1 and idempotency_key = $2
+		`, login, key).Scan(&leased); err != nil {
+			t.Fatalf("read the lease of the key %s: %v", key, err)
+		}
+		if leased == nil {
+			return "the key holds no lease", false
+		}
+		return "the key is leased at " + leased.Format(time.RFC3339Nano), !leased.Before(since)
+	})
 }
 
 // A run that outlives its key's lease keeps the key: it renews the lease while it runs, so a repeat
 // past the lease is still told the first run is going rather than taking the key over and making
 // the write a second time. Only a run whose renewals stopped - its process died - is taken over.
 // The lease is judged in the database against its now(), so the test ages a lease rather than
-// waiting one out; the renewals run on the server's clock, which the test moves.
+// waiting one out; the renewals run on the server's clock, which the test moves. The renewal is
+// read as the lease a statement wrote after a moment of the database's clock taken before the
+// move, and the lease it wrote is then staged stagedAhead on, so the repeat reads the run as going
+// however long the machine took since the renewal, which alone keeps the lease for one lease. The
+// dead holder's lease is staged the same way, and aged a whole lease past that staging for the
+// take-over.
 func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
@@ -175,10 +192,10 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	ageRequestKeyLease(t, rig.database, "alice", "long-run", contracts.IdempotencyLease+time.Second)
 	renewal := start.Add(keyedLeaseRenewal)
 	fake.AwaitArmedAt(t, "the run's lease renewal", renewal)
+	since := testdb.ClockTimestamp(t, rig.database.Pool)
 	fake.Set(renewal)
-	testwait.Eventually(t, "the running handler to renew its key's lease", func() bool {
-		return requestKeyLeased(t, rig.database, "alice", "long-run")
-	})
+	awaitLeaseRenewedSince(t, rig.database, "alice", "long-run", since)
+	ageRequestKeyLease(t, rig.database, "alice", "long-run", -stagedAhead)
 	repeat := rig.send(t, "a", nil, "alice", "long-run")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight {
 		t.Fatalf("a repeat past the lease while the first run renews it: status=%d body=%s, want 409 %s",
@@ -197,11 +214,11 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 	dead := httptest.NewRequest(http.MethodPost, "/test/a/writes", nil)
 	dead.Header.Set("Content-Type", "application/json")
 	dead.SetPathValue("thing", "a")
-	holdRequestKey(t, rig.database, heldKey{login: "alice", key: "dead-run", request: dead, pattern: keyedRigPattern})
+	holdRequestKey(t, rig.database, heldKey{login: "alice", key: "dead-run", request: dead, pattern: keyedRigPattern, leasedAgo: -stagedAhead})
 	if inside := rig.send(t, "a", nil, "alice", "dead-run"); inside.Code != http.StatusConflict {
 		t.Fatalf("a repeat inside a dead holder's lease: status=%d body=%s, want 409", inside.Code, inside.Body.String())
 	}
-	ageRequestKeyLease(t, rig.database, "alice", "dead-run", contracts.IdempotencyLease+time.Second)
+	ageRequestKeyLease(t, rig.database, "alice", "dead-run", stagedAhead+contracts.IdempotencyLease+time.Second)
 	if takeover := rig.send(t, "a", nil, "alice", "dead-run"); takeover.Code != http.StatusCreated || replayed(takeover) {
 		t.Fatalf("a repeat once the dead holder's lease lapsed: status=%d body=%s, want the request run", takeover.Code, takeover.Body.String())
 	}
@@ -431,7 +448,8 @@ func (b *countingBody) Read(p []byte) (int, error) {
 // only to be told to wait. Its body is read to its end, discarded and written only to the digest it
 // is judged by once it has arrived (TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived); here
 // the first still runs, so it is 409 KEY_IN_FLIGHT. With the temporary directory gone, a spool
-// would answer 500.
+// would answer 500. The first's lease is staged stagedAhead past the database's now(), so the
+// repeat reads it as still running however long the 2 MiB body takes to arrive.
 func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
 	const pattern = "/api/v1/issues/{key}/artifacts"
 	rig := newKeyedRigAt(t, pattern, answerRun)
@@ -439,7 +457,7 @@ func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
 	first := httptest.NewRequest(http.MethodPost, "/api/v1/issues/UP-1/artifacts", strings.NewReader(body))
 	first.Header.Set("Content-Type", "application/json")
 	first.SetPathValue("key", "UP-1")
-	holdRequestKey(t, rig.database, heldKey{login: "alice", key: "slow-upload", request: first, pattern: pattern})
+	holdRequestKey(t, rig.database, heldKey{login: "alice", key: "slow-upload", request: first, pattern: pattern, leasedAgo: -stagedAhead})
 
 	sent := &countingBody{Reader: strings.NewReader(body)}
 	repeat := httptest.NewRequest(http.MethodPost, "/api/v1/issues/UP-1/artifacts", sent)

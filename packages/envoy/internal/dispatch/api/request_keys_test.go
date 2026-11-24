@@ -595,8 +595,15 @@ type rigWrite func(ctx context.Context, held func()) error
 // one insert and commit, under the context the handler is given.
 func newWritingRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite)) *keyedRig {
 	t.Helper()
+	return newWritingRigWith(t, testServerOptions{}, answer)
+}
+
+// newWritingRigWith is newWritingRig on a server built with options, such as a key lease staged
+// past the run (testServerOptions.idempotencyLease).
+func newWritingRigWith(t *testing.T, options testServerOptions, answer func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite)) *keyedRig {
+	t.Helper()
 	var database *store.Store
-	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
+	rig := newKeyedRigWith(t, options, keyedRigPattern, func(run int32, w http.ResponseWriter, r *http.Request) {
 		answer(run, w, r, func(ctx context.Context, held func()) error {
 			tx, err := database.Pool.Begin(ctx)
 			if err != nil {

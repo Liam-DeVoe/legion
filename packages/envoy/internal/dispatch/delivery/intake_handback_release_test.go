@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -412,29 +413,29 @@ func driveStop(t *testing.T, stopClock *clocktest.Fake, stopped <-chan struct{})
 	})
 }
 
-// holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
-// a renewal moves it later or the database's clock passes it, and reports whether the renewal came
-// first. Both are read off the database, whose clock the hold's expiry is on (duty.Hold). A hold left
-// to lapse is past its expiry within the hold's TTL; the wait is testwait's, which only guards
-// against a row that neither moves nor lapses.
-func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
+// renewHoldOnItsClock moves the holder's hold clock, a fake no step has moved since the take
+// (stopWithAHeldHandBack's holdClock), through the hold's next renewal, intakeHoldRenew past the
+// take, and waits until that renewal has landed: the hold's expiry stands intakeHoldTTL past a
+// statement's now() between a moment of the database's clock taken before the move and the read,
+// which the expiry keepHoldRowLive staged a day ahead is not. A hold whose renewals stopped writes
+// none, and the wait gives up naming it. It then keeps the row live again (keepHoldRowLive), as
+// the renewals after it would, since nothing moves the clock further.
+func renewHoldOnItsClock(t *testing.T, row heldHandBack) {
 	t.Helper()
-	type reading struct{ expires, now time.Time }
-	read := func() reading {
-		t.Helper()
-		var got reading
-		if err := pool.QueryRow(t.Context(), "select expires_at, now() from duty_holds where name = $1",
-			intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&got.expires, &got.now); err != nil {
+	since := testdb.ClockTimestamp(t, row.pool)
+	row.holdClock.Advance(intakeHoldRenew)
+	testwait.Until(t, "the hold's renewal the move brought to land while the holder's hand-back is pending", func() (string, bool) {
+		var expires time.Time
+		var renewed bool
+		if err := row.pool.QueryRow(t.Context(), `
+			select expires_at, expires_at - make_interval(secs => $2) between $3 and clock_timestamp()
+			from duty_holds where name = $1
+		`, intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), since).Scan(&expires, &renewed); err != nil {
 			t.Fatalf("read the delivery durable's hold: %v", err)
 		}
-		return got
-	}
-	first := read().expires
-	last := testwait.Until(t, "the delivery durable's hold to be renewed past the expiry it had, or the database's clock to pass that expiry", func() (reading, bool) {
-		got := read()
-		return got, got.expires.After(first) || !got.now.Before(first)
+		return fmt.Sprintf("the hold expires at %s; the move began after %s", expires.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano)), renewed
 	})
-	return last.expires.After(first)
+	keepHoldRowLive(t, row.pool, row.holder)
 }
 
 // requireHandBackBeforeCreation waits until the server has had both the holder's hand-back and the
@@ -543,10 +544,10 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     hand-back reached the server before the standby created the durable.
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
-//     holder then, and the standby has not created the durable. With the link still held, the hold is
-//     renewed before the database's clock passes the expiry it had as the stop returned, so it does
-//     not lapse, and the standby still has not created the durable. Once the link moves, the
-//     hand-back reaches the server before the standby creates the durable;
+//     holder then, and the standby has not created the durable. With the link still held, the
+//     hold's next renewal, which the row brings on the hold's clock, lands, so it does not lapse,
+//     and the standby still has not created the durable. Once the link moves, the hand-back
+//     reaches the server before the standby creates the durable;
 //   - a pending hand-back at shutdown: the Run returns at its deadline, then StartIntakes' stop
 //     closes the client that can still send it and waits for its finalizer. The hold is gone before
 //     that stop returns, so its caller can close the pool without leaving the hold to lapse. The
@@ -554,15 +555,20 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     nats.go's lock first; either way it does not reach the server after the standby creates the
 //     durable.
 //
-// No step waits on a time but the hold's own expiry: the stop's own deadline (intakeStopBudget),
-// and the bounds of the flush and the release after it (flushHandBacks, releaseHold), are on the
-// holder's stop clock, which the second and third rows move to that deadline once the write is
-// held and the first never moves, and every wait is testwait's, which only guards against a stop
-// that never returns. The negative controls: a release that does not wait for the hand-backs
-// fails the first's order; a stop that never releases its hold when a publish was left running
-// fails the first's release; a release made at the deadline with a hand-back pending fails the
-// second's hold; a stop that leaves its hold to lapse with a hand-back pending fails the second's
-// renewal; an untracked finalizer fails the third by returning from its shutdown stop with the
+// No step waits on a time: the stop's own deadline (intakeStopBudget), and the bounds of the flush
+// and the release after it (flushHandBacks, releaseHold), are on the holder's stop clock, which
+// the second and third rows move to that deadline once the write is held and the first never
+// moves, and every wait is testwait's, which only guards against a stop that never returns. The
+// second and third rows run the hold on a fake (stopWithAHeldHandBack's holdClock), with its row
+// kept live on the database's clock (keepHoldRowLive), so a renewal stalled on a loaded machine
+// lapses nothing; the second moves that clock through one renewal and reads it land
+// (renewHoldOnItsClock). The first row's hold renews itself on the real clock, and a lapse there
+// could only clear the hold its verdict wants gone. The negative controls: a release that does not
+// wait for the hand-backs fails the first's order; a stop that never releases its hold when a
+// publish was left running fails the first's release; a release made at the deadline with a
+// hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
+// pending writes no renewal, and the second's wait for it gives up naming it; an untracked
+// finalizer fails the third by returning from its shutdown stop with the
 // hold live; and the holder's -NAK published again while the standby holds the message, with the
 // server holding the creation's advisory until the new consumer has delivered it a second time,
 // fails all three by that second delivery. The count does not fail a stop that gives up the
@@ -584,7 +590,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a hand-back still pending at the stop's deadline", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t, nil)
+		row := stopWithAHeldHandBack(t, clocktest.New(time.Now()))
 		row.passStopDeadline(t)
 		testwait.Receive(t, "the holder's stop to return at its deadline while its hand-back is held (a stop that waits for the hand-back never does)", row.stopped)
 		testnats.RequireLockHeld(t, row.conn)
@@ -597,9 +603,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if slices.Contains(row.recorded.since(row.from), durableCreated) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending: %q", row.recorded.since(row.from))
 		}
-		if !holdRenewedBeforeItsExpiry(t, row.pool) {
-			t.Fatalf("the hold reached its expiry unrenewed with the holder's hand-back still pending, so the standby can recreate the durable before a link that heals sends the hand-back to its consumer: %q", row.recorded.since(row.from))
-		}
+		renewHoldOnItsClock(t, row)
 		testnats.RequireLockHeld(t, row.conn)
 		if !row.handBackPending() {
 			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
@@ -612,7 +616,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
-		row := stopWithAHeldHandBack(t, nil)
+		row := stopWithAHeldHandBack(t, clocktest.New(time.Now()))
 		row.passStopDeadline(t)
 		testwait.Receive(t, "the holder's Run to return at its deadline while its hand-back is held", row.stopped)
 		if !row.handBackPending() {

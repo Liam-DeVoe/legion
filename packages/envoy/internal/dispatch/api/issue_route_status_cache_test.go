@@ -202,10 +202,10 @@ func TestAFailingListenerIsAskedOnceWithinTheSilenceWindow(t *testing.T) {
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	// The silence window is lengthened to a minute, and the answered TTL zeroed, so the three
+	// The silence window is lengthened to stagedAhead, and the answered TTL zeroed, so the three
 	// reads below stay inside the silence however slow the machine, and a cache that held the
 	// failure under the answered TTL would ask again. Neither shortens a window this test reads.
-	served.rosters.ttl, served.rosters.silenceTTL = 0, time.Minute
+	served.rosters.ttl, served.rosters.silenceTTL = 0, stagedAhead
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
 
@@ -269,9 +269,9 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
 	t.Parallel()
 	served, calls, _, clock := heldRosterServer(t)
-	// The silence window is a minute, so the second read below is inside it however slow the
+	// The silence window is stagedAhead, so the second read below is inside it however slow the
 	// machine; it lengthens a wait this test does not read.
-	served.rosters.silenceTTL = time.Minute
+	served.rosters.silenceTTL = stagedAhead
 
 	started := clock.Now()
 	answer := make(chan routeRoster, 1)

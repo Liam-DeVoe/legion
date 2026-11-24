@@ -18,13 +18,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A refresh whose statement has committed but whose result is not yet recorded loses to a keyed
 // repeat that claims the same queued attempt anew in that gap: the sender must end up holding the
 // repeat's claim, the one the row carries, so its next refresh writes the row again and the
-// attempt does not lapse into the delivery sweep's hands.
+// attempt does not lapse into the delivery sweep's hands. The repeat's claim is staged stagedAhead
+// past the database's now(), so the next refresh finds it live however long the row takes (a
+// refresh writes only a live claim), and that refresh is read as a claim a statement wrote at or
+// after a moment of the database's clock taken before it.
 func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	t.Parallel()
 	listener, state := newMentionListener(t)
@@ -58,9 +62,9 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 		// claim on the row and the same claim in the sender's map.
 		var newer time.Time
 		if err := database.Pool.QueryRow(context.Background(), `
-			update comment_deliveries set claimed_at = now()
+			update comment_deliveries set claimed_at = now() + make_interval(secs => $2)
 			where comment_id = $1 and target = 'session:s1' and state = 'pending' returning claimed_at
-		`, queued[0].key.comment).Scan(&newer); err != nil {
+		`, queued[0].key.comment, stagedAhead.Seconds()).Scan(&newer); err != nil {
 			t.Errorf("write the newer claim: %v", err)
 		}
 		sender.mu.Lock()
@@ -86,10 +90,11 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 		t.Fatalf("the sender holds claim %v for the queued attempt, the row carries %v: the refresh recorded its "+
 			"own result over the repeat's claim", held, row)
 	}
+	since := testdb.ClockTimestamp(t, database.Pool)
 	sender.refreshHeldClaims(context.Background())
-	if again := attemptClaimedAt(t, database, queued, "session:s1"); !again.After(row) {
-		t.Fatalf("the claim on the queued attempt is still %v after the next refresh, want it written again: "+
-			"left alone it lapses a lease later and the sweep may send it out of order", again)
+	if again := attemptClaimedAt(t, database, queued, "session:s1"); again.Equal(row) || again.Before(since) {
+		t.Fatalf("the claim on the queued attempt is %v after the next refresh, want one written again at or after %v: "+
+			"left alone it lapses a lease later and the sweep may send it out of order", again, since)
 	}
 	release()
 	if sent := settledCommentDeliveries(t, database, queued); len(sent) != 1 || !allSent(sent) {
@@ -104,7 +109,11 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 // lapses with the send still parked, the lane's own send is then refused as another sender's,
 // and the issue's next mention reaches the session first (TestTheMentionSenderClaimModel finds
 // all three). The send, the refresh and the rule are the server's own, on the database; only
-// their order is the test's. The control row runs the refresh while the send is parked.
+// their order is the test's. The control row runs the refresh while the send is parked. Before
+// the last refresh the parked claim is staged stagedAhead past the database's now(), row and
+// record together (ageClaimAndRecord), so that refresh finds it live however long the row took
+// since the claim was written, and it is read as a claim a statement wrote at or after a moment of
+// the database's clock taken before it.
 func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -187,9 +196,12 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 				t.Fatalf("the sender records the parked send's claim as %v (held %t) while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one is never written again and lapses with the send still parked",
 					recorded, holds, row)
 			}
+			ageClaimAndRecord(t, database, sender, key, -stagedAhead)
+			staged := attemptClaimedAt(t, database, comment, "session:s1")
+			since := testdb.ClockTimestamp(t, database.Pool)
 			sender.refreshHeldClaims(context.Background())
-			if again := attemptClaimedAt(t, database, comment, "session:s1"); !again.After(row) {
-				t.Fatalf("the parked send's claim is still %v after the next refresh, want it written again", again)
+			if again := attemptClaimedAt(t, database, comment, "session:s1"); again.Equal(staged) || again.Before(since) {
+				t.Fatalf("the parked send's claim is %v after the next refresh, want one written again at or after %v", again, since)
 			}
 		})
 	}
@@ -205,7 +217,9 @@ func recordedClaim(sender *mentionSender, key mentionKey) (time.Time, bool) {
 
 // ageClaimAndRecord moves the claim key's row carries and the claim sender records for it back by
 // by together, as that much time passing with no statement on the row leaves them: a record that
-// agreed with its row still agrees, and one behind its row is still behind it.
+// agreed with its row still agrees, and one behind its row is still behind it. A negative by moves
+// both that far ahead instead, which stages a claim the database reads live however long a row
+// runs (stagedAhead).
 func ageClaimAndRecord(t *testing.T, database *store.Store, sender *mentionSender, key mentionKey, by time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `

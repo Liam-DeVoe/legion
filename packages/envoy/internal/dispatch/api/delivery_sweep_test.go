@@ -225,6 +225,19 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			}
 
 			// A repeat inside the attempt's claim: the write is answered as made, nothing is sent.
+			// The claim the send took is staged stagedAhead past the database's now() first, so the
+			// repeat finds it live however long the row took since the send claimed it: a claim of
+			// the send's own now() lapses model.DeliveryClaimLapse later, and a repeat that read it
+			// lapsed would take the attempt over and send it.
+			table, column := "message_deliveries", "message_id"
+			if route.comment {
+				table, column = "comment_deliveries", "comment_id"
+			}
+			if _, err := database.Pool.Exec(context.Background(), `update `+table+`
+				set claimed_at = claimed_at + make_interval(secs => $2)
+				where `+column+` = $1 and claimed_at is not null`, owner, stagedAhead.Seconds()); err != nil {
+				t.Fatalf("stage the attempt's claim ahead of the database's clock: %v", err)
+			}
 			repeat := keyedRequest(t, handler, http.MethodPost, path, route.body, "alice", "swept")
 			if repeat.Code != http.StatusCreated || !replayed(repeat) {
 				t.Fatalf("a repeat inside the claim: status=%d body=%s, want the made write replayed", repeat.Code, repeat.Body.String())
@@ -234,10 +247,6 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			}
 
 			// The claim lapses with nobody asking again: the sweep sends the attempt, once.
-			table, column := "message_deliveries", "message_id"
-			if route.comment {
-				table, column = "comment_deliveries", "comment_id"
-			}
 			if _, err := database.Pool.Exec(context.Background(), `update `+table+`
 				set claimed_at = now() - interval '2 minutes', created_at = now() - interval '2 minutes'
 				where `+column+` = $1`, owner); err != nil {
@@ -373,7 +382,10 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 
 // The sweep resumes only what a dead process owed: an attempt its live sender still holds, one a
 // later retry overtook, one opened inside the last minute that its writer has not claimed yet, and
-// one past the window a repeat is recognised in are each left alone.
+// one past the window a repeat is recognised in are each left alone. Each row whose claim or
+// opening must still be live at the pass is staged stagedAhead past the database's now() - the
+// live claim, the overtaking retry's claim, and the unclaimed attempt's opening - so the pass reads
+// it so however long the row takes to reach it.
 func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
@@ -400,13 +412,14 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 		}
 		return id
 	}
-	live := message("10 seconds/2 minutes")
-	overtaken := message("5 minutes/6 minutes", "1 second/1 minute")
+	ahead := (-stagedAhead).String()
+	live := message(ahead + "/2 minutes")
+	overtaken := message("5 minutes/6 minutes", ahead+"/1 minute")
 	unclaimed := message()
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by)
-		values ($1, 1, 'steer', 's1', 'pending', $2)
-	`, unclaimed, author); err != nil {
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state, created_at, requested_by)
+		values ($1, 1, 'steer', 's1', 'pending', now() + make_interval(secs => $3), $2)
+	`, unclaimed, author, stagedAhead.Seconds()); err != nil {
 		t.Fatal(err)
 	}
 	old := message("5 days/5 days")

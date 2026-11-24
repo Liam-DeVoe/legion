@@ -35,8 +35,14 @@ import (
 // event horizon (textversionstest.AwaitRows). How soon after the death the second takes the hold
 // is a service level, which TestAStandbyFillTakesTheHoldWithinAMinuteOfTheHoldersDeath holds in
 // benchtime's timing lane.
+//
+// Both fills take their hold with stagedHoldTTL (Config.holdTTL), so the first's hold cannot lapse
+// while both run however long a loaded machine stalls its renewals, which on holdOptions.TTL would
+// hand the standby the hold early; the row reads the first's expiry past holdOptions.TTL, which is
+// what the seam holds. At the death the row lapses the dead holder's row itself, as the TTL passing
+// with no renewal does. The timing lane's twin runs the production TTL and lapses nothing.
 func TestOneFillHoldsTheLeaseAndAnotherTakesItOver(t *testing.T) {
-	fillTakeOverAfterDeath(t)
+	fillTakeOverAfterDeath(t, benchtime.EveryRun)
 }
 
 // A standby takes the hold of a holder that died within 60 s of the death: the hold's 15 s TTL
@@ -47,21 +53,43 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesItOver(t *testing.T) {
 // is TestOneFillHoldsTheLeaseAndAnotherTakesItOver's, which the suite runs.
 func TestAStandbyFillTakesTheHoldWithinAMinuteOfTheHoldersDeath(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	if took := fillTakeOverAfterDeath(t); took > time.Minute {
+	if took := fillTakeOverAfterDeath(t, benchtime.OnTheClock); took > time.Minute {
 		t.Fatalf("the standby took the dead holder's hold %v after the death; want within 60 s of the death", took.Round(time.Millisecond))
 	}
 }
 
+// stagedHoldTTL is the hold TTL of the every-run take-over row (Config.holdTTL): staged state for
+// the database's clock, which judges the hold's expiry, and for the hold's own loss deadline, not a
+// wait, longer than any `go test -timeout` CI gives this package.
+const stagedHoldTTL = 24 * time.Hour
+
 // fillTakeOverAfterDeath is TestOneFillHoldsTheLeaseAndAnotherTakesItOver's run, and answers how
 // long after the holder's death, on the machine's clock, the standby's take of the hold was read.
-func fillTakeOverAfterDeath(t *testing.T) time.Duration {
+// On benchtime.EveryRun both fills hold with stagedHoldTTL and the row lapses the dead holder's
+// row at the death; on benchtime.OnTheClock they hold with holdOptions.TTL and the hold lapses by
+// itself.
+func fillTakeOverAfterDeath(t *testing.T, lane benchtime.Lane) time.Duration {
 	t.Helper()
+	var holdTTL time.Duration
+	if lane == benchtime.EveryRun {
+		holdTTL = stagedHoldTTL
+	}
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
-	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
+	first := startFillHolding(t, storetest.SecondProcess(t, database), nil, nil, true, holdTTL)
 	firstHolder := awaitLiveHolder(t, database)
-	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
+	if lane == benchtime.EveryRun {
+		var left time.Duration
+		if err := database.Pool.QueryRow(context.Background(),
+			`select expires_at - now() from duty_holds where name = $1`, fillHoldName).Scan(&left); err != nil {
+			t.Fatalf("read the first fill's hold: %v", err)
+		}
+		if left <= holdOptions.TTL {
+			t.Fatalf("the first fill's hold expires %v from the database's now(), want more than holdOptions.TTL %v: the fill took it with the staged TTL (Config.holdTTL)", left, holdOptions.TTL)
+		}
+	}
+	second := startFillHolding(t, storetest.SecondProcess(t, database), nil, nil, true, holdTTL)
 	second.AwaitLine(t, standingByMessage)
 
 	var holders cursorHolders
@@ -90,6 +118,14 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 	died := time.Now()
 	testwait.Returns(t, "the dead holder's pool to close once its fill lets its connections go", first.db.Pool.Close)
 	first.Stop(t, "the dead holder's keyword fill to return after its stop")
+	if lane == benchtime.EveryRun {
+		// The dead holder's row lapses as stagedHoldTTL passing with no renewal would leave it: its
+		// expiry at the database's now(), its holder kept.
+		if _, err := database.Pool.Exec(context.Background(),
+			`update duty_holds set expires_at = now() where name = $1 and holder::text = $2`, fillHoldName, firstHolder); err != nil {
+			t.Fatalf("lapse the dead holder's hold: %v", err)
+		}
+	}
 	var next []int64
 	for range 3 {
 		next = append(next, commitComment(t, database, broker, textversionstest.Issue).id)
@@ -353,6 +389,13 @@ func startFill(t *testing.T, db *store.Store, released <-chan struct{}, serving 
 // sending it where the ticker of standbyRetry would tick (Config.retry); nil is the ticker.
 func startFillRetrying(t *testing.T, db *store.Store, released <-chan struct{}, retry <-chan time.Time, serving bool) *fillProcess {
 	t.Helper()
+	return startFillHolding(t, db, released, retry, serving, 0)
+}
+
+// startFillHolding is startFillRetrying whose fill takes its hold with holdTTL (Config.holdTTL);
+// zero is holdOptions.TTL.
+func startFillHolding(t *testing.T, db *store.Store, released <-chan struct{}, retry <-chan time.Time, serving bool, holdTTL time.Duration) *fillProcess {
+	t.Helper()
 	process := &fillProcess{db: db, serving: make(chan struct{})}
 	if serving {
 		close(process.serving)
@@ -364,6 +407,7 @@ func startFillRetrying(t *testing.T, db *store.Store, released <-chan struct{}, 
 		Serving:  process.serving,
 		Released: released,
 		retry:    retry,
+		holdTTL:  holdTTL,
 	}
 	process.Fill = textversionstest.StartFill(t, func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error {
 		config.Events, config.Logger = wake, logger
