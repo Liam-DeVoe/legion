@@ -307,7 +307,8 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
 // each task block's Parent read from its `parent` (plan.ParentOf) against reference, the document
 // as a reference to one of its blocks names it (documentReference), then read as a plan
-// (plan.FromBlocks). So a `parent` puts a block under a block of this document alone. A block the
+// (plan.FromBlocks) against the same reference. So a `parent` puts a block under a block of this
+// document alone, and a `needs` word names an element of this document alone. A block the
 // plan's grammar cannot read, a `parent` that is not one reference among them, is a refused plan
 // whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
 // all. Every refusal records nothing.
@@ -339,7 +340,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 		}
 		blocks[i].Parent = parent
 	}
-	given, err := plan.FromBlocks(artifactID, version, blocks)
+	given, err := plan.FromBlocks(artifactID, reference, version, blocks)
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false
