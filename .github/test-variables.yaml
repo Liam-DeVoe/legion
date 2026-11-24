@@ -35,6 +35,9 @@ variables:
     class: set
     jobs: [go-envoy]
     why: The Lean model's binary, which go-envoy's airlock-lean leg builds and hands the corpus comparison and the fuzz.
+  APPROVED_VERSION_NEWS_MODEL:
+    class: tool
+    why: The model part two of approved-version-news runs its sessions on, which scripts/e2e/approved-version-news.sh hands BenchmarkRealSessionsTellAndAnswerANewVersion.
   BROKER_TEST_DATABASE_URL:
     class: set
     jobs: [go-envoy-held, go-envoy, go-daemon]
@@ -107,8 +110,8 @@ variables:
     why: The launcher's role-layout tests need a directory outside /tmp and say so through testprereq.Require.
   LEGION_E2E:
     class: selector
-    jobs: [ts]
-    why: Selects the envoy-client tests against a real NATS container, which ts's envoy-client leg runs.
+    jobs: [ts, pi]
+    why: Selects the tests against a real NATS container, which ts's envoy-client leg and pi's pi-envoy and claude-envoy legs run (main's #4287).
   LEGION_E2E_DISPATCH_STACK:
     class: selector
     jobs: [go-envoy]
@@ -128,6 +131,10 @@ variables:
     class: set
     jobs: [pi]
     why: The native Codex binary install-codex puts in the environment of pi's claude-envoy leg.
+  LEGION_TEST_DAEMON_LOG_DIR:
+    class: set
+    jobs: [daemon-live]
+    why: The directory the whole-daemon live tests write each test's daemon and Dispatch logs under, which daemon-live uploads when they fail.
   LEGION_TEST_DRAIN_MEASURE:
     class: set
     jobs: [go-daemon]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - drives a running Dispatch server's people and agents through its HTTP API and reads its node and tuple store back, for the tester who decides the check c-person-graph on that server.
 # Drives the people and the agents of the node and tuple store end to end against a running
 # server (the check c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one

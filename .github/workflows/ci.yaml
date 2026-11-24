@@ -667,7 +667,7 @@ jobs:
           - leg: ${{ github.event_name != 'merge_group' && 'dispatch-two-builds-same' || '' }}
         include:
           - {leg: envoy-go-1, suite: envoy-go, part: 1, name: envoy-go (1/3), runner: ubuntu-24.04-arm, timeout: 40}
-          - {leg: envoy-go-2, suite: envoy-go, part: 2, rest: true, name: envoy-go (2/3), runner: ubuntu-24.04-arm, timeout: 40}
+          - {leg: envoy-go-2, suite: envoy-go, part: 2, rest: true, name: envoy-go (2/3), runner: ubuntu-24.04-arm, timeout: 55}
           - {leg: envoy-go-3, suite: envoy-go, part: 3, name: envoy-go (3/3), runner: ubuntu-24.04-arm, timeout: 41}
           - {leg: envoy-go-race, name: envoy-go-race / envoy-go-race, runner: ubuntu-24.04-arm, timeout: 80}
           - {leg: envoy-go-race-api-1, suite: envoy-go-race-api, part: 1, name: envoy-go-race-api (1/2), runner: ubuntu-24.04-arm, timeout: 30}

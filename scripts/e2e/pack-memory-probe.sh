@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - pack-memory-job.sh's probe inside the worker image's Job: measures git's and jj's memory on a large workspace under gVisor for the person deciding the pack settings
 # The probe of scripts/e2e/pack-memory-job.sh, run inside the worker image by a Kubernetes Job. It
 # measures the memory git and jj take in a large workspace under gVisor, for the checks
 # c-git-rows, c-jj-snapshot-memory, c-handoff-head-read-memory, c-shim-adoption-memory and

@@ -276,7 +276,7 @@ runs:
     - name: Test the search-measure psql helper
       shell: bash
       working-directory: scripts/search-measure
-      run: python3 -m unittest -v pg_test
+      run: python3 -m unittest -v pg_test.py
 
     # Go, but no Actions cache: what runs go here is the held-port build of the envoy listener
     # below, the CI-filter check's go list over a scratch module, the build-tag lister and the Go

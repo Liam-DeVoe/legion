@@ -286,7 +286,9 @@ runs:
     # among them the consumer cap's 2.10 cases and the hub's own reconcile on the
     # nats:2.15.1-alpine image the deployment runs (INFRA-1384); internal/cipher/natscallout has
     # one too: that the image the hub runs lets a user with an empty publish allow list publish
-    # anywhere, the fail-open its guard refuses. Each package runs only the tests its tag adds:
+    # anywhere, the fail-open its guard refuses; natsgrant has the edge grant's, and cmd/listener the
+    # edge listener's, whose relay socket rows wait out a 30 s token twice and a consumer's 60 s ack
+    # wait, hence its 10 minutes (main's #4807 and #4819). Each package runs only the tests its tag adds:
     # `-tags natslive ./pkg` would re-run the package's untagged tests, which already run
     # elsewhere, so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names
     # off the source at run time, and no test name is spelled here. Each assignment is a line of
@@ -303,6 +305,10 @@ runs:
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-natslive-bus.json" --packages ./internal/bus/ -- -count=1 -timeout 5m -tags natslive -run "$cap"
         callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-natslive-natscallout.json" --packages ./internal/cipher/natscallout/ -- -count=1 -timeout 5m -tags natslive -run "$callout"
+        grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-natslive-natsgrant.json" --packages ./natsgrant/ -- -count=1 -timeout 5m -tags natslive -run "$grant"
+        edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-natslive-listener.json" --packages ./cmd/listener/ -- -count=1 -timeout 10m -tags natslive -run "$edge"
     - if: always() && inputs.rest == 'true'
       uses: ./.github/actions/go-test-upload
       with:

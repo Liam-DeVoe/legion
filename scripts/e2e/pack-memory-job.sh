@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - runs the pack-memory measurement Job on a cluster the operator's kube context names, on the worker image digest given, and prints git's and jj's peak memory; a person runs it to decide the image's pack settings and memory budget
 # The measurement Job of the pack-memory checks: c-git-rows, c-jj-snapshot-memory,
 # c-handoff-head-read-memory, c-shim-adoption-memory and c-budget-under-gvisor, and the Job's
 # halves of c-pack-window-config and c-release-source. One Kubernetes Job, on the worker image the

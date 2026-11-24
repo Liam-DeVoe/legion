@@ -1,3 +1,5 @@
+// legion: tool - part two of approved-version-news, real Oh My Pi sessions on a real model, which scripts/e2e/approved-version-news.sh runs as a benchmark for the person deciding on the role prompts; no job runs it.
+//
 // The driver of part two of dispatch://INFRA-175's c-live: real Oh My Pi sessions, on the role
 // prompts this checkout composes and on the base commit's, answering a new version of a design.
 // Part one (approved_version_news_live_test.go) proves what the daemon sends; this part proves what
