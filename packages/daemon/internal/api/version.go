@@ -3312,7 +3312,11 @@ package api
 // writes, which is no wire or answer shape; the reason a pod's account drift gives
 // (`runtime.BreakingDrift` in front of it), which is a round's recorded reasons and an update
 // ask's text, both free text to every reader; and the words of `supervise.UpdateTask` and of
-// the update-stalled notice's reason, which no reader parses.
+// the update-stalled notice's reason, which no reader parses. The second round of fixes on fa9deb04
+// moves none either: the table's key becomes the act's own identity (`operation`), with what the
+// act takes and the uid of its target (`takes`, `target_uid`), in the same unreleased migration;
+// `runtime.ActReader` and `runtime.TakenPod`'s new fields are calls inside this daemon's process;
+// and the workspace-taken and update-stalled notices change only in their words.
 // (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
 // 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and

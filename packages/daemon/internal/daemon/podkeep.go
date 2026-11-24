@@ -335,38 +335,6 @@ func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work
 			"You are told this once for this pod.", issue, issue, issue))
 }
 
-// tellLaunchTook is the daemon's runtime.LaunchTook, its word of a launch's own replacement of an
-// issue pod (sandbox.Options.LaunchTook), which the runtime hands it once the act that takes the
-// disk is done: where the read through a launcher of the pod before the replacement found work
-// that no branch or tag on origin holds, or no read could be made (runtime.TakenPod.Tells), the
-// issue's architect is told once what the replacement took, each commit and the working-copy change
-// by name, or that no read could be made and why (launchTakenMessage). A read that found nothing
-// tells nobody. The notice goes through the replacement's record (podreplace.go): the record the
-// launch wrote before the act (recordLaunchTakes) is written again, the same bytes, and finished
-// with the notice in one transaction (finishReplacement). A store that refuses either leaves the
-// record for a later sweep (finishReplacements), so the launch, which is done, loses nothing of it
-// (GPT-6.1 Sol's point 2 on #5285 at 0259f8af).
-func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod) {
-	attrs := []any{"claim", taken.Claim, "why", taken.Why}
-	if !taken.Tells() {
-		s.log.Info("supervise: a launch replaced its issue's pod, and the read of the workspace before it found nothing that no branch or tag on origin holds",
-			append([]any{"issue", taken.Issue, "pod", taken.PodUID}, attrs...)...)
-		return
-	}
-	recorded, err := launchRecordOf(taken)
-	if err != nil {
-		s.log.Error("supervise: encode the record of a launch's replacement of the issue's pod; its architect is not told what it took",
-			append([]any{"issue", taken.Issue, "pod", taken.PodUID, "error", err}, attrs...)...)
-		return
-	}
-	if err := s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, recorded); err != nil {
-		s.log.Error("supervise: write the record of a launch's replacement of the issue's pod again; the record the launch wrote before it stands, if any, and a later sweep finishes it",
-			append([]any{"issue", taken.Issue, "pod", taken.PodUID, "error", err}, attrs...)...)
-		return
-	}
-	s.finishReplacement(ctx, recorded, launchTakenMessage(taken), attrs...)
-}
-
 // workspaceTakenMessage is the issue's architect's workspace-taken notice for a replacement round
 // made of pod although the read of its workspace before it found work that no branch or tag on
 // origin holds (work, failed nil), or failed (failed): why the round replaced the pod, the roles of
@@ -402,10 +370,12 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 }
 
 // launchTakenMessage is the issue's architect's workspace-taken notice for a launch's own
-// replacement of an issue pod (runtime.TakenPod): which pod, why the launch replaced it, and what
-// the read of its workspace through the pod's launcher found before the replacement, or why no
-// read could be made. The architect reads it in its session and people read it in its history, so
-// it follows ASD-STE100.
+// replacement of an issue pod (runtime.TakenPod): which pod, why the launch replaced it, what it
+// took — the pod and its disk, or, for an act that takes the volume (runtime.TakesVolume), the
+// issue's Sandbox, named by its uid, and the kept volume it owned — and what the read of its
+// workspace through the pod's launcher found before the replacement, or why no read could be made.
+// The architect reads it in its session and people read it in its history, so it follows
+// ASD-STE100.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
 	if named, ok := taken.Claim.Role(); ok {
@@ -415,20 +385,23 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 	if why == "" {
 		why = "the launch could not start the role in that pod"
 	}
+	gone := "The pod and its disk are gone. A role that ran in the pod lost what it had not pushed."
+	if taken.Takes == runtime.TakesVolume {
+		gone = fmt.Sprintf("The issue's Sandbox (uid %s) and its kept volume, which was the disk of the issue's pods, are gone. A role that ran on that volume lost what it had not pushed.", taken.Target)
+	}
 	return strings.Join([]string{
 		fmt.Sprintf("A launch of the %s replaced the pod of %s (%s) on its own account, because %s.", role, taken.Issue, takenPodName(taken.PodUID), why),
-		"The pod and its disk are gone. A role that ran in the pod lost what it had not pushed.",
+		gone,
 		readFound(taken.Work, taken.Err),
 		"Work that is not on a branch at origin is lost. Each role must read its issue branch at origin to see the work that it pushed. You are told this once for this replacement.",
 	}, " ")
 }
 
 // takenPodName is how a workspace-taken notice names the pod a launch's replacement took: by its
-// uid, or, where the runtime does not record which pod used a kept volume last (runtime.TakenPod),
-// by saying so.
+// uid, or, where the issue's Sandbox ran no pod of its own (runtime.TakenPod), by saying so.
 func takenPodName(pod string) string {
 	if pod == "" {
-		return "the runtime does not record which pod used the disk last"
+		return "the issue's Sandbox ran no pod"
 	}
 	return "pod " + pod
 }

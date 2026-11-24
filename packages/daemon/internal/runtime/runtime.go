@@ -233,8 +233,8 @@ func RoundReasons(reasons []string) string {
 func BreaksPod(reasons string) bool { return Breaks(reasons) }
 
 // TakenPod is what a launch's own replacement of an issue pod takes (R7 of dispatch://INFRA-3271):
-// the claim whose launch makes it, the issue, the pod ("" where the runtime does not record which
-// pod used the disk last: a kept volume of a Sandbox that runs no pod), why the launch replaces the
+// the claim whose launch makes it, the issue, the pod ("" where the issue's Sandbox runs no pod of
+// its own: a kept volume a launch deletes with its Sandbox), why the launch replaces the
 // pod rather than keep it — the pod is not live, a facet of it fixed for its life moved, its
 // Sandbox has another disk shape or a kept volume to reset, its launchers are not bound to it, or
 // its stored template cannot be read — and what a read of the workspace through a launcher of the
@@ -272,10 +272,12 @@ func (t TakenPod) Tells() bool { return t.Err != nil || t.Work.HoldsWork() }
 type LaunchTakes func(ctx context.Context, taken TakenPod) error
 
 // LaunchTook is the daemon's word of a launch's own replacement of an issue pod, which the runtime
-// hands it once the act that takes the disk is done (internal/daemon's tellLaunchTook): the daemon
-// tells the issue's architect once what the replacement took, each commit and the working-copy
-// change by name, or that no read could be made. It returns nothing: the replacement is made, and
-// a notice the store does not take now stays on the daemon's record (LaunchTakes) until it does.
+// hands it once the act is made and confirmed (internal/daemon's tellLaunchTook): the pod gone,
+// and, for an act that takes the volume (TakesVolume), the Sandbox of its target uid gone with the
+// volume (GPT-6.1 Sol's point 4 on #5285 at fa9deb04). The daemon tells the issue's architect once
+// what the replacement took, each commit and the working-copy change by name, or that no read could
+// be made. It returns nothing: the replacement is made, and a notice the store does not take now
+// stays on the daemon's record (LaunchTakes) until it does.
 type LaunchTook func(ctx context.Context, taken TakenPod)
 
 // Takes is what a destructive act on an issue's pod takes, which says what shows the act made

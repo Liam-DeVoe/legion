@@ -906,20 +906,31 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 // runtime.ErrTurnBusy, calling nothing, where a launch or a replacement by issue holds it, as the
 // Sandbox runtime answers a turn another holds. Under the turn, an act that takes the pod
 // (runtime.TakesPod) is made where a ReplacePod replaced the target (took), and where the issue's
-// Sandbox no longer holds it (podGone); it is not made otherwise. It records no call, and decide
-// runs with mu free.
+// Sandbox no longer holds it (podGone); it is not made otherwise. An act that takes the kept volume
+// (runtime.TakesVolume) is made where the Sandbox of its target uid is gone (ScriptSandboxGone),
+// and uncertain otherwise, as the Sandbox runtime reads a Sandbox of that uid that still stands
+// Suspended. It records no call, and decide runs with mu free.
 func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
 	if !r.turn.TryLock() {
 		return runtime.ErrTurnBusy
 	}
 	defer r.turn.Unlock()
-	if act.Takes != runtime.TakesPod {
-		return fmt.Errorf("fake runtime: no act takes %q", act.Takes)
-	}
 	r.mu.Lock()
-	state := runtime.ActNotMade
-	if r.took[act.Target] || r.podGone(issue, act.Target) {
-		state = runtime.ActMade
+	var state runtime.ActState
+	switch act.Takes {
+	case runtime.TakesPod:
+		state = runtime.ActNotMade
+		if r.took[act.Target] || r.podGone(issue, act.Target) {
+			state = runtime.ActMade
+		}
+	case runtime.TakesVolume:
+		state = runtime.ActUncertain
+		if r.sandboxGone[act.Target] {
+			state = runtime.ActMade
+		}
+	default:
+		r.mu.Unlock()
+		return fmt.Errorf("fake runtime: no act takes %q", act.Takes)
 	}
 	r.mu.Unlock()
 	return decide(ctx, state)

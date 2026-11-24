@@ -4,19 +4,24 @@
 -- What this adds: pod_replacements, one row per destructive act on an issue's pod, keyed by the
 -- project and the act's own identity (operation), never by the pod: two acts on one pod are two
 -- rows, and the daemon writes no row over another (GPT-6.1 Sol's point 3 on #5285 at fa9deb04).
--- pod_uid is the pod the act takes, or the last pod of the volume it deletes, '' where there is
--- none. The daemon writes the row before the runtime acts: an update round's replacement before the
--- call whose last word the runtime asks under the pod's launch turn, one made at a launch as the
--- launch's reading of the round answers it, and a launch's own replacement before its suspension
--- (R7 of dispatch://INFRA-3271, GPT-6.1 Sol's points 1 and 2 on #5285). record is the daemon's own
--- encoding of the replacement: the round and its recorded reasons, or the launch's claim and why it
--- replaced the pod, and the read of the workspace made before the act, what it found or the error
--- it failed with. written_at is the moment the row was written, by the database's clock. Once the
--- act is made the daemon deletes the row and queues the architect's workspace-taken notice in the
--- same transaction, so the notice goes out exactly once whatever stops between. A replacement whose
--- call failed, or whose daemon stopped, after its act landed is finished from its row at a later
--- sweep, from the read made before it, never from a read made after; a row whose pod the runtime
--- still runs is deleted, since that act was not made.
+-- pod_uid is the pod the act takes, '' where the issue's Sandbox ran no pod of its own. takes is
+-- what the act takes, and target_uid the uid of what it takes (GPT-6.1 Sol's point 4): 'pod', the
+-- suspension of the issue's Sandbox over the pod of that uid, which takes a disk that is the pod's
+-- own with it, or 'volume', the delete of the issue's Sandbox of that uid, which takes the kept
+-- volume it owns. A Suspended Sandbox shows the first made, and only a Sandbox of that uid gone
+-- shows the second. The daemon writes the row before the runtime acts: an update round's
+-- replacement before the call whose last word the runtime asks under the pod's launch turn, one
+-- made at a launch as the launch's reading of the round answers it, and a launch's own replacement
+-- before its suspension (R7 of dispatch://INFRA-3271, GPT-6.1 Sol's points 1 and 2 on #5285).
+-- record is the daemon's own encoding of the replacement: the round and its recorded reasons, or
+-- the launch's claim and why it replaced the pod, and the read of the workspace made before the
+-- act, what it found or the error it failed with. written_at is the moment the row was written, by
+-- the database's clock. Once the act is made the daemon deletes the row and queues the architect's
+-- workspace-taken notice in the same transaction, so the notice goes out exactly once whatever
+-- stops between. A replacement whose call failed, or whose daemon stopped, after its act landed is
+-- finished from its row at a later sweep, from the read made before it, never from a read made
+-- after; a row whose act the runtime shows was not made is deleted, and one whose act the runtime
+-- cannot show made or not stands.
 --
 -- The release before reads and writes no such row. A rollback to it drops the table with whatever
 -- rows it holds, and each of them is a notice the architect is not sent: run the way back below,
@@ -32,6 +37,8 @@ create table if not exists pod_replacements (
     operation text not null check (operation <> ''),
     issue text not null check (issue <> ''),
     pod_uid text not null,
+    takes text not null check (takes in ('pod', 'volume')),
+    target_uid text not null check (target_uid <> ''),
     record jsonb not null,
     written_at timestamptz not null default now(),
     primary key (project, operation)

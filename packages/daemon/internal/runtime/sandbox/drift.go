@@ -567,6 +567,14 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 // still there to see — and where the Sandbox's own pod is another or none; it is not made where the
 // Sandbox runs the target as its own pod. ReplacePod writes its suspension before it waits for the
 // pod to go (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
+//
+// An act that takes the kept volume (runtime.TakesVolume, the uid of the Sandbox that owns it its
+// target) is made only where no Sandbox of that uid is left: the delete is foreground, so the
+// Sandbox's absence is the API server's confirmation that the volume it owned is gone
+// (deleteSandbox; GPT-6.1 Sol's point 4 on #5285 at fa9deb04). A Suspended Sandbox of that uid, or
+// one that runs no pod of its own, says only that the pod was taken, and the act reads uncertain.
+// A Sandbox of that uid Running with a live pod of its own, which is not being deleted, uses the
+// volume again: the act was not made.
 func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
@@ -610,6 +618,21 @@ func (r *Runtime) actState(ctx context.Context, name string, act runtime.Recorde
 			return runtime.ActNotMade, nil
 		}
 		return runtime.ActMade, nil
+	case runtime.TakesVolume:
+		if string(s.UID) != act.Target {
+			return runtime.ActMade, nil
+		}
+		if s.mode() == modeSuspended || s.DeletionTimestamp != nil {
+			return runtime.ActUncertain, nil
+		}
+		pod, err := r.apiPod(ctx, name)
+		if err != nil {
+			return runtime.ActUncertain, err
+		}
+		if ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil {
+			return runtime.ActNotMade, nil
+		}
+		return runtime.ActUncertain, nil
 	}
 	return runtime.ActUncertain, fmt.Errorf("no act takes %q", act.Takes)
 }

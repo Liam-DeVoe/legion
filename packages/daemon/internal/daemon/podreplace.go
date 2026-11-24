@@ -64,25 +64,28 @@ func failedText(err error) string {
 
 // roundRecordOf is the record of round's replacement of issue's pod made over read, the round
 // recording reasons, under an operation identity of its own (GPT-6.1 Sol's point 3 on #5285 at
-// fa9deb04): each replacement a round asks for is an act of its own, whatever pod it names.
+// fa9deb04): each replacement a round asks for is an act of its own, whatever pod it names. A
+// round's replacement is the suspension of the issue's Sandbox over the pod, so it takes the pod,
+// and the pod's uid is its target (GPT-6.1 Sol's point 4).
 func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store.PodReplacement, error) {
 	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(), Role: read.role, At: read.at.UTC(),
 		Head: read.work.Head, Changed: read.work.Changed, Commits: read.work.Commits, Count: read.work.Count, Failed: failedText(read.err)})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
-	return store.PodReplacement{Operation: uuid.NewString(), Issue: issue, PodUID: pod, Record: encoded}, nil
+	return store.PodReplacement{Operation: uuid.NewString(), Issue: issue, PodUID: pod, Takes: string(runtime.TakesPod), Target: pod, Record: encoded}, nil
 }
 
 // launchRecordOf is the record of a launch's own replacement, as the runtime hands it, under the
-// operation identity the runtime gave it.
+// operation identity the runtime gave it, with what the act takes and its target.
 func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
 	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why,
 		Head: taken.Work.Head, Changed: taken.Work.Changed, Commits: taken.Work.Commits, Count: taken.Work.Count, Failed: failedText(taken.Err)})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
-	return store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID, Record: encoded}, nil
+	return store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID,
+		Takes: string(taken.Takes), Target: taken.Target, Record: encoded}, nil
 }
 
 // work is the read the record holds, of pod.
@@ -108,10 +111,11 @@ func (r replacementRecord) read(pod string) workspaceRead {
 	return read
 }
 
-// taken is a launch's record as the runtime handed it (runtime.TakenPod), of issue's pod.
-func (r replacementRecord) taken(issue, pod string) runtime.TakenPod {
-	taken := runtime.TakenPod{Claim: r.Claim, Issue: issue, PodUID: pod, Why: r.Why}
-	taken.Work, taken.Err = r.work(pod)
+// taken is a launch's record, recorded, as the runtime handed it (runtime.TakenPod).
+func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod {
+	taken := runtime.TakenPod{Operation: recorded.Operation, Claim: r.Claim, Issue: recorded.Issue, PodUID: recorded.PodUID, Why: r.Why,
+		Takes: runtime.Takes(recorded.Takes), Target: recorded.Target}
+	taken.Work, taken.Err = r.work(recorded.PodUID)
 	return taken
 }
 
@@ -219,6 +223,28 @@ func (s *supervision) recordLaunchTakes(ctx context.Context, taken runtime.Taken
 	return s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, recorded)
 }
 
+// tellLaunchTook is the daemon's runtime.LaunchTook, its word of a launch's own replacement of an
+// issue pod (sandbox.Options.LaunchTook), which the runtime hands it once the act is made: the pod
+// gone, and the Sandbox and its kept volume gone where the act takes the volume (GPT-6.1 Sol's
+// point 4 on #5285 at fa9deb04). Where the read through a launcher of the pod before the
+// replacement found work that no branch or tag on origin holds, or no read could be made
+// (runtime.TakenPod.Tells), the record the launch wrote before the act (recordLaunchTakes) is
+// finished with the issue's architect's notice of what it took, in one transaction
+// (finishReplacement): each commit and the working-copy change by name, or that no read could be
+// made and why (launchTakenMessage). A read that found nothing tells nobody. The record is the
+// launch's one write of it: a record a sweep finished already is not written again
+// (INFRA-341's reviewer's points B and minor 7), and a store that refuses the finish leaves the
+// record for a later sweep (finishReplacements), so the launch, which is done, loses nothing of it.
+func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod) {
+	attrs := []any{"claim", taken.Claim, "why", taken.Why}
+	if !taken.Tells() {
+		s.log.Info("supervise: a launch replaced its issue's pod, and the read of the workspace before it found nothing that no branch or tag on origin holds",
+			append([]any{"issue", taken.Issue, "pod", taken.PodUID}, attrs...)...)
+		return
+	}
+	s.finishReplacement(ctx, store.PodReplacement{Operation: taken.Operation, Issue: taken.Issue, PodUID: taken.PodUID}, launchTakenMessage(taken), attrs...)
+}
+
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
 // or a daemon left standing (store.Store.PodReplacements), from the runtime's read of the act
 // (runtime.ActReader), and answers the issues whose round's record still stands, which the walk
@@ -287,7 +313,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 		case state == runtime.ActNotMade:
 			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten", attrs...)
 		case !ofRound:
-			taken := rec.taken(r.Issue, r.PodUID)
+			taken := rec.taken(r)
 			s.finishReplacement(ctx, r, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
@@ -311,7 +337,7 @@ func (s *supervision) readAct(ctx context.Context, r store.PodReplacement) (runt
 		return runtime.ActUncertain, nil
 	}
 	state := runtime.ActUncertain
-	err := reader.ReadAct(ctx, r.Issue, runtime.RecordedAct{Takes: runtime.TakesPod, Target: r.PodUID}, func(ctx context.Context, read runtime.ActState) error {
+	err := reader.ReadAct(ctx, r.Issue, runtime.RecordedAct{Takes: runtime.Takes(r.Takes), Target: r.Target}, func(ctx context.Context, read runtime.ActState) error {
 		state = read
 		if read != runtime.ActNotMade {
 			return nil
