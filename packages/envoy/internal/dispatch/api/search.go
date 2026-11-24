@@ -879,16 +879,16 @@ meaning_issue as (
 ),
 meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
-         coalesce(i.updated_at, v.created_at) as updated_at,
+         coalesce(i.updated_at, ds.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join artifacts a on a.id = ` + windowOwnerUUID + `
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
-    join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
+    join document_search ds on ds.artifact_id = a.id, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
-		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
+		searchRowFilters("i.status", "a.created_by", "ds.created_at") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),

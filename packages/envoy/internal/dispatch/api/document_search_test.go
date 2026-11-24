@@ -404,9 +404,10 @@ type documentSearchPlanNode struct {
 // arm reads the latest version through the unique key and tests `v.search @@ q.tsq` as the join
 // filter of the lateral's Nested Loop, which names no relation of its own, so the condition is
 // matched against the relations below it rather than against the node's own. The page's lateral
-// still reads artifact_versions for the snippet's markdown and the meaning candidates for a
-// version's created_at, and neither tests a tsquery, so the assertion is about the match and not
-// about the table.
+// still reads artifact_versions for the snippet's markdown, and tests no tsquery there, so the
+// assertion is about the match and not about the table. The meaning candidates read no
+// artifact_versions at all: a document's date comes from document_search
+// (TestNoMeaningDocumentArmReadsArtifactVersions).
 func artifactVersionsTestingATSQuery(t *testing.T, planJSON json.RawMessage) []string {
 	t.Helper()
 	var root documentSearchPlanNode

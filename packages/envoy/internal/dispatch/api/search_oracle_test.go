@@ -1,5 +1,17 @@
 package api
 
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
 // This file holds search's statements as main ran them at df18d9be, the commit INFRA-4864 starts
 // from: the keyword statement searchQuery, search's three meaning statements, the related-item
 // check's six meaning statements, and the meaning document arm of search's three apart. Their
@@ -21,6 +33,10 @@ package api
 // before document_search and keep their names; the mainAtDF18 prefix says whose these are. They
 // are frozen: they never follow an edit to the package's statements, since that edit is what
 // they exist to be compared with.
+//
+// The end of the file is R3's oracle test (TestSearchAnswersMainsRowsOrderTotalAndReachable),
+// which holds search's four statements to main's over a corpus whose word matches more items of
+// each kind than any arm's limit.
 
 // mainAtDF18VisibilityHead is the opening of refs' visibility predicate as main rendered it, up
 // to its comparison with the acting credential: the read of the node's graph_nodes row and the
@@ -1847,3 +1863,323 @@ const (
 	mainAtDF18RelatedMeaningScopedExcludingQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningExcludingArmsScoped + mainAtDF18RelatedMeaningExcludingTail
 	mainAtDF18RelatedMeaningJoinedExcludingQuery = mainAtDF18RelatedMeaningOpener + mainAtDF18RelatedMeaningExcludingArmsJoined + mainAtDF18RelatedMeaningExcludingTail
 )
+
+// searchResultsItems is how many items of each kind hold the kind's word in R3's fixture: more
+// than the 1,000 matches of a kind R3 names, and more than searchWindowCandidates, the windows a
+// meaning arm takes.
+const searchResultsItems = 1500
+
+// searchResultsKinds is R3's five kinds, each with the word its items hold and no other item
+// does. A kind's place in the list is the dimension whose unit vector the fake embedder answers
+// for its word, which the fixture's windows are written against (searchResultsVectorSQL).
+var searchResultsKinds = []struct{ kind, word string }{
+	{"issue", "wombat"}, {"document", "ibex"}, {"comment", "okapi"}, {"ask", "quokka"}, {"message", "tapir"},
+}
+
+// searchResultsBase is the instant R3's fixture dates its items from: item n of each kind is
+// written n minutes after it.
+var searchResultsBase = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// searchResultsFixture is R3's corpus (newSearchResultsFixture).
+type searchResultsFixture struct {
+	database *store.Store
+	embedder *fakeEmbedder
+	// projects are the two projects the items alternate between: the first holds every odd item
+	// of each kind, and so the oldest.
+	projects [2]string
+	// since is an updated_since that keeps the newer half of each kind's items and not the oldest.
+	since time.Time
+	// oldest is each kind's first item, by the id the statements answer for it (r.id).
+	oldest map[string]string
+}
+
+// searchResultsItem is what item n of every kind of R3's fixture is written with, over the
+// parameters each insert of an item takes ($1 and $2 the two projects, $3 searchResultsBase, $4
+// searchResultsItems): its project, the first for an odd n and the second for an even one; its
+// author, bob for every fourth and alice for the rest; and when it was written.
+const searchResultsItem = `
+			from generate_series(1, $4::int) n
+			cross join lateral (
+			  select case when n % 2 = 1 then $1::text else $2::text end as key,
+			         jsonb_build_object('kind', 'user', 'id', case when n % 4 = 0 then 'bob' else 'alice' end) as author,
+			         $3::timestamptz + make_interval(mins => n) as at
+			) item`
+
+// searchResultsVectorSQL is the vector of item n of the kind at dimension, both SQL
+// expressions: a cosine of 0.9 - 0.0002 n with the unit vector of dimension, which the fake
+// embedder answers for the kind's word, and a cosine of 0 with every other kind's. The rest of its
+// length stands at a position past the five kinds' own, one of its own for each item of a kind,
+// so no two windows of a corpus share a vector.
+func searchResultsVectorSQL(dimension, n string) string {
+	return pairVectorSQL("("+dimension+") + 1",
+		fmt.Sprintf("%d + (%d * (%s) + (%s)) %% %d", len(searchResultsKinds)+1, len(searchResultsKinds), n, dimension, embed.Dimension-len(searchResultsKinds)),
+		"0.9 - 0.0002 * ("+n+")")
+}
+
+// newSearchResultsFixture writes R3's corpus as SQL. Each of the five kinds has
+// searchResultsItems items holding the kind's word, item n written as searchResultsItem says.
+// The issues carry the status the others are filtered by: issue n is done for every third n and
+// todo for the rest. Item n of each of the other four kinds sits on issue n, except that a
+// document n whose n%4 is 3 or 0 is its project's own, and the comment and the ask n whose n%4
+// is 3 sit on that document. So the status filter leaves out every project document and every
+// item on one, and each kind's first item sits on the first issue, in the first project, by
+// alice.
+//
+// The first item of each kind holds its word three times or more and every other item holds it
+// once, so the oldest item is the best match by ts_rank_cd. Every item has one window settled at
+// the fake embedder's identity, whose vector (searchResultsVectorSQL) is the nearest to the
+// kind's query for the first item and further for each later one, and orthogonal to every other
+// kind's query: a search for one kind's word meets no other kind's window above
+// searchMeaningFloor. The issues' windows are the rows the issues' own trigger enqueued, given
+// their vectors; the other kinds' are written as crowdCommentWindows writes its own.
+func newSearchResultsFixture(t *testing.T) searchResultsFixture {
+	t.Helper()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
+	for dimension, kind := range searchResultsKinds {
+		vector := make([]float32, embed.Dimension)
+		vector[dimension] = 1
+		embedder.vectors[kind.word] = vector
+	}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	fixture := searchResultsFixture{
+		database: database, embedder: embedder, projects: [2]string{"ANSA", "BETA"},
+		since:  searchResultsBase.Add(searchResultsItems/2*time.Minute + 30*time.Second),
+		oldest: map[string]string{},
+	}
+	createTestProject(t, handler, fixture.projects[:]...)
+	ctx := context.Background()
+	items := []any{fixture.projects[0], fixture.projects[1], searchResultsBase, searchResultsItems}
+	for _, step := range []struct {
+		what, statement string
+		arguments       []any
+		rows            int64
+	}{
+		{"the issues", `
+			insert into issues (key, project_key, number, title, status, created_by, rank, created_at, updated_at)
+			select item.key || '-' || n, item.key, n,
+			       case when n = 1 then 'Wombat wombat wombat census' else 'Wombat census ' || n end,
+			       case when n % 3 = 0 then 'done' else 'todo' end, item.author, lpad(n::text, 20, '0'), item.at, item.at` +
+			searchResultsItem, items, searchResultsItems},
+		{"the documents", `
+			insert into artifacts (project_key, issue_key, slug, name, kind, created_by, created_at)
+			select item.key, case when n % 4 in (1, 2) then item.key || '-' || n end,
+			       'ibex-notes-' || n, 'Ibex notes ' || n || '.md', 'doc', item.author, item.at` +
+			searchResultsItem, items, searchResultsItems},
+		{"their versions", `
+			insert into artifact_versions (artifact_id, number, markdown, authors, created_at)
+			select a.id, 1, case when a.slug = 'ibex-notes-1' then E'# Ibex notes\n\nIbex ibex ibex.\n'
+			                     else '# Notes ' || split_part(a.slug, '-', 3) || E'\n\nAn ibex sighting.\n' end,
+			       '[]', a.created_at
+			from artifacts a where a.slug like 'ibex-notes-%'
+		`, nil, searchResultsItems},
+		{"the comments", `
+			insert into comments (issue_key, artifact_id, author, body, created_at)
+			select case when n % 4 <> 3 then item.key || '-' || n end, a.id, item.author,
+			       case when n = 1 then 'Okapi okapi okapi.' else 'An okapi sighting, ' || n || '.' end, item.at` +
+			searchResultsItem + `
+			left join artifacts a on n % 4 = 3 and a.slug = 'ibex-notes-' || n
+		`, items, searchResultsItems},
+		{"the asks", `
+			insert into asks (issue_key, artifact_id, author, question, created_at)
+			select case when n % 4 <> 3 then item.key || '-' || n end, a.id, item.author,
+			       case when n = 1 then 'Quokka quokka quokka?' else 'A quokka count, ' || n || '?' end, item.at` +
+			searchResultsItem + `
+			left join artifacts a on n % 4 = 3 and a.slug = 'ibex-notes-' || n
+		`, items, searchResultsItems},
+		{"the messages", `
+			insert into messages (issue_key, author, body, created_at)
+			select item.key || '-' || n, item.author,
+			       case when n = 1 then 'Tapir tapir tapir.' else 'A tapir sighting, ' || n || '.' end, item.at` +
+			searchResultsItem, items, searchResultsItems},
+		{"the issues' windows", `
+			update embeddings e
+			   set embedded_hash = e.content_hash, model = $1, embedded_at = now(),
+			       embedding = ` + searchResultsVectorSQL("0", "i.number") + `
+			  from issues i
+			 where e.kind = 'issue' and e.id = i.key
+		`, []any{embedder.Identity()}, searchResultsItems},
+		{"the other kinds' windows", `
+			insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers)
+			select w.kind, w.id, 'A window of ' || w.id, md5(w.id), md5(w.id), $1,
+			       ` + searchResultsVectorSQL("w.dimension", "w.n") + `, now(), array['b1']
+			from (
+			  select item.kind, item.dimension, item.id, (extract(epoch from item.at - $2::timestamptz) / 60)::int as n
+			  from (
+			    select 'document_block' as kind, 1 as dimension, a.id::text || '#b1' as id, a.created_at as at
+			      from artifacts a where a.slug like 'ibex-notes-%'
+			    union all select 'comment_block', 2, 'comment/' || c.id || '#b1', c.created_at from comments c
+			    union all select 'ask_part', 3, 'ask/' || k.id || '#b1', k.created_at from asks k
+			    union all select 'message_block', 4, 'message/' || m.id || '#b1', m.created_at from messages m
+			  ) item
+			) w
+		`, []any{embedder.Identity(), searchResultsBase}, 4 * searchResultsItems},
+	} {
+		written, err := database.Pool.Exec(ctx, step.statement, step.arguments...)
+		if err != nil {
+			t.Fatalf("write %s: %v", step.what, err)
+		}
+		if written.RowsAffected() != step.rows {
+			t.Fatalf("writing %s wrote %d rows, want %d", step.what, written.RowsAffected(), step.rows)
+		}
+	}
+	var issue, document, comment, ask, message string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select key from issues where number = 1),
+		       (select id::text from artifacts where slug = 'ibex-notes-1'),
+		       (select id::text from comments where body = 'Okapi okapi okapi.'),
+		       (select id::text from asks where question = 'Quokka quokka quokka?'),
+		       (select id::text from messages where body = 'Tapir tapir tapir.')`).Scan(&issue, &document, &comment, &ask, &message); err != nil {
+		t.Fatalf("read each kind's oldest item: %v", err)
+	}
+	fixture.oldest = map[string]string{"issue": issue, "document": document, "comment": comment, "ask": ask, "message": message}
+	if _, err := database.Pool.Exec(ctx, "analyze"); err != nil {
+		t.Fatalf("analyze the fixture: %v", err)
+	}
+	return fixture
+}
+
+// searchAnswer is one statement's answer as R3 reads it: every row as text, in the order the
+// statement answers them, and the total, the reachable and the items of the page, each written
+// "kind/id".
+type searchAnswer struct {
+	rows             []string
+	total, reachable int64
+	items            []string
+}
+
+// readSearchAnswer runs statement bound to arguments in a transaction of its own under settings,
+// as the route runs a search's statement in the scan it opens (beginKeywordScan,
+// beginMeaningScan), and reads its answer. A page past the last row is one row of totals and no
+// item.
+func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) searchAnswer {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the search's transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	rows, err := tx.Query(ctx, statement, arguments...)
+	if err != nil {
+		t.Fatalf("run the statement: %v", err)
+	}
+	defer rows.Close()
+	answer := searchAnswer{rows: []string{}}
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			t.Fatalf("read a row: %v", err)
+		}
+		answer.rows = append(answer.rows, fmt.Sprint(values...))
+		// The columns scanSearchRows reads: the totals first, the kind third and the id fifteenth.
+		var kind, id *string
+		columns := make([]any, len(values))
+		columns[0], columns[1], columns[2], columns[14] = &answer.total, &answer.reachable, &kind, &id
+		if err := rows.Scan(columns...); err != nil {
+			t.Fatalf("scan a row: %v", err)
+		}
+		if kind != nil {
+			answer.items = append(answer.items, *kind+"/"+*id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the statement's rows: %v", err)
+	}
+	return answer
+}
+
+// TestSearchAnswersMainsRowsOrderTotalAndReachable holds R3: each keyword arm ranks and counts
+// every match whatever its age, and a search answers the rows, the order, the total and the
+// reachable main's statements at df18d9be answer. The fixture (newSearchResultsFixture) gives
+// each of the five kinds 1,500 items holding the kind's word, the oldest of them the best match
+// by ts_rank_cd and by vector, and each kind's word is a query.
+//
+// For each query, each of the four statements - searchQuery, and searchQueryMeaning,
+// searchQueryMeaningScoped and searchQueryMeaningJoined over the vector the fake embedder answers
+// for the word - runs for each project form its caller binds it with (every project and one),
+// with no filter and with each of status, author and updated_since alone, at offsets 0 and 50,
+// this build's text and main's over the same arguments and under the settings the route runs it
+// under (searchKeywordScan, searchMeaningScan), the 15-second bound among them (D3). The two
+// answers must be the same rows in the same order. A search narrowed by nothing must count all
+// 1,500 of the kind's matches, or the 750 of one project; and the first page of a search whose
+// filters keep the oldest item must hold it.
+func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
+	t.Parallel()
+	fixture := newSearchResultsFixture(t)
+	ctx := context.Background()
+	every, one := "", fixture.projects[0]
+	statements := []struct {
+		name, live, main string
+		meaning          bool
+		projects         []string
+	}{
+		{"searchQuery", searchQuery, mainAtDF18SearchQuery, false, []string{every, one}},
+		{"searchQueryMeaning", searchQueryMeaning, mainAtDF18SearchQueryMeaning, true, []string{every}},
+		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAtDF18SearchQueryMeaningScoped, true, []string{one}},
+		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAtDF18SearchQueryMeaningJoined, true, []string{every, one}},
+	}
+	filters := []struct {
+		name        string
+		narrow      func(*searchParameters)
+		keepsOldest bool
+	}{
+		{"no filter", nil, true},
+		{"status todo", func(p *searchParameters) { p.status = "todo" }, true},
+		{"author alice", func(p *searchParameters) { p.author = "alice" }, true},
+		{"updated since", func(p *searchParameters) { p.since = &fixture.since }, false},
+	}
+	for _, kind := range searchResultsKinds {
+		t.Run(kind.word, func(t *testing.T) {
+			vectors, err := fixture.embedder.Embed(ctx, []string{kind.word}, embed.InputQuery)
+			if err != nil {
+				t.Fatalf("embed %q: %v", kind.word, err)
+			}
+			oldest := kind.kind + "/" + fixture.oldest[kind.kind]
+			for _, statement := range statements {
+				for _, project := range statement.projects {
+					for _, filter := range filters {
+						for _, offset := range []int{0, 50} {
+							scope := "every project"
+							if project != every {
+								scope = project
+							}
+							t.Run(fmt.Sprintf("%s, %s, %s, offset %d", statement.name, scope, filter.name, offset), func(t *testing.T) {
+								parameters := searchParameters{text: kind.word, project: project, limit: searchDefaultLimit, offset: offset}
+								if filter.narrow != nil {
+									filter.narrow(&parameters)
+								}
+								arguments, settings := searchQueryArguments(parameters), searchKeywordScan
+								if statement.meaning {
+									arguments = searchMeaningQueryArguments(parameters, vectors[0], fixture.embedder.Identity())
+									settings = searchMeaningScan
+								}
+								want := readSearchAnswer(t, ctx, fixture.database, statement.main, arguments, settings)
+								got := readSearchAnswer(t, ctx, fixture.database, statement.live, arguments, settings)
+								if !slices.Equal(got.rows, want.rows) {
+									t.Fatalf("this build's statement answered\n%s\nwant main's\n%s",
+										strings.Join(got.rows, "\n"), strings.Join(want.rows, "\n"))
+								}
+								if filter.narrow == nil {
+									matches := int64(searchResultsItems)
+									if project != every {
+										matches /= 2
+									}
+									if got.total != matches {
+										t.Fatalf("total = %d, want every one of the %d matches of %q", got.total, matches, kind.word)
+									}
+								}
+								if offset == 0 && filter.keepsOldest && !slices.Contains(got.items, oldest) {
+									t.Fatalf("the first page holds no %s, the oldest item and the best match:\n%s", oldest, strings.Join(got.rows, "\n"))
+								}
+							})
+						}
+					}
+				}
+			}
+		})
+	}
+}
