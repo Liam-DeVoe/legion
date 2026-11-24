@@ -24,26 +24,6 @@ func storedPhaseRow(t *testing.T, pool *pgxpool.Pool, key string, role claim.Rol
 	return record.PhaseRowOf(rows, role)
 }
 
-// startEntriesOf is the entry of each start row of key that starts role, oldest first.
-func startEntriesOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) []int64 {
-	t.Helper()
-	rows, err := pool.Query(t.Context(), `select coalesce((payload->>'entry')::bigint, 0) from outbox
-		where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' and payload->>'role' = $2 order by id`, key, string(role))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var entries []int64
-	for rows.Next() {
-		var entry int64
-		if err := rows.Scan(&entry); err != nil {
-			t.Fatal(err)
-		}
-		entries = append(entries, entry)
-	}
-	return entries
-}
-
 // keyedRun walks LEGION-208, whose owner gave `implementer:a tester:a reviewer`, from its gate to
 // the tester's step: key a's agent ran the implementer's step and now runs the tester's.
 func keyedRun(t *testing.T) (*pgxpool.Pool, record.Issue) {
@@ -96,8 +76,8 @@ func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
 	if got := storedPhaseRow(t, pool, root.Key, claim.RoleTester).Entry; got != 2 {
 		t.Fatalf("the tester's row holds entry %d, want 2: one above every row of its claim", got)
 	}
-	if got := startEntriesOf(t, pool, root.Key, claim.RoleTester); len(got) != 1 || got[0] != 2 {
-		t.Fatalf("the tester's starts carry the entries %v, want one start of entry 2", got)
+	if got := roleStartsOf(t, pool, root.Key, claim.RoleTester); len(got) != 1 || got[0].Entry != 2 {
+		t.Fatalf("the tester's starts are %+v, want one start of entry 2", got)
 	}
 }
 

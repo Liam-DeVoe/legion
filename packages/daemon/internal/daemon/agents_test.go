@@ -158,8 +158,8 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAgentsRig(t)
-			if steps := r.walkOneKey(tc.steps, tc.keyed); oneKeyHolds(r, steps, tc.keyed) != nil {
-				t.Fatal(oneKeyHolds(r, steps, tc.keyed))
+			if err := oneKeyHolds(r, r.walkOneKey(tc.steps, tc.keyed), tc.keyed); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -296,7 +296,7 @@ func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
 	}
 }
 
-// phaseRow is what entryRose reads of one phases row: the claim it names and its entry.
+// phaseRowNow is what entryRose reads of one phases row: the claim it names and its entry.
 type phaseRowNow struct {
 	claim string
 	entry int64

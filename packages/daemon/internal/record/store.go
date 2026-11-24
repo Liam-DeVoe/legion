@@ -3522,8 +3522,9 @@ type roleRunIdentity struct {
 	generation string
 }
 
-// RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
-// outbox query reads the selected issues' supervise rows by the outbox_issue index with each
+// RoleRuns reads the phases rows of keys' issues (PhaseEntries), the queued supervise rows and the
+// claims of keys in three bounded queries. The outbox query reads the selected issues' supervise
+// rows by the outbox_issue index with each
 // payload's role and generation as text, each row's age in the store's own clock
 // (QueuedSupervise.Age) and whether a live lease holds the row at that same now()
 // (QueuedSupervise.Running), and decodes only the rows of keys' roles and generations. A row of
@@ -3652,13 +3653,14 @@ func roleRunWorker(key claim.Token, issue string, role claim.Role, entries map[P
 	return token
 }
 
-// RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
+// RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' last
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
 // starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
 // check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
 // holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
-// It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
-// supervise row of every issue that owes a start, once per admission pass.
+// It saves admit's caller RoleRuns' first two statements: the phases rows, and the outbox query,
+// which selects and strictly decodes every supervise row of every issue that owes a start, once per
+// admission pass.
 //
 // Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between

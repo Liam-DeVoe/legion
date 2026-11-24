@@ -2139,8 +2139,8 @@ type Store interface {
 	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
 	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
 	// ClaimSession is the session claims records for token, "" and no error when the token holds
-	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
-	// reviewerToken), in the reviewer's first round as in every later one, to tell the reviewer's
+	// no row. The workflow reads it for the claim of the worker on the reviewer's step (workflow's
+	// reviewersClaim), in the reviewer's first round as in every later one, to tell the reviewer's
 	// own review from another review-App session's by the Legion footer each carries
 	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
 	// registers; the claim the outbox makes holds none until then.
@@ -2566,8 +2566,8 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
-	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
-	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' last statement without
+	// the two before it, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }

@@ -136,12 +136,13 @@ func earlierKeyNames(earlier []PlanStep) map[string]claim.Agent {
 	names := map[string]claim.Agent{}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		row := earlier[i]
-		agent := row.PlanAgent()
-		if agent.Key == "" || agent.Owner() || row.AgentName() == "" {
+		// AgentName is "" for a step of the key owner, as for a row that holds no name.
+		name := row.AgentName()
+		if row.AgentKey == "" || name == "" {
 			continue
 		}
-		if _, ok := names[agent.Key]; !ok {
-			names[agent.Key] = row.AgentName()
+		if _, ok := names[row.AgentKey]; !ok {
+			names[row.AgentKey] = name
 		}
 	}
 	return names
