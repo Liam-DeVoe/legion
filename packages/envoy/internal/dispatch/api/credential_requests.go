@@ -18,6 +18,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -84,6 +85,23 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// relayBrokerRead relays the broker's answer to read (relayBrokerResponse), a GET of the broker
+// for a read route. The read is a wait on another server, so the request holds no admission unit
+// and no pinned connection across it (awayOnNetwork), and a take-back refused after it is answered
+// as admission refuses a request rather than as a broker that could not be reached.
+func (s *server) relayBrokerRead(w http.ResponseWriter, r *http.Request, read func(context.Context) (json.RawMessage, error)) {
+	var body json.RawMessage
+	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
+		body, err = read(ctx)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
+	relayBrokerResponse(w, body, err)
 }
 
 // resolveApproverMe reads ?approver=, which the UI only ever sends as the literal string "me" —
@@ -161,8 +179,9 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, nil)
 		return
 	}
-	body, err := s.deps.AgentSecrets.Pending(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return s.deps.AgentSecrets.Pending(ctx, login)
+	})
 }
 
 // --- POST .../{id}/approve, .../{id}/deny, .../machine-lookup ---
@@ -262,8 +281,9 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Grants(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Grants(ctx, login)
+	})
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
@@ -301,8 +321,9 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.MachineLogins(ctx, model.CanonicalLogin(actor.ID))
+	})
 }
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
@@ -340,8 +361,9 @@ func (s *server) listSignIns(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.SignIns(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.SignIns(ctx, model.CanonicalLogin(actor.ID))
+	})
 }
 
 // revokeSignIn ends one of the caller's own sign-ins: that machine trades no token for them
@@ -380,14 +402,22 @@ type credentialCapabilities struct {
 // getCredentialCapabilities answers that one fact. Unlike every other route here it answers for
 // a Dispatch with no broker rather than 404 FEATURE_OFF, because the question it answers is
 // exactly "what can this deployment do": a 404 would leave the page unable to tell a Dispatch
-// with no broker from a route it failed to reach.
+// with no broker from a route it failed to reach. A read of the broker's metadata is a wait on
+// another server, so the request holds no admission unit and no pinned connection across it
+// (awayOnNetwork), and a take-back refused after it is the answer.
 func (s *server) getCredentialCapabilities(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	capabilities := credentialCapabilities{}
 	if s.deps.AgentSecrets != nil {
-		capabilities.MachineCodePage = s.deps.AgentSecrets.ServesDeviceGrant(r.Context())
+		if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+			capabilities.MachineCodePage = s.deps.AgentSecrets.ServesDeviceGrant(ctx)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	WriteJSON(w, http.StatusOK, capabilities)
 }

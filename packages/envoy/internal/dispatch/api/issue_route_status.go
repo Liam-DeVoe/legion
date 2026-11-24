@@ -39,8 +39,8 @@ import (
 // the fetch bound (awaitFirstRouteRoster). Like fetchHolderLiveness, a listener call runs with no
 // transaction open (envoy_resolve.go carries the reason): the loop reads and writes the row on the
 // background pool, and a read that waits on the listener or asks it itself (that first agents
-// list, the shutdown drain's, every read of a ListenerRosterUncached process) gives back its
-// admission unit and its pinned connection for the wait (admission.GiveBack). Since a read may
+// list, the shutdown drain's, every read of a ListenerRosterUncached process) holds no admission
+// unit and no pinned connection across the wait (awayOnNetwork). Since a read may
 // still ask the listener so, listIssues and getIssue read the roster only once their pooled reads
 // have finished, listAgents before its two aggregates run, and a new caller must do the same.
 //
@@ -273,32 +273,31 @@ func (s *server) readAgentsRoster(ctx context.Context) (routeRoster, error) {
 
 // awaitFirstRouteRoster waits for the refresh loop's fetch - the one in flight, or one it asks the
 // loop to run now (ask) - and answers its roster, for a cold process's agents list
-// (readAgentsRoster). The wait is a wait on another server, so the request gives back its
-// admission unit and its pinned connection for it and takes them back after (admission.GiveBack,
-// Away.TakeBack), as a caller's resolution does around an issuer (identity.Membership.Confirm,
-// serviceTokenActor): a listener slow to answer then holds no unit, and the reads that need no
-// listener are not refused for want of one meanwhile. A take-back refused is the answer, which
-// listAgents writes (writeHandlerError). The wait is bounded by the fetch bound and by the
-// request: a first fetch that has not answered within the bound, and a request that ends first,
-// leave the roster unanswered with an err that says which, and the fetch runs on to store its
-// answer for every process.
+// (readAgentsRoster). The wait is a wait on another server, so the request holds no admission
+// unit and no pinned connection across it (awayOnNetwork): a listener slow to answer then holds
+// no unit, and the reads that need no listener are not refused for want of one meanwhile. A
+// take-back refused is the answer, which listAgents writes (writeHandlerError). The wait is
+// bounded by the fetch bound and by the request: a first fetch that has not answered within the
+// bound, and a request that ends first, leave the roster unanswered with an err that says which,
+// and the fetch runs on to store its answer for every process.
 func (s *server) awaitFirstRouteRoster(ctx context.Context) (routeRoster, error) {
 	bound := cmp.Or(s.rosters.timeout, routeRosterTimeout)
 	fetch := s.rosters.ask()
-	away := admission.GiveBack(ctx)
-	timer := time.NewTimer(bound)
 	var roster routeRoster
-	select {
-	case <-fetch.done:
-		roster = fetch.roster
-	case <-ctx.Done():
-		roster = routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}
-	case <-timer.C:
-		roster = routeRoster{reason: model.RouteReasonUnreachable,
-			err: fmt.Errorf("%w: the listener did not answer Dispatch's first read of its sessions within %s", envoy.ErrUnavailable, bound)}
-	}
-	timer.Stop()
-	if back := away.TakeBack(ctx); back != nil {
+	if back := awayOnNetwork(ctx, func(ctx context.Context) error {
+		timer := time.NewTimer(bound)
+		defer timer.Stop()
+		select {
+		case <-fetch.done:
+			roster = fetch.roster
+		case <-ctx.Done():
+			roster = routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}
+		case <-timer.C:
+			roster = routeRoster{reason: model.RouteReasonUnreachable,
+				err: fmt.Errorf("%w: the listener did not answer Dispatch's first read of its sessions within %s", envoy.ErrUnavailable, bound)}
+		}
+		return nil
+	}); back != nil {
 		return routeRoster{}, back
 	}
 	return roster, nil
@@ -713,15 +712,16 @@ func (s *server) listRouteRoster(ctx context.Context) routeRoster {
 	return buildRouteRoster(sessions)
 }
 
-// listRouteRosterAway is listRouteRoster for a read that holds an admission unit: it gives the
-// unit and its pinned connection back for the listener call and takes them back after
-// (admission.GiveBack, Away.TakeBack), as awaitFirstRouteRoster does around its wait, and answers
-// a take-back refused as its error. The shutdown drain's agents list and every read of a
-// ListenerRosterUncached process ask the listener so.
+// listRouteRosterAway is listRouteRoster for a read that holds an admission unit: it holds no
+// unit and no pinned connection across the listener call (awayOnNetwork), as awaitFirstRouteRoster
+// does across its wait, and answers a take-back refused as its error. The shutdown drain's agents
+// list and every read of a ListenerRosterUncached process ask the listener so.
 func (s *server) listRouteRosterAway(ctx context.Context) (routeRoster, error) {
-	away := admission.GiveBack(ctx)
-	roster := s.listRouteRoster(ctx)
-	if back := away.TakeBack(ctx); back != nil {
+	var roster routeRoster
+	if back := awayOnNetwork(ctx, func(ctx context.Context) error {
+		roster = s.listRouteRoster(ctx)
+		return nil
+	}); back != nil {
 		return routeRoster{}, back
 	}
 	return roster, nil

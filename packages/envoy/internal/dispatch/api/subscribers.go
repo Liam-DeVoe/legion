@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/routing"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // subscriber is a session whose persisted Envoy interests include an issue's
@@ -113,18 +114,26 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 	s.writeSubscribers(w, r, documentSubscriberBase(artifact.Project, artifact.Slug))
 }
 
+// writeSubscribers answers the sessions interested in base's events, from two listener reads one
+// after the other: the interests, then the registered sessions. The two are a wait on another
+// server, so the request holds no admission unit and no pinned connection across them
+// (awayOnNetwork); a take-back refused after them is answered as admission refuses a request
+// (writeEnvoyError leaves it to writeHandlerError).
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
 	}
-	interests, err := s.deps.Envoy.ListInterests(r.Context())
-	if err != nil {
-		s.writeEnvoyError(w, r, err)
-		return
-	}
-	sessions, err := s.deps.Envoy.Sessions(r.Context())
-	if err != nil {
+	var interests []listenerwire.InterestRow
+	var sessions []envoy.Session
+	if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		var err error
+		if interests, err = s.deps.Envoy.ListInterests(ctx); err != nil {
+			return err
+		}
+		sessions, err = s.deps.Envoy.Sessions(ctx)
+		return err
+	}); err != nil {
 		s.writeEnvoyError(w, r, err)
 		return
 	}

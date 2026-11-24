@@ -1230,7 +1230,17 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	if parameters.keywordsOnly {
 		run = s.runFusedSearchQuery
 	} else if s.deps.Embedder != nil {
-		vector, err := s.embedQuery(ctx, parameters.text)
+		// The embedding is a wait on the model service, so the request holds no admission unit and
+		// no pinned connection across it (awayOnNetwork). A failed embedding answers by keywords
+		// alone; a take-back refused after it is the search's answer.
+		var vector []float32
+		err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
+			vector, err = s.embedQuery(ctx, parameters.text)
+			return err
+		})
+		if refused := refusedTakeBack(ctx); refused != nil {
+			return model.SearchResponse{}, refused
+		}
 		if err != nil {
 			slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
 		} else {

@@ -89,8 +89,8 @@ type ciRun struct {
 // loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
-// at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
-// case of the answer.
+// at. Only a failed read of Dispatch's own database, and a take-back refused after the read of
+// GitHub (readCIRuns), is an error; whatever GitHub answers is a case of the answer.
 func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
@@ -122,6 +122,9 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		return nil
 	}
 	runs, err := s.readCIRuns(ctx, head, names)
+	if refused := refusedTakeBack(ctx); refused != nil {
+		return refused
+	}
 	if err != nil {
 		detail := ciUnreadDetail(head, err)
 		for _, p := range proved {
@@ -154,18 +157,26 @@ type provedCI struct {
 // held names to that rule can make `acme/..` the canonical name of a row, and its halves would go
 // into the paths as they are. A deployment holding no App key, a token GitHub would not mint, an
 // HTTP error, a rate limit and the deadline are each the error, worded as GitHub answered it. The
-// token never reaches it: it is sent in a header, and no answer names it.
+// token never reaches it: it is sent in a header, and no answer names it. The read is a wait on
+// GitHub, so the request holds no admission unit and no pinned connection across it
+// (awayOnNetwork); a take-back refused after it is the error, which deriveCIResults answers as
+// the route's own rather than as GitHub unreadable.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
 	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
 	if err != nil {
 		return nil, fmt.Errorf("the pull request row's %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
-	defer cancel()
-	runs, err := s.readCIRunPages(ctx, owner, repo, head.HeadSHA, names)
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("no answer within %s: %w", ciReadDeadline, err)
-	}
+	var runs map[string]*ciRun
+	err = awayOnNetwork(ctx, func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+		defer cancel()
+		var err error
+		runs, err = s.readCIRunPages(ctx, owner, repo, head.HeadSHA, names)
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("no answer within %s: %w", ciReadDeadline, err)
+		}
+		return err
+	})
 	return runs, err
 }
 

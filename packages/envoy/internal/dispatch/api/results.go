@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -596,11 +597,20 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
+	// (comparisonReader.learn). Each stretch of GitHub calls the reader makes - a commit's pull
+	// requests, a repository's default branch, a commit's branch - is a wait on another server, so
+	// the request holds no admission unit and no pinned connection across it
+	// (delivery.WithGitHubWait, awayOnNetwork). The reader reads a stretch that failed as no
+	// answer, so a take-back refused is read here, once it is done, and is the answer.
+	reading := delivery.WithGitHubWait(r.Context(), awayOnNetwork)
 	reader := newComparisonReader(s, at)
-	reader.learn(r.Context(), checks)
+	reader.learn(reading, checks)
 	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
+		reader.answer(reading, &checks[index])
+	}
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
 	}
 	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks

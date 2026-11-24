@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -13,9 +15,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -547,4 +551,217 @@ func TestAServiceTokenIssuersDiscoveryHoldsNoAdmissionUnitWhileItsWaitersWait(t 
 			}
 		})
 	}
+}
+
+// The rows below do the same for a read's own wait on another server (awayOnNetwork): the Envoy
+// listener, GitHub, the embedder a search embeds its query with, and the secrets broker. Each
+// holds its server, in front of the fake the route's own tests serve (heldService), with more
+// reads waiting on it than the read class has units, and requires what the rows above require:
+// no read unit held and none queued while they wait, a read that waits on nothing admitted at
+// once meanwhile, and every waiter answered 200, as before, once the server answers. Before, each
+// waiter held its read unit and its pinned connection for the whole wait, the class filled, and
+// the reads behind it were refused 429 OVERLOADED.
+
+// heldService serves upstream, a route's own test fake, behind a gate: a request hold names is
+// counted in calls as it arrives and waits until release, or until its client gives up, and every
+// other request reaches upstream at once. Requests reach upstream one at a time, since a fake may
+// record what it serves unguarded (fakeBrokerRig).
+func heldService(t *testing.T, upstream http.Handler, hold func(*http.Request) bool) (address string, calls *atomic.Int32, release func()) {
+	t.Helper()
+	calls = &atomic.Int32{}
+	gate := make(chan struct{})
+	var serial sync.Mutex
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hold(r) {
+			calls.Add(1)
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		serial.Lock()
+		defer serial.Unlock()
+		upstream.ServeHTTP(w, r)
+	}))
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	// Release before the close, which waits for every request in flight to finish.
+	t.Cleanup(front.Close)
+	t.Cleanup(release)
+	return front.URL, calls, release
+}
+
+// proxyTo passes every request to the server at address, a fake a route's own tests stand up.
+func proxyTo(t *testing.T, address string) http.Handler {
+	t.Helper()
+	target, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse the fake's address %q: %v", address, err)
+	}
+	return httputil.NewSingleHostReverseProxy(target)
+}
+
+// requireReadsHoldNoUnitOnService sets the reads of requests waiting on service, which the row
+// holds until release, and requires them to hold no read unit and queue none while they wait
+// (calls counts the ones that reached it), a project list, which waits on nothing, answered 200
+// at normal latency meanwhile, and every waiter answered 200 once service answers, the read class
+// holding nothing after.
+func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.Handler, limiter *admission.Limiter,
+	requests []*http.Request, calls func() int32, release func(),
+) {
+	t.Helper()
+	waiters := startWaiters(handler, requests)
+	// Before the server's own cleanups, and releasing the service first, so no read is still
+	// waiting on it when the server closes, whatever the row met.
+	t.Cleanup(func() {
+		release()
+		waiters.working.Wait()
+	})
+	requireWaitersHoldNoReadUnit(t, limiter, calls, func() bool { return true })
+	requireCachedCallersServed(t, handler, map[string]func() *http.Request{
+		"a project list": func() *http.Request { return testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice") },
+	})
+	release()
+	for _, answer := range waiters.collect(t, networkWaiters, 10*time.Second) {
+		if answer.status != http.StatusOK {
+			t.Errorf("a read waiting on %s: status=%d after %v body=%s, want 200 once it answered",
+				service, answer.status, answer.elapsed, strings.TrimSpace(answer.body))
+		}
+	}
+	if stats := limiter.Stats()[admission.Read]; stats.InFlight != 0 {
+		t.Errorf("once every read waiting on %s was answered the read class holds %d units, want none", service, stats.InFlight)
+	}
+}
+
+// The listener: an issue's collaborators wait on its Legion agent registry (issueLegionAgents),
+// and an issue's subscribers on its interests and then its sessions (writeSubscribers), half the
+// waiters each, the registry and the interests held.
+func TestAReadWaitingOnTheListenerHoldsNoReadUnit(t *testing.T) {
+	registry := &legionRegistryListener{}
+	subscribers, listener := newFakeListener(t, nil, nil)
+	upstream := http.NewServeMux()
+	upstream.Handle("/v1/legion/agents", proxyTo(t, registry.serve(t).URL))
+	upstream.Handle("/", proxyTo(t, subscribers))
+	address, calls, release := heldService(t, upstream, func(r *http.Request) bool {
+		return r.URL.Path == "/v1/legion/agents" || r.URL.Path == "/v1/interests/"
+	})
+	limiter := networkWaitLimiter()
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: address, envoyTimeout: time.Minute, admission: limiter})
+	key := createTestIssue(t, handler, "TEST", "Issue")
+	registry.set(key, legionAgentEntry("ses-planner", key, "planner", "2026-11-24T00:00:00Z", nil, nil))
+	listener.mu.Lock()
+	listener.interests["ses-planner"] = []string{issueSubscriberBase(key) + ".>"}
+	listener.mu.Unlock()
+
+	requests := make([]*http.Request, 0, networkWaiters)
+	for index := range networkWaiters {
+		target := "/api/v1/issues/" + key + "/collaborators"
+		if index%2 == 1 {
+			target = "/api/v1/issues/" + key + "/subscribers"
+		}
+		requests = append(requests, testRequestAs(t, http.MethodGet, target, "alice"))
+	}
+	requireReadsHoldNoUnitOnService(t, "the listener", handler, limiter, requests, calls.Load, release)
+}
+
+// GitHub: each read asks whether the App is installed on a repository of its own
+// (getAppInstallation), so each makes an installation lookup, which GitHub holds.
+func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
+	installation := func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/installation") }
+	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !installation(r) {
+			githubtest.Unexpected(t, w, r)
+			return
+		}
+		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{}}`)
+	}})
+	address, calls, release := heldService(t, proxyTo(t, github), installation)
+	limiter := networkWaitLimiter()
+	options := appInstallationOptions(t, address)
+	options.admission = limiter
+	handler, _, _ := newTestServer(t, options)
+
+	requests := make([]*http.Request, 0, networkWaiters)
+	for index := range networkWaiters {
+		requests = append(requests, testRequestAs(t, http.MethodGet, fmt.Sprintf("/api/v1/github/app-installation/acme-%d/widgets", index), "alice"))
+	}
+	requireReadsHoldNoUnitOnService(t, "GitHub", handler, limiter, requests, calls.Load, release)
+}
+
+// heldEmbedder is the search tests' fake embedder with every query's embedding held: each is
+// counted in calls as it arrives and waits until release, or until its bound
+// (searchEmbedTimeout) ends it, before the fake answers it.
+type heldEmbedder struct {
+	*fakeEmbedder
+	calls atomic.Int32
+	gate  chan struct{}
+	once  sync.Once
+}
+
+func (h *heldEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	if inputType == embed.InputQuery {
+		h.calls.Add(1)
+		select {
+		case <-h.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return h.fakeEmbedder.Embed(ctx, texts, inputType)
+}
+
+func (h *heldEmbedder) release() { h.once.Do(func() { close(h.gate) }) }
+
+// The embedder: each read is a search, which embeds its query (runSearch), and the embedder holds
+// it. The search lane is as wide as the waiters, so the read class is what would hold them.
+func TestAReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
+	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, gate: make(chan struct{})}
+	t.Cleanup(embedder.release)
+	limiter := admission.New(admission.Limits{Read: networkWaitReads, Write: networkWaitReads, HeavyReadLane: networkWaiters})
+	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder, admission: limiter})
+
+	requests := make([]*http.Request, 0, networkWaiters)
+	for range networkWaiters {
+		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/search?q=wibble", "alice"))
+	}
+	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release)
+}
+
+// The embedder again, for the related-item check's read: each read is GET
+// /api/v1/projects/{key}/related, which embeds its text before its stages start
+// (relatedInput.embedFirst), and the embedder holds it. The route reads with two units at once
+// (concurrentReads), so the read class holds two of its checks, and the six waiters would need
+// twelve units.
+func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
+	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, gate: make(chan struct{})}
+	t.Cleanup(embedder.release)
+	limiter := admission.New(admission.Limits{Read: concurrentReadWeight * networkWaitReads, Write: networkWaitReads})
+	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder, admission: limiter})
+	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RHOLD", "name": "Related hold"}, "alice")
+	if project.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", project.Code, project.Body.String())
+	}
+
+	requests := make([]*http.Request, 0, networkWaiters)
+	for range networkWaiters {
+		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/projects/RHOLD/related?title=Zymurgy+ledger+drifts", "alice"))
+	}
+	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release)
+}
+
+// The secrets broker: each read is a person's list of the credential requests waiting on them
+// (listCredentialPending), which the broker holds.
+func TestAReadWaitingOnTheSecretsBrokerHoldsNoReadUnit(t *testing.T) {
+	broker := newFakeBrokerRig(t)
+	broker.bodyByRoute["GET /v1/pending"] = `{"pending":[]}`
+	address, calls, release := heldService(t, proxyTo(t, broker.server.URL), func(r *http.Request) bool { return r.URL.Path == "/v1/pending" })
+	limiter := networkWaitLimiter()
+	handler, _, _ := newTestServer(t, testServerOptions{agentSecretsURL: address, admission: limiter})
+
+	requests := make([]*http.Request, 0, networkWaiters)
+	for range networkWaiters {
+		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/credential-requests?approver=me", "alice"))
+	}
+	requireReadsHoldNoUnitOnService(t, "the secrets broker", handler, limiter, requests, calls.Load, release)
 }

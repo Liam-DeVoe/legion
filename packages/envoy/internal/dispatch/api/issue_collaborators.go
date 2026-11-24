@@ -175,7 +175,11 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	registry, registryState := s.issueLegionAgents(ctx, key)
+	registry, registryState, err := s.issueLegionAgents(ctx, key)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 	agents, err := s.collaboratorAgents(ctx, sessions, registry)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -230,16 +234,26 @@ func (s *server) tallyCollaboratorEvents(
 }
 
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
-// "unavailable" when there is no listener or it did not answer within the client's window.
-func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
+// "unavailable" when there is no listener or it did not answer within the client's window. The
+// listener call is a wait on another server, so the request holds no admission unit and no pinned
+// connection across it (awayOnNetwork), and a take-back refused after it is the error, which the
+// route answers as admission refuses a request, never as an unavailable registry.
+func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string, error) {
 	if s.deps.Envoy == nil {
-		return nil, legionRegistryUnavailable
+		return nil, legionRegistryUnavailable, nil
 	}
-	entries, err := s.deps.Envoy.IssueAgents(ctx, key)
+	var entries []listenerwire.LegionAgentAnswer
+	err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
+		entries, err = s.deps.Envoy.IssueAgents(ctx, key)
+		return err
+	})
+	if refused := refusedTakeBack(ctx); refused != nil {
+		return nil, "", refused
+	}
 	if err != nil {
-		return nil, legionRegistryUnavailable
+		return nil, legionRegistryUnavailable, nil
 	}
-	return entries, legionRegistryOK
+	return entries, legionRegistryOK, nil
 }
 
 // collaboratorAgents merges the event-derived sessions with the registry's entries by session id:

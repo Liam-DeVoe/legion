@@ -324,7 +324,14 @@ func (c *Branches) CommitOnBranch(
 	if holdable && c.unseenHeld(pair, now) {
 		return BranchUnseen
 	}
-	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
+	// The compare read is a stretch the caller's request waits on (onGitHub). One whose wait
+	// failed holds nothing and writes nothing: the request is answered that failure.
+	var answer bool
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		answer, err = askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
+	}); refused != nil {
+		return BranchUnknown
+	}
 	if err != nil {
 		if !cannotSeeRepository(err) {
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
@@ -357,13 +364,23 @@ func (c *Branches) CommitOnBranch(
 // CommitOnBranch wants the name even when the newest read could not say, since a
 // branch_commits row is keyed by a branch and the name has to come from somewhere before that
 // row can be asked for at all.
+//
+// The read of GitHub is a stretch the caller's request waits on (onGitHub); one whose wait failed
+// - the request was refused its unit back - answers no name and no and keeps nothing, so no other
+// read of this process takes that refusal for the App being unable to read the repository.
 func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (string, bool) {
 	if held, fresh := c.get(repoFull, now); fresh {
 		return held.branch, held.readable
 	}
 	branch := ""
 	if client != nil {
-		read, err := repositoryDefaultBranch(ctx, client, repoFull)
+		var read string
+		var err error
+		if refused := onGitHub(ctx, func(ctx context.Context) {
+			read, err = repositoryDefaultBranch(ctx, client, repoFull)
+		}); refused != nil {
+			return "", false
+		}
 		if err != nil {
 			if !cannotSeeRepository(err) {
 				slog.Warn("dispatch: read the default branch of a repository", "repo", repoFull, "error", err)

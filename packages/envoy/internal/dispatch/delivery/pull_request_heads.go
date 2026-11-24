@@ -910,7 +910,9 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 // returned rather than swallowed, so no caller persists a weaker attribution and then stamps
 // the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
 // the reconcile's leased pass carries: the intakes and the results routes call this too, and
-// their contexts carry none, so the note changes nothing there.
+// their contexts carry none, so the note changes nothing there. The read is a stretch of GitHub
+// calls the caller's request waits on (onGitHub); one whose wait failed is the error, and the
+// caller writes nothing for it.
 func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
 	attributed, err := a.headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
@@ -920,7 +922,13 @@ func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
-	read, _, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	var read []string
+	var readErr error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		read, _, readErr = fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	}); refused != nil {
+		return headAttributionResult{source: string(sourceNone)}, refused
+	}
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
 			return headAttributionResult{source: string(sourceNone)}, limited
@@ -1101,18 +1109,30 @@ func RepositoryUnreadable(err error) bool {
 // broker is the caller's own event broker, which a row this read re-attributes records its move
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
 // written with no event.
+//
+// The token and the commit's pull requests are one stretch of GitHub calls, and each commit
+// message read the attribution makes another (attributeHead): each runs through the caller's
+// GitHubWait (onGitHub), and every read and write of Dispatch's tables, the head's write
+// transaction among them, runs between them. A stretch whose wait failed ends the read-through
+// with that failure, writing nothing more.
 func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
 	canonical := a.canonical(repoFull)
-	owner, repo, token, err := repositoryRead(ctx, client, canonical)
-	if err != nil {
-		return 0, false, err
+	var token string
+	var pulls []pullRequestPayload
+	var read error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		var owner, repo string
+		if owner, repo, token, read = repositoryRead(ctx, client, canonical); read == nil {
+			pulls, read = fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
+		}
+	}); refused != nil {
+		return 0, false, refused
 	}
-	pulls, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
-	if err != nil {
-		return 0, false, err
+	if read != nil {
+		return 0, false, read
 	}
 	for _, pull := range pulls {
 		if pull.Head.SHA == sha {
