@@ -1161,14 +1161,14 @@ func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, documen
 		with candidates as (
 			select d.node_address as id, true as typed_row from document_blocks d
 			where d.artifact_id = $1::uuid and d.node_kind = $3 and d.type = any($9::text[])
-			  and not `+retiredDocumentSQL(roomBlockRowSQL("d.artifact_id", "d.block_id"))+`
+			  and not `+retiredDocumentSQL(graphstore.RoomBlockRowSQL("d.artifact_id", "d.block_id"))+`
 			union
 			select part.from_id, false from (`+graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
 		`t.to_kind = 'artifact' and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'`)+`) part
 			where part.asserted and part.from_kind = $3
 			union
 			select r.node_address, false from block_refs r where r.artifact_id = $1::uuid and r.node_kind = $3
-			  and not `+retiredDocumentSQL(roomBlockRowSQL("r.artifact_id", "r.block_id"))+`
+			  and not `+retiredDocumentSQL(graphstore.RoomBlockRowSQL("r.artifact_id", "r.block_id"))+`
 		),
 		typed as (
 			select node.id, node.supertag from candidates c

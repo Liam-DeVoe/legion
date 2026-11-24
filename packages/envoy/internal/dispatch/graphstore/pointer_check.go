@@ -385,24 +385,46 @@ func (c *pointerCheck) readInvocations() pointerRead {
 	}
 }
 
+// RoomBlockRowSQL is the document that the issue_room_blocks row of block block (SQL text) under
+// the tree artifact tree (SQL text answering a uuid) names, as SQL text answering a uuid, null
+// where no row names the block: the document whose fragment of an issue room holds a block whose
+// document_blocks row the room's tree artifact keys. The table is keyed by block_id_key(block_id)
+// (migration 20261118230000_issue_tree_room_blocks_key), which holds an id of any length, so the
+// row is read through that key, and the id itself is compared beside it. It is the one reading of
+// that record: refs reads the document of a document_blocks row (refs.BlockDocumentSQL) and of a
+// room's block (refs.RoomBlockDocumentSQL) through it, and the pointer check reads a check's
+// document through it (readBlocks). It stands here, below refs, so that both read the one record.
+func RoomBlockRowSQL(tree, block string) string {
+	return `(select room_block.document_id from issue_room_blocks room_block
+		where room_block.tree_artifact_id = ` + tree + ` and block_id_key(room_block.block_id) = block_id_key(` + block + `)
+		  and room_block.block_id = ` + block + `)`
+}
+
 // readBlocks reads the type of each block of the check that a document holds now, the project of
 // that document and whether it is retired (artifacts.retired_at, docs.RetireDocument), read off
 // its document_blocks row by node_id, the block's address that every row carries, through that
 // column's hash index (document_blocks_node_id, migration 0121), and the primary key of the
-// artifacts row it names. It is not read by node_kind and node_address: a row written before the
+// artifacts row of the document the row is a block of, as refs.BlockDocumentSQL reads it: the
+// document whose fragment holds the block for a row of an issue room, which the room's tree
+// artifact keys (RoomBlockRowSQL), and the row's own artifact for every other row. So a check of a
+// converted document is judged by that document, which its retirement retires, and never by the
+// tree, which stands. It is not read by node_kind and node_address: a row written before the
 // store's backfill, one a pod of the previous release writes during a roll, and one past the
 // store's address bound leave both null, and its block is still the requirement or the check it
 // is. A block no document holds - a finding of a lens, a block a version removed - answers none,
 // and no rule that names a block type lets it through. A document no project holds, an agent
-// conversation's file, answers no project. A retired document keeps its document_blocks rows, so
-// its checks are read, and refused, for what they are. A write that asserts a prevented_by reads
-// them holding the owner lock (store.LockOwner) of each check's document (its race with a
-// retirement or an index pass: api's lockReasoningOwners).
+// conversation's file, answers no project. A retired document keeps its document_blocks rows, and
+// a retired document of an issue room keeps its blocks' issue_room_blocks rows too, since the
+// room's passes keep those blocks as its retirement left them, so its checks are read, and
+// refused, for what they are. A write that asserts a prevented_by reads them holding the owner
+// lock (store.LockOwner) of each check's document (its race with a retirement or an index pass:
+// api's lockReasoningOwners).
 func (c *pointerCheck) readBlocks() pointerRead {
 	return pointerRead{
 		what: "read the types of the blocks a pointer names",
 		sql: `select d.node_id, d.type, a.project_key, a.retired_at is not null
-			from document_blocks d join artifacts a on a.id = d.artifact_id
+			from document_blocks d
+			join artifacts a on a.id = coalesce(` + RoomBlockRowSQL("d.artifact_id", "d.block_id") + `, d.artifact_id)
 			where d.node_id = any($1::text[])`,
 		args: []any{c.blocks},
 		fill: func(rows pgx.Rows) error {

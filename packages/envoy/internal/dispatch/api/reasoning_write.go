@@ -70,19 +70,29 @@ func lockIssueOwner(ctx context.Context, tx pgx.Tx, key string) (string, error) 
 // lockReasoningOwners takes every owner lock a reasoning write stands under, in one
 // events.LockOwnerRows call, so once each and in ascending lock key, before the write reads a
 // node: the issue's own, and the owner of the document of each check a prevented_by of the write
-// asserts, which checks names by the dispatch:// addresses the request gave, none for a write that
-// asserts no prevented_by. A retirement of a document (docs.RetireDocument) and an index pass that
-// marks a block gone (refs.IndexBlocks, under the revision fence) each take that document's owner
-// lock first, so an assertion that races either runs wholly before it, and is retracted with the
-// rest, or wholly after it, and reads the document retired or the check gone, and is refused (spec
-// requirement r-constraint-risk). Two writes that name each other's issues take the locks they
-// share in one order, so neither holds a lock the other waits for.
+// asserts, which checks names by the addresses the request gave (a dispatch:// address or a store
+// id), none for a write that asserts no prevented_by. A retirement of a document
+// (docs.RetireDocument) and an index pass that marks a block gone (refs.IndexBlocks, under the
+// revision fence) each take that document's owner lock first, so an assertion that races either
+// runs wholly before it, and is retracted with the rest, or wholly after it, and reads the
+// document retired or the check gone, and is refused (spec requirement r-constraint-risk). Two
+// writes that name each other's issues take the locks they share in one order, so neither holds a
+// lock the other waits for.
 //
 // The document a check stands in is read off its address with no lock, before the locks: a
 // document block's id is its document's ref_key, '#' and its block id, a ref_key names one
 // document, and no write moves a document to another issue (project_scope.go). An address that
 // names no block of a document names no owner, and the read under the locks answers it as one
 // that does not exist.
+//
+// A check of an issue room named by its room address, `<tree ref_key>#<block>` - the id its
+// prevented_by stores, which a block of a converted document resolves to - names the room's tree
+// artifact before its '#', not the document whose fragment holds the block. The lock is the same:
+// the tree and every document joined to its room are artifacts of one issue, and an issue's
+// artifacts all stand under the issue's owner (events.OwnerRows, docs' lockArtifactOwner). So the
+// write queues with the retirement of that document and with the room's index pass, which moves a
+// block from one fragment to another under the same lock, whichever fragment holds the block; the
+// store's rule then reads the block's document under the locks (graphstore's readBlocks).
 func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []string) error {
 	owners := events.OwnerRows{}
 	owners.Add(issue, "")

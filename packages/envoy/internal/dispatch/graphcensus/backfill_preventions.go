@@ -12,15 +12,21 @@ import (
 
 // endedChecks is an SQL array of the ended checks a risk asserted a prevented_by at: each far end of
 // such a tuple whose block the store holds gone, which a version dropped, or whose document is
-// retired (artifacts.retired_at), whose checks nobody runs. A block's node id names its document's
-// ref_key before its first '#', since a ref_key holds none. narrow is a predicate over p, the
-// prevented_by tuple, that bounds the checks read. It starts from the risks, through
-// graph_tuples_current, since risks are few and a read into blocks would walk every block's tuples.
+// retired (artifacts.retired_at), whose checks nobody runs. A block's node id names the artifact
+// that keys its row by that artifact's ref_key before its first '#', since a ref_key holds none:
+// the block's document, or for a block of an issue room the room's tree artifact, and the block's
+// document is then the one whose fragment holds it (refs.RoomBlockDocumentSQL). So a check of a
+// converted document is judged by that document, as its retirement and the store's rule judge it
+// (docs' retiredPreventions, graphstore's pointerRules), and never by the tree, which stands.
+// narrow is a predicate over p, the prevented_by tuple, that bounds the checks read. It starts from
+// the risks, through graph_tuples_current, since risks are few and a read into blocks would walk
+// every block's tuples.
 func endedChecks(narrow string) string {
 	return `array(
 		select distinct p.to_id from graph_tuples p
 		left join graph_nodes b on b.kind = p.to_kind and b.id = p.to_id
-		left join artifacts a on a.ref_key = split_part(p.to_id, '#', 1)
+		left join artifacts keyed on keyed.ref_key = split_part(p.to_id, '#', 1)
+		left join artifacts a on a.id = coalesce(` + refs.RoomBlockDocumentSQL("keyed.id", "substr(p.to_id, length(keyed.ref_key) + 2)") + `, keyed.id)
 		where p.from_kind = '` + graphstore.KindRisk + `' and p.kind = '` + graphstore.TuplePreventedBy + `'
 		  and p.to_kind = '` + refs.BlockNodeKind + `' and p.asserted
 		  and (b.state = '` + graphstore.StateGone + `' or a.retired_at is not null)

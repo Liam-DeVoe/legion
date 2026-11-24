@@ -215,30 +215,20 @@ func BlockDocumentSQL(alias string) string {
 }
 
 // BlockDocumentOrSQL is BlockDocumentSQL with fallback, SQL text answering a uuid, in place of the
-// row's own artifact where no issue_room_blocks row names the block: a reader that found a block's
-// node in a document of an issue room before the room's block index reached it - a document that
-// owes that index, whose typed nodes the typed-node pass placed in it (PlanDecisionNodes) -
-// passes that document, which is the only record of it, and the row's own artifact after it.
+// row's own artifact where no issue_room_blocks row names the block (graphstore.RoomBlockRowSQL):
+// a reader that found a block's node in a document of an issue room before the room's block index
+// reached it - a document that owes that index, whose typed nodes the typed-node pass placed in it
+// (PlanDecisionNodes) - passes that document, which is the only record of it, and the row's own
+// artifact after it.
 func BlockDocumentOrSQL(alias, fallback string) string {
-	return `coalesce(` + roomBlockRowSQL(alias+".artifact_id", alias+".block_id") + `, ` + fallback + `)`
-}
-
-// roomBlockRowSQL is the document that the issue_room_blocks row of block block (SQL text) under
-// the tree artifact tree (SQL text answering a uuid) names, as SQL text answering a uuid, null
-// where no row names the block. The table is keyed by block_id_key(block_id) (migration
-// 20261118230000_issue_tree_room_blocks_key), which holds an id of any length, so the row is read
-// through that key, and the id itself is compared beside it.
-func roomBlockRowSQL(tree, block string) string {
-	return `(select room_block.document_id from issue_room_blocks room_block
-		where room_block.tree_artifact_id = ` + tree + ` and block_id_key(room_block.block_id) = block_id_key(` + block + `)
-		  and room_block.block_id = ` + block + `)`
+	return `coalesce(` + graphstore.RoomBlockRowSQL(alias+".artifact_id", alias+".block_id") + `, ` + fallback + `)`
 }
 
 // retiredDocumentSQL is true while the document the uuid SQL expression document names is retired
 // (artifacts.retired_at), and false for a null document. Over the document of a block of an issue
-// room (roomBlockRowSQL, RoomBlockDocumentSQL), which is null for a block of no room, it is true of
-// a block of a retired document of the room: that document's fragment leaves the room's layout
-// (docs' roomLayoutSQL), and the room's passes keep its blocks as its retirement left them
+// room (graphstore.RoomBlockRowSQL, RoomBlockDocumentSQL), which is null for a block of no room, it
+// is true of a block of a retired document of the room: that document's fragment leaves the room's
+// layout (docs' roomLayoutSQL), and the room's passes keep its blocks as its retirement left them
 // (BlockIndexing.retained).
 func retiredDocumentSQL(document string) string {
 	return `exists (select 1 from artifacts retired where retired.id = ` + document + ` and retired.retired_at is not null)`
@@ -247,19 +237,19 @@ func retiredDocumentSQL(document string) string {
 // RoomBlockDocumentSQL is the document whose fragment of the issue room under the tree artifact
 // tree (SQL text answering a uuid) holds, or last held, the block block (SQL text), as SQL text
 // answering a uuid, null where none is on record: the document its issue_room_blocks row names
-// while the room holds the block, else, for a block a version dropped from the room, whose row
-// went with it, the document the last asserted in_document of its node, `<tree ref_key>#<block>`,
-// names, since the block index states a block's membership of each document it moves into and
-// retracts none when the block is dropped. An artifact that is no issue's tree holds no record
-// here. Every reader that takes the document of a room's block that may have left the room - an
-// ask's block (AskBlockDocumentSQL), a block a write's event names (CountedChanges) - takes it
-// from here.
+// (graphstore.RoomBlockRowSQL) while the room holds the block, else, for a block a version dropped
+// from the room, whose row went with it, the document the last asserted in_document of its node,
+// `<tree ref_key>#<block>`, names, since the block index states a block's membership of each
+// document it moves into and retracts none when the block is dropped. An artifact that is no
+// issue's tree holds no record here. Every reader that takes the document of a room's block that
+// may have left the room - an ask's block (AskBlockDocumentSQL), a block a write's event names
+// (CountedChanges) - takes it from here.
 func RoomBlockDocumentSQL(tree, block string) string {
 	// The node's address is read first, behind a fence, and the tuples are read in a lateral keyed
 	// on it, so they are probed on the node (from_id) and never scanned by kind. An in_document
 	// always runs to an artifact (the join below reads it), so the probe names no to_kind, which
 	// would lead the planner to the inbound indexes.
-	return `coalesce(` + roomBlockRowSQL(tree, block) + `,
+	return `coalesce(` + graphstore.RoomBlockRowSQL(tree, block) + `,
 		(select stood.id
 		 from (select room_tree.ref_key || '#' || ` + block + ` as address from artifacts room_tree
 		       where room_tree.id = ` + tree + ` and room_tree.kind = 'tree' offset 0) node
