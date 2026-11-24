@@ -412,7 +412,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
 		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro, record.HeldTaskStopped,
-		record.HeldAtWork, record.HeldUnclassified}
+		record.HeldFixRunning, record.HeldCIAtHead, record.HeldAtWork, record.HeldUnclassified}
 	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren,
 		record.HoldForFix, record.HoldForCI}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
@@ -497,7 +497,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
 		}
 	}
-	// The thirteen held words over the twelve issues, the last word on the first issue again.
+	// The fifteen held words over the twelve issues, the last three words on the first three issues again.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})

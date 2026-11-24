@@ -69,12 +69,12 @@ func (e *Engine) retroHold(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 }
 
 // ciWaits is the head of the task of the issue key (taskHead) and what of its CI there has not
-// passed: each check of the head's set that a CI job may run and that has not passed there
-// (ciVerdict's ciUnknownKind, ciRunning or ciFailed), in the set's order, or the one word that no
-// set of checks is held at the head (record.HeadStates.Checks nil: Dispatch has published nothing
-// there yet), as the testing move waits on a set not held (judgeStates). A check that no CI job
-// runs waits for nothing here, whatever its state, and a set held empty waits for nothing. An
-// issue with no open pull request has no head, and nothing waits.
+// passed (record.CIWaits): each check of the head's set that a CI job may run and that has not
+// passed there, in the set's order, or the one word that no set of checks is held at the head
+// (record.HeadStates.Checks nil: Dispatch has published nothing there yet), as the testing move
+// waits on a set not held (judgeStates). A check that no CI job runs waits for nothing here,
+// whatever its state, and a set held empty waits for nothing. An issue with no open pull request
+// has no head, and nothing waits.
 func (e *Engine) ciWaits(ctx context.Context, tx pgx.Tx, key string) (head string, waits []string, err error) {
 	pr, err := e.store.PullRequest(ctx, tx, key)
 	if err != nil {
@@ -91,14 +91,7 @@ func (e *Engine) ciWaits(ctx context.Context, tx pgx.Tx, key string) (head strin
 	if held.Checks == nil {
 		return head, []string{"no check set held at " + head}, nil
 	}
-	for _, check := range held.Checks {
-		state, stated := held.States[check]
-		switch ciVerdict(state, stated) {
-		case ciUnknownKind, ciRunning, ciFailed:
-			waits = append(waits, check)
-		}
-	}
-	return head, waits, nil
+	return head, record.CIWaits(held), nil
 }
 
 // endHoldNotice is the retro-held notice of issue, on w, the walk of its run, held before its

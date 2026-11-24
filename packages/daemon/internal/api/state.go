@@ -616,6 +616,9 @@ type Admission struct {
 	// the one that waits: a root whose Legion label is off, a task that was stopped
 	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
 	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Under the two words of a task's end `heldBy` names what holds it other than an issue: the
+	// check and the head of the running fix under `fix_running`, and each check a CI job runs that
+	// has not passed at the head under `ci_at_head` (record.LineFacts.EndHolds).
 	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than

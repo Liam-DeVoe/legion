@@ -32,6 +32,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
    Read the review (`--phase review`) where it has a reviewer step, at the version your `Handoff:` line names when that line names one.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
+   Legion starts the retro only once each `ci_check` check passes at the task's head and no fix of the task runs, so the `ci_check` cases below come only from a run that ended later.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.

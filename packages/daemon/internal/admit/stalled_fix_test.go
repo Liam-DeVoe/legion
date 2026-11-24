@@ -15,7 +15,8 @@ import (
 // held for its CI stands in held, which the rule reads as stopped before it reads any word
 // (lineHolds.waitsByDesign), so a quiet tree of it is told. A root held for its fix is not quiet
 // while its fix's claim works, so its tree is told to nobody; with that claim idle it is told as
-// any held tree is.
+// any held tree is. The measure reads each root under the word of its hold, ci_at_head or
+// fix_running, and the premise below reads those words from the walk the measure reads.
 //
 // The control is a tree whose root waits on a person: a wait by design, so it is silent, and a
 // pass that names the held trees is a pass that still leaves a waiting tree alone.
@@ -50,6 +51,18 @@ func TestAStalledSweepNamesTheCIHold(t *testing.T) {
 	seedGate(t, pool, gateOf(control))
 	seedMirror(t, pool, control, "in_progress")
 	seedClaim(t, records, control, control, claim.RoleArchitect, supervise.StateIdle)
+
+	// The premise, read from the one walk the measure reads (record.Waiting's second answer): each
+	// held root reads the word of its hold.
+	facts, slots := passFacts(t, pool)
+	words := passWords(t, pool, facts, slots)
+	for key, want := range map[string]record.HeldReason{
+		ciHeld: record.HeldCIAtHead, fixWorking: record.HeldFixRunning, fixIdle: record.HeldFixRunning,
+	} {
+		if got := words[key]; got != want {
+			t.Fatalf("the line leaves %s behind for %q, want %q", key, got, want)
+		}
+	}
 
 	settled := settleMovements(t, pool, ciHeld, fixWorking, fixIdle, control)
 	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }

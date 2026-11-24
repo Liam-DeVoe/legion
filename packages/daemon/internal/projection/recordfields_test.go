@@ -294,13 +294,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		},
 	}
 
-	store := fixStore{
-		projectionStore: projectionStore{
-			issues:      []record.Issue{tree, issue},
-			assignments: map[string][]record.Assignment{root: {drawn}},
-			planTasks:   []record.PlanTask{{Issue: held, Generation: 3, Task: "a"}},
-		},
-		fixes: map[string]record.TaskFix{held: running},
+	store := projectionStore{
+		issues:      []record.Issue{tree, issue},
+		assignments: map[string][]record.Assignment{root: {drawn}},
+		planTasks:   []record.PlanTask{{Issue: held, Generation: 3, Task: "a"}},
+		fixes:       map[string]record.TaskFix{held: running},
 	}
 	state, err := Project(context.Background(), Inputs{
 		Store: store, Project: "LEGION",

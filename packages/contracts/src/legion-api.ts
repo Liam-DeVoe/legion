@@ -983,9 +983,12 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `children_before_retro` and `task_stopped` came with contract 219; a caller below it is served
- * each such row as `unclassified` with no `heldBy` (the daemon's value strip
- * `withoutUnadmittedHeldWords`).
+ * `children_before_retro` and `task_stopped` came with contract 219, and `fix_running` and
+ * `ci_at_head` with contract 236; a caller below the contract a word came with is served each such
+ * row as `unclassified` with no `heldBy` (the daemon's value strip `withoutUnadmittedHeldWords`).
+ * `fix_running` is a task held before its retro while its fix runs, its `heldBy` the fix's check
+ * and head; `ci_at_head` is a task held there until each check a CI job runs passes at its head,
+ * its `heldBy` each such check that has not passed yet.
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
  */
@@ -1001,6 +1004,8 @@ export const LEGION_HELD_REASONS = [
   "accepted_ancestor",
   "children_before_retro",
   "task_stopped",
+  "fix_running",
+  "ci_at_head",
   "at_work",
   "unclassified",
 ] as const;

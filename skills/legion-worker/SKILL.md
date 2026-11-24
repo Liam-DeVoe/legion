@@ -18,7 +18,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
    another role that commits next sets aside whatever the working copy holds.
 
-4. Every role writes the one workspace, so a file can change under your check.
+4. Other roles write your workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
    A run whose output you did not capture can be neither confirmed nor cleared.
@@ -87,7 +87,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro, once no fix or CI holds it.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.

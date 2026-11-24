@@ -1506,13 +1506,14 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
 // reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract, and tomorrow any word the
-// table gives a later arrival. A reader from heldContract up to that contract reads `reason` with
-// a `z.enum` of the eleven words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the `fix_running` and
+// `ci_at_head` of FixBesideReviewContract, and tomorrow any word the table gives a later arrival.
+// A reader from heldContract up to the contract a word arrived at reads `reason` with a `z.enum`
+// of the words before it and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
-// withoutUnadmittedStrandedStates: an older word does stand for it. Each issue of the two holds
-// read `unclassified`, with no `heldBy`, at every daemon before that contract, and `unclassified`
+// withoutUnadmittedStrandedStates: an older word does stand for it. Each issue of those holds
+// read `unclassified`, with no `heldBy`, at every daemon before its word's contract, and `unclassified`
 // arrived with the field, so every reader that knows the field admits it. So the row is served
 // as that reader read it before: the issue, `unclassified` and no `heldBy`, and every other row
 // as it stands.

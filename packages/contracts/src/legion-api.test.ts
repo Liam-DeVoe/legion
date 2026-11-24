@@ -1508,20 +1508,56 @@ test("a state with an issue held for a fix and one held for CI parses", () => {
   expect(holdOf(parsed, "LEGION-213")).toEqual({ holdReason: "ci", heldFrom: "retro" });
 });
 
+// Contract 236 gives each of those two holds its own word in `admission.held` as well:
+// `fix_running`, whose `heldBy` names the check the fix was started for and the head it failed at,
+// and `ci_at_head`, whose `heldBy` names each check a CI job runs that has not passed at the head.
+// The state golden internal/projection writes holds one row of each, and both parse as served; a
+// word outside `LEGION_HELD_REASONS` is refused.
+test("a state whose held rows name a task held for its fix and one held for its CI parses", () => {
+  const state = fixture("state-controller-claim.json") as {
+    admission: { held: { issue: string; reason: string; heldBy?: string[] }[] };
+  };
+  const ends = LegionStateResponse.parse(state).admission?.held?.filter(
+    (row) => row.issue === "LEGION-212" || row.issue === "LEGION-213"
+  );
+  expect(ends).toEqual([
+    {
+      issue: "LEGION-212",
+      reason: "fix_running",
+      heldBy: ["ci / test (ubuntu-24.04)", "c0de0000000000000000000000000000000000ff"],
+    },
+    {
+      issue: "LEGION-213",
+      reason: "ci_at_head",
+      heldBy: ["ci / build", "ci / test (ubuntu-24.04)"],
+    },
+  ]);
+  state.admission.held.push({ issue: "LEGION-233", reason: "fix" });
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The control of the strip: the reader of the contract before 236 refuses the state served at
-// 236, at the two new reasons and nowhere else. So the body that reader is served must carry
-// neither, which is what the daemon's strip gives it (the case below).
+// 236, at the two new reasons, at the two new words and at the holders of their rows that are no
+// issue key, and nowhere else. So the body that reader is served must carry none of them, which is
+// what the daemon's strips give it (the case below).
 test("the reader before the fix holds refuses the state that names them", () => {
   const refused = stateBeforeTheFixHolds.safeParse(fixture("state-controller-claim.json"));
   expect(refused.success).toBeFalse();
   expect(refused.error?.issues.map((issue) => issue.path.join(".")).sort()).toEqual([
+    "admission.held.1.heldBy.0",
+    "admission.held.1.heldBy.1",
+    "admission.held.1.reason",
+    "admission.held.2.heldBy.0",
+    "admission.held.2.heldBy.1",
+    "admission.held.2.reason",
     "issues.LEGION-212.holdReason",
     "issues.LEGION-213.holdReason",
   ]);
 });
 
 // What a caller below 236 is served instead: each of the two holds with no `holdReason` and its
-// `heldFrom` kept, and an escalated hold as it stands. The reader before the fix holds parses it.
+// `heldFrom` kept, each of their held rows as `unclassified` with no `heldBy`, and an escalated
+// hold as it stands. The reader before the fix holds parses it.
 test("the reader before the fix holds parses the state it is served", () => {
   const parsed = stateBeforeTheFixHolds.parse(fixture("state-before-fix-holds.json"));
   expect(holdOf(parsed, "LEGION-250")).toEqual({ holdReason: undefined, heldFrom: "retro" });
