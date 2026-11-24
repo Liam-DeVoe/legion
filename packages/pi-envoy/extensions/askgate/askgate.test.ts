@@ -6423,7 +6423,16 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   // rows fail under load is the gate's own ceiling, not a limit: the dry run does not finish inside
   // DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an `outcome="error"` block,
   // charged 46 to 48 s, where the row asserts a pass. That is a production budget that no per-test
-  // limit can guard.
+  // limit can guard, and how far down it reaches depends on the pod. At the 80 rung the first four
+  // rows were 19 or 20 of 20 at 4380d793 (the Jobs infra-1580-k1-gvhwj and infra-1580-k2-jwpck,
+  // 121 and 92 busy loops for the 80 rung) and the last three 18 or 19 of 20 at 0fba4c77 (above);
+  // at the 64 rung the first four were 18 to 20 of 20 at 2a77b2b8 (infra-1580-k7-8fc7c and
+  // infra-1580-k8-2kz84, 128 and 108 busy loops for the 64 rung). Each red was that block. So
+  // these rows' acceptance rung is 48 busy loops, 24 per CPU, where each is 20 of 20
+  // (infra-1580-k6-5qzzh at 4380d793, and infra-1580-k9-xvzd6 and infra-1580-k10-ps4hl at
+  // 8c41ece7, 70 busy loops for the 48 rung, row A 31.3 s to 37.3 s), the worst run charged
+  // 48 501 ms. At the 96 rung each row has a correct run that main's 30_000 would cut: 1 to 4 of
+  // 20 runs of each cost more than 30 s, with the limits out of the way.
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`
