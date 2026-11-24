@@ -15,10 +15,10 @@ import (
 )
 
 // childStandsAt is LEGION-209, a child of the tree root LEGION-208, standing in at at step place
-// of the plan whose steps are words (seedStepsAt), with each step's phases row naming the claim
-// rows gives its place (rows[0] for step 1, and so on), and its pull request #43 open at head-43,
-// with no merge forward asked yet.
-func childStandsAt(t *testing.T, at phase.Phase, place int, words []string, rows []claim.Token) *pgxpool.Pool {
+// of the plan whose steps are words, with the type of each role in types stored for it
+// (seedStepsAt), with each step's phases row naming the claim rows gives its place (rows[0] for
+// step 1, and so on), and its pull request #43 open at head-43, with no merge forward asked yet.
+func childStandsAt(t *testing.T, at phase.Phase, place int, types map[string]string, words []string, rows []claim.Token) *pgxpool.Pool {
 	t.Helper()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -28,7 +28,7 @@ func childStandsAt(t *testing.T, at phase.Phase, place int, words []string, rows
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "LEGION-209", Parent: new("LEGION-208"), Phase: at, Generation: 4,
 		Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
-	seedStepsAt(t, pool, "LEGION-209", 4, place, nil, words...)
+	seedStepsAt(t, pool, "LEGION-209", 4, place, types, words...)
 	for i, role := range standingSteps(words) {
 		seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: role, Claim: rows[i], StepTask: "a", StepPlace: i + 1, Entry: 1})
 	}
@@ -74,7 +74,7 @@ func TestAMessageToTheOwnersStepReachesTheOwnerWhateverItsRowNames(t *testing.T)
 		{name: "control: the row names the owner", row: childOwner},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := childStandsAt(t, phase.Reviewing, 2, []string{"implementer", "reviewer:owner"}, []claim.Token{implementer, tc.row})
+			pool := childStandsAt(t, phase.Reviewing, 2, nil, []string{"implementer", "reviewer:owner"}, []claim.Token{implementer, tc.row})
 			asksThenLands(t, pool)
 			var held, landed []claim.Token
 			for _, message := range mergeForwardMessages(t, pool) {
@@ -116,7 +116,7 @@ func TestTheReviewOfAMergeThatLandsAtTheOwnersAcceptanceReachesTheOwnerWhateverI
 		{name: "control: the rows name the owner", row: childOwner},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := childStandsAt(t, phase.Accepting, 3, []string{"implementer", "reviewer:owner", "acceptance:owner"},
+			pool := childStandsAt(t, phase.Accepting, 3, nil, []string{"implementer", "reviewer:owner", "acceptance:owner"},
 				[]claim.Token{implementer, tc.row, tc.row})
 			asksThenLands(t, pool)
 			var landing []sent
