@@ -128,7 +128,7 @@ jobs:
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
       # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # keyed on the Go version this step installs, which the release-path check reads too.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -136,13 +136,6 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-
-      # After setup-go: it runs `go list -deps ./cmd/legion` in packages/daemon and holds
-      # release.yaml's LEGION_VERSION_ARGS to every package of this repository it prints, so a
-      # package the legion binary comes to link is one a change to which releases a legion. Here,
-      # in a job that holds no credential, never in the release workflow.
-      - name: Check the legion release's version paths cover every package the binary links
-        run: .github/scripts/check-legion-release-paths.sh
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
       # inside packages/daemon), so it is formatted here with the daemon.
@@ -227,6 +220,17 @@ jobs:
             ~/.cache/legion
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
+
+      # After the restore above: it runs `go list -deps ./cmd/legion` in packages/daemon for each
+      # target .github/go-release-targets.json lists for legion, and holds release.yaml's
+      # LEGION_VERSION_ARGS to every package of this repository those listings print and to the
+      # go.work the build reads, so a package the legion binary comes to link, or the workspace it
+      # builds in, is one a change to which releases a legion. A run
+      # of it before the restore filled the module cache, and tar refused to unpack the entry over
+      # each module file it had downloaded (Go makes them read-only), so the restore failed. Here,
+      # in a job that holds no credential, never in the release workflow.
+      - name: Check the legion release's version paths cover every package the binary links
+        run: .github/scripts/check-legion-release-paths.sh
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and

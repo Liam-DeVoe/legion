@@ -78,8 +78,9 @@ func writeUnder(t *testing.T, root, path, body string) {
 // one, a Chmod on a call that opens no file for writing, the old path of an os.Rename that moved
 // another file onto the open's path, a test file of a package whose tests do not run beside each
 // other, a write by testexec.WriteFile, another module below root, and programfile.Write itself,
-// the Write function of github.com/sjawhar/envoy/programfile: another function of that package is
-// named, and so is a Write of a package of that name elsewhere. The code a deployment runs is
+// the Write function of github.com/sjawhar/envoy/programfile in a file that is no test file:
+// another function of that package is named, and so are a Write in a test file of that package
+// and a Write of a package of that name elsewhere. The code a deployment runs is
 // planted in daemonish: the shapes the daemon's own program files had before programfile.Write,
 // the git helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to
 // 0o700, and a copy that keeps a file's mode.
@@ -156,6 +157,16 @@ func Write(name string, flag int, perm os.FileMode) error {
 }
 
 func Other(name string) error { return os.WriteFile(name, nil, 0o755) }
+`)
+	write("programfile/write_test.go", `package programfile
+
+import (
+	"os"
+	"testing"
+)
+
+`+parallel+`
+func Write(name string) error { return os.WriteFile(name, nil, 0o755) }
 `)
 	write("daemonish/programfile/programfile.go", `package programfile
 
@@ -379,7 +390,7 @@ func followed(t *testing.T, dir string) {
 		"daemonish/install.go:5", "daemonish/install.go:8",
 		"daemonish/programfile/programfile.go:5",
 		"fakestest/fakestest.go:5",
-		"programfile/programfile.go:13",
+		"programfile/programfile.go:13", "programfile/write_test.go:10",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
@@ -387,10 +398,12 @@ func followed(t *testing.T, dir string) {
 }
 
 // Unguarded refuses, naming the root and what it could not read, a root that is no module's: the
-// parent of a module's directory, or a directory inside one, holds no go.mod. It refuses a module
-// root under which it read no test file, because the module holds none or because each one is in
-// another module below it. A check of such a root would name no write and pass while it read
-// nothing. A module root with one test file and no write is named nothing and no error.
+// parent of a module's directory, or a directory inside one, holds no go.mod. It refuses a root
+// whose go.mod declares no module, or cannot be read, saying that rather than that it holds none.
+// It refuses a module root under which it read no test file, because the module holds none or
+// because each one is in another module below it. A check of such a root would name no write and
+// pass while it read nothing. A module root with one test file and no write is named nothing and
+// no error.
 func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	t.Parallel()
 	const test = "package beside\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n"
@@ -404,19 +417,49 @@ func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	writeUnder(t, nested, "go.mod", "module example.com/outer\n")
 	writeUnder(t, nested, "inner/go.mod", "module example.com/inner\n")
 	writeUnder(t, nested, "inner/beside_test.go", test)
-	for _, row := range []struct{ what, root, want string }{
-		{"the parent of a module's directory", parent, "holds no go.mod"},
-		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod"},
-		{"a module with no test file", noTests, "read no Go test file under"},
-		{"a module whose one test file is in another module below it", nested, "read no Go test file under"},
+	noModule := t.TempDir()
+	writeUnder(t, noModule, "go.mod", "go 1.27\n")
+	writeUnder(t, noModule, "beside/beside_test.go", test)
+	unreadable := t.TempDir()
+	writeUnder(t, unreadable, "go.mod/README", "a directory where the go.mod should be\n")
+	writeUnder(t, unreadable, "beside/beside_test.go", test)
+	for _, row := range []struct{ what, root, want, notWant string }{
+		{"the parent of a module's directory", parent, "holds no go.mod", ""},
+		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod", ""},
+		{"a root whose go.mod declares no module", noModule, "its go.mod declares no module", "holds no go.mod"},
+		{"a root whose go.mod is a directory", unreadable, "its go.mod could not be read", "holds no go.mod"},
+		{"a module with no test file", noTests, "read no Go test file under", ""},
+		{"a module whose one test file is in another module below it", nested, "read no Go test file under", ""},
 	} {
 		got, err := Unguarded(row.root)
-		if got != nil || err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) {
-			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q", row.what, row.root, got, err, row.want)
+		if got != nil || err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) ||
+			row.notWant != "" && strings.Contains(err.Error(), row.notWant) {
+			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q, not %q", row.what, row.root, got, err, row.want, row.notWant)
 		}
 	}
 	if got, err := Unguarded(filepath.Join(parent, "module")); err != nil || len(got) != 0 {
 		t.Errorf("Unguarded on a module root with one test file and no write = %v, %v; want nothing and no error", got, err)
+	}
+}
+
+// Unguarded reads the module path a go.mod declares as Go does: past a comment after it, and out
+// of quotes. Under either spelling of its module's path programfile.Write is left out, and the
+// package's other write is named.
+func TestUnguardedReadsTheModulePathAsGoDoes(t *testing.T) {
+	t.Parallel()
+	for _, line := range []string{
+		"module github.com/sjawhar/envoy // the writer's module",
+		`module "github.com/sjawhar/envoy"`,
+	} {
+		root := t.TempDir()
+		writeUnder(t, root, "go.mod", line+"\n")
+		writeUnder(t, root, "programfile/programfile.go", "package programfile\n\nimport \"os\"\n\n"+
+			"func Write(name string, perm os.FileMode) error { return os.WriteFile(name, nil, perm) }\n\n"+
+			"func Other(name string) error { return os.WriteFile(name, nil, 0o755) }\n")
+		writeUnder(t, root, "programfile/programfile_test.go", "package programfile\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n")
+		if got, err := Unguarded(root); err != nil || !slices.Equal(got, []string{"programfile/programfile.go:7"}) {
+			t.Errorf("Unguarded under a go.mod of %q = %v, %v; want only programfile/programfile.go:7, Other's write", line, got, err)
+		}
 	}
 }
 

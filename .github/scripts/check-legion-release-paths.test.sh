@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Tests for `check-legion-release-paths.sh`: every package of this repository the `legion` binary
-# links, and the go.mod and go.sum of its module, is covered by a path of release.yaml's
-# LEGION_VERSION_ARGS. The case that matters is the one the check exists for: a package the
-# binary links that the list does not name.
+# links, for each target .github/go-release-targets.json lists for it, the go.mod and go.sum of
+# its module, and the go.work its build reads with its go.work.sum, is covered by a path of
+# release.yaml's LEGION_VERSION_ARGS. The case that matters is the one the check exists for: a
+# package the binary links that the list does not name, on the runner's own target or on another
+# one.
 #
 # Each case builds a miniature repository under a temporary directory, with a daemon module whose
 # `replace` reaches an envoy module as the real one does, and symlinks the real script into it, so
-# the script under test is the file CI runs and the `go list` it runs is a real one. Needs Go.
+# the script under test is the file CI runs and the `go list` it runs is a real one. Needs Go and
+# jq.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.test.sh
 # CI runs it in ci.yaml's test job, after setup-go.
@@ -25,7 +28,8 @@ source "$script_dir/test-lib.sh"
 covering='packages/daemon/ packages/envoy/used/ packages/envoy/deep/ packages/envoy/go.mod packages/envoy/go.sum'
 
 # fixture <name>: a tree that passes. Its legion command links the daemon's own helper package and
-# the envoy module's used, which links deep; envoy's unused is linked by nothing. Echoes its root.
+# the envoy module's used, which links deep; envoy's unused is linked by nothing. Its target list
+# names a linux and a darwin target for legion, as the real one does. Echoes its root.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -56,6 +60,7 @@ GO
     > "$root/packages/envoy/used/used.go"
   printf 'package deep\n\nfunc Deep() {}\n' > "$root/packages/envoy/deep/deep.go"
   printf 'package unused\n\nfunc Unused() {}\n' > "$root/packages/envoy/unused/unused.go"
+  printf '{\n  "legion": ["linux/amd64", "darwin/arm64"],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
   release "$root" "$covering"
   echo "$root"
 }
@@ -65,6 +70,13 @@ GO
 release() {
   printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: >-\n    --patch-path packages/daemon/internal/prompts/roles/\n    -- %s\njobs: {}\n' \
     "$2" > "$1/.github/workflows/release.yaml"
+}
+
+# gowork <root>: a go.work at the root that binds the two modules, as the real one does, and an
+# empty go.work.sum beside it.
+gowork() {
+  printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$1/go.work"
+  : > "$1/go.work.sum"
 }
 
 run_check() {
@@ -80,7 +92,7 @@ root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it compared" \
-  "$(contains "$out" "covers all 4 packages of this repository that go list -deps ./cmd/legion prints, and the go.mod and go.sum of their 2 modules")"
+  "$(contains "$out" "covers all 4 packages of this repository that go list -deps ./cmd/legion prints for the 2 legion targets of .github/go-release-targets.json, and the go.mod and go.sum of their 2 modules")"
 
 echo "case: a package the binary links that the list does not name"
 root=$(fixture planted)
@@ -99,12 +111,59 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the package the import brought in" "$(contains "$out" 'would release no legion: packages/envoy/unused/\.')"
 
+echo "case: a package the binary links only when it is built for another target"
+# The release builds legion for each target of the list, and a file a build constraint keeps to
+# one of them brings in its imports there alone: darwin.go links unused only into the darwin
+# binary, which no runner of this check is.
+root=$(fixture other-target)
+printf '//go:build darwin\n\npackage main\n\nimport _ "github.com/example/envoy/unused"\n' \
+  > "$root/packages/daemon/cmd/legion/darwin.go"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the package only the darwin binary links" "$(contains "$out" 'would release no legion: packages/envoy/unused/\.')"
+
 echo "case: a module file the list does not name"
 root=$(fixture module-file)
 release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/deep/ packages/envoy/go.mod'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the go.sum" "$(contains "$out" 'would release no legion: packages/envoy/go.sum\.')"
+
+echo "case: a go.work binds the modules, and the list does not name it"
+# The release builds in workspace mode when a go.work is above packages/daemon, as the real one
+# is, and the go.work's own lines (a go or godebug line, a use, a replace) set what the binary
+# builds with, so a change to it alone must release one, as a change to a module's go.mod does.
+root=$(fixture gowork-unnamed)
+gowork "$root"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the go.work and its sum" "$(contains "$out" 'would release no legion: go.work, go.work.sum\.')"
+
+echo "case: a go.work and its sum the list names"
+root=$(fixture gowork-named)
+gowork "$root"
+release "$root" "$covering go.work go.work.sum"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says it compared the go.work" "$(contains "$out" 'and go.work and go.work.sum, which bind them')"
+
+echo "case: a go.work the list names, beside a go.work.sum it does not"
+root=$(fixture gowork-sum-unnamed)
+gowork "$root"
+release "$root" "$covering go.work"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the go.work.sum alone" "$(contains "$out" 'covers 1 of what the legion binary links .*: go.work.sum\.')"
+
+echo "case: a go.work outside the repository"
+# GOWORK may name one anywhere; a change to a file outside the repository is no commit the list
+# can name, so the check cannot hold it to the list and refuses it.
+root=$(fixture gowork-outside)
+mkdir -p "$work/gowork-outside-parent"
+printf 'go 1.22\n\nuse (\n\t%s/packages/daemon\n\t%s/packages/envoy\n)\n' "$root" "$root" > "$work/gowork-outside-parent/go.work"
+GOWORK="$work/gowork-outside-parent/go.work" run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says it is outside the repository" "$(contains "$out" 'is outside the repository')"
 
 echo "case: a directory covers every package below it"
 root=$(fixture directory)
@@ -139,6 +198,19 @@ run_check "$root"
 check "exits 1 with no --" "$(is "$status" 1)"
 check "says so" "$(contains "$out" 'LEGION_VERSION_ARGS has no `--`')"
 
+echo "case: a target list that names no legion target, or none at all"
+root=$(fixture no-targets)
+printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_check "$root"
+check "exits 1 with no legion target" "$(is "$status" 1)"
+check "says so" "$(contains "$out" 'go-release-targets.json lists no legion target, so the packages the legion binary links are unknown')"
+
+root=$(fixture no-target-list)
+rm "$root/.github/go-release-targets.json"
+run_check "$root"
+check "exits 1 with no target list" "$(is "$status" 1)"
+check "says it could not read it" "$(contains "$out" 'could not read the legion targets of .github/go-release-targets.json')"
+
 echo "case: a listing longer than one environment variable can hold"
 # 500 packages with 245-character directory names make a go list output of about 180 KiB, more
 # than the 128 KiB one environment variable holds: the check handed its listing over in one once,
@@ -164,6 +236,7 @@ printf 'package helper\n\nimport "github.com/example/daemon/internal/gone"\n\nfu
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says the packages are unknown" "$(contains "$out" 'go list -deps ./cmd/legion failed in packages/daemon, so the packages the legion binary links are unknown')"
+check "names the target it failed for" "$(contains "$out" 'are unknown (target linux/amd64)')"
 
 echo "case: go list printed no package of this repository"
 root=$(fixture outside)
