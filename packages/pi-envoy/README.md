@@ -208,7 +208,7 @@ session and no ask's (`ask.*`). It starts no turn: it goes as `nextTurn` with no
 the next turn reads it, whatever starts that turn. Oh My Pi keeps such a card only in memory while
 a turn streams, where that turn does not take it and a process that ends loses it, so the
 extension hands it only to a settled host (`hostSettled`). One that comes during a turn is held,
-and handed at the first settled check after the run or after an automatic compaction, at a
+and handed at the first settled check after the run or after a compaction, automatic or asked for, at a
 heartbeat that finds the host settled, or right before a card that starts a turn
 (`checkStoredCards`). The host writes it with no `message_end`, so its frame counts as shown once
 the session's store holds its entry, on any branch of the session, under SQL session storage as

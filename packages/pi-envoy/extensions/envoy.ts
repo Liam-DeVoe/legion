@@ -3368,7 +3368,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   // the compaction cut off are no longer in any request: the session's shown set becomes what its
   // new live context shows (`liveContext`), replaced rather than added to, so a later read or
   // delivery sends such a picture again. It is the set of the session that compacted, the id its
-  // own tool calls carry, which a task subagent's instance knows too.
+  // own tool calls carry, which a task subagent's instance knows too. A compaction the session
+  // asked for ends no run, so no run's end arms the stored-card check after it: its end arms the
+  // check while a stored card waits, as an automatic compaction's end does below, and a card held
+  // through it is handed once the host is next idle.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
@@ -3378,6 +3381,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       shown,
       transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
     );
+    if (unwritten.waitsOnStored()) checkStoredCards();
   });
   // An automatic compaction keeps the host busy, and one after a run's end can outlast every check
   // that end armed (`STORED_CHECKS`). So its end arms the check again while a stored card waits,

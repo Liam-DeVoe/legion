@@ -14330,6 +14330,31 @@ console.log(JSON.stringify(args));
       expect(fixture.deliveries[1]?.options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
     });
 
+    // A compaction the session asked for ends no run, so no run's end arms the check after it: the
+    // compaction's own end does, as an automatic compaction's end does.
+    test("held through a compaction the session asked for is handed once it ends", async () => {
+      let idle = false;
+      const { agent, context, delivered, fixture } = await bootDirectSession("low-manual-compaction", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-manual-compaction", { urgency: "low" }));
+      agent.push(daemonEnvelope("busy notice", "med-manual-compaction", { urgency: "med" }));
+      await delivered(1);
+      // The run ends, and the host is busy compacting through every check the end armed.
+      await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(1);
+
+      idle = true;
+      await fixture.handlers.get("session_compact")?.({}, context);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(2);
+      expect(String(fixture.deliveries[1]?.content)).toContain("held notice");
+      expect(fixture.deliveries[1]?.options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+    });
+
     test("is recorded shown once the session file holds its entry, and not before", async () => {
       const directory = mkdtempSync(join(tmpdir(), "envoy-low-card-"));
       const sessionFile = join(directory, "session.jsonl");
