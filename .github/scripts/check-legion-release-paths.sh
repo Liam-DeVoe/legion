@@ -19,8 +19,8 @@
 # would read the same as one that found nothing missing.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.sh
-# CI runs it in ci.yaml's lint job (after setup-go), which holds no credential, and its tests in
-# ci.yaml's test job.
+# CI runs it in ci.yaml's lint job (after setup-go and the go-notices restore, which it must not
+# run before), which holds no credential, and its tests in ci.yaml's test job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
