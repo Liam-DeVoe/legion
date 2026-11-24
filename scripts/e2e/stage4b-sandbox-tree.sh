@@ -4022,8 +4022,8 @@ begin child-release
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
 # Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (linger.go enqueues an
-# IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the six
-# role Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
+# IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the
+# Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
 # parked child is left to keep, and its next todo (child-reentered) makes the Sandbox afresh.
 # The two slots those children held are freed with them, and the line's first issue takes one:
 # tree 3, waiting since issue-independence. A child's slot going to a root is the cap counting
@@ -6538,8 +6538,8 @@ timeout_hook=limit_pending_blocked # clean_smoke_main leaves the hook empty
 # A look took up to 10 minutes from its task to its report in acceptance runs.
 on_tree "$tree1" until_true 600 "the tester's pending report on the first look of $tree1's production check" check_look_reported "$tree1" 1
 # root_parked: the root keeps no Sandbox, no pod and no disk between its looks. The pending report
-# suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the six
-# role Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
+# suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the
+# Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
 # any other stop of an issue does, so there is no mode left to read: the gone-read of
 # child1_released is the signal here too, the pod's disk inside it for the reason child2_parked
 # gives. root_running: a look's wake has made the Sandbox again, Running, with a pod. Each read is
