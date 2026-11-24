@@ -5,8 +5,9 @@ package api
 // This tree's check c-read-cost: no read this tree moves gets slower, and no event outruns its node.
 //
 // The test is TestNoReadThisTreeMovesGetsSlower at the end of this file; everything above it is
-// the corpus it writes, the two servers it boots and the six reads it measures, with the old
-// page's first load beside the tree read as a second old side of it. It carries the basebuild
+// the corpus it writes, the two servers it boots and the six reads it measures, with two more old
+// sides of the tree read beside it: the old page's first load, and that load with the page's
+// Verification, Plan and Decisions tabs opened after it. It carries the basebuild
 // tag, as cmd/dispatch's store_census_test.go does, because it builds the server of an earlier
 // commit (testbaseline.Build), which needs a checkout that holds that commit; no CI job builds
 // the tag. It stands in this package, outside cmd/dispatch, because its last step runs
@@ -50,19 +51,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The corpus, as c-read-cost states it: one issue of 2,000 blocks at a depth of 6, one person with
-// 10,000 delivered entries, one node with 500 backlinks, one requirement served by 50 checks, and
-// history unrelated to the actor at ten times the actor's own. The corpus states its own shape so
-// that a reading is reproducible, and every count is held to before anything is measured.
+// The corpus, as c-read-cost states it: one issue whose tree is read, of four documents
+// (readCostSpecBlocks), one person with 10,000 delivered entries, one node with 500 backlinks, one
+// requirement served by 50 checks, and history unrelated to the actor at ten times the actor's
+// own. The corpus states its own shape so that a reading is reproducible, and every count is held
+// to before anything is measured.
 const (
-	// readCostTreeBlocks and readCostTreeDepth are the issue whose tree is expanded: one document
-	// of that many blocks, whose deepest block sits that many list levels down.
+	// readCostTreeBlocks and readCostTreeDepth are the tree issue's tree document, tree.md, its one
+	// document that is no role document: that many blocks, whose deepest block sits that many list
+	// levels down.
 	readCostTreeBlocks = 2_000
 	readCostTreeDepth  = 6
 	// readCostEntries is what the reader's inbox holds, delivered as the three kinds of row the
@@ -86,6 +90,26 @@ const (
 	readCostOwnHistory        = readCostThreads + readCostConversation
 	readCostUnrelatedBlocks   = 2_000
 	readCostUnrelatedDocument = 10 * readCostOwnHistory / readCostUnrelatedBlocks
+)
+
+// The tree issue's role documents, comments and asks: the issue INFRA-1253's spec v213 holds its
+// skeleton read to after INFRA-840, whose plan is the largest role document of the census of every
+// INFRA issue (INFRA-5574's load measure, sections 1 and 1b): a spec of 62 blocks, a Verification
+// document of 106 and a plan of 2,786, as the blocks read lists them, 47 comments a person wrote
+// and 5 asks. Each role document is typed blocks alone - requirements, checks, plan tasks - each
+// holding the one paragraph its schema asks for, so the blocks read lists two blocks for each and
+// half of a document's blocks are typed: the most its size allows, since no tree read answers a
+// role document's prose (R2, R16). v213's Verification seeds typed role blocks alone too, but
+// counts 2,786 plan tasks, which with their paragraphs the blocks read would list as 5,572 blocks;
+// INFRA-840's own documents hold 14 requirements, 27 checks and 75 plan tasks.
+const (
+	readCostSpecBlocks         = 62
+	readCostVerificationBlocks = 106
+	readCostPlanBlocks         = 2_786
+	readCostTreeComments       = 47
+	readCostTreeAsks           = 5
+	// readCostTreeAsker is the agent session that opens the tree issue's asks.
+	readCostTreeAsker = "ses_read_cost_tree_asker"
 )
 
 // The sampling, as inbox_dismissed_scale_test.go takes it and widened to p90 and p99: one warm-up
@@ -485,16 +509,35 @@ func readCostVacuum(t *testing.T, conn *pgx.Conn, side string) {
 
 // readCostCorpus is what the reads address in the corpus.
 type readCostCorpus struct {
-	// treeIssue's spec, its primary and only document, is treeDocument, of readCostTreeBlocks
-	// blocks, which its tree expands; so the old page's first load (readCostOldFirstLoad) reads
-	// the same blocks as the tree read does.
-	treeIssue, treeDocument string
+	// treeIssue is the issue whose tree is read: its spec, its primary document, treeSpec, its
+	// Verification document treeVerification and its plan treePlan, of the sizes readCostSpecBlocks
+	// states, and its tree document, tree.md, treeDocument, its one document that is no role
+	// document, whose blocks read is the tree read's old side. The old page's first load
+	// (readCostOldFirstLoad) reads the spec, and its role tabs (readCostOldRoleTabs) the other two.
+	treeIssue, treeSpec, treeVerification, treePlan, treeDocument string
 	// coverageIssue's spec holds the requirement r1, which readCostChecks checks serve.
 	coverageIssue string
 	// citedIssue is the node readCostBacklinks comments cite.
 	citedIssue string
 	// askIssues are the issues assigned to the reader that their asks and threads stand on.
 	askIssues []string
+}
+
+// readCostRoleDocument is one role document of the tree issue as the shape holds it: its artifact
+// id, its slug, what it is, the typed block it is made of, and how many blocks the blocks read lists
+// for it, half of them that typed block.
+type readCostRoleDocument struct {
+	id, slug, name, typ string
+	blocks              int
+}
+
+// roleDocuments are the tree issue's three role documents.
+func (corpus *readCostCorpus) roleDocuments() []readCostRoleDocument {
+	return []readCostRoleDocument{
+		{corpus.treeSpec, "spec", "spec", "requirement", readCostSpecBlocks},
+		{corpus.treeVerification, "verification-md", "Verification document", "check", readCostVerificationBlocks},
+		{corpus.treePlan, "plan-md", "plan", "plan_task", readCostPlanBlocks},
+	}
 }
 
 // seedReadCost writes the corpus through the server's own API, as its own writers store it: no
@@ -511,8 +554,10 @@ func seedReadCost(t *testing.T, s *readCostServer) *readCostCorpus {
 		map[string]string{"key": readCostElsewise, "name": "History unrelated to the reader"}, http.StatusCreated)
 
 	corpus := &readCostCorpus{}
-	corpus.treeIssue = createReadCostIssue(t, s, readCostProject, "The issue whose tree is expanded", readCostTreeText(), readCostWriter)
-	corpus.treeDocument = readCostSpecOf(t, s, corpus.treeIssue)
+	corpus.treeIssue = createReadCostIssue(t, s, readCostProject, "The issue whose tree is expanded",
+		readCostRoleText("requirement", "r", readCostSpecBlocks/2, func(int) string { return "" }), readCostWriter)
+	corpus.treeSpec = readCostSpecOf(t, s, corpus.treeIssue)
+	seedReadCostTreeIssue(t, s, corpus)
 
 	corpus.coverageIssue = createReadCostIssue(t, s, readCostProject, "The requirement fifty checks serve",
 		":::requirement{#r1}\nOne requirement that fifty checks serve.\n:::\n", readCostWriter)
@@ -531,6 +576,34 @@ func seedReadCost(t *testing.T, s *readCostServer) *readCostCorpus {
 	seedReadCostUnrelated(t, s)
 	t.Logf("seeded the corpus through %s in %s", s.name, time.Since(started).Round(time.Millisecond))
 	return corpus
+}
+
+// seedReadCostTreeIssue writes the rest of the tree issue as its writer: its Verification document
+// and its plan, each check and each plan task serving a requirement of the spec, the requirements
+// in turn; its tree document, tree.md; its comments; and the asks an agent session opens on it.
+func seedReadCostTreeIssue(t *testing.T, s *readCostServer, corpus *readCostCorpus) {
+	t.Helper()
+	issue := corpus.treeIssue
+	serves := func(index int) string {
+		return fmt.Sprintf(` serves="dispatch://%s/spec#b-r%d"`, issue, index%(readCostSpecBlocks/2)+1)
+	}
+	corpus.treeVerification = uploadReadCostDocument(t, s, issue, "verification.md", readCostRoleText("check", "c", readCostVerificationBlocks/2,
+		func(index int) string { return serves(index) + ` surface="cli" run="go test ./..."` }), readCostWriter)
+	corpus.treePlan = uploadReadCostDocument(t, s, issue, "plan.md", readCostRoleText("plan_task", "t", readCostPlanBlocks/2, serves), readCostWriter)
+	corpus.treeDocument = uploadReadCostDocument(t, s, issue, "tree.md", readCostTreeText(), readCostWriter)
+	readCostInParallel(t, "comments on "+issue, readCostTreeComments, func(index int) error {
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue+"/comments", readCostWriter, map[string]string{
+			"body": fmt.Sprintf("Comment %d of the tree issue's conversation.", index),
+		}, http.StatusCreated)
+		return err
+	})
+	readCostInParallel(t, "asks on "+issue, readCostTreeAsks, func(index int) error {
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue+"/asks", "", map[string]any{
+			"question": fmt.Sprintf("Which way does question %d of the tree issue go?", index),
+			"actor":    map[string]string{"kind": "session", "id": readCostTreeAsker},
+		}, http.StatusCreated)
+		return err
+	})
 }
 
 // seedReadCostInbox writes the reader's readCostEntries delivered entries: readCostAsks open asks
@@ -702,7 +775,7 @@ func readCostInParallel(t *testing.T, what string, jobs int, job func(index int)
 	t.Logf("wrote %d %s in %s", jobs, what, time.Since(started).Round(time.Millisecond))
 }
 
-// readCostTreeText is the tree issue's spec, which its tree expands: a heading, a spine of bullet
+// readCostTreeText is the tree issue's tree document, tree.md: a heading, a spine of bullet
 // lists nesting readCostTreeDepth levels deep, a paragraph, and a flat list filling it out to
 // readCostTreeBlocks blocks. Each level of the spine is a list block and the paragraph of its one
 // item, and the flat list is one block and each of its items one more, so the count is arithmetic;
@@ -719,6 +792,19 @@ func readCostTreeText() string {
 	text.WriteString("\nThe items below fill the tree out.\n\n")
 	for index := range readCostTreeBlocks - 3 - 2*readCostTreeDepth {
 		fmt.Fprintf(&text, "- item %d of the tree\n", index)
+	}
+	return text.String()
+}
+
+// readCostRoleText is a role document of the tree issue made of count typed blocks of typ alone,
+// each opened with its #id, prefix and its number, and the attributes attributes gives it, and
+// holding one paragraph, so the blocks read lists two blocks for each. Its words write no issue key
+// and no #id, so the old page's references of the document read nothing for it
+// (features/refs/useTextReferences.ts:73-84 at the commit BASELINE_SHA names).
+func readCostRoleText(typ, prefix string, count int, attributes func(index int) string) string {
+	var text strings.Builder
+	for index := range count {
+		fmt.Fprintf(&text, ":::%s{#%s%d%s}\nThe %s numbered %d of the tree issue.\n:::\n\n", typ, prefix, index+1, attributes(index), typ, index+1)
 	}
 	return text.String()
 }
@@ -894,10 +980,7 @@ func (shape *readCostShape) require(t *testing.T, side string) {
 func requireReadCostOldShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) {
 	t.Helper()
 	shape := &readCostShape{}
-	var blocks []readCostBlock
-	s.read(t, "read the tree's blocks", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &blocks)
-	shape.hold(t, s.name, "blocks of the tree's document", len(blocks), readCostTreeBlocks, true)
-	shape.hold(t, s.name, "levels of the tree's deepest block", readCostDepth(t, s, corpus.treeDocument, blocks), readCostTreeDepth, false)
+	requireReadCostTreeIssueShape(t, s, corpus, shape)
 
 	var asks []json.RawMessage
 	s.read(t, "read the asks waiting on the reader", "/api/v1/inbox?assignee=me", &asks)
@@ -916,33 +999,16 @@ func requireReadCostOldShape(t *testing.T, s *readCostServer, corpus *readCostCo
 }
 
 // requireReadCostNewShape reads the corpus back through this head's own reads, and answers whether
-// this head serves the one inbox read: where it answers 404 the read is not at this head, which
+// this head serves the one inbox read, and whether its tree read is the skeleton read
+// (requireReadCostTreeReadShape): where the inbox read answers 404 it is not at this head, which
 // fails the run naming the route, and every other read is still measured.
-func requireReadCostNewShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) bool {
+func requireReadCostNewShape(t *testing.T, s *readCostServer, corpus *readCostCorpus) (served, skeleton bool) {
 	t.Helper()
 	shape := &readCostShape{}
-	var tree struct {
-		Nodes []struct {
-			Kind string `json:"kind"`
-		} `json:"nodes"`
-		Cursor *string `json:"cursor"`
-	}
-	s.read(t, "read the tree", "/api/v1/issues/"+corpus.treeIssue+"/tree", &tree)
-	blocks := 0
-	for _, node := range tree.Nodes {
-		if node.Kind == refs.BlockNodeKind {
-			blocks++
-		}
-	}
-	if tree.Cursor != nil {
-		shape.failed = append(shape.failed, fmt.Sprintf("the tree read answered a cursor (%s): the tree does not fit one page", *tree.Cursor))
-	}
-	shape.hold(t, s.name, "block nodes of the tree read", blocks, readCostTreeBlocks, true)
-	var documentBlocks []readCostBlock
-	s.read(t, "read the tree's blocks", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &documentBlocks)
-	shape.hold(t, s.name, "levels of the tree's deepest block", readCostDepth(t, s, corpus.treeDocument, documentBlocks), readCostTreeDepth, false)
+	requireReadCostTreeIssueShape(t, s, corpus, shape)
+	skeleton = requireReadCostTreeReadShape(t, s, corpus, shape)
 
-	served := true
+	served = true
 	inbox, err := s.send(http.MethodGet, "/api/v1/me/inbox?state=inbox", readCostReader, nil)
 	switch {
 	case err != nil:
@@ -981,7 +1047,7 @@ func requireReadCostNewShape(t *testing.T, s *readCostServer, corpus *readCostCo
 
 	requireReadCostSharedShape(t, s, corpus, shape)
 	shape.require(t, s.name)
-	return served
+	return served, skeleton
 }
 
 // requireReadCostSharedShape holds what both sides read through the same routes: the backlinks of
@@ -1022,6 +1088,140 @@ func requireReadCostSharedShape(t *testing.T, s *readCostServer, corpus *readCos
 	shape.hold(t, s.name, "matches of the reader's search", search.Total, 1, false)
 }
 
+// requireReadCostTreeIssueShape holds the tree issue to its shape through reads both builds serve:
+// the blocks the blocks read lists for each of its role documents and how many of them are the
+// document's typed block, the blocks of tree.md and how many levels down its deepest block stands,
+// and the tree issue's comments and asks.
+func requireReadCostTreeIssueShape(t *testing.T, s *readCostServer, corpus *readCostCorpus, shape *readCostShape) {
+	t.Helper()
+	for _, role := range corpus.roleDocuments() {
+		var blocks []struct {
+			Type string `json:"type"`
+		}
+		s.read(t, "read the blocks of the tree issue's "+role.name, "/api/v1/artifacts/"+role.id+"/blocks", &blocks)
+		typed := 0
+		for _, block := range blocks {
+			if block.Type == role.typ {
+				typed++
+			}
+		}
+		shape.hold(t, s.name, "blocks of the tree issue's "+role.name, len(blocks), role.blocks, true)
+		shape.hold(t, s.name, role.typ+" blocks of the tree issue's "+role.name, typed, role.blocks/2, true)
+	}
+	var blocks []readCostBlock
+	s.read(t, "read the blocks of tree.md", "/api/v1/artifacts/"+corpus.treeDocument+"/blocks", &blocks)
+	shape.hold(t, s.name, "blocks of the tree issue's tree.md", len(blocks), readCostTreeBlocks, true)
+	shape.hold(t, s.name, "levels of tree.md's deepest block", readCostDepth(t, s, corpus.treeDocument, blocks), readCostTreeDepth, false)
+	var comments, asks []json.RawMessage
+	s.read(t, "read the tree issue's comments", "/api/v1/issues/"+corpus.treeIssue+"/comments", &comments)
+	s.read(t, "read the tree issue's asks", "/api/v1/issues/"+corpus.treeIssue+"/asks?state=all", &asks)
+	shape.hold(t, s.name, "comments on the tree issue", len(comments), readCostTreeComments, true)
+	shape.hold(t, s.name, "asks on the tree issue", len(asks), readCostTreeAsks, true)
+}
+
+// readCostDocumentNode is one entry of the skeleton read's document_nodes: a document of the issue,
+// by its artifact id and its slug, and the blocks the blocks read lists for it.
+type readCostDocumentNode struct {
+	ArtifactID string `json:"artifact_id"`
+	Slug       string `json:"slug"`
+	BlockCount int    `json:"block_count"`
+}
+
+// requireReadCostTreeReadShape reads the tree issue's tree read on this head, prints what it
+// answers beside what the skeleton read of INFRA-1253's spec v213 answers for the same issue, and
+// holds it to what this head's read answers, answering whether that is the skeleton read.
+//
+// The skeleton read, which pull request #4180 builds, answers the typed blocks of the issue's role
+// documents and no block of its other documents, its newest 200 comments with comments_before null
+// where no older one remains, its asks, and document_nodes: an entry for each document, with the
+// blocks the blocks read lists for it. The read it replaces, this head's while the answer holds no
+// document_nodes, answers the role documents' typed blocks and every block of the other documents
+// (issueTreeBuilder.excluded). So on either read the typed blocks of each type are held, and one
+// page; the blocks of tree.md are held to every one on the older read and none on the skeleton
+// read; and its comments, its asks, comments_before and document_nodes are held on the skeleton
+// read alone, and printed on the older read.
+func requireReadCostTreeReadShape(t *testing.T, s *readCostServer, corpus *readCostCorpus, shape *readCostShape) bool {
+	t.Helper()
+	var tree struct {
+		Nodes []struct {
+			Kind     string `json:"kind"`
+			Supertag string `json:"supertag"`
+		} `json:"nodes"`
+		Cursor         *string                 `json:"cursor"`
+		CommentsBefore *string                 `json:"comments_before"`
+		DocumentNodes  *[]readCostDocumentNode `json:"document_nodes"`
+	}
+	s.read(t, "read the tree", "/api/v1/issues/"+corpus.treeIssue+"/tree", &tree)
+	roles := corpus.roleDocuments()
+	typed := map[string]int{}
+	others, comments, asks := 0, 0, 0
+	for _, node := range tree.Nodes {
+		switch {
+		case node.Kind == refs.BlockNodeKind && slices.ContainsFunc(roles, func(role readCostRoleDocument) bool { return role.typ == node.Supertag }):
+			typed[node.Supertag]++
+		case node.Kind == refs.BlockNodeKind:
+			others++
+		case node.Kind == graphstore.KindComment:
+			comments++
+		case node.Kind == graphstore.KindAsk:
+			asks++
+		}
+	}
+	documents := append(slices.Clone(roles), readCostRoleDocument{id: corpus.treeDocument, slug: "tree-md", name: "tree.md", blocks: readCostTreeBlocks})
+	var answeredTyped, wantTyped, wantDocuments []string
+	for _, role := range roles {
+		answeredTyped = append(answeredTyped, fmt.Sprintf("%d %s", typed[role.typ], role.typ))
+		wantTyped = append(wantTyped, fmt.Sprintf("%d %s", role.blocks/2, role.typ))
+	}
+	for _, document := range documents {
+		wantDocuments = append(wantDocuments, fmt.Sprintf("%s %d", document.slug, document.blocks))
+	}
+	answeredDocuments := "absent"
+	if tree.DocumentNodes != nil {
+		var entries []string
+		for _, node := range *tree.DocumentNodes {
+			entries = append(entries, fmt.Sprintf("%s %d", cmp.Or(node.Slug, node.ArtifactID), node.BlockCount))
+		}
+		answeredDocuments = fmt.Sprintf("of %d entries (%s)", len(entries), strings.Join(entries, ", "))
+	}
+	before := "null or absent"
+	if tree.CommentsBefore != nil {
+		before = *tree.CommentsBefore
+	}
+	t.Logf("c-read-cost: %s's tree read of %s answers typed blocks of its role documents (%s), %d blocks of tree.md, %d comments, "+
+		"%d asks, comments_before %s and document_nodes %s; the skeleton read of INFRA-1253's spec v213 answers typed blocks (%s), "+
+		"no block of tree.md, %d comments, %d asks, comments_before null and document_nodes of %d entries (%s)", s.name, corpus.treeIssue,
+		strings.Join(answeredTyped, ", "), others, comments, asks, before, answeredDocuments, strings.Join(wantTyped, ", "),
+		readCostTreeComments, readCostTreeAsks, len(documents), strings.Join(wantDocuments, ", "))
+	for _, role := range roles {
+		shape.hold(t, s.name, role.typ+" blocks of the "+role.name+" the tree read answers", typed[role.typ], role.blocks/2, true)
+	}
+	if tree.Cursor != nil {
+		shape.failed = append(shape.failed, fmt.Sprintf("the tree read answered a cursor (%s): the tree does not fit one page", *tree.Cursor))
+	}
+	if tree.DocumentNodes == nil {
+		shape.hold(t, s.name, "blocks of tree.md the tree read answers, which the skeleton read leaves out", others, readCostTreeBlocks, true)
+		return false
+	}
+	shape.hold(t, s.name, "blocks of tree.md the skeleton read answers", others, 0, true)
+	shape.hold(t, s.name, "comments the skeleton read answers", comments, readCostTreeComments, true)
+	shape.hold(t, s.name, "asks the skeleton read answers", asks, readCostTreeAsks, true)
+	if tree.CommentsBefore != nil {
+		shape.failed = append(shape.failed, fmt.Sprintf("the skeleton read answered comments_before %s, though no comment is older than its page", *tree.CommentsBefore))
+	}
+	shape.hold(t, s.name, "entries of the skeleton read's document_nodes", len(*tree.DocumentNodes), len(documents), true)
+	for _, document := range documents {
+		count := -1
+		for _, node := range *tree.DocumentNodes {
+			if node.ArtifactID == document.id || node.Slug == document.slug {
+				count = node.BlockCount
+			}
+		}
+		shape.hold(t, s.name, "block_count the skeleton read's document_nodes gives "+document.name, count, document.blocks, true)
+	}
+	return true
+}
+
 // ───── the six reads ──────────────────────────────────────────────────────
 
 // readCostRead is one read this tree moves: what the page reads now (new), what it read before
@@ -1029,11 +1229,15 @@ func requireReadCostSharedShape(t *testing.T, s *readCostServer, corpus *readCos
 // and answers their summed time, what each side's requests are, for the table, and the arm of the
 // check it stands in (readCostArms). A read whose against names another read is a second old side
 // of that read: it has no new side of its own, its row sets it beside the new side of the read
-// against names, it gates nothing, and note is what its row's last cell says of it.
+// against names, it gates nothing, and note is what its row's last cell says of it. apart, where
+// set, is the reads such a side leaves out of its readings, which its old side takes apart after
+// them (readCostApart), and apartNote what they are.
 type readCostRead struct {
 	name, arm, oldRoutes, newRoutes string
 	old, new                        func(s *readCostServer) (time.Duration, error)
 	against, note                   string
+	apart                           func(s *readCostServer) (time.Duration, error)
+	apartNote                       string
 }
 
 // readCostGets times the GETs of paths as the reader, one after another, and answers their summed
@@ -1054,8 +1258,8 @@ func readCostGets(paths ...string) func(s *readCostServer) (time.Duration, error
 }
 
 // readCostArms are the arms of the check by the names READ_COST_READS takes, each the arm of one
-// read of readCostReads, but for the tree arm, which holds the tree read and the old page's first
-// load beside it.
+// read of readCostReads, but for the tree arm, which holds the tree read and beside it the old
+// page's first load, alone and with its role tabs.
 var readCostArms = []string{"inbox", "tree", "coverage", "chain", "references", "search"}
 
 // readCostArmsVariable names the arms a run measures, for diagnosis (readCostArmFilter).
@@ -1100,11 +1304,47 @@ func readCostChosen(t *testing.T, reads []readCostRead, arms map[string]bool) []
 	})
 }
 
-// readCostFirstLoad is the old issue page's first load of the tree issue (readCostOldFirstLoad):
-// the paths one load GETs, one after another, the routes they are, and what its row says of it.
-type readCostFirstLoad struct {
+// readCostOldPage is one load of the old issue page as a second old side of the tree read takes
+// it: the paths one load GETs, one after another, the routes they are, and what its row says of
+// it; and the paths of the reads it leaves out of its readings, which its old side takes apart
+// (readCostApart), with what they are.
+type readCostOldPage struct {
 	paths, routes []string
 	note          string
+	apart         []string
+	apartNote     string
+}
+
+// readCostRoute is one read of the old page: the route it is, as a row names it, and the path a
+// reading of it GETs.
+type readCostRoute struct {
+	route, path string
+}
+
+// sendOnce sends each of reads once on s as the reader, before any reading of the page, and adds
+// each that answers 200 to the page's reads. One that answers 404 is one the old build does not
+// serve for the tree issue, which it says and leaves out of every reading of what, answering its
+// route; any other answer fails the run.
+func (page *readCostOldPage) sendOnce(t *testing.T, s *readCostServer, what string, reads []readCostRoute) []string {
+	t.Helper()
+	var unserved []string
+	for _, read := range reads {
+		answer, err := s.send(http.MethodGet, read.path, readCostReader, nil)
+		switch {
+		case err != nil:
+			t.Fatalf("c-read-cost: %s: %v", what, err)
+		case answer.status == http.StatusNotFound:
+			unserved = append(unserved, read.route)
+			t.Logf("c-read-cost: %s answers GET %s with %s: the old build does not serve this read of the tree issue, so every "+
+				"reading of %s leaves it out", s.name, read.path, answer, what)
+		case answer.status != http.StatusOK:
+			t.Fatalf("c-read-cost: %s: GET %s on %s answered %s", what, read.path, s.name, answer)
+		default:
+			page.paths = append(page.paths, read.path)
+			page.routes = append(page.routes, read.route)
+		}
+	}
+	return unserved
 }
 
 // readCostIssueKey is an issue key a text writes, bare or in a dispatch:// address.
@@ -1150,19 +1390,18 @@ var readCostIssueKey = regexp.MustCompile(`\b[A-Z][A-Z0-9]*-[0-9]+\b`)
 // reads that are not about the issue (/auth/whoami, /projects, /priorities, /agents,
 // /projects/{key}/architecture-sources, the block schema), the person-only reads production
 // answers an agent with 403 (/me/state, /inbox, /me/documents/{id}/read,
-// /issues/{key}/subscribers and the shell's counts), and the lazy reads of the other tabs. Each
-// read is sent once here first: one that answers 404 is one the old build does not serve for this
-// issue, which is said and left out of every reading; any other answer but 200 fails the run.
-func readCostOldFirstLoad(t *testing.T, s *readCostServer, corpus *readCostCorpus) readCostFirstLoad {
+// /issues/{key}/subscribers and the shell's counts), and the lazy reads of the other tabs, of
+// which readCostOldRoleTabs adds the role tabs'. Each read is sent once here first (sendOnce).
+func readCostOldFirstLoad(t *testing.T, s *readCostServer, corpus *readCostCorpus) readCostOldPage {
 	t.Helper()
-	key, spec := corpus.treeIssue, corpus.treeDocument
+	key, spec := corpus.treeIssue, corpus.treeSpec
 	var text struct {
 		Markdown string `json:"markdown"`
 	}
 	s.read(t, "read the tree issue's spec", "/api/v1/artifacts/"+spec+"/text", &text)
 	var blocks []readCostBlock
 	s.read(t, "read the blocks of the tree issue's spec", "/api/v1/artifacts/"+spec+"/blocks", &blocks)
-	reads := []struct{ route, path string }{
+	reads := []readCostRoute{
 		{"/api/v1/issues/{key}", "/api/v1/issues/" + key},
 		{"/api/v1/issues/{key}/comments", "/api/v1/issues/" + key + "/comments"},
 		{"/api/v1/issues/{key}/asks?state=all", "/api/v1/issues/" + key + "/asks?state=all"},
@@ -1178,29 +1417,12 @@ func readCostOldFirstLoad(t *testing.T, s *readCostServer, corpus *readCostCorpu
 	for _, issue := range readCostIssueKey.FindAllString(text.Markdown, -1) {
 		if !slices.Contains(cited, issue) {
 			cited = append(cited, issue)
-			reads = append(reads, struct{ route, path string }{"/api/v1/issues/{cited}/summary", "/api/v1/issues/" + issue + "/summary"})
+			reads = append(reads, readCostRoute{"/api/v1/issues/{cited}/summary", "/api/v1/issues/" + issue + "/summary"})
 		}
 	}
-	var load readCostFirstLoad
-	var unserved []string
-	for _, read := range reads {
-		answer, err := s.send(http.MethodGet, read.path, readCostReader, nil)
-		switch {
-		case err != nil:
-			t.Fatalf("c-read-cost: the old page's first load of %s: %v", key, err)
-		case answer.status == http.StatusNotFound:
-			unserved = append(unserved, read.route)
-			t.Logf("c-read-cost: %s answers GET %s with %s: the old build does not serve this read of the tree issue, so every "+
-				"reading of the old page's first load leaves it out", s.name, read.path, answer)
-		case answer.status != http.StatusOK:
-			t.Fatalf("c-read-cost: the old page's first load of %s: GET %s on %s answered %s", key, read.path, s.name, answer)
-		default:
-			load.paths = append(load.paths, read.path)
-			load.routes = append(load.routes, read.route)
-		}
-	}
-	load.note = fmt.Sprintf("the spec, the tree issue's one document, holds %d blocks and cites %d issues; a load is %d reads",
-		len(blocks), len(cited), len(load.paths))
+	var load readCostOldPage
+	unserved := load.sendOnce(t, s, "the old page's first load of "+key, reads)
+	load.note = fmt.Sprintf("the spec holds %d blocks and cites %d issues; a load is %d reads", len(blocks), len(cited), len(load.paths))
 	if len(unserved) > 0 {
 		load.note += ", leaving out what the old build does not serve: " + strings.Join(unserved, ", ")
 	}
@@ -1209,18 +1431,172 @@ func readCostOldFirstLoad(t *testing.T, s *readCostServer, corpus *readCostCorpu
 	return load
 }
 
-// readCostReads are the six reads, and beside the tree read the old page's first load as a second
-// old side of it. Where the route stands at both commits - the coverage read, the references
-// panel with the header's backlink count, and search - each side is that route. The inbox's new
-// read replaces three, which a reading of the release before makes one after another, as its page
-// did. The tree read replaces the reads of an issue's documents, which for this issue is its one
-// document's blocks, and the old page's first load (readCostOldFirstLoad) is every read that page
-// made to draw the same issue; it gates nothing yet. The chain read replaces nothing, so it
+// readCostOldRoleTabs is the old issue page's first load of the tree issue (firstLoad) with its
+// Verification, Plan and Decisions tabs then opened, on the release before s: every read of the
+// first load, then the reads each tab adds, in the order the tabs stand. Each is cited at the
+// commit BASELINE_SHA names, under packages/dispatch/web/src. The Verification and Plan tabs are
+// features/issue/IssuePage.tsx:493-512, each a RoleDocumentPanel (:164-211) that mounts its tab
+// and, where the issue holds the document, the document through ArtifactDocument (:197-206) and
+// ProofDocument (features/artifacts/ArtifactDocument.tsx:173-185). Each finds its document by the
+// issue read's verification_artifact_id or plan_artifact_id (features/issue/useIssueDetail.ts:21-22,
+// api/issue-cache.ts:17-29), and with none draws an empty state and reads nothing
+// (features/verification/VerificationTab.tsx:261-271, features/plan/PlanTab.tsx:146-156). The
+// Decisions tab is features/issue/IssuePage.tsx:580-594.
+//
+//   - Verification: GET /api/v1/issues/{key}/results, features/verification/VerificationTab.tsx:209-210
+//     (issueResultsQuery, api/queries.ts:111-115; api/client.ts:1104-1105); then the document's
+//     GET /api/v1/artifacts/{id}, /text and /blocks, as the first load reads the spec's
+//     (features/doc/ProofDocument.tsx:313-317,362-365).
+//   - Plan: the plan's GET /api/v1/artifacts/{id}, /text and /blocks, the same lines; its task
+//     list reads the blocks under the same key (features/plan/PlanTab.tsx:74-77), so once.
+//   - Decisions: GET /api/v1/issues/{key}/decisions (features/issue/DecisionsPanel.tsx:375-378),
+//     under the key the first load's decisions read has (features/doc/spec-marks.ts:30-34), so the
+//     tab sends no read of its own while that answer is fresh (staleTime 30 s, main.tsx:29).
+//
+// Neither role tab sends a read the first load sent: the document's asks are the issue's
+// (features/doc/ProofDocument.tsx:371-375), and so are its margin's comments
+// (features/margin/useMarginItems.ts:334-345). Neither sends GET /api/v1/issues/{key}/comments?artifact={id}:
+// ArtifactDocument reads it only where the address names a comment
+// (features/artifacts/ArtifactDocument.tsx:112-122), and the panel names none
+// (features/issue/IssuePage.tsx:198-205). A check's or a task's Referenced-by panel reads nothing
+// until it is opened (features/refs/ReferencedBy.tsx:329-345), the plan's approval chip reads its
+// reviews only in its dialog (features/doc/ApprovalChip.tsx:66-77), and a document's references
+// (features/doc/ProofDocument.tsx:1167) read an issue summary for each bare key and the question
+// map for a #id its words write (features/refs/useTextReferences.ts:73-84), which the corpus's
+// role documents do not write.
+//
+// The Plan tab sends one read more for each task it lists, which every reading leaves out and the
+// old side takes apart after its readings (readCostApart): GET /api/v1/references?to={block} for
+// each plan_task and each block the tasks' serves and needs name (readCostPlanTaskReads). Every
+// read is sent once here first (sendOnce); a tab whose document the issue does not hold reads none
+// of it, which is said and named in the row as absent.
+func readCostOldRoleTabs(t *testing.T, s *readCostServer, corpus *readCostCorpus, firstLoad readCostOldPage) readCostOldPage {
+	t.Helper()
+	key := corpus.treeIssue
+	var issue struct {
+		VerificationArtifactID string `json:"verification_artifact_id"`
+		PlanArtifactID         string `json:"plan_artifact_id"`
+	}
+	s.read(t, "read the tree issue's role documents", "/api/v1/issues/"+key, &issue)
+	documentReads := func(name, id string) []readCostRoute {
+		return []readCostRoute{
+			{"/api/v1/artifacts/{" + name + "}", "/api/v1/artifacts/" + id},
+			{"/api/v1/artifacts/{" + name + "}/text", "/api/v1/artifacts/" + id + "/text"},
+			{"/api/v1/artifacts/{" + name + "}/blocks", "/api/v1/artifacts/" + id + "/blocks"},
+		}
+	}
+	var reads, tasks []readCostRoute
+	var absent []string
+	if issue.VerificationArtifactID == "" {
+		absent = append(absent, "the Verification tab's /api/v1/issues/{key}/results and its document's three reads, since the issue holds no Verification document")
+	} else {
+		reads = append(reads, readCostRoute{"/api/v1/issues/{key}/results", "/api/v1/issues/" + key + "/results"})
+		reads = append(reads, documentReads("verification", issue.VerificationArtifactID)...)
+	}
+	if issue.PlanArtifactID == "" {
+		absent = append(absent, "the Plan tab's three reads of its document, since the issue holds no plan")
+	} else {
+		reads = append(reads, documentReads("plan", issue.PlanArtifactID)...)
+		tasks = readCostPlanTaskReads(t, s, key, issue.PlanArtifactID)
+	}
+	decisions := "the Decisions tab adds no read: it draws from the first load's /api/v1/issues/{key}/decisions"
+	if !slices.Contains(firstLoad.routes, "/api/v1/issues/{key}/decisions") {
+		decisions = "the Decisions tab adds no read"
+		absent = append(absent, "the Decisions tab's /api/v1/issues/{key}/decisions, which the old build does not serve")
+	}
+	what := "the old page's first load of " + key + " and its role tabs"
+	tabs := readCostOldPage{paths: slices.Clone(firstLoad.paths), routes: slices.Clone(firstLoad.routes)}
+	absent = append(absent, tabs.sendOnce(t, s, what, reads)...)
+	var apart readCostOldPage
+	if unserved := apart.sendOnce(t, s, "the Plan tab's reads of the tasks of "+key, tasks); len(unserved) > 0 {
+		absent = append(absent, fmt.Sprintf("%d of the Plan tab's reads of its tasks", len(unserved)))
+	}
+	tabs.apart = apart.paths
+	leftOut := "none"
+	if len(tabs.apart) > 0 {
+		tabs.apartNote = fmt.Sprintf("the %d GET /api/v1/references?to={block} the Plan tab sends, one for each plan_task it lists and each "+
+			"block their serves and needs name (features/plan/PlanTab.tsx:79-99,124-128, BlockLink :25-27; "+
+			"features/refs/reference-target.ts:450-453), which its readings leave out", len(tabs.apart))
+		leftOut = tabs.apartNote + ", taken apart on the line below"
+	}
+	if len(absent) == 0 {
+		absent = append(absent, "none")
+	}
+	tabs.note = fmt.Sprintf("a load is the first load's %d reads and the role tabs' %d, %d reads: %s; %s; left out of every reading: %s; "+
+		"absent: %s", len(firstLoad.paths), len(tabs.paths)-len(firstLoad.paths), len(tabs.paths), strings.Join(tabs.routes, " + "),
+		decisions, leftOut, strings.Join(absent, "; "))
+	t.Logf("c-read-cost: one reading of %s on %s is these %d reads, one after another: %s; %s", what, s.name, len(tabs.paths),
+		strings.Join(tabs.paths, " + "), tabs.note)
+	return tabs
+}
+
+// readCostPlanTaskReads is what the old Plan tab reads for the tasks it lists: GET
+// /api/v1/references?to={block} for each block its tasks name, each block once, as its query key
+// is its reference (features/refs/reference-target.ts:144-148,156-161). Its task list takes the
+// plan's plan_task blocks (features/plan/PlanTab.tsx:79-99) and draws each (:124-128) as a Task
+// (:53-62), whose BlockLink (:25-27, at :56) reads the task's own block through useReferenceTarget
+// and useReferenceData (features/refs/reference-target.ts:546-552,450-453; api/client.ts:1527-1531);
+// the task's reference is dispatch://{key}/artifact/{slug}#b-{id} (PlanTab.tsx:83-93;
+// features/refs/routes.ts:715-719, features/refs/block-reference.ts:103-105). Its Pointers draw a
+// BlockLink for each block its serves and needs name (PlanTab.tsx:16-21,46,57-58), each read the
+// same way.
+func readCostPlanTaskReads(t *testing.T, s *readCostServer, key, plan string) []readCostRoute {
+	t.Helper()
+	var artifact struct {
+		Slug string `json:"slug"`
+	}
+	s.read(t, "read the tree issue's plan", "/api/v1/artifacts/"+plan, &artifact)
+	var blocks []struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Attributes []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"attributes"`
+	}
+	s.read(t, "read the blocks of the tree issue's plan", "/api/v1/artifacts/"+plan+"/blocks", &blocks)
+	var reads []readCostRoute
+	named := map[string]bool{}
+	read := func(reference string) {
+		if !named[reference] {
+			named[reference] = true
+			reads = append(reads, readCostRoute{"/api/v1/references?to={block}", "/api/v1/references?to=" + url.QueryEscape(reference)})
+		}
+	}
+	for _, block := range blocks {
+		if block.Type != "plan_task" {
+			continue
+		}
+		read("dispatch://" + key + "/artifact/" + url.PathEscape(artifact.Slug) + "#b-" + block.ID)
+		for _, attribute := range block.Attributes {
+			if attribute.Name == "serves" || attribute.Name == "needs" {
+				for _, pointer := range strings.Fields(attribute.Value) {
+					read(pointer)
+				}
+			}
+		}
+	}
+	return reads
+}
+
+// readCostReads are the six reads, and beside the tree read two more old sides of it. Where the
+// route stands at both commits - the coverage read, the references panel with the header's
+// backlink count, and search - each side is that route. The inbox's new read replaces three, which
+// a reading of the release before makes one after another, as its page did. The tree read replaces
+// the reads of an issue's documents, held to the blocks read of the issue's tree document,
+// tree.md; the old page's first load (readCostOldFirstLoad) is every read that page made to draw
+// the same issue, and with its role tabs (readCostOldRoleTabs) every read it made to show the four
+// role documents the tree read answers at once, but the reads it makes of the plan's tasks, which
+// the old side takes apart; neither gates anything yet. The chain read replaces nothing, so it
 // carries a baseline of its own (readCostChainBound).
-func readCostReads(corpus *readCostCorpus, firstLoad readCostFirstLoad) []readCostRead {
+func readCostReads(corpus *readCostCorpus, firstLoad, roleTabs readCostOldPage) []readCostRead {
 	cited := "/api/v1/references?to=" + url.QueryEscape("dispatch://"+corpus.citedIssue)
 	inboxOld := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox",
 		"/api/v1/agents/" + readCostConverse + "/messages"}
+	var tasks func(s *readCostServer) (time.Duration, error)
+	if len(roleTabs.apart) > 0 {
+		tasks = readCostGets(roleTabs.apart...)
+	}
 	return []readCostRead{
 		{
 			name: "inbox", arm: "inbox", oldRoutes: strings.Join(inboxOld, " + "), newRoutes: "/api/v1/me/inbox?state=inbox",
@@ -1228,7 +1604,7 @@ func readCostReads(corpus *readCostCorpus, firstLoad readCostFirstLoad) []readCo
 		},
 		{
 			name: "issue tree expansion", arm: "tree",
-			oldRoutes: "/api/v1/artifacts/{tree document}/blocks", newRoutes: "/api/v1/issues/{tree issue}/tree",
+			oldRoutes: "/api/v1/artifacts/{tree.md}/blocks", newRoutes: "/api/v1/issues/{tree issue}/tree",
 			old: readCostGets("/api/v1/artifacts/" + corpus.treeDocument + "/blocks"),
 			new: readCostGets("/api/v1/issues/" + corpus.treeIssue + "/tree"),
 		},
@@ -1236,6 +1612,12 @@ func readCostReads(corpus *readCostCorpus, firstLoad readCostFirstLoad) []readCo
 			name: "issue tree first load (old page)", arm: "tree",
 			oldRoutes: strings.Join(firstLoad.routes, " + "), newRoutes: "the new side of the issue tree expansion",
 			old: readCostGets(firstLoad.paths...), against: "issue tree expansion", note: firstLoad.note,
+		},
+		{
+			name: "issue tree first load and role tabs (old page)", arm: "tree",
+			oldRoutes: strings.Join(roleTabs.routes, " + "), newRoutes: "the new side of the issue tree expansion",
+			old: readCostGets(roleTabs.paths...), against: "issue tree expansion", note: roleTabs.note,
+			apart: tasks, apartNote: roleTabs.apartNote,
 		},
 		{
 			name: "coverage", arm: "coverage",
@@ -1266,11 +1648,13 @@ func readCostReads(corpus *readCostCorpus, firstLoad readCostFirstLoad) []readCo
 // readCostReading is one read's readings on one side: the four percentiles and every reading, so
 // a number in the table can be read against the spread it came from, and the database time of
 // the readings and of the idle interval after them (readCostStatements), nil where it was not
-// measured.
+// measured, and where its old side leaves reads out of its readings, those reads taken apart (nil
+// for every other read).
 type readCostReading struct {
 	p50, p90, p95, p99 time.Duration
 	runs               []time.Duration
 	database, idle     *readCostDatabaseTime
+	apart              *readCostApart
 }
 
 // measureReadCost takes one warm-up reading that is not counted - the first run of a statement on
@@ -1311,7 +1695,9 @@ func measureReadCost(t *testing.T, check string, statements *readCostStatements,
 	return reading
 }
 
-// measureReadCostSide takes every read of reads that the side has (old, or new) on s, keyed by name.
+// measureReadCostSide takes every read of reads that the side has (old, or new) on s, keyed by
+// name, and on the old side, after a read's readings, the reads it leaves out of them, taken apart
+// (measureReadCostApart).
 func measureReadCostSide(t *testing.T, statements *readCostStatements, s *readCostServer, reads []readCostRead, old bool,
 	skip map[string]bool) map[string]readCostReading {
 	t.Helper()
@@ -1324,9 +1710,51 @@ func measureReadCostSide(t *testing.T, statements *readCostStatements, s *readCo
 		if take == nil || skip[read.name] {
 			continue
 		}
-		readings[read.name] = measureReadCost(t, "c-read-cost", statements, s, read.name, s.name, take)
+		reading := measureReadCost(t, "c-read-cost", statements, s, read.name, s.name, take)
+		if old && read.apart != nil {
+			reading.apart = measureReadCostApart(t, statements, s, read)
+		}
+		readings[read.name] = reading
 	}
 	return readings
+}
+
+// readCostApartLoads is how many loads of the reads a second old side leaves out of its readings
+// are taken apart, one after another, after its readings.
+const readCostApartLoads = 3
+
+// readCostApart is the reads a second old side leaves out of its readings, taken apart: the time
+// of each of readCostApartLoads loads of all of them, and their database time and that of the idle
+// interval after them, each per load. It gates nothing; it shows what the reads left out cost.
+type readCostApart struct {
+	loads          []time.Duration
+	database, idle *readCostDatabaseTime
+}
+
+// measureReadCostApart takes readCostApartLoads loads of the reads read leaves out of its readings
+// on s, one after another, with no warm-up, between two snapshots of the database time.
+func measureReadCostApart(t *testing.T, statements *readCostStatements, s *readCostServer, read readCostRead) *readCostApart {
+	t.Helper()
+	apart := &readCostApart{}
+	apart.database, apart.idle = statements.measure(t, readCostApartLoads, func() {
+		for range readCostApartLoads {
+			took, err := read.apart(s)
+			if err != nil {
+				t.Fatalf("c-read-cost: a load of the reads %s leaves out, on %s: %v", read.name, s.name, err)
+			}
+			apart.loads = append(apart.loads, took)
+		}
+	})
+	return apart
+}
+
+// readCostApartLine is the line beside the row of a read whose old side leaves reads out of its
+// readings: what they are, the time of each load of them taken apart, and their database time per
+// load, a load being one reading of that line.
+func readCostApartLine(read readCostRead, apart *readCostApart) string {
+	return fmt.Sprintf("%s, beside its row and gating nothing: %s; %d loads of them, one after another after its readings, took %v ms, "+
+		"each load one reading here%s", read.name, read.apartNote, len(apart.loads), readCostMilliseconds(apart.loads),
+		readCostDatabaseLine(apart.database, apart.idle))
 }
 
 // ───── the chain read's own baseline ──────────────────────────────────────
@@ -1388,9 +1816,11 @@ func readCostPodNow() readCostPod {
 // readCostCorpusName is the corpus a chain reading was taken over, as the constants that write it
 // state it: a run over another corpus reads another read.
 func readCostCorpusName() string {
-	return fmt.Sprintf("%d blocks at depth %d; %d entries (%d asks, %d threads, %d messages); %d backlinks; %d checks; "+
-		"%d unrelated rows; %d readings", readCostTreeBlocks, readCostTreeDepth, readCostEntries, readCostAsks, readCostThreads,
-		readCostConversation, readCostBacklinks, readCostChecks, readCostUnrelatedDocument*readCostUnrelatedBlocks, readCostRuns)
+	return fmt.Sprintf("%d blocks at depth %d; a tree issue of %d, %d and %d role blocks, %d comments and %d asks; "+
+		"%d entries (%d asks, %d threads, %d messages); %d backlinks; %d checks; %d unrelated rows; %d readings",
+		readCostTreeBlocks, readCostTreeDepth, readCostSpecBlocks, readCostVerificationBlocks, readCostPlanBlocks, readCostTreeComments,
+		readCostTreeAsks, readCostEntries, readCostAsks, readCostThreads, readCostConversation, readCostBacklinks, readCostChecks,
+		readCostUnrelatedDocument*readCostUnrelatedBlocks, readCostRuns)
 }
 
 // readCostChainBaseline is the chain read's recorded baseline: its readings, the commit they were
@@ -1479,8 +1909,10 @@ func readCostPodName(pod readCostPod) string {
 // database: the inbox, the issue tree expansion, the coverage read, the chain read, the references
 // panel with its backlink counts, and search. The old side of each is the answer of the read it
 // replaces, on the build of the commit BASELINE_SHA names; the new side is this head's. Beside the
-// tree read stands a second old side of it, which gates nothing yet: the reads the old issue page
-// made on its first load to draw the same issue (readCostOldFirstLoad). The run has four steps.
+// tree read stand two more old sides of it, which gate nothing yet: the reads the old issue page
+// made on its first load to draw the same issue (readCostOldFirstLoad), and those with the reads
+// its Verification, Plan and Decisions tabs then made (readCostOldRoleTabs), whose Plan tab's read
+// of each task is left out of its readings and taken apart after them. The run has four steps.
 // First, it seeds the corpus on the release before, through that build's own writers, and
 // measures the old side there. Second, it stops that server and boots this head over the same
 // database, which migrates it; it then writes the announcement of another build listing every
@@ -1488,7 +1920,8 @@ func readCostPodName(pod readCostPod) string {
 // boot's step deleting what the children kept for one release (startup.Retire) runs, and prints the
 // view definition the references panel is then measured over. Third, it waits until every backfill
 // of this tree owes nothing, reading each owed count every 2 s and failing after 300 s, and holds
-// the corpus to its stated shape through this head's own reads. Fourth, and only then, it measures
+// the corpus to its stated shape through this head's own reads, the tree read among them
+// (requireReadCostTreeReadShape). Fourth, and only then, it measures
 // the new side. The two sides are minutes apart in one run, which is the comparison a shared box
 // allows.
 //
@@ -1541,7 +1974,8 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	waitReadCostOwed(t, conn, base.name, readCostBaseOwed, readCostDrainWait, nil, "")
 	readCostVacuum(t, conn, "old side")
 	requireReadCostOldShape(t, base, corpus)
-	reads := readCostChosen(t, readCostReads(corpus, readCostOldFirstLoad(t, base, corpus)), arms)
+	firstLoad := readCostOldFirstLoad(t, base, corpus)
+	reads := readCostChosen(t, readCostReads(corpus, firstLoad, readCostOldRoleTabs(t, base, corpus, firstLoad)), arms)
 	old := measureReadCostSide(t, statements, base, reads, true, nil)
 	base.stop(t)
 
@@ -1564,7 +1998,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	waitReadCostOwed(t, conn, head.name, readCostHeadOwed, readCostOwedWait,
 		func() bool { return strings.Contains(head.process.Output.String(), readCostBackfillDone) }, "boot_backfill_done", headCommit)
 	readCostVacuum(t, conn, "new side")
-	served := requireReadCostNewShape(t, head, corpus)
+	served, skeleton := requireReadCostNewShape(t, head, corpus)
 
 	// ───── fourth: the new side ─────
 	missing := map[string]bool{"inbox": !served}
@@ -1579,6 +2013,13 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	t.Log("c-read-cost: read\t" + strings.Join(readCostHeads("old", "new"), "\t") + "\tdb new/old\tratio of p50s\tbound")
 	for _, read := range reads {
 		t.Logf("c-read-cost: %s", readCostRow(read, old, now, chain, missing))
+		if read.arm == "tree" && read.against == "" && !skeleton {
+			t.Logf("c-read-cost: the tree arm's readings are a pre-run: this head's tree read is the read INFRA-1253's spec v213 "+
+				"replaces, not yet its skeleton read (pull request #4180), and still answers the %d blocks of tree.md", readCostTreeBlocks)
+		}
+		if reading := old[read.name]; reading.apart != nil {
+			t.Logf("c-read-cost: %s", readCostApartLine(read, reading.apart))
+		}
 	}
 	sides := []struct {
 		name     string
