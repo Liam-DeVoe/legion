@@ -2,7 +2,8 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
-import { createElement, type ReactNode, useRef } from "react";
+import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
+import { createPortal } from "react-dom";
 
 import { realClock } from "../__tests__/fake-clock";
 import { frameAndTasks, nextFrame } from "../__tests__/frames";
@@ -11,6 +12,7 @@ import { useReadBound } from "../api/read-bound";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { CONTROL } from "./control-names";
 import {
   ARM_ON_PRESS,
   armOnPress,
@@ -427,6 +429,93 @@ test("a component's hand-off lands on a control wholly in sight where it always 
   expect(landed).toEqual(belongs);
 });
 
+/** What the Inbox list's `ViewportAnchor` does to the page in a commit that changes nothing above
+ *  the row it holds: it reads where the page stands before the commit (`getSnapshotBeforeUpdate`)
+ *  and puts the page back there from `componentDidUpdate`, in the layout phase, after the layout
+ *  effects of every component drawn before it, a component's hand-off among them. `page.y` is how
+ *  far down the page the window stands, as the case lays it out. */
+class KeepsPlace extends Component<{ readonly page: { y: number } }, object, number> {
+  getSnapshotBeforeUpdate(): number {
+    return this.props.page.y;
+  }
+
+  componentDidUpdate(
+    _props: Readonly<{ readonly page: { y: number } }>,
+    _state: Readonly<object>,
+    snapshot?: number
+  ): void {
+    if (snapshot !== undefined) this.props.page.y = snapshot;
+  }
+
+  render(): ReactNode {
+    return null;
+  }
+}
+
+// (ch) A component's hand-off lands in a layout effect, and a layout effect after it in the same
+// commit can scroll the page back under the landing: the Inbox list's `ViewportAnchor` puts the
+// row it holds back where the commit found it, from its `componentDidUpdate`. At 390 px, Enter on
+// Mark all read scrolled out of sight left Blocked on you, its landing, with 4 of its 44 px in
+// view in Chromium and Firefox. A landing partly in sight - 4 of its 44 px below the window's top
+// edge - is scrolled to its nearest edge once that commit is done, and stands whole in the window;
+// a landing wholly in sight scrolls nothing, then or after.
+test("a landing a later layout effect of its commit scrolls back partly out of sight is scrolled to its nearest edge once the commit is done, and one wholly in sight scrolls nothing", async () => {
+  const landed: Record<string, object> = {};
+  for (const [named, top] of [
+    ["partly in sight", -40],
+    ["wholly in sight", 100],
+  ] as const) {
+    const page = { y: 1_000 };
+    // A scroll into view moves the window by the least that shows the element whole, as
+    // `{ block: "nearest" }` does.
+    const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element
+    ) {
+      const box = this.getBoundingClientRect();
+      if (box.top < 0) page.y += box.top;
+      else if (box.bottom > window.innerHeight) page.y += box.bottom - window.innerHeight;
+    });
+    try {
+      landed[named] = await inMain([], async (main) => {
+        const host = document.createElement("div");
+        main.append(host);
+        const draw = (labels: readonly string[]) =>
+          createElement(
+            Fragment,
+            null,
+            createElement(HandOffLine, { fallback: () => null, labels }),
+            createElement(KeepsPlace, { page })
+          );
+        const view = render(draw(["One", "Two"]), { container: host });
+        try {
+          const [one, two] = [...host.querySelectorAll("button")];
+          if (one === undefined || two === undefined) throw new Error("the line drew no buttons");
+          // One stands `top` px down the window while it is scrolled to 1,000 px, and 44 px tall.
+          one.getBoundingClientRect = () => new DOMRect(0, 1_000 + top - page.y, 200, 44);
+          clickPress(two);
+          view.rerender(draw(["One"]));
+          // The commit is done.
+          await Promise.resolve();
+          return {
+            landed: landing(),
+            scrolled: scrolls.mock.calls.length > 0,
+            top: one.getBoundingClientRect().top,
+          };
+        } finally {
+          view.unmount();
+          host.remove();
+        }
+      });
+    } finally {
+      scrolls.mockRestore();
+    }
+  }
+  expect(landed).toEqual({
+    "partly in sight": { landed: "One", scrolled: true, top: 0 },
+    "wholly in sight": { landed: "One", scrolled: false, top: 100 },
+  });
+});
+
 // A component's own hand-off lands on no field that takes typed text, its fallback included: the
 // reader never chose it, and their next key would be typed into it. A line whose only control a
 // press takes away falls back to a search box, as a selection header's Clear selection with no
@@ -555,12 +644,15 @@ test("a component's hand-off for a control taken away with a control before it l
 /** What an `ArmedLine` draws: one button per label, `held` ones held while their write is out
  *  (`aria-disabled`, as `heldPress` holds one), `disabled` ones disabled, after a disabled
  *  checkbox where `box` asks for one - the Agents page's select-all while no row matches - and
- *  the line itself only while `shown` (by default). */
+ *  the line itself only while `shown` (by default). With `list`, a list one of its buttons opened
+ *  is drawn as well, outside the line in a portal on the page's body, holding the text box named
+ *  Search, as the shared list draws its own (`MultiSelect`). */
 interface ArmedLineProps {
   readonly box?: boolean;
   readonly disabled?: readonly string[];
   readonly held?: readonly string[];
   readonly labels: readonly string[];
+  readonly list?: boolean;
   readonly shown?: boolean;
 }
 
@@ -573,7 +665,7 @@ function ArmedLine(props: ArmedLineProps): ReactNode {
     (element) => (line.current?.contains(element) ? line.current : null),
     () => null
   );
-  const { box = false, disabled = [], held = [], labels, shown = true } = props;
+  const { box = false, disabled = [], held = [], labels, list = false, shown = true } = props;
   const buttons = labels.map((label) =>
     createElement(
       "button",
@@ -601,6 +693,12 @@ function ArmedLine(props: ArmedLineProps): ReactNode {
               })
             : null,
           buttons
+        )
+      : null,
+    list
+      ? createPortal(
+          createElement("input", { "aria-label": "Search", type: "text" }),
+          document.body
         )
       : null
   );
@@ -1196,5 +1294,66 @@ test("an armed press whose action is answered while its control stays held with 
         line.remove();
       }
     });
+  });
+});
+
+/** The reader's pointer press on `element` that moves no focus, as WebKit's press on a button
+ *  leaves the focus where it was: its `pointerdown`, then its `click`. */
+function pointerPress(element: HTMLElement): void {
+  element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  fireEvent.click(element);
+}
+
+// (ds) Armed by a pick in a list a control of the component opened - Enter in the list's text
+// box, where the shared list picks its active row (`MultiSelect`) - whose write holds that
+// control while it is out: the Inbox selection bar's Snooze selected asks. The pick puts the
+// focus on the control and takes the list, and the text box the press was armed on, away. A
+// second press on the held control, by Enter or by a click, takes nothing but its hold: the pick
+// stays the cause, though the control it was armed on has left the page, and the write's answer
+// that takes the control away hands the focus to the control now at its place, as it does with
+// no second press. A press on Pinned, held since before the pick, is the reader's next act: it
+// arms anew, nothing keeps that press live, and the loss leaves the focus on the page.
+test("a second press on the control a pick's write holds leaves the pick the cause though its list's text box has gone, and a press on a control held before the pick arms anew", async () => {
+  const labels = ["Before", "Snooze", "After", "Pinned"];
+  const acts: Readonly<Record<string, (snooze: HTMLElement, pinned: HTMLElement) => void>> = {
+    "a click on Pinned, held before the pick": (_snooze, pinned) => pointerPress(pinned),
+    "a click on the held Snooze": (snooze) => pointerPress(snooze),
+    "a second Enter on the held Snooze": (snooze) => enterPress(snooze),
+    "nothing after the pick": () => undefined,
+  };
+  const landed: Record<string, string | null> = {};
+  for (const [named, actAgain] of Object.entries(acts)) {
+    const bar = document.createElement("div");
+    bar.dataset.control = CONTROL.selectionBar;
+    document.body.append(bar);
+    const line = armedLineIn(bar, { held: ["Pinned"], labels, list: true });
+    try {
+      const search = document.querySelector<HTMLElement>('input[aria-label="Search"]');
+      if (search === null) throw new Error("the list drew no text box");
+      search.focus();
+      // The pick: Enter in the list's text box arms the hand-off, the list puts the focus on its
+      // trigger and goes, and the write the pick sends holds the trigger and what answers it.
+      enterPress(search);
+      const snooze = line.button("Snooze");
+      snooze.focus();
+      line.redraw({ held: ["Pinned", "Snooze"], labels });
+      const answered = holdHandOff();
+      actAgain(snooze, line.button("Pinned"));
+      for (const _ of [0, 1, 2]) await frameAndTasks();
+      // The write lands, and its answer takes the trigger away.
+      line.redraw({ held: ["Pinned"], labels: ["Before", "After", "Pinned"] });
+      answered();
+      landed[named] = landing();
+    } finally {
+      line.remove();
+      disarm();
+      bar.remove();
+    }
+  }
+  expect(landed).toEqual({
+    "a click on Pinned, held before the pick": "the page",
+    "a click on the held Snooze": "After",
+    "a second Enter on the held Snooze": "After",
+    "nothing after the pick": "After",
   });
 });
