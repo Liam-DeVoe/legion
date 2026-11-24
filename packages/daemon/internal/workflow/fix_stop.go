@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -56,4 +58,49 @@ func (e *Engine) dropRunFix(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	return e.dropFixWay(ctx, tx, issue, w, said)
+}
+
+// fixClaimFailed takes the failure of the implementer's claim while the fix the issue record names
+// runs (record.Issue.RunningFix), and answers whether it did: the fix ends stopped with the
+// failure (TaskFix.ClaimFailed), at the task's head as it stands, since only the fix pushes while
+// it runs, and its end decides what runs next by the three ways (endFix, afterFix). The issue is
+// not held, since the step beside the fix goes on, and no second fix starts for the check at that
+// head. The owner is told by one worker-died notice naming the fix, its check and head, the
+// failure, what runs next, and the move back that starts the implementer again.
+func (e *Engine) fixClaimFailed(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimFailed) (bool, error) {
+	if fact.Role != claim.RoleImplementer || issue.RunningFix == 0 {
+		return false, nil
+	}
+	w, fix, err := e.fixNamed(ctx, tx, issue, issue.RunningFix)
+	if err != nil || fix == nil {
+		return false, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	_, head := taskHead(pr)
+	failure := deathReason(fact, false)
+	fix.ClaimFailed = failure
+	if err := e.endFix(ctx, tx, issue, w, fix, StepEnd{Result: ResultStopped}, head); err != nil {
+		return false, err
+	}
+	ended, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || ended == nil {
+		return false, err
+	}
+	next := "The step beside it goes on, and what runs next is decided when it ends."
+	switch ended.Way {
+	case wayReturn:
+		next = fmt.Sprintf("The task returns to step %d.", ended.ReturnTo)
+	case wayAfterFix:
+		next = fmt.Sprintf("The steps after the fix run again at %s.", head)
+	case wayOn:
+		next = "Each step keeps its result."
+	}
+	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
+		Reason: fmt.Sprintf("The implementer's claim failed while it ran fix %d of task %s (check %s at %s): %s. "+
+			"The fix ended, and Legion starts no second fix for this check at this head. %s "+
+			"Where the check still fails at the task's end you are told; send the task back with request_backward_move to start the implementer again.",
+			fix.Fix, fix.Task, fix.Check, fix.Head, failure, next)})
 }
