@@ -497,7 +497,7 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // so it reads `graph_nodes` only for an end that can be reserved for its author: the far end of
 // an edge, whose kind is a column, is tested on its kind in SQL first, and an end whose kind is a
 // literal of the build - a block of the node read, or the block holding an edge out of it - binds
-// its kind's predicate only where the gate keeps it (andGatedKind): a document's block does, and a
+// its kind's predicate only where the gate keeps it (gatedKind): a document's block does, and a
 // block of an ask, a comment or a message, which the store reserves for nobody, binds none.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
@@ -558,7 +558,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
 		// artifact by its uuid (edgeFrom).
 		from := edgeFrom("g")
-		source += andGatedEnd(AnyKind, "g.from_kind", from, false, seen)
+		source += ` and ` + gatedEnd(AnyKind, "g.from_kind", from, false, seen)
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
@@ -569,7 +569,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case document:
 			arms += `
 			union all
-			` + keyedBlockArm("block", documentBlockIDs(id), source+andGatedKind("block", "g.to_id", seen))
+			` + keyedBlockArm("block", documentBlockIDs(id), source+` and `+gatedKind("block", "g.to_id", seen))
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -580,7 +580,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source+andGatedKind(item.BlockKind(), "g.to_id", seen))
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source+` and `+gatedKind(item.BlockKind(), "g.to_id", seen))
 		}
 	case query.Direction == "out" && document:
 		// The document's own edges name it by its uuid, but the one the store states out of it
@@ -588,30 +588,30 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// that ref_key.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
-			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			` and ` + gatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.kind = '` + graphstore.TupleChangedByRun + `'
 			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)` +
-			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			` and ` + gatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
 			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") +
-			andGatedKind("block", "b.from_node", seen) + andGatedEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
+			` and ` + gatedKind("block", "b.from_node", seen) + ` and ` + gatedEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
-			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			` and ` + gatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + itemBlockLinks(item) + `
 			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent +
-			andGatedKind(item.BlockKind(), "r.from_node", seen) + andGatedEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
+			` and ` + gatedKind(item.BlockKind(), "r.from_node", seen) + ` and ` + gatedEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id +
-			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
+			` and ` + gatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
 	}

@@ -731,8 +731,8 @@ var (
 var blockRefKinds = `select linked.kind from (` + refs.BlockRefKindsSQL + `) linked (kind)
 			where not ` + kindIn("linked.kind", tieKinds)
 
-// kindIn is true of the tuple kind column whose value is one of kinds, a non-empty list of this
-// build's constants (store.QuoteLiterals).
+// kindIn is true of the kind column - a node's, a tuple's or an edge's - whose value is one of
+// kinds, a non-empty list of this build's constants (store.QuoteLiterals).
 func kindIn(column string, kinds []string) string {
 	return column + ` in (` + store.QuoteLiterals(kinds) + `)`
 }
@@ -851,7 +851,7 @@ func heldTuples(kinds string, holders ...string) string {
 		`t.from_kind = n.kind and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'
 		  and held.asserted`
 }
 
@@ -1747,7 +1747,7 @@ func currentOutOfNodes(name string, nearKinds, kinds []string) string {
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`,
 		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = near.from_kind and t.from_id = near.from_id
-			  and t.kind in ('`+strings.Join(kinds, `', '`)+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+			  and `+kindIn("t.kind", kinds)+` and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) held
 		where held.asserted
 	)`
@@ -1769,7 +1769,7 @@ func statedOutOfNodes(name string, nearKinds, kinds []string) string {
 		cross join lateral (
 			select 1 from graph_tuples t
 			where t.from_kind = near.from_kind and t.from_id = near.from_id
-			  and t.kind in ('` + strings.Join(kinds, `', '`) + `') and t.to_kind <> '` + graphstore.KindValue + `'
+			  and ` + kindIn("t.kind", kinds) + ` and t.to_kind <> '` + graphstore.KindValue + `'
 			limit 1
 		) stated
 	)`

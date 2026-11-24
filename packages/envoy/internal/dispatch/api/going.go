@@ -562,9 +562,9 @@ func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
 // read. A run's failure is kept and answered once the loop is done, joined with the others, so one
 // run neither fails the loop nor costs the runs read after it their turn. A loop whose context
 // ends - the process shutting down - stops at the next run and answers that once, joined with the
-// runs' failures before it, rather than failing every run left at its first statement. Whether
-// the context ended is the caller's to read (ctx.Err), as goRunsPastTheHour does before its second
-// read.
+// runs' failures before it, rather than failing every run left at its first statement. A loop
+// begun on a context that has already ended fails at its read, which answers that end named by
+// read, as goRunsPastTheHour's second read does after a shutdown during its first.
 func eachGoingRun(ctx context.Context, pool *store.Pool, read, statement string, args []any, take func(id string) error) error {
 	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
@@ -639,13 +639,11 @@ var goingRowlessRuns = `
 // going_requests row is more than an hour old (goingRunsPastTheHour), and then the interaction
 // nodes, not gone and more than an hour old, whose row a process of the release before deleted
 // (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
-// loop over runs (eachGoingRun). After the first read's loop it reads the pass's context, and once
-// that has ended - before the read, during it or during its runs - it leaves the second read
-// unmade and answers the context's end named by the second read, as that read's failure would
-// have, unless the loop's error already holds that end (errors.Is): it does where the end cost the
-// loop its read or stopped it before a run, and does not where the loop answered no error or only
-// runs' failures of their own. It logs one line where it did anything: how many runs of the first
-// read and nodes of the second it stated gone, and how many runs' rows it removed.
+// loop over runs (eachGoingRun). Both reads always run: a pass whose context ended fails the read
+// that comes after, under that read's name, so a shutdown during the first read's loop names the
+// end twice, once from that loop and once from the second read. It logs one line where it did
+// anything: how many runs of the first read and nodes of the second it stated gone, and how many
+// runs' rows it removed.
 func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 	var runsStated, rowlessStated, removed int
 	var failed []error
@@ -657,7 +655,7 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 		{"read the runs past the hour", goingRunsPastTheHour, &runsStated},
 		{"read the runs past the hour whose rows are gone", goingRowlessRuns, &rowlessStated},
 	}
-	for index, read := range reads {
+	for _, read := range reads {
 		err := eachGoingRun(ctx, pool, read.name, read.statement, []any{contracts.GoingRequestTTL.Seconds(), goingGoneBatch}, func(id string) error {
 			done, err := goRunGone(ctx, pool, id)
 			if done.stated {
@@ -670,12 +668,6 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 		})
 		if err != nil {
 			failed = append(failed, err)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			if index+1 < len(reads) && !errors.Is(err, ctxErr) {
-				failed = append(failed, fmt.Errorf("%s: %w", reads[index+1].name, ctxErr))
-			}
-			break
 		}
 	}
 	if runsStated+rowlessStated+removed > 0 {
