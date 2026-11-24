@@ -107,14 +107,17 @@ That cost is now held to a budget by the run itself, at the merge job's step "Re
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
 ceiling less that job's own worst case. Both are written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
-branch); the worst case is the 45 s of job 137694934103 (run 45151841335, attempt 2), the most
-of the ten merge jobs of pull request #3513's runs of 2026-11-23, which replaces the 44 s of job
-132733634671, the most a merge job of that pull request's runs of 2026-11-15 up to 17:44Z read.
+branch); the worst case is the 54 s of job 138031009105 (run 45261148766, attempt 2, at
+e15ee5e4), the most of the 38 merge jobs of pull request #3513's ci.yaml runs created since
+2026-11-22, read from the jobs API on 2026-11-24. It replaces the 45 s of job 137694934103 (run
+45151841335, attempt 2), the most of the ten merge jobs of that pull request's runs of
+2026-11-23 up to 13:04Z, which replaced the 44 s of job 132733634671, the most a merge job of its
+runs of 2026-11-15 up to 17:44Z read.
 The readings above, taken as the budget takes them, which is each lane less its own merge job,
 are the merge job's lines of the three attempts, 2,597, 2,661 and 2,634 s (merge jobs of 38, 45
 and 40 s) against the 3,156 s that run read, and the pull-request lane's 682 s at 5e22df0a
-(45130649093, 19 s) against the 856 s it read; all are inside the budget, which is 3,155 s on the
-full lane and 855 s on the pull-request lane from this commit on.
+(45130649093, 19 s) against the 856 s it read; all are inside the budget, which is 3,146 s on the
+full lane and 846 s on the pull-request lane from this commit on.
 
 That ceiling is a coarse guard and no reading of what dispatch://INFRA-1109 delivers: no job can
 read another run, so a figure written here cannot be a ratio against the day's default branch,
@@ -128,10 +131,10 @@ of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126
 runs were 0.72 and 0.78 of that median, so the suite is as cheap as it was and the ceiling is
 what moved. It became 3,200 s on 2026-11-17, when pull request #3513's full lanes at 61e5c402
 and 1ba866a9 read 2,062 to 2,484 s at that step, the worst 6.5 per cent under 2,656 s. Read as
-that step reads a lane, its merge job apart, the full lane's 3,155 s is 27 per cent above that
+that step reads a lane, its merge job apart, the full lane's 3,146 s is 27 per cent above that
 tree's worst reading (2,484 s), under one and a half times its median (2,231 s), and under the
 median of the 27 green default-branch full lanes of 2026-11-16 (3,189 s), though 10 of those 27
-read under it. The pull-request lane's is 855 s, its 900 s less the same 45 s.
+read at or under it. The pull-request lane's is 846 s, its 900 s less the same 54 s.
 .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 a run that cost more than the one before it, which is how this suite went from about 25
@@ -1815,16 +1818,17 @@ The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of
 carried before was measured on another branch and is replaced by that sample. The merge
 jobs of pull request #3513's runs of 2026-11-15 up to 17:44Z read at most 44 s whole (job
 132733634671, run 43687205491), the figure `merge_maximum` took off the lane's bound until the
-ten merge jobs of its runs of 2026-11-23 read up to 45 s whole (job 137694934103, run
-45151841335 attempt 2), which it takes now. The steps without a budget of the 2026-11-15 jobs
-sum to 48 s at their maxima (checkout 10 s, `bun install` 12 s and the merge of the blob
-reports 5 s among them), 49 s with the 1 s the refused-download step is allotted below, since
-no run of that day ran it. 180 + 49 = 229 s is 3 min 49 s, so the rule gives the same 4 minutes
-as the older sample below. What made job 137694934103 the longest is its checkout, 13 s, and
-"Reading one, the rows", 11 s, the reading of its attempt's one flaky row, and its log holds no
-rate-limit wait. That checkout is 3 s past the 10 s above: counted, the steps without a budget
-sum to 52 s with the refused-download step's 1 s, and 180 + 52 = 232 s is still 4 minutes. The
-other nine jobs' steps were not read.
+ten merge jobs of its runs of 2026-11-23 up to 13:04Z read up to 45 s whole (job 137694934103,
+run 45151841335 attempt 2), and that 45 s until its 38 merge jobs since 2026-11-22 read up to
+54 s whole (job 138031009105, run 45261148766 attempt 2), which it takes now. Over those 38 and
+the 10 merge jobs of main's 65 merge-queue runs listed since main's #5175 merged
+(2026-11-23T21:37:21Z), 48 jobs read from the jobs API on 2026-11-24 up to 01:06Z, the steps
+without a budget sum to 48 s at their maxima: checkout 14 s, `bun install` 8 s, the merge of the
+blob reports 4 s, setup-bun, the upload of the merged report and "Reading three" 3 s each, Set
+up job and the blob download 2 s each, the refused-download step 0 s, and every other step 1 s.
+180 + 48 = 228 s is 3 min 48 s, so the rule gives the same 4 minutes as the older sample below.
+What made job 138031009105 the longest is its checkout, 14 s, and "Reading one, the rows",
+11 s, the most that step took over the 48, and its log holds no rate-limit wait.
 
 Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
 setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest
@@ -1864,10 +1868,10 @@ gives the same 4 min: its 40 s less reading one's 4 s is 36 s, and 1 s each for 
 it does not hold - that one, "Reading four, the row durations", which runs one jq over the
 merged report, and "Reading five, the lane's machine time", which runs one jq over the jobs
 file reading one already wrote and makes no request at all - makes 39 s, and 180 + 39 = 219 s.
-The lane's budget takes this job's whole measured maximum off its bound, the 45 s of 2026-11-23
-with these steps in it (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`). The
-job's budget is above the step's, so the step's own budget fires first and names the step, which
-is the reason this file's head gives for putting budgets on steps.
+The lane's budget takes this job's whole measured maximum off its bound, the 54 s of 2026-11-23
+(job 138031009105) with these steps in it (.github/scripts/dispatch-browser-run-reads.sh,
+`merge_maximum`). The job's budget is above the step's, so the step's own budget fires first and
+names the step, which is the reason this file's head gives for putting budgets on steps.
 
 What that sample does not hold: no browser step failed in any of those runs, so no blob
 report in them carries a failed row's trace, and the download, the merge and reading
@@ -1993,7 +1997,7 @@ lane's budget the step exits 1 and the job is red. Each lane's budget is its com
 ceiling less this job's own worst case, both written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum`), which a job
 reading inside its own run cannot see of itself: its `completed_at` is null while it runs.
-The script's `machine-time` branch carries that subtraction, the runs the measured 45 s of it
+The script's `machine-time` branch carries that subtraction, the runs the measured 54 s of it
 came from, and why a jobs file it cannot read refuses rather than passes.
 
 The lane is this workflow's own input, which every job of the file but the embedder's
