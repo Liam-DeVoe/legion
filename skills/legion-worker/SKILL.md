@@ -1,35 +1,30 @@
 ---
 name: legion-worker
-description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, or merger — booted from the daemon's LEGION_* environment.
+description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, merger, or a deployment's role — booted from the daemon's LEGION_* environment.
 ---
 
 # Legion Phase Worker
 
 Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits and pod release; this skill adds the rest.
-Where it disagrees with the code or a `--help`, follow those and tell your architect which line is wrong.
 
 ## Every phase
 
-1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
-   the architect records there what it does not message.
-   Read the report each `Step <j> (<step>) reported: <word> version <v>.` line of your task names: `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.
+1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`).
    Where your task has no such line, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
+   Your architect's decisions for you come in your task and your messages: read no other document for them.
    A record beats your memory.
 
-2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
-   A path you did not write in either list: read `skill://legion-worker/references/foreign-path.md`.
+2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
-3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+3. Before you write the handoff or report your step, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
+   another role that commits next sets aside whatever the working copy holds.
 
-4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
-   the working copy is the next role's first commit.
-
-5. Every role writes the one workspace, so a file can change under your check.
+4. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
    A run with no captured output can be neither confirmed nor cleared.
 
-6. A codebase-wide rename or deletion leaves history (transcripts, test snapshots, changelog entries) unchanged.
+5. A codebase-wide rename or deletion leaves history (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
@@ -43,7 +38,7 @@ Where it disagrees with the code or a `--help`, follow those and tell your archi
     Do what it asks at the head it names, with a handoff of its own.
 
   - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or it names no head; nothing was recorded.
-    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
+    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head, with a handoff that names it where your phase writes one.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
@@ -63,14 +58,20 @@ Where it disagrees with the code or a `--help`, follow those and tell your archi
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
-- Another role's topic answers 404: read that step's report (item 1).
+- Another role's topic answers 404: read that step's report or runs (item 1).
 
 ## Commits and pushes
 
-- Before every push, and before you clone a repository under `$LEGION_WORKSPACE`, follow `skill://legion-worker/references/default-branch-check.md`:
-  it reads your branch's commits and their messages, and says which trailers the pane writes for you and the one cure you may add.
+- Write no trailer yourself.
+  The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names;
+  the git wrapper adds the first two to a `git commit`.
+  A merge, revert, cherry-pick or rebase that git makes gets none.
+  Cure an unpushed commit that lacks a line by describing it again in the pane's shell;
+  where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
+
+- A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
 
@@ -81,18 +82,14 @@ Where it disagrees with the code or a `--help`, follow those and tell your archi
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
-  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review.
+  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
-
-- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-
-- A Dispatch comment or message never carries that footer: Dispatch records the session that wrote it.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
@@ -109,7 +106,7 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 ## References
 
-- The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- The PR body, its `Thermo` line, the simplify pass, a comment's footer: `skill://legion-worker/references/pr-body.md`.
 
 - A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 

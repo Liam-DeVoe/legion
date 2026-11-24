@@ -53,7 +53,7 @@ Never approve a head while a required item has no run; sort it in this order.
 Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first.
-   `DIRTY` takes the implementer's forward merge: the daemon asks for it and names the new head.
+   `DIRTY` takes a forward merge, the implementer's before `merging` and the merger's in it: the daemon asks for it and names the new head.
    `UNKNOWN`: read each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer.
    Never close and reopen it.
@@ -68,18 +68,18 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
    Approve only once the item's run concluded green.
    One close and reopen covers every item of the head: name the others to the architect in the same message.
    A head with any item in case 2 or 3 takes no remedy, and an item with no run once the reopen's runs concluded is never reopened.
-6. Anything else: tell the architect, do not approve, and wait.
+6. Anything else.
 
 ### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
   a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says.
-  With no tester step, the implementer's evidence for each is what you read.
+  With no earlier tester step, the implementer's evidence for each is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last submitted review's footer `head`.
+After a forward merge, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last submitted review's footer `head`.
 This lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
 
 ```bash

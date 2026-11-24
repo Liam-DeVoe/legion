@@ -44,8 +44,9 @@ const (
 
 // Snapshot is the record state a row guard reads. Guards are pure and contain no side effects.
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
-// counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. A
-// completion never moves an issue on a pull request closed without merging, nor with none recorded.
+// counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. The
+// implementer's completion never moves an issue on a pull request closed without merging, nor with
+// none recorded (hasOpenOrMergedPR). No other step's completion reads it.
 type Snapshot struct {
 	Phase             phase.Phase
 	HasOpenOrMergedPR bool
@@ -110,8 +111,9 @@ var stepRows = []struct {
 // rows on its role's trigger (stepRows), at each position of the line that phase stands at; the
 // merge, out of merging into done; and a backward row from each position of the line to each
 // position before it (backwardRows). A head that conflicts with its base moves no phase
-// (merge_forward.go). A return goes back to implementing where implementing stands before the step
-// that fails, and a step with no implementing before it has none. Each row carries the places of
+// (merge_forward.go). A failed step's return is one of those backward rows: to the first step of
+// the type implementation before it (Walk.returnTarget), or to the earlier step its completion
+// names, and a failed step with neither stops its task. Each row carries the places of
 // its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
 // deployment defines or two steps of one role, has a row for each. A row into accepting starts
 // nobody, because accepting's role is the tree's architect; every other row into a phase of the

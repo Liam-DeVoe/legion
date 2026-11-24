@@ -150,6 +150,7 @@ var implementCompletion = api.HandoffCompleteRequest{Summary: "implemented", Com
 // The control takes the key off step 2 (`implementer:a tester reviewer`): step 2 then gets an agent
 // of its own, `…-tester`, in a session of its own, which the same reads must show.
 func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -258,6 +259,7 @@ func oneKeyHolds(r *ownerStepsRig, steps [3]stepRecordRead, keyed bool) error {
 // so no task the claim is handed falls at or below one it was handed before. The reviewer's row
 // stays its own. The task then walks to done again in the same two agents.
 func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer:a", "tester:a", "reviewer")
 	r.openGate(phase.Implementing)
@@ -350,9 +352,10 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // keys a phases row by its step"), the claim of each resume, whose way back also puts back one open
 // resume per role, and the name of each step's agent, so its plan rows name no agent, as that
 // release wrote them. This release then boots, migrates the key, the columns and the indexes again,
-// the column naming each step for its role (20261117213545), and the issue reaches done with the
+// the column naming each step for its role (20261123203837), and the issue reaches done with the
 // claims `…-implementer` and `…-reviewer` of its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer", "reviewer")
 	r.openGate(phase.Implementing)
@@ -444,6 +447,7 @@ func (r *stepRecordsRig) holdsClaimsOf(roles ...claim.Role) {
 // step 3 the session of step 2, not of step 1: `…-reviewer` is relaunched with the role
 // implementer, resuming its own session, which the same reads must show.
 func TestARoleTwoTimesInATask(t *testing.T) {
+	t.Parallel()
 	t.Run("one key at steps 1 and 3, through a failed review", func(t *testing.T) {
 		r := newAgentsRig(t)
 		if err := roleTwiceHolds(r, r.walkRoleTwice()); err != nil {
@@ -659,6 +663,7 @@ func (r *stepRecordsRig) runsRecorded(runs []stepRun) []stepRecordRead {
 // step 1, which still names the record step 1's first run wrote, and walks to done again with the
 // claims of its steps and no other.
 func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan(oneKeyPlan...)
 	r.openGate(phase.Implementing)

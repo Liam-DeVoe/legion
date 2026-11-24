@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -35,7 +36,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -302,7 +303,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -731,7 +732,7 @@ func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role,
 func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
 			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
@@ -741,8 +742,8 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A phase worker's start is one row, which carries the task and its entry and waits for the
-// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// A phase worker's start is one row, which carries the task and its entry and, in a phase that
+// keeps a slot (record.KeepsSlot), waits for the issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
 // back beside it and is of no entry, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()
@@ -823,7 +824,7 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
 		var issue *record.Issue
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, c.Issue)
 			return err

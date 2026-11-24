@@ -181,10 +181,11 @@ type IdleView struct {
 	// sits below record, so the view carries the row's fields rather than the rule.
 	Phases map[claim.Role]IdlePhase
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
-	// start that waits because the pod lacks the slot of its claim or the role of its step
-	// (StartWaitsForPodPrefix) is no such delivery: the pod cannot run it, so it is counted in
-	// StartsWaitingForPod instead.
+	// role of its pod. A start queued for news of the approved design alone is not counted: it
+	// wakes the claim a release suspends (store's idleWaitingRow). A start that waits because the
+	// pod lacks the slot of its claim or the role of its step (StartWaitsForPodPrefix) is no such
+	// delivery either: the pod cannot run it, so it is counted in StartsWaitingForPod instead. The
+	// rule reads only whether there is one, so the store reads only that.
 	Waiting bool
 	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of

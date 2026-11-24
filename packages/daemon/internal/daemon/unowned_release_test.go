@@ -116,7 +116,7 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 // nothing has closed, each as one line, so a test can compare what a release found with what it
 // left. A teardown that armed a backstop would have cancelled the open ones of the issue first
 // (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
-// back for that claim (migration 20261121183336, one open resume per claim).
+// back for that claim (migration 20261123203838, one open resume per claim).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -211,6 +211,7 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
 // a claim an earlier release left `released`.
 func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the pod of an issue whose one claim failed", func(t *testing.T) {
@@ -364,6 +365,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 // mark: a mark standing is a state no later row could read around, so the three readings that
 // keep the pod come first and the release that takes it is last.
 func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -447,6 +449,7 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 // claim, so an issue it has decided stands in the answer for ever, and deciding a gone pod inside
 // a transaction would cost one of them a minute for ever.
 func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -507,6 +510,7 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 // deletes the Secrets, each one already gone counted as deleted, keeps the Sandbox with its uid,
 // and records the delete, and the next pass holds the issue and writes no row.
 func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name    string
@@ -612,10 +616,11 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 	}
 }
 
-// issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role,
-// as here, named as the sandbox runtime names them: the provisioning Secret `<sandbox>-boot`
-// (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots (roleSecretName),
-// one for each of Legion's six roles, each the slot of the agent named for that role.
+// issueSandboxSecrets are the Secrets an issue's Sandbox owns under a deployment that defines no
+// role of its own, named as the sandbox runtime names them: the provisioning Secret
+// `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots
+// (roleSecretName), one for each of Legion's six roles, each the slot of the agent named for that
+// role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}
 	for _, role := range claim.Roles {
@@ -649,6 +654,7 @@ const secretsReleased = "legion.dev/secrets-released"
 // left, counts each delete as done, writes the record and keeps the uid. Both cases run the real
 // Sandbox runtime over the test's API.
 func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overKeptSandbox is the idle rig whose issue's kept Sandbox the test API holds, Running, with
 	// its seven Secrets, behind a recorder of every write, and the real runtime of a deployment
@@ -709,7 +715,7 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 				hold, marked, queued, workflow.IdleHoldUnownedSandboxGone)
 		}
 	}
-	// recordedAfterDeletes fails the test unless writes delete each of the seven Secrets of the
+	// recordedAfterDeletes fails the test unless writes delete each of the Secrets of the
 	// Sandbox name, each delete answered status, and then write the release's record, answered OK,
 	// once and after the last delete.
 	recordedAfterDeletes := func(t *testing.T, writes []apiWrite, name string, status int) {

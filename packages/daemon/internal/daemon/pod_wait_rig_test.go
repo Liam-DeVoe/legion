@@ -164,7 +164,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 }
 
 // A pod built before a role of the deployment is kept until main's rule for a pod with no live
-// claim or the pod's update round ends it (ruling 18 point 5): the start of the role waits on its
+// claim or the pod's update round ends it: the start of the role waits on its
 // row and makes no claim, so no launch replaces the pod with the issue's disk under it.
 //
 //  1. A stopped role's work stays while the start waits: for three of the rig's ticks the pod
@@ -173,6 +173,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 //  2. After the idle period, main's rule releases the pod, and the checker starts in a new pod.
 //  3. An operator's suspension keeps the pod past the idle period and is told once.
 func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) {
+	// Not parallel: each case sets environment variables of the whole process (newIdleWakeRig).
 	waiting := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 		t.Helper()
 		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {
