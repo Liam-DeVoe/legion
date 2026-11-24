@@ -141,6 +141,10 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 			name = "architect-root.md"
 		}
 		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
+		if !isRoot {
+			// Control: a sub-architect's composition leaves out every architect's common part.
+			daemonParts = []string{name}
+		}
 	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
 		name := string(role)
 		shared = []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
