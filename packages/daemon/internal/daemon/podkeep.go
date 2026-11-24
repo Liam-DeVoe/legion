@@ -89,7 +89,7 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // the row's moment and tells nobody.
 func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase) (bool, error) {
 	at := keptMoment(read.at, group)
-	decline, _, _ := declineOf(claim.RoleArchitect, pod, at, read.work, read.err)
+	decline := declineOf(claim.RoleArchitect, pod, at, read.work, read.err)
 	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
 		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work)}, at)
 		if err != nil {

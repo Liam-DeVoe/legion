@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -95,13 +96,10 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 	if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
 		return err
 	}
-	if payload.Launcher {
-		r.log.Info("outbox: the release of a pod no claim owns read the issue's workspace through the pod's launcher and found nothing that no branch or tag on origin holds; its teardown runs next",
-			"issue", row.Issue, "head", work.Head)
-		return nil
-	}
-	r.log.Info("outbox: the idle release read the issue's workspace and found nothing that no branch or tag on origin holds; its roles stop next",
-		"issue", row.Issue, "role", payload.Role, "head", work.Head)
+	// The release goes on: after a launcher's read (payload.Launcher) to its teardown alone, since
+	// it stops no role, and after a role's read to its role stops.
+	r.log.Info("outbox: the release read the issue's workspace and found nothing that no branch or tag on origin holds; the release goes on",
+		"issue", row.Issue, "role", payload.Role, "launcher", payload.Launcher, "head", work.Head)
 	return nil
 }
 
@@ -278,19 +276,39 @@ func (r *outbox) declineFor(ctx context.Context, issue string, payload record.Is
 // declineOf is what every decline records of its read: its moment, readAt, the moment the read
 // began, so a turn that started while the read ran — one that may have pushed the work the read
 // found — is a turn after the decline, which ends it (pods.IdleDecline.Stands); the role told;
-// the reason, which is its hold's name (workflow's idleHoldNames spells the two by the reasons);
-// the pod; and for a read that could read, the work it found. It answers the hold of a pod a live
-// role runs in and the sentence the hold record and the log line carry.
-func declineOf(role claim.Role, pod string, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string) {
-	hold, why := workflow.IdleHoldUnpushedWork, declineReason(work)
+// the reason, pods.DeclineUnpushedWork or, for a read that failed, pods.DeclineWorkspaceUnread;
+// the pod; and for a read that could read, the work it found.
+func declineOf(role claim.Role, pod string, readAt time.Time, work runtime.WorkspaceWork, failed error) store.IdleReleaseDecline {
+	decline := store.IdleReleaseDecline{At: readAt, Role: role, Reason: pods.DeclineUnpushedWork, PodUID: pod}
 	if failed != nil {
-		hold, why = workflow.IdleHoldWorkspaceUnread, "the workspace could not be read: "+storetext.FarSideError(failed.Error())
+		decline.Reason = pods.DeclineWorkspaceUnread
+		return decline
 	}
-	decline := store.IdleReleaseDecline{At: readAt, Role: role, Reason: hold.String(), PodUID: pod}
-	if failed == nil {
-		decline.Head, decline.Commits, decline.Changed = work.Head, work.Count, work.Changed
+	decline.Head, decline.Commits, decline.Changed = work.Head, work.Count, work.Changed
+	return decline
+}
+
+// declineHold is the hold a declined check keeps its pod under, and the sentence the hold record
+// and the log line carry: what the read found (declineReason), or that it failed and why. A pod a
+// live role runs in is held under the idle release's names, whose spelling is the decline's reason
+// (workflow's idleHoldNames), and a pod no role runs in, whose launcher read it (unowned,
+// keptDecline), under the unowned_ names, so a reader of the records can tell the two apart.
+func declineHold(unowned bool, work runtime.WorkspaceWork, failed error) (workflow.IdleHold, string) {
+	switch {
+	case failed != nil && unowned:
+		return workflow.IdleHoldUnownedWorkspaceUnread, unreadReason(failed)
+	case failed != nil:
+		return workflow.IdleHoldWorkspaceUnread, unreadReason(failed)
+	case unowned:
+		return workflow.IdleHoldUnownedUnpushedWork, declineReason(work)
 	}
-	return decline, hold, why
+	return workflow.IdleHoldUnpushedWork, declineReason(work)
+}
+
+// unreadReason is what the hold record and the log line say of a read that failed: the far side's
+// error text as the daemon stores it (storetext.FarSideError).
+func unreadReason(failed error) string {
+	return "the workspace could not be read: " + storetext.FarSideError(failed.Error())
 }
 
 // roleDecline is the decline of a check read through a live role's shim. Its pod is the one the
@@ -307,7 +325,8 @@ func (r *outbox) roleDecline(issue string, role claim.Role, readAt time.Time, wo
 			pod = uid
 		}
 	}
-	decline, hold, why := declineOf(role, pod, readAt, work, failed)
+	decline := declineOf(role, pod, readAt, work, failed)
+	hold, why := declineHold(false, work, failed)
 	if failed != nil {
 		return decline, hold, why, nil
 	}
@@ -329,14 +348,10 @@ func (r *outbox) roleDecline(issue string, role claim.Role, readAt time.Time, wo
 // another disk. Its role is the issue's architect, whose workspace-kept notice (keptMessage) is its
 // message: it names each claim's state and what the read found, a failed read's error included, and
 // the store queues it once for each pod (store's recordDecline), whether the read found work or
-// failed. Its hold is recorded under the unowned_ names, so a reader of the records can tell a pod
-// no role runs in from one whose live role holds the work.
+// failed. Its hold is recorded under the unowned_ names (declineHold).
 func (r *outbox) keptDecline(ctx context.Context, issue string, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
-	decline, _, why := declineOf(claim.RoleArchitect, work.PodUID, readAt, work, failed)
-	hold := workflow.IdleHoldUnownedUnpushedWork
-	if failed != nil {
-		hold = workflow.IdleHoldUnownedWorkspaceUnread
-	}
+	decline := declineOf(claim.RoleArchitect, work.PodUID, readAt, work, failed)
+	hold, why := declineHold(true, work, failed)
 	claims, err := r.trees.ClaimStatesIn(ctx, r.project, issue)
 	if err != nil {
 		return store.IdleReleaseDecline{}, hold, "", err
@@ -384,13 +399,11 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 			return err
 		}
 		store.OnCommit(ctx, func() {
-			if payload.Launcher {
-				r.log.Info("outbox: the release of a pod no claim owns is declined, and the pod stays with its workspace; no role process runs there, so the issue's architect is told once for the pod",
-					"issue", issue, "hold", hold.String(), "reason", why, "told", declined.Told)
-				return
-			}
-			r.log.Info("outbox: the idle release of an issue's pod is declined, and the pod stays with its workspace; no release is asked again until a role of the issue starts a turn",
-				"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", declined.Told)
+			// A launcher's decline (payload.Launcher) is of the release of a pod no claim owns,
+			// told to the issue's architect once for the pod; a role's tells that role, and no
+			// release is asked again until a role of the issue starts a turn.
+			r.log.Info("outbox: the release of an issue's pod is declined, and the pod stays with its workspace",
+				"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "launcher", payload.Launcher, "told", declined.Told)
 		})
 		return nil
 	})
