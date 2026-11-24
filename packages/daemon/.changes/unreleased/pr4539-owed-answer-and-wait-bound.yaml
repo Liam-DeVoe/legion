@@ -46,6 +46,7 @@ body: |-
   the normal bounds apply again once the issue holds a slot. A migration adds
   `pod_wake_backstops.armed_at`.
   The role prompt says when a reminder comes and what to do when a completion is refused.
-  The `RETURN_REFUSED` messages and the texts of `HANDOFF_HEAD_MERGED_FORWARD` say the refused
-  call moved nothing, where they said nothing was recorded, since the daemon keeps those refusals
-  under the call's key.
+  The `RETURN_REFUSED` messages say the refused call moved nothing, where they said nothing was
+  recorded, since the daemon keeps those refusals under the call's key. The documentation of
+  `HANDOFF_HEAD_MERGED_FORWARD`, a refusal the daemon keeps the same way, says so too; its
+  messages, which already said the completion changed nothing, are unchanged.

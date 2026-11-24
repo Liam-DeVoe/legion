@@ -1325,9 +1325,10 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 // it (workflow's mergeForwardOnEntry, holdMerger; cybermonklabs/legion#4979), and while the ask has
 // not landed: an ask of the head made of another role in a phase other than implementing, or
 // one that records no asked role. The merger the daemon asked in merging is not held, since the
-// merge is its own work; an ask of the implementer made in testing or in reviewing and carried
-// into merging holds it, and so does an ask with no role that a daemon before #4979 wrote, made
-// in merging or carried into it from a phase other than implementing; an ask made in
+// merge is its own work; an ask of the implementer made in any phase after implementing and
+// carried into merging holds it (the rows carry one from testing and one from reviewing, and one
+// from accepting holds it alike), and so does an ask with no role that a daemon before #4979
+// wrote, made in merging or carried into it from a phase other than implementing; an ask made in
 // implementing, which the move into merging asks again, holds it not; and once such an ask
 // landed, or while it is of another head, it holds no role at all.
 func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLands(t *testing.T) {

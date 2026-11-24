@@ -133,9 +133,15 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     landed, made of another role in a phase other than implementing, an ask that records no
 //     asked role reading as the implementer's - the role asked keeps the merge, since it may
 //     already be at work on it, and the merger is held until it lands (holdMerger) rather than
-//     asked. On a task where a step follows the review or the acceptance, a move into that step
-//     asks nothing either: the conflict was decided by R0's reasons where it was confirmed, and
-//     the step goes on at the head as a tester or a reviewer after the implementer does.
+//     asked. Where an ask of that head made of another role in a phase other than implementing
+//     has landed, and the pull request stands again at that head, as a head that came back
+//     leaves it, the merger is neither held nor asked: an ask that landed holds no role, and
+//     mergeForward asks nothing again at a head an ask made outside implementing names. No hold
+//     then keeps the merger from owing merging (api's owedBy), and its role prompt has it merge
+//     the base forward onto a head GitHub reads DIRTY. On a task where a step follows the review
+//     or the acceptance, a move into that step asks nothing either: the conflict was decided by
+//     R0's reasons where it was confirmed, and the step goes on at the head as a tester or a
+//     reviewer after the implementer does.
 //   - At such a head, a move into a phase after implementing on the task's line (Walk.MovesBack: a
 //     planning after the implementer too, a planning before it never) where a step of the task
 //     still runs before the merge (not classify.MergeComesNext), while the record's ask of that

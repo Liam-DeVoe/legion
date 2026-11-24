@@ -1951,13 +1951,14 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // implementing. Such a hold told role to stop, not to complete at the head pr stands at, and to
 // wait for the daemon's landed message (MergeForwardLanded). So it answers true for the tester in
 // testing and the reviewer in reviewing, held by the ask of the implementer made in that phase,
-// and for the merger in merging, held by an ask of another role made in a phase other than
-// implementing: one made in testing or reviewing and carried into merging, or one that records no
-// asked role, which a daemon before cybermonklabs/legion#4979 wrote, in merging too, and which
-// Asked reads as the implementer's. In merging it holds the merger exactly where a move into
-// merging holds the merger rather than asking it (workflow's mergeForwardOnEntry, which reads it,
-// and holdMerger): an ask made in implementing covers implementing alone, so that move asks the
-// merger again, and an ask of the merger is the merger's own. The role asked is never
+// and for the merger in merging, held by an ask of another role made in any phase but
+// implementing: one of the implementer made in a phase after implementing, such as testing,
+// reviewing or accepting, and carried into merging, or one that records no asked role, which a
+// daemon before cybermonklabs/legion#4979 wrote, in merging too, and which Asked reads as the
+// implementer's. In merging it holds the merger exactly where a move into merging holds the
+// merger rather than asking it (workflow's mergeForwardOnEntry, which reads it, and holdMerger):
+// an ask made in implementing covers implementing alone, so that move asks the merger again, and
+// an ask of the merger is the merger's own. The role asked is never
 // held: the merge is its own open work, the implementer's in implementing and in retro alike and
 // the merger's in merging, so the ask goes to it and no hold does, and reminding it of that work
 // is what the reminder is for. A nil pr, or one that records no ask, holds nothing.

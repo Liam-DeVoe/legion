@@ -546,20 +546,20 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // confirmed, of its row's entry, of an earlier one or of no entry, while it is behind its entry
 // or still serves an earlier run of the issue (holdsUndeliveredEntryTask), and a claim that holds
 // a task of news alone of the issue's run and phase that no turn has confirmed, whatever it owes
-// and whatever entry it serves (holdsUndeliveredNewsTask). It is the one statement of that rule,
-// which every other text of it cites, and those two functions are the one statement of the terms
-// of each kind. It reads the run and the entry c serves as the owed answer and the reminder hold
-// read them (supervise.Claim.ServingAt, through pods.IdleClaim.ReadServing), so a fresh claim
-// whose first task of the issue's run is not yet delivered serves that task's run and entry and
-// owes its phase, and a claim kept across a new run of its issue whose first task of that run is
-// not yet delivered still serves the earlier run. It reads, through tx as the idle view reads them
-// (record.FillIdleClaims), the entry its role's phases row stands on, whether that row records
-// its completion, whether a merge forward of the issue's pull request holds its role and whether
-// that pull request is merged while the issue stands in merging. It answers those facts beside the
-// verdict, for the line of a caller that arms nothing. c is the whole claim (store.ClaimTx), since
-// the run and the entry it serves are read from its pending delivery, the run and the entry it
-// last served and its update round, and the task it holds, of either kind, is that pending
-// delivery.
+// and whatever entry it serves (holdsUndeliveredNewsTask). It is the one statement of that rule
+// in code, which docs/kubernetes.md's restatements name, and those two functions are the one
+// statement of the terms of each kind. It reads the run and the entry c serves as the owed answer
+// and the reminder hold read them (supervise.Claim.ServingAt, through pods.IdleClaim.ReadServing),
+// so a fresh claim whose first task of the issue's run is not yet delivered serves that task's run
+// and entry and owes its phase, and a claim kept across a new run of its issue whose first task of
+// that run is not yet delivered still serves the earlier run. It reads, through tx as the idle
+// view reads them (record.FillIdleClaims), the entry its role's phases row stands on, whether that
+// row records its completion, whether a merge forward of the issue's pull request holds its role
+// and whether that pull request is merged while the issue stands in merging. It answers those
+// facts beside the verdict, for the line of a caller that arms nothing. c is the whole claim
+// (store.ClaimTx), since the run and the entry it serves are read from its pending delivery, the
+// run and the entry it last served and its update round, and the task it holds, of either kind,
+// is that pending delivery.
 //
 // Each writer of an open phase's backstop asks it before it arms one, and none of them reads the
 // run c serves before it asks, so all three hold the worker to one rule, its run included: a

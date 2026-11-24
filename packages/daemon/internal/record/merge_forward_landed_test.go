@@ -12,9 +12,9 @@ import (
 // TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLands also moves the pull
 // request's head to the landed commit, so the head term (an ask of another head holds nothing)
 // already frees each role there, and those rows pass with the landed term gone. This test holds
-// the landed term alone: the ask landed, and the pull request stands again at the head the ask
-// was made of, as a head that came back leaves it (the shape the move into merging names,
-// workflow's mergeForwardOnEntry). Such an ask holds no role, in the phase it was made in and, in
+// the landed term alone: the ask records the head its merge left (MergeForward.Landed), and the
+// pull request stands again at the head the ask was made of, not at that landed head, as a head
+// that came back leaves it. Such an ask holds no role, in the phase it was made in and, in
 // merging, whoever it asked.
 func TestMergeForwardHoldsNoRoleOnceItLandedThoughThePullRequestStandsAgainAtItsHead(t *testing.T) {
 	const head, landed = "c0de", "d00d"
