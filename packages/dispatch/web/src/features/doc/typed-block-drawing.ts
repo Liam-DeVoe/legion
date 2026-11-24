@@ -354,12 +354,18 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
 };
 
 /** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
- *  source: any quote and list markers, the directive's colons, and the block's id as the renderer
- *  writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold),
- *  ended by a space or the closing brace. */
+ *  source: the container markers the block is written after, the directive's colons, and the
+ *  block's id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id
+ *  the shortcut cannot hold), ended by a space or the closing brace. The markers are the ones the
+ *  CLI skips (`withoutContainerMarkers` in packages/envoy-client's `text-asks.ts`), so both read an
+ *  opener by one rule: indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or a number
+ *  and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with a label
+ *  that is not blank), each with the spaces and tabs after it. The renderer writes the first block
+ *  of a list item or of a footnote's definition on the marker's or the label's line. */
 function askOpenerSource(blockId: string): string {
   const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return `^[> \\t-]*:{3,}ask\\{${id}[ }]`;
+  const marker = "(?:>|[-*+][ \\t]|\\d+[.)][ \\t]|\\[\\^(?!\\s*\\])[^\\]\\n]*\\]:)";
+  return `^[ \\t]*(?:${marker}[ \\t]*)*:{3,}ask\\{${id}[ }]`;
 }
 
 /**

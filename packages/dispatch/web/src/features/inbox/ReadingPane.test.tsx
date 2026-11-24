@@ -986,7 +986,9 @@ test("an approval draws the answer of an answered ask in a version this build wr
   };
   // The server's read of the ask, cached under the document page's keys and answered by the
   // network too, whichever of the owner's reads the pane takes it from.
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([answered]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    { ...answered, last_reply: null },
+  ]);
   const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([answered]);
   const { view } = renderPane({
     ask: approvalAsk(),

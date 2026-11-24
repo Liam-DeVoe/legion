@@ -13,11 +13,12 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
  * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
- * containers' quote and list markers, opens the directive, outside fenced code and outside the
- * front matter a document opens with. A line that quotes an opener in code - a fence, or an inline
- * span, which never starts the line - opens no block, and nor does a line of front matter, which
- * is no markdown, so a document's writer cannot make it read as an answer Dispatch recorded. A
- * document of this release with no ask block opens none, and reads no ask.
+ * containers' quote, list and footnote markers, opens the directive, outside fenced code and
+ * outside the front matter a document opens with. A line that quotes an opener in code - a fence,
+ * one opened on a footnote's label line too, or an inline span, which never starts the line -
+ * opens no block, and nor does a line of front matter, which is no markdown, so a document's
+ * writer cannot make it read as an answer Dispatch recorded. A document of this release with no
+ * ask block opens none, and reads no ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
@@ -92,14 +93,15 @@ function fenceRun(text: string): CodeFence | undefined {
   return { char, run };
 }
 
-/** `line` without the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`, or a number
- *  and `.` or `)`, each followed by a space) a block nested in a quote or a list item is written
- *  after. */
+/** `line` without the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or a number
+ *  and `.` or `)`, each followed by a space) and footnote labels (`[^label]:` with a label that is
+ *  not blank, and every space and tab after it, as askgate-new-asks.ts reads pmdoc's footnote
+ *  definition) a block nested in a quote, a list item or a footnote is written after. */
 function withoutContainerMarkers(line: string): string {
   let rest = line;
   for (;;) {
     rest = rest.replace(/^[ \t]+/, "");
-    const marker = /^(?:>|[-*+][ \t]|\d+[.)][ \t])/.exec(rest);
+    const marker = /^(?:>|[-*+][ \t]|\d+[.)][ \t]|\[\^(?!\s*\])[^\]]*\]:)/.exec(rest);
     if (marker === null) return rest;
     rest = rest.slice(marker[0].length);
   }
