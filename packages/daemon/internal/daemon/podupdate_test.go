@@ -1084,12 +1084,14 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 }
 
 // podUpdateAccountDrift is the reason PodDrift gives for a pod running as a ServiceAccount other
-// than the configured one, spelled as drift.go builds it: "account " + <the account the pod runs
-// as> + ", now " + <the configured account> (PodDrift, accountDrift), here a pod left on `default`
-// under a configuration that now names `legion-worker`. This round rig scripts PodDrift, so
-// nothing here reads drift.go: the sandbox package's TestPodDriftNamesTheServiceAccountThePodRunsAs
-// holds that spelling, and this copy of it only makes the round below one opened on the account.
-const podUpdateAccountDrift = "account default, now legion-worker"
+// than the configured one, spelled as drift.go builds it: runtime.BreakingDrift + "account " +
+// <the account the pod runs as> + ", now " + <the configured account> (PodDrift, accountDrift),
+// here a pod left on `default` under a configuration that now names `legion-worker`. The mark
+// says the drift breaks the pod (R7 of dispatch://INFRA-3271, spec v21). This round rig scripts
+// PodDrift, so nothing here reads drift.go: the sandbox package's
+// TestPodDriftNamesTheServiceAccountThePodRunsAs holds that spelling, and this copy of it only
+// makes the round below one opened on the account.
+const podUpdateAccountDrift = runtime.BreakingDrift + "account default, now legion-worker"
 
 // The ServiceAccount a pod runs as reaches its replacement the way every other drift of an issue
 // pod does, and that is the whole of what this test holds. A pod created under the account the

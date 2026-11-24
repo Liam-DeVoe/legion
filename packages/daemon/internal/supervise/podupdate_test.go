@@ -817,6 +817,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.",
 		"When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod.",
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings.",
+		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, and the work on the disk stays on that volume.",
 		"These things go with the pod when the daemon replaces it:",
 		"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with round: \"" + testRound + "\" before you end that turn.",
 		"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
@@ -864,6 +865,32 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	} {
 		if strings.Contains(text, gone) {
 			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
+		}
+	}
+}
+
+// The ask of a round over a drift that breaks the pod (runtime.BreakingDrift at the start of the
+// round's reasons, R7 of dispatch://INFRA-3271, spec v21) does not promise that a read which finds
+// work keeps the pod: no role can keep working in that pod, so the daemon replaces it whatever the
+// read finds, and tells the issue's architect what the read found. Only a volume that the next pod
+// mounts keeps the work on the disk. GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af.
+func TestUpdateTaskOfARoundThatBreaksThePodPromisesNoKeep(t *testing.T) {
+	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.UTC)
+	text := UpdateTask(testRound, runtime.BreakingDrift+"account default, now legion-worker", endsAt)
+	for _, want := range []string{
+		"The round is " + testRound + ".",
+		"This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds.",
+		"Before it replaces the pod, the daemon reads the workspace on the pod's disk and tells the issue's architect what the read found.",
+		"The daemon deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts.",
+		"Only your own push keeps your work. Work that you do not push before the pod goes is lost.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the ask of a round that breaks the pod does not say %q:\n%s", want, text)
+		}
+	}
+	for _, gone := range []string{"the daemon does not replace the pod", "the pod and its disk stay", "or until the round ends with no replacement"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("the ask of a round that breaks the pod says %q, which such a round never does:\n%s", gone, text)
 		}
 	}
 }
