@@ -29,9 +29,9 @@ import { Timestamp } from "../refs/Timestamp";
 
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
- * what the check compared its results with. The server reads it over every result of the
- * check, so no word here comes from the newest result alone: a pass recorded before a fail
- * still stands, and a fail recorded after a pass takes nothing away from it.
+ * what the check compared its results with. The server decides it, and no word here reads a
+ * result: a pass and a fail at one head of a `before_merge` check leave that head `unknown`, and
+ * a check compared with a branch takes its newest result that counts.
  */
 const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
