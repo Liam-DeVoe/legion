@@ -138,9 +138,6 @@ func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) 
 			g := newRig(t, nil, withoutCredentialWait(),
 				withOptions(func(o *Options) {
 					o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement}
-					o.RoleApps.Plan = func(context.Context, string, claim.Role) (appauth.Planned, error) {
-						return appauth.Planned{}, answer("plan")
-					}
 					o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
 						if token != keyed {
 							return "", false, nil
@@ -148,7 +145,11 @@ func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) 
 						return "", false, answer("actsAs")
 					}
 				}),
-				withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+				// The plan reader reaches the runtime's roleApps through Options.RoleApps, which this
+				// option sets with the credential that reads it.
+				withProjectTokensOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, func(context.Context, string, claim.Role) (appauth.Planned, error) {
+					return appauth.Planned{}, answer("plan")
+				}))
 			g.spawn(rootSpec(t))
 			g.spawn(testSpec(t, keyed, "checker", testTree))
 			sent := len(g.sent(keyed))
