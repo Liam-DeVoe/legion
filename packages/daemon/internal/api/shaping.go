@@ -1064,7 +1064,7 @@ const intakeGiveUpsContract = 228
 // no key of the state), so a caller from that contract to 245 is served 228's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
-// is, and it is the last number of answers.go's SupportedContracts, which names the constant.
+// is, and answers.go's SupportedContracts names the constant.
 const podHoldContract = 246
 
 // withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;

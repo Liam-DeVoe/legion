@@ -57,18 +57,18 @@ const referencesGrowthBound = 6.5
 // blocks: 10,000 links, 5 into each block. The server's sessions run with JIT off, as production's
 // Cloud SQL runs every statement: it does not support PostgreSQL's LLVM JIT.
 //
-// The budget alone measures the machine as much as the query: the negative control below reads
-// that issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So
-// the test also seeds an issue a fifth the size: its spec and 8 documents of 50 blocks, so 410 own targets, and
-// 100 documents of 20 blocks that link into them, 2,000 links, 5 into each block. A read linear in
-// its links reads 5 times the rows at the large issue as at the small one; a test of each link
-// against every own target makes 10,000 × 2,042 comparisons at the one and 2,000 × 410 at the
-// other, 25 times as many. refs.Closure, the read the route makes, reads each issue 3 times, the
-// two in turn, with no budget (closureRead), and the median of the large issue's reads is at most
-// referencesGrowthBound times the median of the small one's. The route then reads the large issue
-// 3 times, and their median answers 200 inside the budget: one read a slow spell of the machine
-// pushes past it does not fail the test, and two do. Each issue has a database and a server of
-// its own (seedLinkedIntoIssue).
+// The budget alone measures the machine as much as the query: the negative control below reads that
+// issue in 0.9 s on the build farm, inside it, and in about 6 s in the implementer's pod. So the
+// test also seeds an issue a fifth the size: its spec and 8 documents of 50 blocks, so 410 own
+// targets, and 100 documents of 20 blocks that link into them, 2,000 links, 5 into each block. A
+// read linear in its links reads 5 times the rows at the large issue as at the small one; a test of
+// each link against every own target makes 10,000 × 2,042 comparisons at the one and 2,000 × 410 at
+// the other, 25 times as many. refs.Closure, the read the route makes, reads each issue 3 times,
+// the two in turn, with no budget (closureRead), and the median of the large issue's reads is at
+// most referencesGrowthBound times the median of the small one's. The route then reads the large
+// issue 3 times, and their median answers 200 inside the budget: one read a slow spell of the
+// machine pushes past it does not fail the test, and two do. Each issue has a database and a server
+// of its own (seedLinkedIntoIssue).
 //
 // One document of each side is written through the API, and the rest are copies of its rows
 // written in SQL (seedDocumentCopies), so the rows the read reads are as the server's own writes

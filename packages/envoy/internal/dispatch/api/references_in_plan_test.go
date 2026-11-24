@@ -19,13 +19,12 @@ import (
 
 // The references read's in statement (refs' linksInQuery) leaves the issue's own nodes out of the
 // nodes that link into them by an anti-join, under each plan-cache mode (explaintest's
-// PlanCacheModes). Over the seed of
-// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks's large issue (seedLinkedIntoIssue
-// with 40 documents of its own and 500 that link into them), its plan,
-// read by EXPLAIN (ANALYZE, BUFFERS), holds a join node of join type Anti whose condition names
-// the own relation's columns, x.kind and x.id, and no node whose filter holds
-// `ROW(...) <> ALL ((InitPlan n).col1)`: a test of each link row against an array of the own
-// nodes.
+// PlanCacheModes). Over the large issue of
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks (seedLinkedIntoIssue with 40
+// documents of its own and 500 that link into them), its plan, read by EXPLAIN (ANALYZE, BUFFERS),
+// holds a join node of join type Anti whose condition names the own relation's columns, x.kind and
+// x.id, and no node whose filter holds `ROW(...) <> ALL ((InitPlan n).col1)`: a test of each link
+// row against an array of the own nodes.
 //
 // That test costs link rows × own nodes: Postgres does not hash an array an InitPlan reads, so it
 // compares each link row with the own nodes in turn, here each of 10,000 link rows with the 2,042
