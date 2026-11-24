@@ -3983,83 +3983,87 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * follow the font - are `"lines"`.
  */
 const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
-  // The priority part alone is written, not measured: since dispatch://INFRA-2160/spec the
-  // priority is the trigger of its menu, as the Snooze and the status are.
   chromium: {
     "project Board": [
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
+        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
+        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
+        parts:
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
+        parts:
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
+        parts:
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
+        parts:
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
+        parts:
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
+        parts:
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
       },
     ],
     "project List": [
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-1" | button "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | "Priority" | combobox "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
       },
       {
         box: [49, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-2" | button "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | "Priority" | combobox "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-3" | button "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | "Priority" | combobox "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-4" | button "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | "Priority" | combobox "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-5" | button "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | "Priority" | combobox "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-6" | button "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | "Priority" | combobox "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-7" | button "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | "Priority" | combobox "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-8" | button "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | "Priority" | combobox "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
     ],
     "Agents page": [
@@ -4091,77 +4095,83 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAt
     "project Board": [
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
+        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
+        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
+        parts:
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
+        parts:
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
+        parts:
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
+        parts:
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
+        parts:
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
+        parts:
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
       },
     ],
     "project List": [
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | button "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Priority" | combobox "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
       },
       {
         box: [65, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | button "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | button "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Priority" | combobox "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | button "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Priority" | combobox "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | button "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Priority" | combobox "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | button "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Priority" | combobox "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | button "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Priority" | combobox "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | button "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Priority" | combobox "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
     ],
     "Agents page": [
@@ -7501,7 +7511,16 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // where the row marked last stood. A focused control taken away, for which Firefox and WebKit
 // fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
 // focus row (e2e/playwright.config.ts).
-test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls by no more than the line that closes above the list @firefox @webkit", async ({
+// INFRA-2160's R8, merged over this row: the item after the last of the rows a bulk action is
+// on is selected and its row has the keyboard focus, not a control in it. That row is the one now
+// at the marked row's place, and where it stands partly out of the reader's sight there, the
+// hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll a
+// landing may make (INFRA-3135's ruling of 2026-11-21 12:3xZ) beside the line that closes above
+// the list. Measured at 390x664 in the full lane's Jobs at the merge's head
+// (infra-2160-fullproof-shard-2 and -4), with the bar's own focus scrolling to that row while the
+// threads still stood: the row stood at the window's top, 266 px above the place, for one thread,
+// and 1045 px above the window for two, in Chromium, Firefox and WebKit.
+test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place, and scrolls by no more than the line that closes above the list and what shows that row whole @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -7523,7 +7542,8 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
   const bar = page.getByRole("toolbar", { name: "Selected rows" });
   const inboxRowOf = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
   /** Where the window and the list's box stand, and what holds the focus: its name, the row it
-   *  is in, its top, and whether its box is inside the window and inside the list's box. */
+   *  is in, whether it is that row itself, its top, and whether its box is inside the window and
+   *  inside the list's box. */
   const landing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
@@ -7531,7 +7551,15 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       const scrollY = Math.round(window.scrollY);
       const focused = document.activeElement;
       if (!(focused instanceof HTMLElement) || focused === document.body) {
-        return { inSight: false, name: "the body", row: null, scrollTop, scrollY, top: null };
+        return {
+          inSight: false,
+          isRow: false,
+          name: "the body",
+          row: null,
+          scrollTop,
+          scrollY,
+          top: null,
+        };
       }
       const own = focused.getBoundingClientRect();
       const clip = frame?.getBoundingClientRect();
@@ -7547,6 +7575,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
           own.bottom <= bottom + 1 &&
           own.left >= -1 &&
           own.right <= window.innerWidth + 1,
+        isRow: focused.matches("[data-inbox-row]"),
         name:
           focused.getAttribute("aria-label") ||
           label ||
@@ -7558,8 +7587,11 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         top: Math.round(own.top),
       };
     });
-  /** Where the list's box stands in the page and where a row stands on screen: the row `id`
-   *  names, else the row that holds the focus. */
+  /** Where the list's box stands in the page and whether it is the box that scrolls the rows,
+   *  the part of the window the reader sees through it, less the scroll padding of the box that
+   *  scrolls the rows - the window's `scroll-padding-bottom` below 1280 px (`styles.css`), which a
+   *  nearest-edge scroll leaves clear as `scrollIntoView` does - and where a row stands on screen
+   *  and how tall it is: the row `id` names, else the row that holds the focus. */
   const rowAndList = (id: string | null) =>
     page.evaluate((rowId) => {
       const frame = document.querySelector('[data-testid="inbox-list"]');
@@ -7567,9 +7599,32 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         rowId === null
           ? document.activeElement?.closest("[data-inbox-row]")
           : document.querySelector(`[data-inbox-row="${CSS.escape(rowId)}"]`);
+      const box = frame?.getBoundingClientRect();
+      const { overflowY } = frame === null ? { overflowY: "visible" } : getComputedStyle(frame);
+      const listScrolls =
+        frame !== null &&
+        (overflowY === "auto" || overflowY === "scroll") &&
+        frame.scrollHeight > frame.clientHeight;
+      const padded = getComputedStyle(
+        listScrolls && frame !== null ? frame : document.documentElement
+      );
+      const [from, to] =
+        listScrolls && box !== undefined ? [box.top, box.bottom] : [0, window.innerHeight];
       return {
-        listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+        listScrolls,
+        listTop: (box?.top ?? 0) + window.scrollY,
+        rowHeight: row?.getBoundingClientRect().height ?? 0,
         rowTop: row?.getBoundingClientRect().top ?? null,
+        viewBottom: Math.min(
+          to - (Number.parseFloat(padded.scrollPaddingBottom) || 0),
+          box?.bottom ?? window.innerHeight,
+          window.innerHeight
+        ),
+        viewTop: Math.max(
+          from + (Number.parseFloat(padded.scrollPaddingTop) || 0),
+          box?.top ?? 0,
+          0
+        ),
       };
     }, id);
   const wrong: string[] = [];
@@ -7649,32 +7704,36 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         wrong.push(
           `${where}: the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
         );
-      } else if (now.row !== after) {
+      } else if (now.row !== after || !now.isRow) {
         wrong.push(
-          `${where}: the focus is on ${now.name}, not on "${afterName}", the row now at the marked row's place (${numbers})`
+          `${where}: the focus is on ${now.name}, not on the row of "${afterName}", the row now at the marked row's place (${numbers})`
         );
       }
-      // The landing's row stands where the row marked last stood on screen, and the window moved
-      // by the height that closed above the list in the press's commit and no more: below `sm`,
-      // Mark all read's line, which goes with the last unread threads. One read of the list's box
-      // and the landing's row: every hand-off of the press has run, and nothing else moves them.
+      // The landing's row stands where the row marked last stood on screen, else, where it stands
+      // partly out of sight there, at the nearest edge that shows it whole (`nearestEdgeTop`).
+      // The box that scrolls the rows moved by that scroll, and the window by the height that
+      // closed above the list in the press's commit besides, and no more: below `sm`, Mark all
+      // read's line, which goes with the last unread threads. One read of the list's box and the
+      // landing's row: every hand-off of the press has run, and nothing else moves them.
       const placed = await rowAndList(null);
       const closed = stood.listTop - placed.listTop;
-      if (
-        placed.rowTop === null ||
-        stood.rowTop === null ||
-        Math.abs(placed.rowTop - stood.rowTop) > 1
-      ) {
+      const atPlace =
+        stood.rowTop === null
+          ? null
+          : nearestEdgeTop(stood.rowTop, placed.rowHeight, placed.viewTop, placed.viewBottom);
+      if (placed.rowTop === null || atPlace === null || Math.abs(placed.rowTop - atPlace) > 1) {
         wrong.push(
-          `${where}: the row of ${now.name} stands at ${placed.rowTop} px, not where the row marked last stood, at ${stood.rowTop} px (${numbers})`
+          `${where}: the row of ${now.name} stands at ${placed.rowTop} px, not where the row marked last stood, at ${stood.rowTop} px, nor at the nearest edge that shows it whole there, ${atPlace} px (${numbers})`
         );
       }
+      const shown = stood.rowTop === null || atPlace === null ? 0 : stood.rowTop - atPlace;
+      const [windowBy, listBy] = placed.listScrolls ? [-closed, shown] : [shown - closed, 0];
       if (
-        Math.abs(before.scrollY - now.scrollY - closed) > 1 ||
-        now.scrollTop !== before.scrollTop
+        Math.abs(now.scrollY - before.scrollY - windowBy) > 1 ||
+        Math.abs(now.scrollTop - before.scrollTop - listBy) > (listBy === 0 ? 0 : 1)
       ) {
         wrong.push(
-          `${where}: the press scrolled by more than the ${Math.round(closed)} px that closed above the list, with the focus on ${now.name}: ${numbers}`
+          `${where}: the press scrolled by more than the ${Math.round(closed)} px that closed above the list and the ${Math.round(shown)} px that show ${now.name} whole: ${numbers}`
         );
       }
     }
@@ -8313,14 +8372,23 @@ test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on
 // landing stood in sight at 270 px. A focused control taken away, for which Firefox and WebKit
 // fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
 // focus row (e2e/playwright.config.ts).
-test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus to the next row's Dismiss in sight, at 1440 and 390 @firefox @webkit", async ({
+// INFRA-2160's R8, merged over this row: the Dismiss of the item in hand - the first thread,
+// selected beside the reading column at 1440, and every row below the column's width - selects
+// the item after it and gives that item's row the keyboard focus, not a control in it. That row
+// moves up into the place, and where it stands partly out of the reader's sight there, the
+// hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll the
+// 12:3xZ ruling allows a landing. Measured at 390x664 in the full lane's Jobs at the merge's head
+// (infra-2160-fullproof-shard-2 and -4): the row stood 190 px above the window once the first
+// thread went, and the window scrolled up by those 190 px, in Chromium, Firefox and WebKit.
+test("a thread's Dismiss in the Inbox's list hands the focus to the next row, and scrolls only to show that row whole, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const list = page.getByTestId("inbox-list");
   /** Where the window and the list's box stand and how far each can scroll, and what holds the
-   *  focus: its name, the row it is in, whether it is a row's Dismiss, its top, and whether its box
-   *  is inside the window and inside the list's box. */
+   *  focus: its name, the row it is in, whether it is that row itself, its top and height, the
+   *  part of the window the reader sees through the list's box, and whether its box is inside
+   *  it. */
   const landing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
@@ -8335,11 +8403,14 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
       if (!(focused instanceof HTMLElement) || focused === document.body) {
         return {
           ...scroll,
-          dismiss: false,
+          height: 0,
           inSight: false,
+          isRow: false,
           name: "the body",
           row: null,
           top: null,
+          viewBottom: window.innerHeight,
+          viewTop: 0,
         };
       }
       const own = focused.getBoundingClientRect();
@@ -8351,15 +8422,18 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
       const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
       return {
         ...scroll,
-        dismiss: focused.matches("[data-inbox-dismiss]"),
+        height: own.height,
         inSight:
           own.top >= top - 1 &&
           own.bottom <= bottom + 1 &&
           own.left >= -1 &&
           own.right <= window.innerWidth + 1,
+        isRow: focused.matches("[data-inbox-row]"),
         name: `${focused.tagName.toLowerCase()} "${words}"`,
         row: focused.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null,
-        top: Math.round(own.top),
+        top: own.top,
+        viewBottom: bottom,
+        viewTop: top,
       };
     });
   const wrong: string[] = [];
@@ -8385,17 +8459,13 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
     // One read of the order: the wait above found three thread rows drawn, newest first.
     const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
     const row = page.locator(`[data-inbox-row="${target}"]`);
+    // The first thread is the item in hand: selected beside the reading column, as every row is
+    // below its width.
+    await selectRow(page, target);
     // One read is the answer: the list is drawn, and nothing moves its rows before the press.
     const next = await row.evaluate(
       (node) => node.nextElementSibling?.getAttribute("data-inbox-row") ?? "no row"
     );
-    const nextDismiss = page.locator(`[data-inbox-row="${next}"] [data-inbox-dismiss]`);
-    await expect(
-      nextDismiss,
-      `${where}: the row after the first thread draws no Dismiss`
-    ).toHaveCount(1);
-    // One read of the name: the next row is drawn, and its Dismiss names its thread.
-    const nextName = (await nextDismiss.getAttribute("aria-label")) ?? next;
     await row.locator("[data-inbox-dismiss]").focus();
     await nextFrames(page);
     // One instant is the point: where the window and the list stand just before the press.
@@ -8408,52 +8478,89 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
     // One read is the answer: every hand-off of the press has run, and nothing else moves.
     const now = await landing();
     const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})`;
-    if (now.row !== next || !now.dismiss) {
+    if (now.row !== next || !now.isRow) {
       wrong.push(
-        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, not on "${nextName}", the Dismiss of the row now at its place (${numbers})`
+        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, not on the row now at its place, "${next}" (${numbers})`
       );
     } else if (!now.inSight) {
       wrong.push(
         `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
       );
     }
-    // A box the page clamped stands at its farthest scroll now, and stood farther before.
+    // A box the page clamped stands at its farthest scroll now, and stood farther before. A box
+    // may also move by the nearest-edge scroll that shows the row the focus is on whole: the row
+    // stood at `top + moved` before that move, and stands where `nearestEdgeTop` puts it now.
     const windowClamped = now.scrollY >= now.farthestY - 1 && before.scrollY > now.farthestY;
     const listClamped = now.scrollTop >= now.farthestTop - 1 && before.scrollTop > now.farthestTop;
-    if (Math.abs(now.scrollY - before.scrollY) > 1 && !windowClamped) {
-      wrong.push(
-        `${where}: after Enter on the first thread's Dismiss the window scrolled ${now.scrollY - before.scrollY} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
-      );
-    }
-    if (Math.abs(now.scrollTop - before.scrollTop) > 1 && !listClamped) {
-      wrong.push(
-        `${where}: after Enter on the first thread's Dismiss the list scrolled ${now.scrollTop - before.scrollTop} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
-      );
+    for (const [box, moved, clamped] of [
+      ["window", now.scrollY - before.scrollY, windowClamped],
+      ["list", now.scrollTop - before.scrollTop, listClamped],
+    ] as const) {
+      const shownWhole =
+        now.top !== null &&
+        Math.abs(
+          nearestEdgeTop(now.top + moved, now.height, now.viewTop, now.viewBottom) - now.top
+        ) <= 1;
+      if (Math.abs(moved) > 1 && !clamped && !shownWhole) {
+        wrong.push(
+          `${where}: after Enter on the first thread's Dismiss the ${box} scrolled ${moved} px, more than shows ${now.name} whole at ${now.top} px (${numbers})`
+        );
+      }
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+/** Where a box `height` tall whose top stands at `top` stands once it is scrolled to its nearest
+ *  edge in the part of the window the reader sees from `viewTop` to `viewBottom`, as
+ *  `scrollIntoView({ block: "nearest" })` puts it: where it stands while it is wholly in that part
+ *  or overhangs both its ends; else, with one end out, at the top of that part where the top is
+ *  out and it fits, or where the foot is out and it does not, and at its foot otherwise. INFRA-
+ *  2160's R8 hand-off scrolls the row it focuses so (`focusIntoView`), the one scroll a landing may
+ *  make (INFRA-3135's ruling of 2026-11-21 12:3xZ). */
+function nearestEdgeTop(top: number, height: number, viewTop: number, viewBottom: number): number {
+  const bottom = top + height;
+  const fits = height <= viewBottom - viewTop;
+  if ((top >= viewTop && bottom <= viewBottom) || (top < viewTop && bottom > viewBottom)) {
+    return top;
+  }
+  return top < viewTop === fits ? viewTop : viewBottom - height;
+}
+
 /** Where the keyboard focus is, read once: the focused element's tag and name, whether it is the
  *  body, whether it stands inside an element `inside` matches (a CSS selector, or none), whether
- *  its box stands wholly inside the window, and where the window stands. */
+ *  its box stands wholly inside the window, whether, taller than the window less its scroll
+ *  padding, it fills all of that view - as a nearest-edge scroll leaves such a box, the most of it
+ *  the reader can see at once - and where the window stands. */
 function focusPlace(
   page: Page,
   inside?: string
-): Promise<{ body: boolean; inSight: boolean; inside: boolean; name: string; scrollY: number }> {
+): Promise<{
+  body: boolean;
+  fills: boolean;
+  inSight: boolean;
+  inside: boolean;
+  name: string;
+  scrollY: number;
+}> {
   return page.evaluate((inside) => {
     const scrollY = Math.round(window.scrollY);
     const focused = document.activeElement;
     if (!(focused instanceof HTMLElement) || focused === document.body) {
-      return { body: true, inSight: false, inside: false, name: "the body", scrollY };
+      return { body: true, fills: false, inSight: false, inside: false, name: "the body", scrollY };
     }
     const own = focused.getBoundingClientRect();
     const words = (focused.getAttribute("aria-label") || focused.textContent || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 40);
+    const padded = getComputedStyle(document.documentElement);
+    const viewTop = Number.parseFloat(padded.scrollPaddingTop) || 0;
+    const viewBottom = window.innerHeight - (Number.parseFloat(padded.scrollPaddingBottom) || 0);
     return {
       body: false,
+      fills:
+        own.height > viewBottom - viewTop && own.top <= viewTop + 1 && own.bottom >= viewBottom - 1,
       inSight:
         own.top >= -1 &&
         own.bottom <= window.innerHeight + 1 &&
@@ -8490,6 +8597,12 @@ function focusPlace(
 // press, which each engine moves to the body at its own time, and a focused control taken away, for
 // which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects
 // that names the page-own focus row (e2e/playwright.config.ts).
+// INFRA-2160's R8, merged over this row: a decline is the reader's answer to the item in hand, so
+// once it lands the row of the question after it is selected and takes the focus, and the hand-off
+// brings that row into sight at its nearest edge (`focusIntoView`). A row taller than the window
+// cannot stand wholly in it: in sight is then filling the window, less its scroll padding below
+// 1280 px (`styles.css`). Measured at 390x664 in builds Job infra-2160-fl-diag: the next question's
+// card, 718 px tall, took the focus at -336 px and was brought to -134 to 584 px.
 test("the Inbox's Decline dialog keeps the keyboard focus inside itself while its write is out, and on a control after it lands @firefox @webkit", async ({
   page,
 }) => {
@@ -8570,7 +8683,7 @@ test("the Inbox's Decline dialog keeps the keyboard focus inside itself while it
     const landed = await focusPlace(page);
     if (landed.body) {
       wrong.push(`${where}: after the decline lands the focus is on the body`);
-    } else if (!landed.inSight) {
+    } else if (!landed.inSight && !landed.fills) {
       wrong.push(
         `${where}: after the decline lands the focus is on ${landed.name}, out of sight (window.scrollY ${landed.scrollY})`
       );

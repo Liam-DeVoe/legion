@@ -361,9 +361,7 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  // CORE's default, acme/gadgets, is the Repository list's choice beside the issue's own,
-  // acme/widgets.
-  await putProjectDefaultRepository("CORE", "acme/gadgets");
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const issue = await createIssue({ project: "CORE", title: "Repository under a held save" });
   await patchIssue(issue.key, { repo: "acme/widgets" });
   const renamed = "Repository under a held save, renamed while it is out";

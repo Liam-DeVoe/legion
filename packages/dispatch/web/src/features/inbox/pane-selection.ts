@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { focusIntoView } from "../../components/focus-place";
+import { focusIntoView, focusNoScroll } from "../../components/focus-place";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
@@ -150,10 +150,11 @@ export interface PaneSelection extends InboxHandOff {
    * rather than when it is wanted.
    */
   showing: (listed: readonly PlacedRow[]) => InboxListRow | undefined;
-  /** The element a landed hand-off is about to give the focus to - the row after the rows acted
-   *  on, or the list's empty message - or null while none is waiting: what the bar of selected
-   *  rows hands the focus to first as it goes (`SelectionBar`'s `returnFocus`). */
-  handOffTarget: () => HTMLElement | null;
+  /** Gives the element a landed hand-off is waiting to give the focus to - the row after the
+   *  rows acted on, or the list's empty message - the focus now, by the hand-off's own rule
+   *  (`focusTarget`), and answers whether one was waiting: what the bar of selected rows hands
+   *  the focus on by first as it goes (`SelectionBar`'s `returnFocus`). */
+  focusHandOff: () => boolean;
 }
 
 /**
@@ -213,6 +214,12 @@ export function usePaneSelection({
   const begun = useRef<readonly HandOff[]>([]);
   /** The hand-off that has landed and whose target has not taken the focus yet. */
   const focusTo = useRef<HandOff | undefined>(undefined);
+  /** A target `focusTarget` gave the focus with no scroll while rows of `acted` still stood
+   *  before it: once none does, it is scrolled into view where the reader cannot see the whole
+   *  of it, while it still holds the focus. */
+  const intoView = useRef<{ acted: ReadonlySet<string>; target: HTMLElement } | undefined>(
+    undefined
+  );
   /** A commit for the focus to move in: a landing in card mode changes nothing else that
    *  renders. */
   const [, setLandings] = useState(0);
@@ -271,6 +278,34 @@ export function usePaneSelection({
     target === null
       ? (region.current?.querySelector<HTMLElement>(EMPTY_SELECTOR) ?? null)
       : rowIn(region.current, target);
+  /** Whether a row of `acted` still stands before `target` in this list: the target then
+   *  stands below where it will stand once they have gone. */
+  const actedBefore = (acted: ReadonlySet<string>, target: HTMLElement): boolean =>
+    [...acted].some((id) => {
+      const row = rowIn(region.current, id);
+      return (
+        row !== null &&
+        (row.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+      );
+    });
+  /**
+   * Gives a hand-off's `target` the keyboard focus. While a row of `acted` still stands before
+   * it in this list, with no scroll: the rows acted on go in a later commit - a dismiss's
+   * optimistic removal, an answered row the list lets go of, a snooze folding its rows away -
+   * and their going moves the target up into the place the reader saw them in, where the list's
+   * anchor holds it (`ViewportAnchor`). A scroll to the target where it stands below them would
+   * carry the view past that place by the height still to go. So it is scrolled into view only
+   * once they have gone (`intoView`), where the reader cannot see the whole of it then; with
+   * none of them before it, at once (`focusIntoView`).
+   */
+  const focusTarget = (acted: ReadonlySet<string>, target: HTMLElement): void => {
+    if (actedBefore(acted, target)) {
+      focusNoScroll(target);
+      intoView.current = { acted, target };
+    } else {
+      focusIntoView(target);
+    }
+  };
   /** Takes the begun action on rows that include every one of `ids` off the record, and gives
    *  it back, or undefined where none was begun on them. */
   const takeBegun = (ids: readonly string[]): HandOff | undefined => {
@@ -536,26 +571,39 @@ export function usePaneSelection({
   });
 
   // The hand-off's focus, after every commit: the row the reader's action sends them to, or the
-  // list's empty message, takes the keyboard focus once the page draws it, and is scrolled into
-  // view where the reader cannot see the whole of it (`focusIntoView`), since WebKit scrolls a
-  // focused element into view only a frame later; a row in sight moves nothing. After every
-  // commit, because the acted row and the control that held the focus leave in their own commits
-  // - a closing dialog's own return of the focus (`useDialog`), the column's card swapped for the
-  // next one, a row taken off the list - and a passive effect runs after their cleanups, so the
-  // target wins over each of them and over the page's rescue, which waits a frame and a task.
-  // The empty message is drawn only once the acted rows have gone, so the hand-off waits for it
-  // while they are still drawn, and is spent once they have gone without it.
+  // list's empty message, takes the keyboard focus once the page draws it (`focusTarget`), and is
+  // scrolled into view where the reader cannot see the whole of it - once no row acted on stands
+  // above it - since WebKit scrolls a focused element into view only a frame later; a row in
+  // sight moves nothing. After every commit, because the acted row and the
+  // control that held the focus leave in their own commits - a closing dialog's own return of the
+  // focus (`useDialog`), the column's card swapped for the next one, a row taken off the list -
+  // and a passive effect runs after their cleanups, so the target wins over each of them and over
+  // the page's rescue, which waits a frame and a task. The empty message is drawn only once the
+  // acted rows have gone, so the hand-off waits for it while they are still drawn, and is spent
+  // once they have gone without it.
   //
   // An action still in the air can lose its rows first - a bulk snooze folds them at once - and,
   // with the focus in one of them, the focus with them: the target takes it then rather than the
   // rescue, and the landing finds the reader there.
+  //
+  // A target given the focus while rows acted on still stood before it is scrolled into view in
+  // the first commit that finds none of them there (`intoView`): after the list's anchor has held
+  // it at their place, which leaves a target in sight there where it is.
   useEffect(() => {
+    const shown = intoView.current;
+    if (
+      shown !== undefined &&
+      (document.activeElement !== shown.target || !actedBefore(shown.acted, shown.target))
+    ) {
+      intoView.current = undefined;
+      if (document.activeElement === shown.target) focusIntoView(shown.target);
+    }
     const handOff = focusTo.current;
     if (handOff !== undefined) {
       const target = targetElement(handOff.target);
       if (target !== null) {
         focusTo.current = undefined;
-        focusIntoView(target);
+        focusTarget(handOff.acted, target);
       } else if (!drawsAny(handOff.acted)) {
         focusTo.current = undefined;
       }
@@ -581,8 +629,14 @@ export function usePaneSelection({
 
   return {
     ...stableHandOffs,
-    handOffTarget: () =>
-      focusTo.current === undefined ? null : targetElement(focusTo.current.target),
+    focusHandOff: () => {
+      const handOff = focusTo.current;
+      const target = handOff === undefined ? null : targetElement(handOff.target);
+      if (handOff === undefined || target === null) return false;
+      focusTo.current = undefined;
+      focusTarget(handOff.acted, target);
+      return true;
+    },
     id: selectedId,
     select,
     selectedRow,

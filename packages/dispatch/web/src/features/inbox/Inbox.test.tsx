@@ -4073,6 +4073,109 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
   }
 });
 
+// The bar's Dismiss over a thread near the window's foot, with the row after it standing partly
+// below the window, 700 to 800 px down a 768 px window. That row takes the focus (R8: the item
+// after the last of the rows acted on is selected and its row has the keyboard focus) while the
+// thread is still drawn, and with no scroll: scrolled into sight where it stands then, below the
+// thread, the view would be carried past the thread's place by the thread's height once the
+// thread goes. Measured in the browser at 390x664 (table-controls.e2e.ts's bulk Dismiss deep in
+// the list): the bar's own focus scrolled the window to the row while the threads stood, and
+// their going left it at the window's top, or 1045 px above it for two. The thread goes, the row
+// moves up into its place, wholly in the reader's sight, and nothing has scrolled.
+test("a bulk Dismiss gives the row after the marked thread the focus with no scroll while the thread still stands above it", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Four rows above the window: the eleventh row, the one marked, stands 600 to 700 px down it,
+  // and the twelfth 700 to 800 px.
+  const laidOut = layRowsDown(4 * LAID_ROW_PX);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const [marked, after] = rowIds().slice(10, 12) as [string, string];
+    await user.click(markOf(marked));
+    await screen.findByText("1 selected");
+    const place = laidRowOf(marked).getBoundingClientRect().top;
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).not.toContain(marked));
+    const landing = laidRowOf(after);
+    await waitFor(() => expect(landing).toHaveFocus());
+    // Every focus the page asked the landing to take asked it with no scroll.
+    const asked = moves.focused.filter((move) => move.target === landing);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked
+        .filter((move) => move.options?.preventScroll !== true)
+        .map((move) => JSON.stringify(move.options ?? "no options"))
+    ).toEqual([]);
+    expect(moves.scrolled.map((element) => element.outerHTML.slice(0, 120))).toEqual([]);
+    expect(landing.getBoundingClientRect().top).toBe(place);
+    expect(window.scrollY).toBe(4 * LAID_ROW_PX);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    reads();
+  }
+});
+
+// A thread's own Dismiss below the column's width, the same way: the row after the thread stands
+// 700 to 800 px down the 768 px window while the thread is still drawn, and takes the focus with
+// no scroll (R8). Scrolled into sight where it stands then, below the thread, it would be carried
+// past the thread's place once the thread goes. The thread goes, the row moves up into its place,
+// wholly in the reader's sight, and nothing has scrolled.
+test("a thread's own Dismiss gives the row after it the focus with no scroll while the thread still stands above it", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Four rows above the window: the eleventh row, the one dismissed, stands 600 to 700 px down
+  // it, and the twelfth 700 to 800 px.
+  const laidOut = layRowsDown(4 * LAID_ROW_PX);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const [dismissed, after] = rowIds().slice(10, 12) as [string, string];
+    const dismiss = await waitFor(() => {
+      const button = document.querySelector<HTMLElement>(`[data-inbox-dismiss="${dismissed}"]`);
+      if (button === null) throw new Error(`${dismissed} draws no Dismiss`);
+      return button;
+    });
+    const place = laidRowOf(dismissed).getBoundingClientRect().top;
+
+    await user.click(dismiss);
+    await waitFor(() => expect(rowIds()).not.toContain(dismissed));
+    const landing = laidRowOf(after);
+    await waitFor(() => expect(landing).toHaveFocus());
+    // Every focus the page asked the landing to take asked it with no scroll.
+    const asked = moves.focused.filter((move) => move.target === landing);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked
+        .filter((move) => move.options?.preventScroll !== true)
+        .map((move) => JSON.stringify(move.options ?? "no options"))
+    ).toEqual([]);
+    expect(moves.scrolled.map((element) => element.outerHTML.slice(0, 120))).toEqual([]);
+    expect(landing.getBoundingClientRect().top).toBe(place);
+    expect(window.scrollY).toBe(4 * LAID_ROW_PX);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    reads();
+  }
+});
+
 // An answer from a card deep in the list, with the reader's focus moved on to a row below it
 // while the answer is out. The Inbox keeps the answered row where the reader saw it until the
 // answer lands, and lets it go then: the reader's own press takes it away, so the rows after it

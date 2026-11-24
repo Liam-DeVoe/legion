@@ -1802,18 +1802,20 @@ function InboxBody({
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus, or the control in it that held the focus: the row a press
-      // of the bar hands the reader on to (R8). Else the checkbox of the row the reader marked
+      // of the bar hands the reader on to (R8), which the hand-off focuses itself, with no scroll
+      // while the rows the press takes away still stand above it (`focusHandOff`): the bar's own
+      // focus would scroll the view to that row where it stands below them, and their going then
+      // carries it past the place the reader saw. Else the checkbox of the row the reader marked
       // last while the list draws it and no press is taking it away, brought into view. Else the
       // hand-off above (`landAtPlace`) has put the focus itself, with no scroll, after a press
       // that took that row away or with no row marked. The list column's own stop is the last
       // place the focus can go: a Move to Inbox that empties the Dismissed view leaves no other
       // row, and the view's empty message takes the focus from there once it is drawn.
       returnFocus={() =>
-        paneSelection.handOffTarget() ??
-        (landAtPlace()
+        paneSelection.focusHandOff() || landAtPlace()
           ? null
           : (rowIn(listRef.current, lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
-            focusListStop(listScroller.current)))
+            focusListStop(listScroller.current))
       }
       state={barState}
     >
