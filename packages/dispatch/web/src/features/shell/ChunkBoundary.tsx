@@ -1,10 +1,15 @@
 import { Component, type ReactNode } from "react";
 
+import { ChunkNotLoaded } from "./chunk-component";
+
 interface ChunkBoundaryProps {
   readonly children: ReactNode;
   /** What draws in the place of `children` once a render under them has thrown: nothing, unless
-   *  a host names something. */
+   *  a host names something. A chunk that could not load draws `notLoaded` instead. */
   readonly fallback?: ReactNode;
+  /** What draws in the place of `children` once a chunk under them could not load
+   *  (`ChunkNotLoaded`, `chunkComponent`): nothing, unless a host names something. */
+  readonly notLoaded?: ReactNode;
   /** For a host whose part draws with no reader action (the two lists of writes, the
    *  reference-preview layer): a value that changes whenever the part may be wanted again - a
    *  change of which writes a list shows or of where one stands, pressed by the reader or
@@ -19,6 +24,9 @@ interface ChunkBoundaryProps {
   readonly reset?: unknown;
 }
 
+/** What a boundary caught, if anything: a chunk that could not load, or a render that threw. */
+type Failure = "none" | "chunk" | "render";
+
 /**
  * The error boundary of a host the shell draws outside the page's own boundary (`app.tsx`'s
  * `ErrorBoundary region="this page"`), around a part whose code is a chunk of its own: the two
@@ -30,7 +38,7 @@ interface ChunkBoundaryProps {
  * (`features/doc/TextAskCardHost.tsx`).
  *
  * WHY EACH SUCH HOST NEEDS ONE. A chunk that fails to download while the browser is online is
- * thrown into the render that waits on it (`chunkComponent`, `chunk-component.tsx`), and the
+ * thrown into the render that waits on it (`ChunkNotLoaded`, `chunk-component.tsx`), and the
  * nearest boundary catches it. Outside the page's boundary that is the app's top one
  * (`main.tsx`), which replaces the whole app: `AuthGate` unmounts, and with it this tab's
  * sign-in channel listener and its sign-in check, so the tab stops answering another tab's
@@ -44,27 +52,34 @@ interface ChunkBoundaryProps {
  * waits on.
  *
  * Why not `ErrorBoundary`: that one tells the reader which region failed, with a reload button,
- * in the region's own place. A list of writes in the status corner draws nothing while it has
- * nothing to show, and one that cannot load draws nothing too; React logs the failure itself
- * (`onCaughtError`). A host whose part has something else to stand for it names it as
- * `fallback`: a surface a reader opened names an alert that says it could not open
- * (`askedSurface`).
+ * in the region's own place, for every throw. Here a chunk that could not load is told from a
+ * render that threw, and each host names what stands in its part's place for each. A list of
+ * writes draws nothing while it has nothing to show, and nothing while its chunk cannot load,
+ * until its `reset` draws it again; React logs the failure itself (`onCaughtError`). A render
+ * of a list that throws draws an alert that says which list could not be shown
+ * (`features/writes/write-hosts.tsx`): that is a fault the reader must be told of, never
+ * silence. A surface a reader opened draws an alert that says it could not open, for either
+ * throw (`askedSurface`). The reference-preview layer names nothing for either.
  */
-export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: boolean }> {
-  state = { failed: false };
+export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: Failure }> {
+  state: { failed: Failure } = { failed: "none" };
 
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true };
+  static getDerivedStateFromError(error: unknown): { failed: Failure } {
+    return { failed: error instanceof ChunkNotLoaded ? "chunk" : "render" };
   }
 
   componentDidUpdate({ reset }: ChunkBoundaryProps): void {
     // Only a boundary that has failed draws `children` again. One that has not draws them
     // already, and a state set for nothing would cost a render at every change of `reset`, which
     // a list of writes changes whenever which writes it shows, or where one stands, changes.
-    if (this.state.failed && reset !== this.props.reset) this.setState({ failed: false });
+    if (this.state.failed !== "none" && reset !== this.props.reset) {
+      this.setState({ failed: "none" });
+    }
   }
 
   render(): ReactNode {
-    return this.state.failed ? this.props.fallback : this.props.children;
+    const { failed } = this.state;
+    if (failed === "none") return this.props.children;
+    return failed === "chunk" ? this.props.notLoaded : this.props.fallback;
   }
 }

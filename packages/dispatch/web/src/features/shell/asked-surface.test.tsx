@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { type AskedSurfaceProps, askedSurface } from "./asked-surface";
-import { type Chunk, chunk } from "./chunk-component";
+import { type Chunk, chunk, chunkComponent } from "./chunk-component";
 import { chunkLoadsOut, onlyPrefetchesOut } from "./chunk-loads";
 
 /** A surface as the bar and the peek are: mounted while closed, drawing nothing then. */
@@ -141,8 +141,13 @@ test("Tab and Shift+Tab leave the focus in the box, and the open stands", async 
 });
 
 // An Escape that ends an input method's composition only ends it, as it does in the open
-// surface: the open stands, and what the reader typed stays.
-test("an Escape that ends a composition leaves the open standing with what was typed", async () => {
+// surface: the open stands, and what the reader typed stays. Chromium marks that Escape
+// `isComposing`; Safari sends it after its compositionend with `isComposing` false and keyCode
+// 229 (WebKit bug 165004).
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("an Escape that ends a composition, marked by %s, leaves the open standing with what was typed", async (_mark, marked) => {
   const user = userEvent.setup();
   const { promise, resolve } = Promise.withResolvers<typeof Surface>();
   const view = render(<Shell source={chunk(() => promise)} />);
@@ -150,7 +155,7 @@ test("an Escape that ends a composition leaves the open standing with what was t
     await user.click(screen.getByRole("button", { name: "Open" }));
     const box = screen.getByRole("textbox", { name: LOADING });
     fireEvent.change(box, { target: { value: "日本" } });
-    fireEvent.keyDown(box, { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(box, { ...marked, key: "Escape" });
     expect(box).toHaveFocus();
     await act(async () => resolve(Surface));
     expect(screen.getByText('Surface with "日本"')).toBeDefined();
@@ -241,6 +246,34 @@ test("a surface whose render throws draws an alert in its place, whose Close giv
     expect(screen.getByText("Fragile drawn")).toBeDefined();
   } finally {
     reload.mockRestore();
+    logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// A chunk the surface draws from that fails to download online - a decision card in a body of
+// the peek, say - draws the same alert: the boundary names it for a chunk that could not load as
+// well as for a render that threw (`notLoaded`), so the surface does not go with no word.
+test("a chunk the surface draws from that fails to download draws the alert in its place", async () => {
+  const user = userEvent.setup();
+  const Card = chunkComponent(
+    chunk<object>(() =>
+      Promise.reject(new TypeError("Failed to fetch dynamically imported module"))
+    ),
+    null
+  );
+  function WithCard({ open }: AskedSurfaceProps): ReactNode {
+    return open === false ? null : <Card />;
+  }
+  const source = chunk(async () => WithCard);
+  await source.load();
+  const logged = quietConsoleError();
+  const view = render(<Shell source={source} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    const alert = await screen.findByRole("alertdialog", { name: "Could not open Example." });
+    expect(alert).toHaveTextContent(/^Could not open Example\./u);
+  } finally {
     logged.mockRestore();
     view.unmount();
   }

@@ -1,10 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
-import { api } from "../../api/client";
-import { PendingWritesHost } from "./write-hosts";
+import { ApiError, api } from "../../api/client";
+import { chunk, chunkComponent } from "../shell/chunk-component";
+import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 
 // The store's take-up of what a reload kept waits for every kind of write, a chunk of its own
@@ -96,4 +99,94 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
 test("a take-up whose own ask failed ends with the writes host's fetch also when another load brought the kinds in before it began", async () => {
   await import("./kinds");
   await takeUpEndsWithTheHost();
+});
+
+/** A part a list draws in a write's row, in the place of the write's label, that throws: it
+ *  stands for any fault of the list's own render. */
+function Fault(): never {
+  throw new Error("A row of the list failed to render");
+}
+
+/** A part of the same place whose chunk fails to download online: it throws into the list's
+ *  render what the list's own `chunkComponent` throws when the list's chunk fails after a deploy.
+ *  It stands for that chunk, which a row cannot fail: once any row of this process has drawn a
+ *  list, its chunk is in, and `chunk` keeps it. This one keeps no failed download, so each mount
+ *  asks again and fails again. */
+const NotLoaded = chunkComponent(
+  chunk<object>(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module"))),
+  null
+);
+
+/** Each list of writes, by its host: the name of the list's own region, and the name of the
+ *  alert that stands in its place once its render has thrown. */
+const lists = [
+  ["pending-writes indicator", PendingWritesHost, "Pending changes", "the changes waiting to save"],
+  ["sign-in page's kept list", KeptWritesHost, "Kept changes", "the changes this page kept"],
+] as const;
+
+/** Draws `Host` over a store of alice's, and presses one write that the indicator shows and
+ *  Dispatch refuses, whose label is `label`: each list draws the label of a refused write, the
+ *  kept list as a write of alice's that the page keeps. Answers the view. */
+function drawARefusedWrite(Host: () => ReactNode, label: ReactNode): RenderResult {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Host />
+    </QueryClientProvider>
+  );
+  act(() => {
+    void writesOf(client)
+      .run({
+        detail: null,
+        kind: plainWrite,
+        // A label is text, which a row draws as it is; a part in its place draws in the list's
+        // own render.
+        label: label as unknown as string,
+        method: "PATCH",
+        presentation: "indicator",
+        write: () => Promise.reject(new ApiError(422, { code: "KEY_REUSED", error: "refused" })),
+      })
+      .catch(() => undefined);
+  });
+  return view;
+}
+
+// A fault in a list's render draws an alert in the list's place that says which list could not
+// be shown, with a Reload: never silence, since the indicator's rows are where a refused write
+// offers Retry and Discard, and the sign-in page's list is the reader's one warning of the writes
+// a sign-in as someone else drops. The reader did not open the list, so the alert takes no focus.
+test.each(
+  lists
+)("the %s whose render throws draws an alert in its place", async (_list, Host, region, list) => {
+  const logged = quietConsoleError();
+  const view = drawARefusedWrite(Host, <Fault />);
+  try {
+    const alert = await screen.findByRole("alert", { name: `Could not show ${list}.` });
+    expect(alert).toHaveTextContent(`Could not show ${list}.`);
+    expect(within(alert).getByRole("button", { name: "Reload" })).toBeDefined();
+    expect(screen.queryByRole("region", { name: region })).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+    expect(logged).toHaveBeenCalled();
+  } finally {
+    logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// A chunk that fails to download online draws no alert: the list draws nothing, as it does with
+// no write to show, until a change of its writes draws it again (`ChunkBoundary`'s `reset`).
+test.each(
+  lists
+)("a chunk that fails to download under the %s draws nothing in the list's place", async (_list, Host, region) => {
+  const logged = quietConsoleError();
+  const view = drawARefusedWrite(Host, <NotLoaded />);
+  try {
+    await waitFor(() => expect(logged).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: region })).not.toBeInTheDocument();
+  } finally {
+    logged.mockRestore();
+    view.unmount();
+  }
 });

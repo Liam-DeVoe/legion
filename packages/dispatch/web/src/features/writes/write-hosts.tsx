@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
+import { surfaceBg } from "../../theme/classes";
 import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import {
@@ -9,6 +10,7 @@ import {
   renderChunk,
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
+import { ErrorView } from "../shell/ErrorBoundary";
 import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
 
@@ -32,14 +34,15 @@ import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from ".
  * is in draws in the commit of the row that shows it, and a download that fails goes through
  * `renderChunk`, so a list that cannot load after a deploy spends one of the tab's recovery
  * reloads (`DeploymentResilience.tsx`). Both hosts sit outside the page's error boundary - the
- * status corner, and the sign-in page - so each list has a boundary of its own (`ChunkBoundary`):
- * one that fails online draws nothing, as it would with no write to show, and the rest of the
- * page stays drawn and signed in. A change of which writes a list shows, or of where one stands -
- * a write pressed or gone, one refused or late - draws the list afresh (`reset`,
- * `shownWritesKey`), which asks for its chunk again; the indicator's last write going is no such
- * change, since the list it would draw is empty (`PendingWritesHost`). A boundary that never
- * reset would leave the reader on a page no recovery reload follows - the boundary says when none
- * does - with no Retry, Discard or Stop trying for the life of the page.
+ * status corner, and the sign-in page - so each list has a boundary of its own (`ChunkBoundary`),
+ * and the rest of the page stays drawn and signed in. A list whose chunk fails to download online
+ * draws nothing, as it would with no write to show; a list whose render throws draws an alert in
+ * its place (`CouldNotShow`). A change of which writes a list shows, or of where one stands - a
+ * write pressed or gone, one refused or late - draws the list afresh (`reset`, `shownWritesKey`),
+ * which asks for its chunk again; the indicator's last write going is no such change, since the
+ * list it would draw is empty (`PendingWritesHost`). A boundary that never reset would leave the
+ * reader on a page no recovery reload follows - the boundary says when none does - with no
+ * Retry, Discard or Stop trying for the life of the page.
  * On the sign-in page the reader changes none of those writes, so the kept list asks again as
  * well when the reader comes back to it (`KeptWritesHost`). Both chunks are started once the page
  * has drawn, so a reader who presses a write, or whose session lapses, usually finds its list in
@@ -55,6 +58,29 @@ const keptWritesChunk = chunk<object>(() =>
 // While a chunk is still on its way its list draws nothing, as it would with no write to show.
 const PendingWritesIndicator = chunkComponent(pendingWritesChunk, null);
 const KeptWrites = chunkComponent(keptWritesChunk, null);
+
+/**
+ * What stands in a list's place once its render has thrown: an alert that says which list could
+ * not be shown, with a Reload, as a region that stopped rendering looks (`ErrorView`). A render
+ * error is never silent here: the indicator's rows are the one place a write shown there
+ * (`presentation: "indicator"`) offers Retry and Discard once refused, and the sign-in page's
+ * list is the reader's one warning of the writes a sign-in as someone else drops. It is no
+ * dialog, as a surface's alert is (`askedSurface`): the reader did not open the list, so it takes
+ * no focus and holds no keys. Its role is `alert`, as a region's is (`ErrorBoundary`), so a
+ * screen reader says it as it appears, wherever the focus is.
+ */
+function CouldNotShow({ className, list }: { className: string; list: string }): ReactNode {
+  const heading = `Could not show ${list}.`;
+  return (
+    <ErrorView
+      aria-label={heading}
+      className={className}
+      heading={heading}
+      reload="Reload"
+      role="alert"
+    />
+  );
+}
 
 /**
  * Every kind of write the page makes (`kinds.ts`), which only the store's take-up of what a
@@ -138,8 +164,21 @@ export function PendingWritesHost(): ReactNode {
     prefetchChunk(keptWritesChunk.load);
     prefetchWriteKinds();
   }, [drawn]);
+  // A list whose render threw keeps its alert in its place until `reset` changes, and then draws
+  // again, so a fault that one write's row brings ends with that row. The alert goes with the
+  // last write as well: with no write left, the list has nothing it could not show.
   return reset === "" ? null : (
-    <ChunkBoundary reset={reset}>
+    <ChunkBoundary
+      fallback={
+        shown === "" ? null : (
+          <CouldNotShow
+            className={`w-full max-w-md shadow-lg ${surfaceBg}`}
+            list="the changes waiting to save"
+          />
+        )
+      }
+      reset={reset}
+    >
       <PendingWritesIndicator />
     </ChunkBoundary>
   );
@@ -161,12 +200,13 @@ export function KeptWritesHost(): ReactNode {
   // `prefetchChunk` tells the chunk-failure recovery. A load that fails here too is asked for
   // again as the reader comes back to the page (below).
   useEffect(prefetchWriteKinds, []);
-  // A list whose chunk failed draws again on a change of the store's writes it shows, which may
-  // offer a control - a write the reload kept that the store has not taken up shows by its name
-  // alone - and on the sign-in page none may come: the reader presses no write there, and one out
-  // may never be answered. So it draws again too as the reader comes back to the page - the
-  // window gets the focus back, or the browser comes back online - which is what a reader who
-  // finds the list missing does before they reload by hand. A list that has not failed draws
+  // A list whose chunk failed, or whose render threw, draws again on a change of the store's
+  // writes it shows, which may offer a control - a write the reload kept that the store has not
+  // taken up shows by its name alone - and on the sign-in page none may come: the reader presses
+  // no write there, and one out may never be answered. So it draws again too as the reader comes
+  // back to the page - the window gets the focus back, or the browser comes back online - which
+  // is what a reader who finds the list missing does before they reload by hand. Until then a
+  // list whose render threw keeps its alert in its place. A list that has not failed draws
   // nothing anew for either. The kinds are asked for again then as well, for a take-up still
   // waiting for them.
   const [returns, setReturns] = useState(0);
@@ -184,7 +224,10 @@ export function KeptWritesHost(): ReactNode {
   }, []);
   const reset = useMemo(() => `${shownWritesKey(rows)};${returns}`, [rows, returns]);
   return rows.length === 0 && records.length === 0 ? null : (
-    <ChunkBoundary reset={reset}>
+    <ChunkBoundary
+      fallback={<CouldNotShow className="mt-6" list="the changes this page kept" />}
+      reset={reset}
+    >
       <KeptWrites />
     </ChunkBoundary>
   );

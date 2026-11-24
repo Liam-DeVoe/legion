@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useRef } from "react";
 
-import { type KeyBinding, useKeymap } from "../shell/keymap";
+import { inputMethodKey, type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import { bringOnScreen } from "./identity-block";
@@ -10,7 +10,6 @@ import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
-import { inputMethodKey } from "./useNodeEditing";
 
 /**
  * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,

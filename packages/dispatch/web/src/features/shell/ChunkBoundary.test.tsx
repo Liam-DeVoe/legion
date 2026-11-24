@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { ChunkBoundary } from "./ChunkBoundary";
+import { chunk, chunkComponent } from "./chunk-component";
 
 function Throwing(): never {
-  throw new TypeError("Failed to fetch dynamically imported module");
+  throw new Error("The part failed to render");
 }
 
-// A part whose chunk failed draws nothing in its place, or what its host names for it, and the
-// rest of the page stays drawn: the throw never reaches a boundary above.
+// A part whose render throws draws nothing in its place, or the fallback its host names for it,
+// and the rest of the page stays drawn: the throw never reaches a boundary above.
 test("a render that throws under it draws nothing, or the fallback a host names, and its siblings stay", () => {
   const logged = quietConsoleError();
   const view = render(
@@ -46,6 +47,41 @@ test("a part that renders draws as it is", () => {
     expect(screen.getByText("content")).toBeTruthy();
     expect(screen.queryByText("The shell before")).not.toBeInTheDocument();
   } finally {
+    view.unmount();
+  }
+});
+
+// A chunk under it that fails to download online (`ChunkNotLoaded`) draws what its host names for
+// that, or nothing, and never the fallback a host names for a render that threw: a list of writes
+// whose chunk cannot load draws nothing, as it does with no write to show, while one whose render
+// threw draws an alert (`features/writes/write-hosts.tsx`).
+test("a chunk under it that fails to download draws what the host names for that, or nothing, and never the fallback", async () => {
+  const NotLoaded = chunkComponent(
+    chunk<object>(() =>
+      Promise.reject(new TypeError("Failed to fetch dynamically imported module"))
+    ),
+    null
+  );
+  const logged = quietConsoleError();
+  const view = render(
+    <div>
+      <section aria-label="Quiet">
+        <ChunkBoundary fallback={<p>Could not show it</p>}>
+          <NotLoaded />
+        </ChunkBoundary>
+      </section>
+      <ChunkBoundary fallback={<p>Could not show it</p>} notLoaded={<p>Could not load it</p>}>
+        <NotLoaded />
+      </ChunkBoundary>
+    </div>
+  );
+  try {
+    await waitFor(() => expect(logged).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Could not load it")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Quiet" })).toBeEmptyDOMElement();
+    expect(screen.queryByText("Could not show it")).not.toBeInTheDocument();
+  } finally {
+    logged.mockRestore();
     view.unmount();
   }
 });

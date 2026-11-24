@@ -32,10 +32,10 @@ import { relativeTimeLabel } from "./Timestamp";
  * WHY A MODULE OF ITS OWN. The rail's pinned agents (`features/sidebar/Sidebar.tsx`) are the one
  * place the entry chunk shows an agent, and the entry is what every page parses before it draws
  * anything (`web/src/asset-sizes-in-build.ts` holds it to its budget). They show a session by its
- * id, and nothing more. While the rail imported `AgentName.tsx`, the entry carried all of that
- * module: a person's name, an author's, the plain-text forms, the resolution lines and the
- * unresponsive note, which only the pages' own chunks draw. The rail imports this half alone, and
- * `AgentName.tsx` is in the chunks that draw it.
+ * id, and nothing more. Through `AgentName.tsx` the rail would carry all of that module into the
+ * entry: a person's name, an author's, the plain-text forms, the resolution lines and the
+ * unresponsive note, which only the pages' own chunks draw. So the rail imports this half alone,
+ * and `AgentName.tsx` is in the chunks that draw it.
  *
  * With `AgentName.tsx` and `routes.ts`, this is one of the modules the root `biome.json` lets
  * import the contracts naming functions and `AGENT_LIVE_PATH` (`AgentName.tsx` says why).

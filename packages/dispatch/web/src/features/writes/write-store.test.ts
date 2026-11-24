@@ -2187,7 +2187,7 @@ test("a sign-out out holds its person's writes until Dispatch answers it", async
 
 // A sign-out that waits its turn and is discarded signed no one out, so every write of its
 // person it held goes on, as after a refused one. The app's sign-out never waits so: it has no
-// line, and a take-up of what a reload kept no longer holds it back either, since it joins its
+// line, and a take-up of what a reload kept does not hold it back either, since it joins its
 // line at once (`Writes.run`). So this one is pressed on the line of alice's status change, which
 // keeps failing at the connection: the sign-out waits behind it and holds it, and alice discards
 // the sign-out.

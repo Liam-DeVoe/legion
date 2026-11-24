@@ -234,8 +234,9 @@ export default defineConfig({
     // from `AgentName.tsx`'s session half alone (`features/refs/SessionName.tsx`), so the rest of
     // that module is a chunk the pages' chunks share, and the entry read 497,401 bytes with a
     // 39-character `DISPATCH_BUILD` on 2026-11-24. After the changes since, Details' one Escape
-    // rule among them (`escapeClosesDrawer`, `features/shell/useDialog.ts`), the entry reads
-    // 497,933 bytes with a 39-character `DISPATCH_BUILD`, the same day.
+    // rule among them (`escapeClosesDrawer`, `features/shell/useDialog.ts`), the entry read
+    // 497,933 bytes with a 39-character `DISPATCH_BUILD` the same day, and the two lists' alert
+    // for a render error (`features/writes/write-hosts.tsx`) takes it to 498,553.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
     // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.

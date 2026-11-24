@@ -49,7 +49,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * build comment names. It refused a change of this branch too: `4afe19c7` (2026-11-24), the
  * loading box and the alert of the surfaces a key opens, wrote 500,530, and `4e9171bc` the same
  * day answered it by taking `features/refs/AgentName.tsx` out of the entry (497,401 bytes); at
- * `540b1fe2` the entry is 497,933 bytes, both with a 39-character build id.
+ * `540b1fe2` the entry was 497,933 bytes, and the two lists' alert for a render error
+ * (`features/writes/write-hosts.tsx`) takes it to 498,553, each with a 39-character build id.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

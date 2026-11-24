@@ -13,7 +13,7 @@ import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
 import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";
 import { ERROR_ACTION_CLASS, ErrorView } from "./ErrorBoundary";
-import { DIALOG_SCOPE, useKeymapScope } from "./keymap";
+import { DIALOG_SCOPE, inputMethodKey, useKeymapScope } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
 /** What a surface drawn through `askedSurface` takes, beside its own props. */
@@ -81,12 +81,13 @@ export interface AskedSurfaceProps {
  * page's error boundary (`app.tsx`). A render that throws under it - a chunk the surface draws
  * from failing online, the decision card of a body in the peek among them
  * (`features/doc/TextAskCardHost.tsx`), or any other fault of the surface - draws an alert in
- * the surface's place, "Could not open <name>." with Close and Reload (`CouldNotOpen`), and the
- * page stays drawn and signed in, rather than reaching the app's top boundary (`main.tsx`). A
- * render error is never silent: a surface that closed with no word would look like a key that
- * did nothing, and the reader would press it again into the same fault. The surface's own chunk
- * failing to download is no throw in a render: it rejects the download above, which closes the
- * open, as "WHEN THE CHUNK IS ASKED FOR" says.
+ * the surface's place, "Could not open <name>." with Close and Reload (`CouldNotOpen`), as the
+ * boundary's `fallback` and its `notLoaded` both, and the page stays drawn and signed in, rather
+ * than reaching the app's top boundary (`main.tsx`). A render error is never silent: a surface
+ * that closed with no word would look like a key that did nothing, and the reader would press it
+ * again into the same fault. The surface's own chunk failing to download is no throw in a
+ * render: it rejects the download above, which closes the open, as "WHEN THE CHUNK IS ASKED FOR"
+ * says.
  *
  * `name` is the name the surface's own element carries - "Create issue", "Keyboard shortcuts",
  * "Search", "Inbox" - and names the box and the alert that stand in its place.
@@ -148,19 +149,17 @@ export function askedSurface<P extends AskedSurfaceProps>(
         off.resolve();
       };
     }, [open, Component]);
+    const alert = (
+      <CouldNotOpen
+        name={name}
+        onClose={() => {
+          closed(closes + 1);
+          onClose();
+        }}
+      />
+    );
     return (
-      <ChunkBoundary
-        fallback={
-          <CouldNotOpen
-            name={name}
-            onClose={() => {
-              closed(closes + 1);
-              onClose();
-            }}
-          />
-        }
-        key={closes}
-      >
+      <ChunkBoundary fallback={alert} key={closes} notLoaded={alert}>
         {Component !== undefined ? (
           <Component {...props} typed={held.text} />
         ) : open ? (
@@ -228,6 +227,7 @@ interface Held {
  * - Escape calls the open off, and goes no further, so a dialog the box sits over is not closed
  *   with it. An Escape that ends an input method's composition only ends it, as it does in the
  *   open surface (`keymap.ts` and `app.tsx` skip such a key too), and what the reader typed stays.
+ *   Safari sends that Escape with `isComposing` false, and `inputMethodKey` knows it too.
  * - Enter does nothing: the box is in no form. That is the safe choice: in the surface an Enter
  *   can submit, and a submit the reader made before they saw the surface is one they did not see.
  * - Every other key types into the box, and the surface takes what it holds as `typed`.
@@ -273,7 +273,7 @@ function Placeholder({
       }}
       onKeyDown={(event) => {
         if (event.key === "Tab") event.preventDefault();
-        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+        if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
           event.stopPropagation();
           onCancel();
         }

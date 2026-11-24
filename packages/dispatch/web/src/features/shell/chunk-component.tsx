@@ -30,7 +30,7 @@ import { importWhenOnline, keptUntilRejected, renderChunk } from "./chunk-loads"
  * the component itself draws in an ordinary update, which React does not hold back. A download
  * that fails while the browser is offline is tried again once it is back online, as
  * `lazyChunk`'s is (`importWhenOnline`), and one that fails online goes to the nearest error
- * boundary.
+ * boundary as a `ChunkNotLoaded`.
  */
 export interface Chunk<P> {
   /** Starts the download, or joins the download that is already out. Resolves with the
@@ -53,6 +53,18 @@ export function chunk<P>(importer: () => Promise<ComponentType<P>>): Chunk<P> {
     ),
     loaded: () => loaded,
   };
+}
+
+/**
+ * What `chunkComponent` throws into a render for a chunk whose download failed online, the
+ * failure itself its `cause`: the mark a `ChunkBoundary` tells it by from a render that threw
+ * (`notLoaded`). It carries the failure's message, so a boundary that shows or logs the message
+ * gives the browser's own words (`ErrorBoundary`).
+ */
+export class ChunkNotLoaded extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
 }
 
 /**
@@ -81,10 +93,10 @@ export function chunkComponent<P extends object>(
         },
         (error: unknown) => {
           // An updater that throws makes the render throw, so the nearest error boundary gets
-          // the failure.
+          // the failure, marked as a download's.
           if (mounted)
             setComponent(() => {
-              throw error;
+              throw new ChunkNotLoaded(error);
             });
         }
       );
