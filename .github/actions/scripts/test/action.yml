@@ -397,7 +397,8 @@ runs:
       run: .github/scripts/leg-verdict.test.sh
 
     # The fence of the kind and airlock-arm jobs' test processes, against fakes of sudo,
-    # iptables, docker and the rest: its rules, grants, step shell and report.
+    # iptables, docker and the rest and a directory standing for the cgroup hierarchy: its cgroup,
+    # rules, step shell and report.
     - name: Test the fence of a test process to loopback and its job's networks
       shell: bash
-      run: .github/scripts/test-user.test.sh
+      run: .github/scripts/test-fence.test.sh

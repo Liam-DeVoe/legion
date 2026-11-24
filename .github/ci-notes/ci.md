@@ -679,14 +679,20 @@ tree-stage4b-restart without the listener's move 37.2 (38). The two new tree leg
 their own yet; from their parts' times, tree-stage4b-controller 36.8 (37) and tree-stage4b-address
 36.3 (37).
 
-Each leg fetches what the rig runs as the runner's user first (kind's build, gVisor's release,
-the node and registry images, the kind network, the Go modules) and then runs its test step as
-legion-test, whose outbound connections reach loopback and the kind network alone
-(.github/scripts/test-user.sh); the step after it prints the connections that rule refused and
-Docker's image events since it began, and fails on either, since Docker pulls as root, outside
-the rule. The node's containerd pulls from ghcr.io and the rig's registry alone, and CoreDNS
-answers NXDOMAIN for every name outside cluster.local and the rig's stand-ins, which the rig's
-teardown names (scripts/e2e/lib/kind-sandbox.sh).
+Each leg fetches what the rig runs first (kind's build, gVisor's release, the node and registry
+images, the kind network, the Go modules) and then runs its test step in a cgroup of its own, as
+the runner's user, whose outbound connections, and those of every process it starts, reach
+loopback and the kind network's bridge alone (.github/scripts/test-fence.sh, an iptables and an
+ip6tables rule matched with `-m cgroup --path`); the step after it prints the rule, its match and
+counters in both families, the connections it refused and Docker's image events since it began,
+and fails on a missing match, a refusal or a pull, since Docker pulls as root, outside the rule.
+The runner routes the cluster's pod subnet through the node's address on the kind network, so
+the daemon a tree test runs reads each repository cache at its pod address, as the product does.
+The node's containerd pulls from ghcr.io and the rig's registry alone, and CoreDNS answers
+NXDOMAIN for every name outside cluster.local and the rig's stand-ins, the pods' web-search
+provider among them; the rig's teardown names the refused names and each image the nodes pulled
+(scripts/e2e/lib/kind-sandbox.sh), and the leg uploads each node's containerd journal and the
+stand-ins' requests.
 
 The chain `changes` → `ci-images` → `kind-image` → the longest leg → `ci-ok` was 32.2 to 34.0
 minutes in those runs: 10.2 of it the jobs before and after the leg, 9.3 of that the image job,
@@ -1122,12 +1128,13 @@ own and the scripts ran fenced. Its old check-run name, `airlock-arm / airlock-a
 the one job; neither leg is a split of one suite, so no carrier stands for the two.
 
 Each leg starts its stacks as the runner's user, one step each, and runs the script against the
-running stack (--stack-log) as legion-test, whose outbound connections reach loopback and the
-job's Postgres container alone (.github/scripts/test-user.sh); the last step prints what that
-rule refused. k9's stack serves github.com from a stand-in of its own (dev-airlock.sh
---git-stand-in, `dev-airlock-stands git` on 127.0.0.6:443), which k9's shallow clone reads and
-must hold the commit of, and its negative control runs on a second stack once the first is gone,
-since the two bind the same loopback addresses.
+running stack (--stack-log) in a cgroup of its own, as the same user, whose outbound connections,
+and those of every process it starts, reach loopback and the job's Postgres container alone
+(.github/scripts/test-fence.sh); the last step prints that rule, its match and counters in both
+families and what it refused. k9's stack serves github.com from a stand-in of its own
+(dev-airlock.sh --git-stand-in, `dev-airlock-stands git` on 127.0.0.6:443), which k9's shallow
+clone reads and must hold the commit of, and its negative control runs on a second stack once the
+first is gone, since the two bind the same loopback addresses.
 
 ## The Lean model of the airlock, and why its fuzz run is two minutes
 

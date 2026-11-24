@@ -1,8 +1,9 @@
 // Package kindtest is the kind rig a Go test of the Sandbox runtime runs on: a throwaway kind
 // cluster with Agent Sandbox's controller and gVisor, a registry the node pulls from, the fake
 // GitHub (internal/fakegithub), which the cluster's pods reach as github.com and api.github.com,
-// the stand-ins for the public TLS sites the daemon's image probe reaches (TLSSites), and an image
-// built FROM the worker image under test that reads those stand-ins as the real services. Start
+// the stand-ins for the public TLS hosts the pods reach beside it (TLSSites: the sites the daemon's
+// image probe reaches, the npm registry and the pods' web-search provider), and an image built
+// FROM the worker image under test that reads those stand-ins as the real services. Start
 // brings it up from the test process on an amd64 Linux host with Docker, which the kind job of
 // ci.yaml is, and tears it down when the test ends, keeping the cluster's state when the test
 // failed (LogDirEnv).
@@ -57,14 +58,16 @@ import (
 // two: ImageEnv names it by digest in a registry this host can pull from (the image a
 // pull request's worker-image job pushed), and ImageArchiveEnv names a docker archive of it (the
 // image the kind job built itself), compressed with zstd when its name ends in .zst. LogDirEnv
-// names the directory a failed test's cluster state goes to, which the job uploads.
+// names the directory each test's evidence goes to, which the job uploads: on every run the TLS
+// stand-ins' requests and each node's containerd journal, and a failed test's cluster state.
 // NPMTarballsEnv names a directory of npm tarballs, which a test serves from the rig's npm
 // stand-in (TLSSites.ServeNPMLock): the job's setup fetches them by a lock's resolved URLs, since
 // a test's pods reach no registry outside the runner. FetchedEnv names the directory
 // kind_sandbox_fetch filled in a set-up step (the pinned kind, gVisor's release) after pulling
-// the node and registry images, so Start fetches nothing: the kind job runs its tests as a user
-// whose outbound connections reach loopback and the kind network alone. Where it is unset, Start
-// runs kind_sandbox_fetch itself, into the test's own directory.
+// the node and registry images, so Start fetches nothing: the kind job runs its tests in a cgroup
+// whose outbound connections reach loopback and the kind network's bridge alone
+// (.github/scripts/test-fence.sh). Where it is unset, Start runs kind_sandbox_fetch itself, into
+// the test's own directory.
 const (
 	ImageEnv        = "LEGION_TEST_KIND_IMAGE"
 	ImageArchiveEnv = "LEGION_TEST_KIND_IMAGE_ARCHIVE"
@@ -91,8 +94,9 @@ type Rig struct {
 	Registry string
 	// GitHub is the fake GitHub, which the cluster's pods reach as github.com and api.github.com.
 	GitHub *fakegithub.Server
-	// Sites is the stand-in for the public TLS sites the daemon's image probe reaches, which the
-	// cluster's pods reach under the sites' own names.
+	// Sites is the stand-in for the public TLS hosts the pods reach beside GitHub (the sites the
+	// daemon's image probe reaches, the npm registry and the web-search provider), which the
+	// cluster's pods reach under the hosts' own names.
 	Sites *TLSSites
 	// Image is the image every pod of a kind test starts, the image probe's included, by its digest
 	// in Registry, and already in the node's containerd: built FROM the worker image under test to
@@ -796,24 +800,34 @@ func (r *Rig) push(t *testing.T, image, repository string) string {
 	return pushed
 }
 
-// teardown keeps what the cluster held and the stand-ins' requests when the test failed, then
-// deletes the cluster and the registry. The script's status 3 is kind_sandbox_teardown's
-// verdict that a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's
-// registry, which fails the test; any other failure of the teardown is logged.
+// teardown keeps the TLS stand-ins' requests, each with its body, on every run, and logs the
+// web-search stand-in's, so the job's artifact holds what the pods asked each stand-in; when the
+// test failed, it keeps the fake GitHub's requests and what the cluster held too. Then it deletes
+// the cluster, the route to its pods and the registry. The script's status 3 is
+// kind_sandbox_teardown's verdict that CHECK kind-node-pulls failed (a node pulled an image from
+// outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, or its journal holds no pull),
+// which fails the test; any other failure of the teardown is logged.
 func (r *Rig) teardown(t *testing.T) {
 	status := "0"
+	if r.Sites != nil {
+		requests := r.Sites.Requests()
+		if err := os.WriteFile(filepath.Join(r.Evidence, "tls-sites-requests.txt"), []byte(strings.Join(requests, "\n")+"\n"), 0o644); err != nil {
+			t.Logf("keep the TLS stand-ins' requests: %v", err)
+		}
+		var searches []string
+		for _, request := range requests {
+			if strings.Contains(request, " "+WebSearchHost+"/") {
+				searches = append(searches, request)
+			}
+		}
+		t.Logf("the web-search stand-in %s answered %d requests:\n%s", WebSearchHost, len(searches), strings.Join(searches, "\n"))
+	}
 	if t.Failed() {
 		status = "1"
 		if r.GitHub != nil {
 			requests := strings.Join(r.GitHub.Requests(), "\n") + "\n"
 			if err := os.WriteFile(filepath.Join(r.Evidence, "fake-github-requests.txt"), []byte(requests), 0o644); err != nil {
 				t.Logf("keep the fake GitHub's requests: %v", err)
-			}
-		}
-		if r.Sites != nil {
-			requests := strings.Join(r.Sites.Requests(), "\n") + "\n"
-			if err := os.WriteFile(filepath.Join(r.Evidence, "tls-sites-requests.txt"), []byte(requests), 0o644); err != nil {
-				t.Logf("keep the TLS stand-ins' requests: %v", err)
 			}
 		}
 		t.Logf("the rig's state at the failure is in %s", r.Evidence)
@@ -831,15 +845,16 @@ kind_sandbox_teardown "$4" "$5"`
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit) && exit.ExitCode() == 3:
-		t.Errorf("teardown of %s: a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's registry:\n%s", r.Name, out)
+		t.Errorf("teardown of %s: CHECK kind-node-pulls failed, as its lines say:\n%s", r.Name, out)
 	case err != nil || len(out) > 0:
 		t.Logf("teardown of %s: %v: %s", r.Name, err, out)
 	}
 }
 
-// evidenceDir is where a failed test's cluster state goes: a directory of the test's own under
-// LogDirEnv, which the kind job uploads when it fails, or, where that is unset, a directory that
-// outlives the test, named in the log.
+// evidenceDir is where a test's evidence goes (its stand-ins' requests and its nodes' containerd
+// journals, and at a failure the cluster's state): a directory of the test's own under LogDirEnv,
+// which the kind job uploads, or, where that is unset, a directory that outlives the test, named in
+// the log.
 func evidenceDir(t *testing.T) string {
 	t.Helper()
 	name := regexp.MustCompile(`[^A-Za-z0-9_.-]+`).ReplaceAllString(t.Name(), "_")

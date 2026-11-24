@@ -16,11 +16,12 @@ description: >-
   lease test's with one broker and a 91-second lease. Each makes a database of its own on the
   job's Postgres through psql, and serves each bound host on port 443 of a loopback address of
   its own, which the runner's user may bind only once the kernel lets it. The check and the test
-  run against the running stack (--stack-log) as legion-test, through the step shell
-  legion-test-shell (.github/scripts/test-user.sh): its outbound connections reach loopback and
-  the job's Postgres container alone, and every other one is logged and refused. It reads the
-  stack's directories, and stops a broker and reads its environment as the runner's user, which
-  the fence lets it do for kill and cat alone. The last step prints the rule's refusals.
+  run against the running stack (--stack-log) in a cgroup of their own, legion-test, through the
+  step shell legion-test-shell (.github/scripts/test-fence.sh), as the runner's user, who owns the
+  stack: an iptables and an ip6tables rule matched on that cgroup let their outbound connections,
+  and those of every process they start, reach loopback and the bridge of the job's Postgres
+  container alone, and log and refuse every other one. The last step prints the rule, its match
+  and counters in both families and its refusals.
 inputs:
   leg:
     description: The leg of ci.yaml's airlock-arm job, k9 or lease, the part of its check-run name after `airlock-arm / `.
@@ -39,8 +40,9 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends postgresql-client
 
-    # legion-test reads the checkout and the runner's temporary directory, where each step's
-    # script and each stack's output are; each stack's own directories are granted as it starts.
+    # From here the check's steps run in the cgroup legion-test, as the runner's user; their
+    # outbound connections reach loopback and the bridge of each container the job runs, its
+    # Postgres service, alone.
     - id: fence
       name: Fence the check's process to loopback and the job's Postgres container
       shell: bash
@@ -48,13 +50,12 @@ runs:
         sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
         containers=()
         for id in $(docker ps -q); do containers+=(--container "$id"); done
-        .github/scripts/test-user.sh fence --signal-as "$(id -un)" "${containers[@]}" --read "$GITHUB_WORKSPACE" --read "$RUNNER_TEMP"
+        .github/scripts/test-fence.sh fence "${containers[@]}"
 
     # Each stack's dev-airlock.sh runs in a session of its own with its output in
     # $RUNNER_TEMP/airlock-<stack>.log and its pid beside it; the step ends once its banner says
-    # ready, and grants legion-test the airlock's work directory and dev-broker.sh's. The leg's
-    # own stack first: k9's, with github.com's stand-in and each broker under GOMAXPROCS=1, or
-    # the lease test's, with one broker at the shortest lease it starts with.
+    # ready. The leg's own stack first: k9's, with github.com's stand-in and each broker under
+    # GOMAXPROCS=1, or the lease test's, with one broker at the shortest lease it starts with.
     - name: Start the leg's stack
       shell: bash
       env:
@@ -72,8 +73,6 @@ runs:
         timeout 900 bash -c 'until grep -q "^dev-airlock: ready\.$" "$1"; do kill -0 "$2" || exit 1; sleep 1; done' _ "$log" "$!" ||
           { tail -n 40 "$log"; echo "::error::the $STACK stack did not come up (dev-airlock.sh ${options[*]})"; exit 1; }
         sed -n '/^dev-airlock: ready\.$/,$p' "$log"
-        mapfile -t dirs < <(sed -n 's/^  export \(AIRLOCK_DIR\|DEV_BROKER_DIR\)=//p' "$log")
-        .github/scripts/test-user.sh grant "${dirs[@]}"
 
     # Under ten minutes of generated load no call fails, the proxy adds at most 100 ms at the
     # median, and each broker process stays within half its wall time in CPU and 1 GiB of memory.
@@ -116,8 +115,6 @@ runs:
         timeout 900 bash -c 'until grep -q "^dev-airlock: ready\.$" "$1"; do kill -0 "$2" || exit 1; sleep 1; done' _ "$log" "$!" ||
           { tail -n 40 "$log"; echo "::error::the control's stack did not come up (dev-airlock.sh --idle-seconds 60)"; exit 1; }
         sed -n '/^dev-airlock: ready\.$/,$p' "$log"
-        mapfile -t dirs < <(sed -n 's/^  export \(AIRLOCK_DIR\|DEV_BROKER_DIR\)=//p' "$log")
-        .github/scripts/test-user.sh grant "${dirs[@]}"
 
     - name: Airlock check k9's negative control
       if: inputs.leg == 'k9'
@@ -132,8 +129,9 @@ runs:
         kill "$pid" 2>/dev/null || exit 0
         timeout 120 tail --pid="$pid" -f /dev/null
 
-    # The rule's refusals, none expected.
-    - name: Print what the rule refused
+    # The rule, its match on the cgroup and its counters in both families, and its refusals, none
+    # expected.
+    - name: Print the rule and what it refused
       if: always() && steps.fence.outcome == 'success'
       shell: bash
-      run: .github/scripts/test-user.sh report
+      run: .github/scripts/test-fence.sh report

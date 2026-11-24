@@ -20,12 +20,12 @@
 #     nothing; a PASS line follows a line saying what was seen;
 #   - one last line, `check k9: passed` or `check k9: failed (<n> of <m>)`.
 #
-# With --stack-log it starts no stack: it reads the banner of one already up, which another user
-# may own and started with dev-airlock.sh's output in that file, and runs k9's properties on it,
-# or with --control the negative control alone. CI starts each stack as the runner's user and
-# runs this script as a user whose connections reach loopback and the stack's containers alone
-# (.github/scripts/test-user.sh): it stops a broker of that stack, and reads its environment,
-# through `sudo -n -u <the stack's owner>`, which that user may do for kill and cat alone.
+# With --stack-log it starts no stack: it reads the banner of one already up, which this user
+# started with dev-airlock.sh's output in that file, and runs k9's properties on it, or with
+# --control the negative control alone; it stops a broker of that stack and reads its
+# environment as it does of a stack of its own. CI starts each stack in a step of its own and
+# runs this script in a cgroup whose outbound connections reach loopback and the stack's
+# containers alone (.github/scripts/test-fence.sh).
 #
 # No line it prints is a credential. A value is compared by its SHA-256 (the first 16 hex
 # digits) and its length, and every line that compares one says so; that is a rule of the
@@ -146,7 +146,6 @@ done
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
 STACK_LOG="$WORK_DIR/stack.log"
 STACK_PID=""
-STACK_OWNER=""
 HELPER_PIDS=()
 
 cleanup() {
@@ -281,8 +280,7 @@ stack_up() {
 		echo "CHECK setup: FAIL: $STACK_LOG holds no 'dev-airlock: ready.' banner, so no stack is up there to run on"
 		exit 1
 	fi
-	STACK_OWNER="$(stat -c %U "$STACK_LOG")"
-	echo "airlock-check: using the running stack whose output is $STACK_LOG (started by $STACK_OWNER, with dev-airlock.sh $*)" >&2
+	echo "airlock-check: using the running stack whose output is $STACK_LOG (started with dev-airlock.sh $*)" >&2
 	read_stack
 }
 
@@ -297,17 +295,6 @@ read_stack() {
 	# directory its own banner named. k9's load driver is a subcommand of it.
 	STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 	echo "airlock-check: the stack is up (${#BROKER_API_ADDRS[@]} brokers, work directory $AIRLOCK_DIR)" >&2
-}
-
-# as_stack_owner runs a command as the user the stack runs as: this user, or the owner of a
-# stack --stack-log names, who lets this user run kill and cat as them through sudo (CI's
-# .github/scripts/test-user.sh fence --signal-as).
-as_stack_owner() {
-	if [ -z "$STACK_OWNER" ] || [ "$STACK_OWNER" = "$(id -un)" ]; then
-		"$@"
-	else
-		sudo -n -u "$STACK_OWNER" "$@"
-	fi
 }
 
 # stop_stack stops dev-airlock.sh, whose own EXIT trap stops its processes and drops the
@@ -445,7 +432,7 @@ check_k9_main() {
 	local pids pid environs=""
 	mapfile -t pids < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
 	for pid in "${pids[@]}"; do
-		environs="$environs $pid:$(as_stack_owner cat "/proc/$pid/environ" | tr '\0' '\n' | grep -c '^GOMAXPROCS=1$')"
+		environs="$environs $pid:$(tr '\0' '\n' <"/proc/$pid/environ" | grep -c '^GOMAXPROCS=1$')"
 	done
 	observe "the stack's broker processes are ${pids[*]}, and each one's /proc/<pid>/environ holds GOMAXPROCS=1 (pid:matches)$environs"
 
@@ -566,7 +553,7 @@ check_k9_main() {
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
-	as_stack_owner kill "$stopped" 2>/dev/null || true
+	kill "$stopped" 2>/dev/null || true
 	wait "$gap_pid" 2>/dev/null || true
 	# Four calls, not one: the stack's proxy front is a round-robin over both brokers' ports
 	# that reads its backends from a file and asks nobody whether a backend is alive, so every

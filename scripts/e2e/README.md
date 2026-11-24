@@ -2375,7 +2375,8 @@ Each item below names a function, then what it does.
 
   creates the cluster `NAME` on the pinned node image, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
   labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
-  creates the `legion` namespace and checks kind's `standard` storage class.
+  creates the `legion` namespace and checks kind's `standard` storage class;
+  then routes the cluster's pod subnet (the node's `podCIDR`) on this host through the node's address on the kind network with `sudo -n ip route replace`, so a process of the host reaches a pod at its own address as the daemon does, and says so in the log, or says that pod addresses are not routed where `sudo -n` is refused.
   With `API_PORT`, the API server listens on `127.0.0.1:API_PORT`, and its service-account issuer is `https://127.0.0.1:API_PORT`, whose discovery document and keys anyone may read, so a process of the host verifies a pod's service-account token
 
 - `kind_k ARGS…`
@@ -2400,8 +2401,13 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE...`
 
-  sends the cluster's pods to `ADDRESS:GITHUB_PORT` for `github.com` and `api.github.com`, and to `ADDRESS:SITES_PORT` for each `SITE`, the public TLS sites the image probe reaches: for each, a Service on port 443 with no selector, whose one endpoint is that address, and a CoreDNS `hosts` rule naming its cluster IP (`kind_github_address`, `kind_sites_address`).
+  sends the cluster's pods to `ADDRESS:GITHUB_PORT` for `github.com` and `api.github.com`, and to `ADDRESS:SITES_PORT` for each `SITE`, the rig's TLS stand-ins (`TLSSites.Hosts()` of `packages/daemon/internal/kindtest`: the npm registry, the pods' web-search provider and the image probe's sites): for each, a Service on port 443 with no selector, whose one endpoint is that address (`kind_github_address`, `kind_sites_address`).
+  CoreDNS answers those names with templates, answers `NXDOMAIN` for every other name outside `cluster.local` with no fall-through to public DNS, and logs each name it refused.
   The rule reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS
+
+- `kind_node_pulls JOURNAL...`
+
+  reads the containerd journals of the cluster's nodes, prints each image a node pulled, and returns 3 when one is neither a `ghcr.io/cybermonklabs/legion/ci` image named by digest nor an image of the rig's local registry, or when no journal holds a successful pull; `kind-sandbox.test.ts` holds it on the journals under `testdata/kind-node-pulls`
 
 - `kind_sandbox_start_nfs_server SEED`
 
@@ -2413,7 +2419,9 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
-  when `STATUS` is not 0, writes the cluster's nodes and pods, the `legion` namespace's Sandboxes and volume claims, the descriptions and container logs of the `legion`, `nfs` and `postgres` namespaces' pods and every event to `EVIDENCE/cluster-at-failure.txt`, and the Agent Sandbox controller's log to `EVIDENCE/agent-sandbox-controller.log`; then deletes the cluster and the registry.
+  when `STATUS` is not 0, writes the cluster's nodes and pods, the `legion` namespace's Sandboxes and volume claims, the descriptions and container logs of the `legion`, `nfs` and `postgres` namespaces' pods and every event to `EVIDENCE/cluster-at-failure.txt`, and the Agent Sandbox controller's log to `EVIDENCE/agent-sandbox-controller.log`;
+  in every case saves each node's containerd journal to `EVIDENCE/containerd-<node>.journal`, prints the names CoreDNS refused, and reads the pull list with `kind_node_pulls`, whose status 3 the rig's teardown turns into a failed test (`CHECK kind-node-pulls`);
+  then deletes the pod route, the cluster and the registry.
   It does nothing before `kind_sandbox_use` or `kind_sandbox_create` named a cluster, and deletes no cluster once it is gone
 
 ## lib/h2-settings.ts

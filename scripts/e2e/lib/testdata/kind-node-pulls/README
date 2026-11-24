@@ -1,0 +1,22 @@
+The containerd journals of a kind node that kind_node_pulls (scripts/e2e/lib/kind-sandbox.sh) reads
+in scripts/e2e/lib/kind-sandbox.test.ts, one directory a case, each file named as
+kind_sandbox_teardown names a node's journal: containerd-<node>.journal.
+
+These journals are not yet captured from a run. Their lines are written in the form containerd's
+CRI plugin logs a pull in, as journald keeps it and `-o cat` prints it (logrus text, the message
+quoted): `PullImage "<ref>"` when a pull starts, `PullImage "<ref>" returns image reference
+"<id>"` when it succeeded and `PullImage "<ref>" failed` when it did not (containerd's
+internal/cri/instrument/instrumented_service.go, PullImage), with the `Pulled image` and
+`stop pulling image` lines of internal/cri/server/images/image_pull.go beside them.
+
+A capture replaces them: the kind job keeps each node's journal of every test as
+containerd-<node>.journal in its kind-<leg>-logs artifact, which kind_sandbox_teardown writes with
+
+  docker exec <node> journalctl -u containerd --no-pager -o cat
+
+and a case takes a whole journal from it, with the run's id written here.
+
+- pinned-and-local: pulls of ghcr.io/cybermonklabs/legion/ci by digest and of the rig's registry,
+  and a refused pull of docker.io, which is no pull; passes.
+- outside-repository: beside those, a pull of ghcr.io in another repository; fails.
+- no-pull: no PullImage line at all; fails, as a reader that read nothing.

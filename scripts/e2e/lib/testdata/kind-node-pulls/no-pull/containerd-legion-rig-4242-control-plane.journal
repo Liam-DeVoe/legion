@@ -1,0 +1,3 @@
+time="2026-11-23T15:01:58.204181022Z" level=info msg="starting containerd" revision=  version=v2.2.0
+time="2026-11-23T15:01:58.311940263Z" level=info msg="containerd successfully booted in 0.108233s"
+time="2026-11-23T15:02:31.770318441Z" level=info msg="RunPodSandbox for &PodSandboxMetadata{Name:coredns-7c65d6cfc9-x8k2p,Uid:5e1c0f6a-3b2d-4c8e-9f7a-1d2e3f4a5b6c,Namespace:kube-system,Attempt:0,}"

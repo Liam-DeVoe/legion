@@ -21,17 +21,21 @@ description: >-
   root test once on a merge group; the runtime legs turn it off (GO_TEST_RETRY=off), since a rerun
   of the root test would drop the group the leg's -run selects and run every group. A failed test
   leaves the cluster's pods, Sandboxes, events, logs, the Agent Sandbox controller's log, the fake
-  GitHub's requests and the test's own logs under kind-logs, which the last step uploads.
+  GitHub's requests and the test's own logs under kind-logs, and every test leaves there its TLS
+  stand-ins' requests, each with its body, and each node's containerd journal, which the last step
+  uploads.
 
-  Each test step's process runs as a user of its own, legion-test, through the step shell
-  legion-test-shell (.github/scripts/test-user.sh): its outbound connections reach loopback and
-  the kind network alone, and every other one is logged and refused. So every fetch the rig makes
-  happens before, as the runner's user: kind's build, gVisor's release, the node and registry
+  Each test step's process runs in a cgroup of its own, legion-test, through the step shell
+  legion-test-shell (.github/scripts/test-fence.sh), as the runner's user: an iptables and an
+  ip6tables rule matched on that cgroup let its outbound connections, and those of every process
+  it starts, reach loopback and the kind network's bridge alone, which carries the rig's registry,
+  its stand-ins and the route to the cluster's pod subnet, and log and refuse every other one. So
+  every fetch the rig makes happens before: kind's build, gVisor's release, the node and registry
   images and the Go modules the tests build with. Docker fetches as root, outside that rule, so
-  the step after the tests prints the rule's refusals and Docker's image events since the rule
-  began, and fails on either a refusal or a pull. The cluster's own pulls go to ghcr.io and the
-  rig's registry alone, and its pods resolve no name but cluster.local's and the rig's stand-ins'
-  (scripts/e2e/lib/kind-sandbox.sh).
+  the step after the tests prints the rule, its match and counters, its refusals and Docker's image
+  events since the rule began, and fails on a missing match, a refusal or a pull. The cluster's own
+  pulls go to ghcr.io and the rig's registry alone, each named at the teardown, and its pods
+  resolve no name but cluster.local's and the rig's stand-ins' (scripts/e2e/lib/kind-sandbox.sh).
 inputs:
   leg:
     description: The leg of ci.yaml's kind job, the part of its check-run name after `kind / `.
@@ -106,16 +110,13 @@ runs:
         kind_sandbox_fetch "$RUNNER_TEMP/kind-fetched"
         (cd packages/daemon && go mod download)
 
-    # legion-test may read the module cache and bun, and read and write the checkout and the
-    # runner's temporary directory, where the image archive, gotestsum, the reports and the logs
-    # are; its Go build cache is its own, as cold as the runner's was.
+    # From here each test step runs in the cgroup legion-test, as the runner's user, so it reads
+    # and writes the checkout, the runner's temporary directory and the caches the steps above
+    # filled; its outbound connections reach loopback and the kind network's bridge alone.
     - id: fence
       name: Fence the test process to loopback and the kind network
       shell: bash
-      run: |
-        reads=(--read "$(go env GOMODCACHE)")
-        [ ! -d "$HOME/.bun" ] || reads+=(--read "$HOME/.bun")
-        .github/scripts/test-user.sh fence --docker --network kind --grant "$GITHUB_WORKSPACE" --grant "$RUNNER_TEMP" "${reads[@]}"
+      run: .github/scripts/test-fence.sh fence --network kind
 
     # The rig's measuring test times each piece of the rig by name, then runs a Burstable Sandbox
     # under gVisor that clones a private repository from the fake GitHub and a gVisor pod that
@@ -313,25 +314,29 @@ runs:
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-controller-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bControllerRestartOnTheKindRigLive)$'
 
-    # The rule's refusals (none expected) and Docker's image events while it stood: the test
-    # process fetched nothing, and Docker pulled nothing for it.
-    - name: Print what the rule refused and Docker's image events
+    # The rule, its match on the cgroup and its counters in both families, its refusals (none
+    # expected), and Docker's image events while it stood: the test process fetched nothing, and
+    # Docker pulled nothing for it.
+    - name: Print the rule, what it refused and Docker's image events
       if: always() && steps.fence.outcome == 'success'
       shell: bash
-      run: .github/scripts/test-user.sh report --docker-events
+      run: .github/scripts/test-fence.sh report --docker-events
 
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:
         name: kind-${{ inputs.leg }}-test
 
-    # A failed test's state, in a directory of the test's own: the cluster's nodes, pods, the
-    # legion namespace's Sandboxes and volume claims, its pods' descriptions and logs and the NFS
-    # and PostgreSQL servers', every event, the Agent Sandbox controller's log, the fake GitHub's
-    # requests, and for a runtime group the runtime's own log beside them. The name carries no run
-    # attempt and the upload overwrites, so a re-run's state replaces the failed attempt's.
-    - name: Upload the rig's state at the failure
-      if: failure()
+    # Each test's evidence, in a directory of the test's own: on every run its TLS stand-ins'
+    # requests, each with its body (the web-search stand-in's among them), and each node's
+    # containerd journal, which the teardown's list of pulled images is read from; at a failure
+    # also the cluster's nodes, pods, the legion namespace's Sandboxes and volume claims, its pods'
+    # descriptions and logs and the NFS and PostgreSQL servers', every event, the Agent Sandbox
+    # controller's log, the fake GitHub's requests, and for a runtime group the runtime's own log
+    # beside them. The name carries no run attempt and the upload overwrites, so a re-run's
+    # evidence replaces the earlier attempt's.
+    - name: Upload the rig's evidence
+      if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: kind-${{ inputs.leg }}-logs

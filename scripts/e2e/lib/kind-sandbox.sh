@@ -14,9 +14,9 @@
 # says how it differs from the release); and gVisor's dated release by sha512.
 #
 # The rig's fetches are kind_sandbox_fetch's alone, so a caller that runs it in a set-up step
-# leaves the process that runs the rest nothing to fetch: the kind job runs it as the runner's
-# user, and its tests as a user whose outbound connections reach loopback and the kind network
-# alone (.github/scripts/test-user.sh). The cluster pulls only from the local registry and
+# leaves the process that runs the rest nothing to fetch: the kind job runs it before its rule,
+# and its tests in a cgroup whose outbound connections reach loopback and the kind network's
+# bridge alone (.github/scripts/test-fence.sh). The cluster pulls only from the local registry and
 # ghcr.io (kind_sandbox_create), and its pods resolve no name outside cluster.local and the rig's
 # stand-ins (kind_sandbox_route_stand_ins).
 #
@@ -24,7 +24,7 @@
 # kind_sandbox_fetch DIR fetches what the rig runs: the pinned kind into DIR/kind
 # (kind_sandbox_install_kind), gVisor's release into DIR/gvisor.tar.zstd, held to its sha512, and
 # the node and registry images into Docker; and it makes the kind network the cluster joins, as
-# kind makes it, so a rule naming the network's addresses can stand before the cluster does.
+# kind makes it, so a rule naming the network's bridge can stand before the cluster does.
 # kind_sandbox_use NAME WORK names the cluster NAME and its files in WORK for the functions below,
 # with no cluster made: a caller that runs each function in a shell of its own (internal/kindtest)
 # calls it first in each.
@@ -38,7 +38,8 @@
 # from ghcr.io and from no other registry (/etc/containerd/certs.d/_default points every other
 # one at kind_no_registry, an address of the node's own where nothing listens), which
 # kind_sandbox_start_registry adds the local registry to. kind_k runs kubectl against that file
-# and context alone, so the caller's kubeconfig and its current context are never read.
+# and context alone, so the caller's kubeconfig and its current context are never read. This host
+# routes the node's pod subnet through the node's address on the kind network (kind_route_pods).
 # kind_sandbox_start_registry PORT starts a registry container on the kind network
 # (kind_registry), published on the host at 127.0.0.1:PORT, from which the node pulls
 # localhost:PORT/<image>: an image pushed there has a registry digest, which
@@ -52,11 +53,13 @@
 # that digest, so a pod's start never waits on a registry.
 # kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE... sends the cluster's pods to
 # ADDRESS:GITHUB_PORT for github.com and api.github.com, and to ADDRESS:SITES_PORT for each SITE,
-# the public TLS sites the image probe reaches: for each, a selectorless Service on 443 whose one
-# endpoint is that address, and a CoreDNS answer naming its cluster IP (kind_github_address,
-# kind_sites_address). CoreDNS (kind_corefile) answers NXDOMAIN for every other name outside
-# cluster.local, with no forward to the runner's resolver, and logs each such answer. The rule
-# reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS.
+# the public TLS hosts the rig stands in for beside GitHub (internal/kindtest's TLSSites.Hosts:
+# the sites the image probe reaches, the npm registry and the pods' web-search provider): for
+# each, a selectorless Service on 443 whose one endpoint is that address, and a CoreDNS answer
+# naming its cluster IP (kind_github_address, kind_sites_address). CoreDNS (kind_corefile) answers
+# NXDOMAIN for every other name outside cluster.local, with no forward to the runner's resolver,
+# and logs each such answer. The rule reaches pods alone: the node, and containerd's pulls,
+# resolve through Docker's DNS.
 # kind_sandbox_start_nfs_server SEED starts an NFS server in the cluster (NFS-Ganesha, as the
 # Kubernetes SIG Storage's nfs-provisioner image ships it), exporting /team, which holds seed.txt
 # with SEED, and /scratch, and sets kind_nfs_server to its Service's cluster IP once the node
@@ -65,12 +68,14 @@
 # the services: Postgres of CI's other jobs), whose superuser postgres has PASSWORD, on a Service
 # the cluster's pods reach at its cluster IP and this host reaches at the node's address on the
 # kind network and the Service's node port, once it accepts connections.
-# kind_sandbox_teardown STATUS EVIDENCE prints each name CoreDNS answered NXDOMAIN for, then,
-# when STATUS is not 0, writes what the cluster held (its nodes and pods, the legion namespace's
-# Sandboxes and volume claims, its pods' descriptions and container logs and the nfs and postgres
-# namespaces', every event, and the Agent Sandbox controller's log) to EVIDENCE, and deletes the
-# cluster and the registry. It does nothing before kind_sandbox_use or kind_sandbox_create has
-# named a cluster, and deletes nothing once the cluster is gone.
+# kind_sandbox_teardown STATUS EVIDENCE prints each name CoreDNS answered NXDOMAIN for, saves each
+# node's containerd journal to EVIDENCE/containerd-<node>.journal and names each image the nodes
+# pulled from it (kind_node_pulls), then, when STATUS is not 0, writes what the cluster held (its
+# nodes and pods, the legion namespace's Sandboxes and volume claims, its pods' descriptions and
+# container logs and the nfs and postgres namespaces', every event, and the Agent Sandbox
+# controller's log) to EVIDENCE, deletes the routes kind_route_pods made, and deletes the cluster
+# and the registry. It does nothing before kind_sandbox_use or kind_sandbox_create has named a
+# cluster, and deletes nothing once the cluster is gone. It returns 3 when kind_node_pulls fails.
 #
 # LEGION_E2E_KIND names the kind binary when kind_sandbox_install_kind has not run in this shell.
 
@@ -80,6 +85,7 @@ kind_context=
 kind_kubeconfig=
 kind_node=
 kind_registry=
+kind_pod_routes=
 kind_github_address=
 kind_sites_address=
 kind_nfs_server=
@@ -140,6 +146,7 @@ kind_sandbox_fetch() {
 
 kind_sandbox_use() {
   kind_cluster=$1 kind_context=kind-$1 kind_kubeconfig=$2/kubeconfig kind_node=$1-control-plane kind_registry=$1-registry
+  kind_pod_routes=$2/pod-routes
 }
 
 kind_sandbox_create() {
@@ -185,6 +192,34 @@ EOF
     note "the API server's service-account issuer is https://127.0.0.1:$port; anyone may read its discovery document and keys"
   fi
   note "$("$kind_bin" version), node $(kind_k get node "$kind_node" -o jsonpath='{.status.nodeInfo.kubeletVersion}, allocatable {.status.allocatable.cpu} cpu, {.status.allocatable.memory} memory, {.status.allocatable.ephemeral-storage} ephemeral storage')"
+  kind_route_pods
+}
+
+# kind_route_pods routes, from this host, the node's pod subnet (its spec.podCIDR, IPv4 as the
+# rig's kind config leaves the cluster) through the node's address on the kind network, so a
+# process here reaches a pod at the pod's own address, as a daemon outside the cluster does
+# (internal/runtime/sandbox's readCacheHealth reads each repository cache's /healthz there): what
+# it sends leaves through the kind network's bridge, which the kind job's rule passes. The route
+# goes into kind_pod_routes, for kind_sandbox_teardown to delete. Where sudo -n is refused, it says
+# that pod addresses are not routed from this host, and goes on.
+kind_route_pods() {
+  local cidr="" via refused deadline=$((SECONDS + 60))
+  if ! refused=$(sudo -n true 2>&1); then
+    note "pod addresses are not routed from this host, since sudo -n is refused: $refused"
+    return 0
+  fi
+  # The controller manager gives the node its subnet once the node registers, which --wait
+  # covers; the read waits a little for it all the same.
+  until [ -n "$cidr" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "the node $kind_node has no pod subnet (spec.podCIDR) after 60 s"
+    cidr=$(kind_k get node "$kind_node" -o jsonpath='{.spec.podCIDR}')
+    [ -n "$cidr" ] || sleep 1
+  done
+  via=$(docker inspect --format "{{with index .NetworkSettings.Networks \"$kind_network\"}}{{.IPAddress}}{{end}}" "$kind_node")
+  [ -n "$via" ] || fail "the node $kind_node has no address on the $kind_network network to route $cidr through"
+  sudo -n ip route replace "$cidr" via "$via"
+  printf '%s %s\n' "$cidr" "$via" >>"$kind_pod_routes"
+  note "this host routes the cluster's pod subnet: $(ip route show "$cidr")"
 }
 
 kind_sandbox_start_registry() {
@@ -461,13 +496,49 @@ EOF
   note "PostgreSQL at $(kind_k -n postgres get service postgres -o jsonpath='{.spec.clusterIP}:5432') in the cluster, node port $(kind_k -n postgres get service postgres -o jsonpath='{.spec.ports[0].nodePort}'), accepting connections"
 }
 
-# kind_sandbox_teardown STATUS EVIDENCE: names each name CoreDNS refused and each image the nodes
-# pulled, keeps the cluster's state in EVIDENCE when STATUS is not 0, then deletes the cluster and
-# the registry. It returns 3 when a node pulled an image that is neither
-# ghcr.io/cybermonklabs/legion/ci by digest nor the rig's registry (localhost:<port>), after the
-# deletes, which the rig reports as the test's failure.
+# kind_node_pulls JOURNAL... names each image a kind node's containerd pulled, read from JOURNAL,
+# the node's containerd journal as `journalctl -u containerd -o cat` prints it, in a file named
+# containerd-<node>.journal: the CRI plugin's line for a pull that succeeded (`PullImage "<ref>"
+# returns image reference "<id>"`), since images kind load put in the node and the node image's
+# own are no pull, and a refused pull returns no reference. It prints `CHECK kind-node-pulls:
+# PASS` when each is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry
+# (localhost:<port>); it prints `CHECK kind-node-pulls: FAIL` and returns 3 when one is neither, or
+# when no journal holds a pull, since every rig pulls the gVisor check's busybox and its own
+# image: a journal with no pull is one the reader did not read, not a cluster that pulled nothing.
+kind_node_pulls() {
+  local journal node pulled ref outside=0 pulls=0
+  for journal in "$@"; do
+    node=${journal##*/containerd-}
+    node=${node%.journal}
+    pulled=$(sed -n 's/.*PullImage \\"\([^\\"]*\)\\" returns image reference.*/\1/p' "$journal" 2>/dev/null | sort -u || true)
+    while read -r ref; do
+      [ -n "$ref" ] || continue
+      pulls=$((pulls + 1))
+      case "$ref" in
+        ghcr.io/cybermonklabs/legion/ci@sha256:*) note "the node $node pulled $ref" ;;
+        localhost:[0-9]*/*) note "the node $node pulled $ref from the rig's registry" ;;
+        *) note "the node $node pulled $ref, which is neither ghcr.io/cybermonklabs/legion/ci by digest nor the rig's registry"; outside=1 ;;
+      esac
+    done <<<"$pulled"
+  done
+  if [ "$outside" -ne 0 ]; then
+    note "CHECK kind-node-pulls: FAIL: a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, each line above"
+    return 3
+  fi
+  if [ "$pulls" -eq 0 ]; then
+    note "CHECK kind-node-pulls: FAIL: no containerd journal of the nodes ($*) holds the line of a pull that succeeded, and every rig pulls at least its own image"
+    return 3
+  fi
+  note "CHECK kind-node-pulls: PASS: each of the $pulls images the nodes pulled is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry"
+}
+
+# kind_sandbox_teardown STATUS EVIDENCE: names each name CoreDNS refused, saves each node's
+# containerd journal in EVIDENCE and names each image the nodes pulled (kind_node_pulls), keeps
+# the cluster's state in EVIDENCE when STATUS is not 0, then deletes the cluster, the routes
+# kind_route_pods made and the registry. It returns 3, after the deletes, when kind_node_pulls
+# failed, which the rig reports as the test's failure.
 kind_sandbox_teardown() {
-  local status=$1 evidence=$2 namespace pod clusters refused node pulled ref outside=0 pulls=0
+  local status=$1 evidence=$2 namespace pod clusters refused node journals=() verdict=0 cidr via out
   [ -n "$kind_cluster" ] || return 0
   # Read whole, not piped into grep -q, whose early exit is the pipeline's failure under pipefail.
   clusters=$("$kind_bin" get clusters 2>/dev/null || true)
@@ -481,29 +552,16 @@ kind_sandbox_teardown() {
     else
       note "CoreDNS refused no name"
     fi
-    # Each image a node's containerd pulled, from the CRI plugin's line for a pull that succeeded
-    # (`PullImage "<ref>" returns image reference "<id>"`): images kind load put in the node and the
-    # node image's own are no pull, and a refused pull returns no reference.
+    # Each node's containerd journal, which the kind job uploads with the rest of EVIDENCE, and
+    # the images the nodes pulled, read from those very files.
+    mkdir -p "$evidence"
     for node in $("$kind_bin" get nodes --name "$kind_cluster" 2>/dev/null); do
-      pulled=$(docker exec "$node" journalctl -u containerd --no-pager -o cat 2>/dev/null |
-        sed -n 's/.*PullImage \\"\([^\\"]*\)\\" returns image reference.*/\1/p' | sort -u || true)
-      while read -r ref; do
-        [ -n "$ref" ] || continue
-        pulls=$((pulls + 1))
-        case "$ref" in
-          ghcr.io/cybermonklabs/legion/ci@sha256:*) note "the node $node pulled $ref" ;;
-          localhost:[0-9]*/*) note "the node $node pulled $ref from the rig's registry" ;;
-          *) note "the node $node pulled $ref, which is neither ghcr.io/cybermonklabs/legion/ci by digest nor the rig's registry"; outside=1 ;;
-        esac
-      done <<<"$pulled"
+      docker exec "$node" journalctl -u containerd --no-pager -o cat >"$evidence/containerd-$node.journal" 2>/dev/null ||
+        note "could not read the containerd journal of the node $node"
+      journals+=("$evidence/containerd-$node.journal")
     done
-    if [ "$outside" -ne 0 ]; then
-      note "CHECK kind-node-pulls: FAIL: a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, each line above"
-    else
-      note "CHECK kind-node-pulls: PASS: each of the $pulls images the nodes pulled is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry"
-    fi
+    kind_node_pulls "${journals[@]+"${journals[@]}"}" || verdict=$?
     if [ "$status" -ne 0 ]; then
-      mkdir -p "$evidence"
       {
         kind_k get nodes -o wide
         kind_k get pods -A -o wide
@@ -523,6 +581,16 @@ kind_sandbox_teardown() {
     "$kind_bin" delete cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" >/dev/null 2>&1 ||
       echo "could not delete kind cluster $kind_cluster; delete it with: $kind_bin delete cluster --name $kind_cluster" >&2
   fi
+  if [ -s "$kind_pod_routes" ]; then
+    while read -r cidr via; do
+      if out=$(sudo -n ip route del "$cidr" via "$via" 2>&1); then
+        note "this host no longer routes the pod subnet $cidr through $via"
+      else
+        note "could not delete this host's route of $cidr through $via: $out"
+      fi
+    done <"$kind_pod_routes"
+    rm -f "$kind_pod_routes"
+  fi
   docker rm -f "$kind_registry" >/dev/null 2>&1 || true
-  [ "$outside" -eq 0 ] || return 3
+  [ "$verdict" -eq 0 ] || return 3
 }

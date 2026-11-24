@@ -18,6 +18,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"math/big"
@@ -28,6 +29,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -41,24 +43,34 @@ import (
 // URLs) and a stale-plugin install of a published version (`bun add`) fetch from it.
 const NPMHost = "registry.npmjs.org"
 
+// WebSearchHost is Parallel's keyless MCP endpoint, the search provider the pinned Oh My Pi's
+// web_search tool tries first and always, with no key and no setting (the "web" role's defaults
+// in its catalog, packages/catalog/src/compat/rules/runtime/behavior.kdl, and
+// packages/coding-agent/src/web/search/providers/parallel.ts at the .omp-pin tag): each pod's
+// capability report runs one search through it (packages/pi-legion/src/capability-report.ts,
+// checkWebSearch), and web-search stays closed only when a provider answers.
+const WebSearchHost = "search.parallel.ai"
+
 // TLSSites is the rig's stand-in for the public hosts the cluster's pods reach over TLS beside
-// GitHub: the sites the daemon's image probe reaches (internal/tlssites) and the npm registry
-// (NPMHost), so no pod of a kind test leaves the runner. The cluster's pods reach it under the
-// hosts' own names (kind_sandbox_route_stand_ins), and Image is built to read it as the probe reads
-// the real sites: the emSign and AAA stand-ins serve chains that end at roots of the rig's own,
-// which Image carries at the paths of the real pinned roots (tlssites.Site.Root) and holds in no
-// trust store, so every client refuses them, as the probe requires, and the positive controls
-// verify them with those files; the control, the isolation endpoint and the registry serve chains
-// of the rig's sites authority (AuthorityPEM), which Image trusts as it trusts the fake GitHub's, so
-// every client accepts the control and no pinned root verifies the isolation endpoint. Measured on
-// 2026-11-21 in an INFRA issue pod, with the stand-ins on 127.0.0.1:443 and Image's changes made
-// in namespaces of their own: the probe's positive controls and every client that pod's image
+// GitHub: the sites the daemon's image probe reaches (internal/tlssites), the npm registry
+// (NPMHost) and the pods' web-search provider (WebSearchHost), so no pod of a kind test leaves the
+// runner. The cluster's pods reach it under the hosts' own names (kind_sandbox_route_stand_ins),
+// and Image is built to read it as the probe reads the real sites: the emSign and AAA stand-ins
+// serve chains that end at roots of the rig's own, which Image carries at the paths of the real
+// pinned roots (tlssites.Site.Root) and holds in no trust store, so every client refuses them, as
+// the probe requires, and the positive controls verify them with those files; the control, the
+// isolation endpoint, the registry and the web-search provider serve chains of the rig's sites
+// authority (AuthorityPEM), which Image trusts as it trusts the fake GitHub's, so every client
+// accepts the control and no pinned root verifies the isolation endpoint. Measured on 2026-11-21
+// in an INFRA issue pod, with the stand-ins on 127.0.0.1:443 and Image's changes made in
+// namespaces of their own: the probe's positive controls and every client that pod's image
 // carries passed (az and mise were not on its PATH).
 //
 // The answers follow what the probe was measured against: each compromised site serves a 200
 // text/plain page at every path, the control a 200 HTML page at / and 404 elsewhere, and the
 // isolation endpoint a 200 HTML page. The registry serves the files a test gives it (ServeNPMLock,
-// PublishNPM) and 404 for any other path.
+// PublishNPM) and 404 for any other path. The web-search provider answers a search with one
+// result (answerWebSearch).
 type TLSSites struct {
 	server *http.Server
 	addr   string
@@ -70,7 +82,8 @@ type TLSSites struct {
 	mu sync.Mutex
 	// npm is the registry's files by path.
 	npm map[string][]byte
-	// requests is every request the stand-ins answered: "<method> <host><path> -> <status>".
+	// requests is every request the stand-ins answered: "<method> <host><path> -> <status>", and
+	// its body after a space where it had one (recordedBody).
 	requests []string
 }
 
@@ -85,7 +98,7 @@ func StartTLSSites(t *testing.T, listen string) *TLSSites {
 		s.roots[site.Root] = pemOf(root)
 		certificates[host(site)] = leafOf(t, host(site), root, key)
 	}
-	for _, name := range []string{host(tlssites.Control), host(tlssites.Isolation), NPMHost} {
+	for _, name := range []string{host(tlssites.Control), host(tlssites.Isolation), NPMHost, WebSearchHost} {
 		certificates[name] = leafOf(t, name, authority, authorityKey)
 	}
 	listener, err := tls.Listen("tcp", listen, &tls.Config{GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -109,7 +122,7 @@ func (s *TLSSites) Addr() string { return s.addr }
 
 // Hosts is the name of every host the stand-ins serve.
 func (s *TLSSites) Hosts() []string {
-	return []string{host(tlssites.EmSign), host(tlssites.AAA), host(tlssites.Control), host(tlssites.Isolation), NPMHost}
+	return []string{host(tlssites.EmSign), host(tlssites.AAA), host(tlssites.Control), host(tlssites.Isolation), NPMHost, WebSearchHost}
 }
 
 // AuthorityPEM is the sites authority, which Image trusts.
@@ -118,20 +131,25 @@ func (s *TLSSites) AuthorityPEM() []byte { return s.authority }
 // RootsPEM is each compromised site's stand-in root by the path Image carries it at.
 func (s *TLSSites) RootsPEM() map[string][]byte { return s.roots }
 
-// Requests is every request the stand-ins answered, in order.
+// Requests is every request the stand-ins answered, in order, each with its body.
 func (s *TLSSites) Requests() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.requests)
 }
 
-// answer answers a request as the host it names answered the probe, or as the registry serves
-// the files it was given, and records it.
+// maxRecordedBody is the most of a request's body the stand-ins read and record.
+const maxRecordedBody = 1 << 20
+
+// answer answers a request as the host it names answered the probe, as the registry serves the
+// files it was given, or as the web-search provider answers a search, and records it with its
+// body.
 func (s *TLSSites) answer(w http.ResponseWriter, r *http.Request) {
 	name, _, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		name = r.Host
 	}
+	received, _ := io.ReadAll(io.LimitReader(r.Body, maxRecordedBody))
 	status := http.StatusOK
 	switch name {
 	case host(tlssites.EmSign), host(tlssites.AAA):
@@ -161,13 +179,91 @@ func (s *TLSSites) answer(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(body)
 		}
+	case WebSearchHost:
+		status = answerWebSearch(w, r, received)
 	default:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintln(w, "<!doctype html><title>the kind rig's stand-in</title>")
 	}
+	line := fmt.Sprintf("%s %s%s -> %d", r.Method, name, r.URL.Path, status)
+	if len(received) > 0 {
+		line += " " + recordedBody(received)
+	}
 	s.mu.Lock()
-	s.requests = append(s.requests, fmt.Sprintf("%s %s%s -> %d", r.Method, name, r.URL.Path, status))
+	s.requests = append(s.requests, line)
 	s.mu.Unlock()
+}
+
+// recordedBody is a request's body as one line of the requests the stand-ins keep: JSON compacted,
+// as it was sent, and anything else quoted.
+func recordedBody(body []byte) string {
+	var compact bytes.Buffer
+	if json.Compact(&compact, body) == nil {
+		return compact.String()
+	}
+	return strconv.Quote(string(body))
+}
+
+// webSearchResult is the one result the web-search stand-in answers every search with: a page of
+// Jujutsu's documentation, which a pod's capability check searches for ("jujutsu version
+// control", capability-report.ts), with the title and excerpt Parallel's results carry.
+var webSearchResult = map[string]any{
+	"url":      "https://jj-vcs.github.io/jj/latest/",
+	"title":    "Jujutsu, as the kind rig's web-search stand-in answers it",
+	"excerpts": []string{"Jujutsu is a Git-compatible version control system."},
+}
+
+// answerWebSearch answers a request to WebSearchHost as Parallel's keyless MCP endpoint answers the
+// pinned Oh My Pi's web_search (packages/coding-agent/src/web/search/providers/parallel.ts and
+// src/mcp/json-rpc.ts at the .omp-pin tag), and returns the status it wrote. The provider POSTs one
+// JSON-RPC 2.0 request to /mcp, a tools/call of web_search, with no initialize before it. The
+// answer is a JSON-RPC result whose id is the request's own, of the same JSON type, since the
+// provider compares the two with ===, and whose structuredContent, which the provider reads before
+// any text content, holds one result with a url, all the provider requires of an answer; its
+// content carries the same as text, as an MCP tool's result does. A request of another shape is
+// refused, naming what it was, so a change of the exchange shows in the requests the rig keeps
+// rather than as an answer the provider misreads.
+func answerWebSearch(w http.ResponseWriter, r *http.Request, body []byte) int {
+	const wants = "the kind rig's web-search stand-in answers a JSON-RPC 2.0 tools/call of web_search POSTed to /mcp"
+	switch {
+	case r.URL.Path != "/mcp":
+		http.Error(w, wants+", and this is "+r.URL.Path, http.StatusNotFound)
+		return http.StatusNotFound
+	case r.Method != http.MethodPost:
+		http.Error(w, wants+", and this is a "+r.Method, http.StatusMethodNotAllowed)
+		return http.StatusMethodNotAllowed
+	}
+	var call struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(body, &call); err != nil || call.JSONRPC != "2.0" || len(call.ID) == 0 {
+		http.Error(w, wants+", and this is no JSON-RPC 2.0 request with an id", http.StatusBadRequest)
+		return http.StatusBadRequest
+	}
+	answer := map[string]any{"jsonrpc": "2.0", "id": call.ID}
+	if call.Method != "tools/call" || call.Params.Name != "web_search" {
+		answer["error"] = map[string]any{"code": -32601, "message": fmt.Sprintf("%s, and this is %q of %q", wants, call.Method, call.Params.Name)}
+	} else {
+		results := map[string]any{"results": []any{webSearchResult}}
+		text, err := json.Marshal(results)
+		if err != nil {
+			http.Error(w, "the kind rig's web-search stand-in cannot encode its result: "+err.Error(), http.StatusInternalServerError)
+			return http.StatusInternalServerError
+		}
+		answer["result"] = map[string]any{
+			"content":           []any{map[string]any{"type": "text", "text": string(text)}},
+			"structuredContent": results,
+			"isError":           false,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(answer)
+	return http.StatusOK
 }
 
 // ServeNPMLock serves, at the paths of their resolved URLs, the registry tarballs of lock (an npm

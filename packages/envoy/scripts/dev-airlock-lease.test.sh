@@ -26,11 +26,12 @@
 #
 # Usage: packages/envoy/scripts/dev-airlock-lease.test.sh [--stack-log FILE]
 #
-# --stack-log FILE runs it on a stack already up, which another user may own, whose dev-airlock.sh
-# output FILE holds, and starts none: the stack's starter gives it the one broker and the short
-# lease (BROKER_LEASE_SECONDS=91 dev-airlock.sh --one-broker), and the first property fails on a
-# stack with any other lease. CI starts the stack as the runner's user and runs this as a user
-# whose connections reach loopback and the stack's containers alone (.github/scripts/test-user.sh).
+# --stack-log FILE runs it on a stack already up, whose dev-airlock.sh output FILE holds, and
+# starts none: the stack's starter gives it the one broker and the short lease
+# (BROKER_LEASE_SECONDS=91 dev-airlock.sh --one-broker), and the first property fails on a stack
+# with any other lease. CI starts the stack in a step of its own and runs this in a cgroup whose
+# outbound connections reach loopback and the stack's containers alone
+# (.github/scripts/test-fence.sh).
 #
 # Needs what dev-airlock.sh needs: bash, curl, jq, go and psql, a Postgres server named by
 # DEV_BROKER_POSTGRES_URL (or Docker for dev-postgres.sh), and loopback port 443 for the
