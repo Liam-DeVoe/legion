@@ -743,7 +743,7 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" createdb -U postgres dispatch_bench
           go run ./cmd/dispatch-seed --database-url "$DISPATCH_BENCH_DATABASE_URL" --scale 0.01
-          ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-envoy-go-timings-docs.json --packages ./internal/dispatch/docs/ -- -count=1 -timeout 5m -run '^(TestStatementTimings)$'
+          ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-envoy-go-timings-docs.json --packages ./internal/dispatch/docs/ -- -count=1 -timeout 5m -exec 'env GODEBUG=checkfinalizers=1' -run '^(TestStatementTimings)$'
           ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-envoy-go-timings-refs.json --packages ./internal/dispatch/refs/ -- -count=1 -timeout 5m -run '^(TestStatementTimings)$'
       - {if: always() && matrix.rest, uses: ./.github/actions/go-test-upload, with: {name: go-envoy-held-envoy-go-timings}}
       - {name: envoy-go-race, if: "startsWith(matrix.leg, 'race-')", uses: ./.github/actions/go-envoy-held/envoy-go-race, with: {part: '${{ matrix.part }}', legs: 2, postgres: '${{ job.services.postgres.id }}'}}

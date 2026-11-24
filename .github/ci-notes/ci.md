@@ -1041,7 +1041,9 @@ TestStatementTimings of refs and of docs times nothing: each runs the statements
 BenchmarkStatementTimings times, once and untimed, on the database cmd/dispatch-seed fills, and
 checks what they read, one package at a time after every Postgres-backed step of the leg (the step
 "Check the statements on the seeded measurement database" of ci.yaml's go-envoy-held job). The
-timings are the benchmarks', a tool's, since a runner's load decides a timed pair.
+timings are the benchmarks', a tool's, since a runner's load decides a timed pair. docs's runs
+under the cleanup detector (`-exec 'env GODEBUG=checkfinalizers=1'`), the mode main's
+envoy-go-docs-finalizers job ran it in.
 
 ## The envoy-go unit step: one go test that counts the broker's skips
 
