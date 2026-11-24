@@ -7,7 +7,8 @@
  *  directory, so no global bunfig of the host reaches it either. Other rows run the tool itself
  *  there instead: on an `--out` the tool must refuse before it starts Bun, and on copies of the
  *  package whose rows never end, which the tool is stopped on, or whose worker or Bun's test
- *  process is killed, or whose step GitHub's runner cancels. unit-repeat-budgets.test.ts holds
+ *  process is killed, or whose step GitHub's runner cancels, or whose one file's runs cannot end
+ *  by the deadline the tool is given, and one whose runs can. unit-repeat-budgets.test.ts holds
  *  the budgets of .github/workflows/dispatch-unit-repeat.yaml to the measurements beside them.
  *
  *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
@@ -20,7 +21,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,9 @@ import {
   junitAt,
   type LaneRun,
   markdown,
+  overrunsIn,
   parseArguments,
+  progressTail,
   type Report,
   type RowlessKind,
   runningFiles,
@@ -451,7 +454,9 @@ test(
     // The lie: the tool draws a seed Bun refuses, so the weekly run stops before any test.
     const options = (seed: string) =>
       parseArguments(["--lane", "web", "--out", "out", "--seed", seed], () => 0);
-    expect(options("0")).toEqual({ options: { lane: "web", out: "out", reruns: 20, seed: 0 } });
+    expect(options("0")).toEqual({
+      options: { lane: "web", out: "out", reruns: 20, seed: 0, deadlineSeconds: null },
+    });
     expect(options("4294967295")).toMatchObject({ options: { seed: 4294967295 } });
     for (const refused of ["4294967296", "-1", "1.5", "0x10", ""]) {
       expect(options(refused)).toHaveProperty("problem");
@@ -498,6 +503,26 @@ test(
     expect(await Bun.file(file).text()).toBe(text);
   },
   rowLimit("short")
+);
+
+test(
+  "a --deadline is a whole number of seconds of at least 1, and with none the tool projects nothing",
+  () => {
+    // The lie: a deadline the tool misreads, a fraction or a zero, holds every file's runs to a
+    // deadline the leg does not have, and stops a leg that would have passed.
+    const deadline = (...more: string[]) =>
+      parseArguments(["--lane", "harness", "--out", "out", ...more], () => 0);
+    expect(deadline("--deadline", "7800")).toMatchObject({ options: { deadlineSeconds: 7800 } });
+    expect(deadline("--deadline", "1")).toMatchObject({ options: { deadlineSeconds: 1 } });
+    expect(deadline()).toMatchObject({ options: { deadlineSeconds: null } });
+    // As `--deadline=<value>`, which parseArgs takes whole even where the value starts with `-`.
+    for (const refused of ["0", "-1", "1.5", "7800s", ""]) {
+      expect(deadline(`--deadline=${refused}`)).toEqual({
+        problem: `--deadline is a whole number of seconds, at least 1, not ${refused}`,
+      });
+    }
+  },
+  rowLimit()
 );
 
 /** One line of a progress file, as e2e/tools/unit-repeat-progress.ts writes it. */
@@ -586,6 +611,7 @@ test(
       },
       bunEnd: null,
       namesRuns: {},
+      overruns: [],
     };
     const lane = { reruns: 2, seed: SEED, script: "test:harness" };
     expect(runningFiles(stop, lane)).toEqual([
@@ -782,6 +808,171 @@ test(
   rowLimit()
 );
 
+test(
+  "a file whose ended runs project its runs past the deadline is named, and a file that can still end in time is not",
+  () => {
+    // The lie: a leg runs to its deadline for a file whose first run already showed its runs
+    // cannot end by it, or the projection stops a leg that could still pass: it takes a run's
+    // mean, where a slow first run and fast later ones end in time; it reads a projection that
+    // lands on the deadline as past it; or it names a file with no run ended, or every run ended.
+    // The leg starts at 1,000 s on the progress file's clock, with a deadline of 7,800 s and 20
+    // reruns; every time below is in seconds from that start.
+    const start = 1_000_000;
+    const at = (seconds: number) => start + seconds * 1000;
+    const lines: string[] = [];
+    // A load of `<load>.test.ts` at `loadedAt`, and each of its runs as [began, ended], one row a
+    // run; a run whose end is null began and has not ended.
+    const file = (
+      load: string,
+      loadedAt: number,
+      runs: readonly (readonly [number, number | null])[]
+    ) => {
+      lines.push(
+        progressLine({
+          event: "load",
+          load,
+          at: at(loadedAt),
+          file: `${load}.test.ts`,
+          pid: 1,
+          atOnce: false,
+        })
+      );
+      for (const [began, ended] of runs) {
+        lines.push(progressLine({ event: "run", load, at: at(began) }));
+        lines.push(progressLine({ event: "start", load, at: at(began) }));
+        if (ended === null) continue;
+        lines.push(progressLine({ event: "end", load, at: at(ended) }));
+        lines.push(progressLine({ event: "done", load, at: at(ended) }));
+      }
+    };
+    // One run of 450.5 s ended at 551 s: 19 more end at 9,110.5 s at the soonest.
+    file("slow", 100, [[100.5, 551]]);
+    // One run of 500 s ended at 700 s: 19 more end at 10,200 s, the latest, so named first.
+    file("slower", 200, [[200, 700]]);
+    // Three runs of 60 s: 17 more end at 1,200 s.
+    file("fits", 0, [
+      [0, 60],
+      [60, 120],
+      [120, 180],
+    ]);
+    // A first run of 500 s and a second of 300 s: as fast as the fastest, 18 more end at 6,200 s;
+    // as their mean of 400 s they would end at 8,000 s, past the deadline.
+    file("faster-later", 0, [
+      [0, 500],
+      [500, 800],
+    ]);
+    // One run of 390 s: 19 more end at 7,800 s, on the deadline and not past it.
+    file("on-the-deadline", 0, [[0, 390]]);
+    // A run begun and not ended: nothing to project from.
+    file("unended", 0, [[0, null]]);
+    // Every run ended, the last at 7,000 s: nothing left to come.
+    file(
+      "finished",
+      0,
+      Array.from({ length: 20 }, (_, run) => [run * 350, (run + 1) * 350] as const)
+    );
+    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: its second `done`
+    // times the run it ends from that run's own start, so 18 more end at 6,000 s. Paired with the
+    // first run's start, the run would read 600 s, and 19 more would end at 12,000 s.
+    lines.push(
+      progressLine({
+        event: "load",
+        load: "skipped-done",
+        at: at(0),
+        file: "skipped-done.test.ts",
+        pid: 1,
+        atOnce: false,
+      }),
+      progressLine({ event: "run", load: "skipped-done", at: at(0) }),
+      progressLine({ event: "run", load: "skipped-done", at: at(300) }),
+      progressLine({ event: "done", load: "skipped-done", at: at(600) })
+    );
+    // One run of 390.001 s: 19 more end at 7,800.02 s, just past the deadline, which the report
+    // rounds up, never to the deadline itself.
+    lines.push(
+      progressLine({
+        event: "load",
+        load: "just-past",
+        at: start,
+        file: "just-past.test.ts",
+        pid: 1,
+        atOnce: false,
+      }),
+      progressLine({ event: "run", load: "just-past", at: start }),
+      progressLine({ event: "done", load: "just-past", at: start + 390_001 })
+    );
+    // The last line, cut short as a worker's write can be when the file is read.
+    const text = `${lines.join("\n")}\n{"event":"done","load":"fits","at":`;
+    expect(overrunsIn(text, start, 20, 7800)).toEqual([
+      {
+        file: "slower.test.ts",
+        runsEnded: 1,
+        reruns: 20,
+        fastestSeconds: 500,
+        projectedSeconds: 10200,
+        deadlineSeconds: 7800,
+      },
+      {
+        file: "slow.test.ts",
+        runsEnded: 1,
+        reruns: 20,
+        fastestSeconds: 450.5,
+        projectedSeconds: 9110.5,
+        deadlineSeconds: 7800,
+      },
+      {
+        file: "just-past.test.ts",
+        runsEnded: 1,
+        reruns: 20,
+        fastestSeconds: 390,
+        projectedSeconds: 7800.1,
+        deadlineSeconds: 7800,
+      },
+    ]);
+    // Each of them inside a deadline past its projection: none is named.
+    expect(overrunsIn(text, start, 20, 10_201)).toEqual([]);
+    // With no progress file yet, nothing is named.
+    expect(overrunsIn("", start, 20, 7800)).toEqual([]);
+  },
+  rowLimit()
+);
+
+test(
+  "the tool's reader of the progress file takes each line once, whole, however the writes split it",
+  async () => {
+    // The lie: the reader that feeds the projection drops a line cut at a read, takes it twice,
+    // or loses the lines past its buffer, so a file's runs are miscounted and the leg is stopped
+    // falsely, or never. Here the reader reads a file that is not there yet, then a line in two
+    // writes with a read between them, then more than its 64 KiB buffer at once.
+    const directory = scratch();
+    const path = join(directory, "progress.jsonl");
+    const reader = progressTail(path);
+    try {
+      expect(reader.read()).toEqual([]);
+      const line = (load: string, at: number) => `${progressLine({ event: "run", load, at })}\n`;
+      const first = line("first", 1);
+      writeFileSync(path, first.slice(0, 10));
+      expect(reader.read()).toEqual([]);
+      appendFileSync(path, first.slice(10));
+      expect(reader.read()).toEqual([{ event: "run", load: "first", at: 1 }]);
+      expect(reader.read()).toEqual([]);
+      const many = Array.from({ length: 3000 }, (_, index) => line(`load-${index}`, index)).join(
+        ""
+      );
+      expect(many.length).toBeGreaterThan(2 ** 16);
+      appendFileSync(path, many);
+      const read = reader.read();
+      expect(read).toHaveLength(3000);
+      expect(read[0]).toEqual({ event: "run", load: "load-0", at: 0 });
+      expect(read[2999]).toEqual({ event: "run", load: "load-2999", at: 2999 });
+      expect(new Set(read.map((each) => each.load)).size).toBe(3000);
+    } finally {
+      reader.close();
+    }
+  },
+  rowLimit()
+);
+
 /** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
  *  option 36, and then an exec of them, which keeps it. So each process the command's tree leaves
  *  when its parent ends re-parents to the command, whatever process group or session it went to,
@@ -920,7 +1111,10 @@ const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
  *  preload of the tool's own process, and a file the driver writes once it has sent the SIGTERM,
  *  which that preload can wait for. `how.killFrom`, where given, is a file that holds a pid: the
  *  driver sends that process a SIGKILL in place of the SIGTERM to the tool, as the out-of-memory
- *  killer would, and the tool hears of no stop. */
+ *  killer would, and the tool hears of no stop. `how.deadline`, where given, runs the tool with
+ *  that many reruns and that `--deadline`, the progress file read every 100 ms; a caller that
+ *  leaves the stop to the tool passes a mark that never comes, so the driver sends its SIGTERM
+ *  only once the tool has ended, to no process. */
 async function stoppedLeg(
   directory: string,
   files: Readonly<Record<string, string>>,
@@ -929,9 +1123,10 @@ async function stoppedLeg(
   how: {
     readonly hold?: { readonly preload: string; readonly release: string };
     readonly killFrom?: string;
+    readonly deadline?: { readonly reruns: number; readonly seconds: number };
   } = {}
 ): Promise<StoppedLeg> {
-  const { hold, killFrom } = how;
+  const { hold, killFrom, deadline } = how;
   const tools = join(directory, "e2e", "tools");
   const rows = join(directory, "e2e", "__tests__");
   mkdirSync(tools, { recursive: true });
@@ -966,7 +1161,8 @@ async function stoppedLeg(
       "--lane",
       "harness",
       "--reruns",
-      "2",
+      String(deadline?.reruns ?? 2),
+      ...(deadline === undefined ? [] : ["--deadline", String(deadline.seconds)]),
       "--seed",
       String(SEED),
       "--out",
@@ -984,6 +1180,7 @@ async function stoppedLeg(
       KILL_FROM: killFrom ?? "",
       DISPATCH_UNIT_REPEAT_STOP_GRACE_MS: String(bounds.graceMs),
       DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS: String(bounds.namesMs),
+      ...(deadline === undefined ? {} : { DISPATCH_UNIT_REPEAT_PROJECTION_MS: "100" }),
     },
     from: import.meta.url,
   });
@@ -1418,6 +1615,102 @@ driverRow(
     );
     // The step ends on the tool's own exit, not on the deadline's 124.
     expect(code).toBe(1);
+    expect(left).toEqual([]);
+  },
+  rowLimit("stoppedLeg")
+);
+
+/** A test file of one row that sleeps `ms` in each run, so no run of it takes less. The tool times
+ *  each run on the real clock the progress file writes, so the planted run must take real time;
+ *  the sleep is a floor and no guess, since load only lengthens a run and so only moves its
+ *  projection further past a deadline under the floor. */
+function sleepsEachRun(ms: number): string {
+  return `import { test } from "bun:test";\n\ntest("sleeps ${ms} ms", async () => {\n  await Bun.sleep(${ms});\n});\n`;
+}
+
+driverRow(
+  "a leg whose file's ended runs project its runs past the deadline is stopped then, naming the file",
+  async () => {
+    // The lie: a leg runs on to its deadline for a file whose first run already showed that its
+    // runs cannot end by it, every row passing, and names only the row that happened to be
+    // running, as every harness leg of five runs on 2026-11-23 did for
+    // e2e/__tests__/outside-agent-codex.test.ts. Here the package's one file, whose one row sleeps
+    // 1 s, runs 1,000 times under a deadline of 600 s: its runs take at least 1,000 s, so once one
+    // has ended they project past the deadline whatever the machine's load. The tool must stop
+    // the leg then, long before the deadline: a tool that waited for the deadline, or never
+    // stopped, runs past this driver's own 90 s bound and fails the row there. No signal reaches
+    // the tool: the driver's mark never comes.
+    const directory = scratch();
+    const { code, stdout, report, left } = await stoppedLeg(
+      directory,
+      { "slow.test.ts": sleepsEachRun(1000) },
+      [join(directory, "never")],
+      { graceMs: 120_000, namesMs: 120_000 },
+      { deadline: { reruns: 1000, seconds: 600 } }
+    );
+    expect(code).toBe(1);
+    expect(report.stop?.afterSeconds).toBeLessThan(600);
+    const overruns = report.stop?.overruns ?? [];
+    expect(overruns).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/slow.test.ts",
+        reruns: 1000,
+        deadlineSeconds: 600,
+        reproduce: `bun run test:harness e2e/__tests__/slow.test.ts --seed=${SEED} --rerun-each=1000`,
+      }),
+    ]);
+    const [overrun] = overruns;
+    // The projection rests on ended runs alone, each at least the row's 1 s.
+    expect(overrun.runsEnded).toBeGreaterThanOrEqual(1);
+    expect(overrun.runsEnded).toBeLessThan(1000);
+    expect(overrun.fastestSeconds).toBeGreaterThanOrEqual(1);
+    expect(overrun.projectedSeconds).toBeGreaterThan(600);
+    const facts =
+      `${overrun.runsEnded} of 1000 runs ended, the fastest in ${overrun.fastestSeconds.toFixed(1)} s; ` +
+      `at that speed its 1000 runs end ${overrun.projectedSeconds.toFixed(1)} s after Bun's start, ` +
+      "past the leg's 600 s deadline";
+    expect(kinds(report)).toEqual(["stopped"]);
+    expect(report.rowlessFailures[0].text).toStartWith("The tool stopped the leg after ");
+    expect(report.rowlessFailures[0].text).toContain(
+      `because 1 test file's runs are projected past the leg's 600 s deadline: e2e/__tests__/slow.test.ts: ${facts}. When it stopped, `
+    );
+    expect(report.failingRows).toEqual([]);
+    expect(stdout).toContain(
+      "::error file=packages/dispatch/e2e/__tests__/slow.test.ts,title=Runs projected past the " +
+        `deadline::e2e/__tests__/slow.test.ts: ${facts}, so the tool stopped the leg after ` +
+        `${report.stop?.afterSeconds.toFixed(1)} s (seed ${SEED}). Run its runs again from ` +
+        `packages/dispatch: bun run test:harness e2e/__tests__/slow.test.ts --seed=${SEED} --rerun-each=1000\n`
+    );
+    expect(stdout).toContain(
+      `unit-repeat: stopped after ${report.stop?.afterSeconds.toFixed(1)} s, since e2e/__tests__/slow.test.ts: ${facts}.`
+    );
+    expect(markdown(report)).toContain(
+      "### 1 test file's runs projected past the deadline\n\n#### `e2e/__tests__/slow.test.ts`\n\n" +
+        `${facts}. Bun runs every run of a file one after another in one worker,`
+    );
+    expect(left).toEqual([]);
+  },
+  rowLimit("stoppedLeg")
+);
+
+driverRow(
+  "a leg whose files' runs can all end by the deadline is never stopped by the projection",
+  async () => {
+    // The lie: the projection stops a leg that would have passed in time. Here the same file runs
+    // 3 times under a deadline of 600 s: its runs project far inside it, and the leg ends by
+    // itself with every row passing and no stop.
+    const directory = scratch();
+    const { code, stdout, report, left } = await stoppedLeg(
+      directory,
+      { "slow.test.ts": sleepsEachRun(1000), "quick.test.ts": passes },
+      [join(directory, "never")],
+      { graceMs: 120_000, namesMs: 120_000 },
+      { deadline: { reruns: 3, seconds: 600 } }
+    );
+    expect(report.stop).toBeNull();
+    expect(report.testcases).toEqual({ passed: 9, failed: 0, skipped: 3 });
+    expect(code).toBe(0);
+    expect(stdout).not.toContain("projected past the deadline");
     expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
