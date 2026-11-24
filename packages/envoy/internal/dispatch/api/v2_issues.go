@@ -553,14 +553,18 @@ func (s *server) v2IssueRows() []routeRow {
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/plans/{id}", Auth: authAny, Versions: onlyV2,
 			Description: "Write the plan one run of the issue ran from {generation, source, artifact_id?, version?, " +
-				"tasks: [{id, steps}]}, a bearer naming its session in actor: the Legion daemon writes it when the run's " +
-				"work starts, under the uuid it derives for the run's plan. source is owner, with the document " +
-				"artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner " +
-				"gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or " +
-				"role:key, the role one a step record's role takes, since each run of the step is a record of that " +
-				"role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent " +
-				"again changes nothing, and a body every member of which the plan holds as sent answers the plan and " +
-				"writes nothing. The write makes the plan whatever id it names, so no plan is missing to it. The actor " +
+				"tasks: [{id, steps}]}, a bearer naming its session in actor: the Legion daemon writes it under the " +
+				"uuid it derives for the run's plan, when the run's work starts and again at each later version of " +
+				"the owner's plan that Legion takes. source is owner, with the document artifact_id and the version " +
+				"of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose " +
+				"experiment's group takes none from its owner, with neither; each task's id is unique in the plan and " +
+				"its steps are each a role or role:key, the role one a step record's role takes, since each run of the " +
+				"step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose " +
+				"version is above the one the plan holds replaces all four, and every other write leaves them, a " +
+				"default plan counting as version 0, so a write that arrives late, twice or out of order changes " +
+				"nothing; the generation is the first write's. A body every member of which the plan holds as sent " +
+				"answers the plan and writes nothing. The write makes the plan whatever id it names, so no plan is " +
+				"missing to it. The actor " +
 				"must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the " +
 				"airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
 				"name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the plan " +
