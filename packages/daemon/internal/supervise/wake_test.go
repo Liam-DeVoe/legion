@@ -442,6 +442,46 @@ func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
 	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
 }
 
+// The controller's retry of the same claim runs no launch at once. runDroppedLaunchForRetry takes
+// the operator's retry alone, the line exemptWake draws: the controller asks its retries of as many
+// agents at once as it decides to, so each keeps the turn the pacing gave it. The retry is refused
+// naming the state the gate found, as a retry of a queued claim is, and the claim launches once, at
+// its turn.
+//
+// The negative control is runDroppedLaunchForRetry matching every RequestAskedRetry, whoever asks
+// it: the controller's retry then launches the claim at once, and this test reads that at the
+// runtime's starts.
+func TestAControllersRetryOfAClaimWaitingFromQueuedKeepsItsTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	held := second.View().WakeWaiting
+	if held == nil {
+		t.Fatal("the second claim's launch is not waiting its turn")
+	}
+
+	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByController})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the controller's retry answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.wantStarts(secondToken, 0)
+	if again := second.View().WakeWaiting; again == nil || *again != *held {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v", again, held)
+	}
+	h.clock.Advance(wakeInterval + wakePart - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
 // The same retry of a claim the gate found suspended runs the launch the rule's resume parked —
 // the session the claim records, resumed — rather than being refused as a retry of a suspended
 // claim: a person waiting on the claim is not made to know which state a launching claim was in
