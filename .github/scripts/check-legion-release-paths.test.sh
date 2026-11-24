@@ -171,6 +171,45 @@ release "$root" 'packages/daemon/ packages/envoy/'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+echo "case: a glob that names every package below a directory"
+# The release's bash expands packages/envoy/* at the repository's root to each entry of
+# packages/envoy, and git reads each of those as covering every file below it.
+root=$(fixture glob-envoy)
+release "$root" 'packages/daemon/ packages/envoy/*'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a glob git matches across directories, which bash leaves as it is"
+# No entry of packages/envoy matches *.go, so the release's bash passes the word on unchanged,
+# and git's pathspec, whose * matches a /, reads it as every .go file below packages/envoy.
+root=$(fixture glob-git)
+release "$root" 'packages/daemon/ packages/envoy/*.go packages/envoy/go.mod packages/envoy/go.sum'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a glob bash expands where git alone would match nothing"
+# git reads packages/envoy/[du]*/ as a pattern no file's path matches, since no file's path ends
+# in a /. The release's bash expands the word first, at the repository's root, to deep/, unused/
+# and used/ under packages/envoy, and git reads those.
+root=$(fixture glob-bash)
+release "$root" 'packages/daemon/ packages/envoy/[du]*/ packages/envoy/go.mod packages/envoy/go.sum'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: an exclude whose glob takes a linked package back out"
+# git reads the exclude's first * as matching a, so it takes every file under
+# packages/envoy/a/internal/ out of the list, and the binary links that package through a.
+root=$(fixture exclude-glob)
+mkdir -p "$root/packages/envoy/a/internal"
+printf 'package internal\n\nfunc F() {}\n' > "$root/packages/envoy/a/internal/f.go"
+printf 'package a\n\nimport "github.com/example/envoy/a/internal"\n\nfunc A() { internal.F() }\n' > "$root/packages/envoy/a/a.go"
+sed -i 's|"github.com/example/envoy/used"|"github.com/example/envoy/a"\n\t"github.com/example/envoy/used"|; s|used.Use() }|used.Use(); a.A() }|' \
+  "$root/packages/daemon/cmd/legion/main.go"
+release "$root" 'packages/daemon/ packages/envoy/ :(exclude)packages/envoy/*/internal/*'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the package the exclude takes out" "$(contains "$out" 'would release no legion: packages/envoy/a/internal/\.')"
+
 echo "case: an exclude takes a path back out"
 root=$(fixture exclude)
 release "$root" ':(exclude)packages/envoy/deep packages/daemon/ packages/envoy/'

@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Tests for `release-build-legion.sh`. With no argument, as release.yaml's legion_build job runs it,
+# it packs one archive per legion target of .github/go-release-targets.json, each holding that
+# target's static binary, built with the target's CGO_ENABLED=0, GOOS and GOARCH, and the
+# THIRD_PARTY_NOTICES the notices script writes under the same environment, and it stops when it
+# cannot read the targets. Its three modes, which check-legion-release-paths.sh asks: `targets`,
+# the legion targets one a line; `list`, go list over ./cmd/legion in packages/daemon with a
+# target's environment; and `env`, go env with that environment. The modes read none of the
+# build's variables, and a mode it does not know, or one without its target, is refused.
+#
+# Each case builds a miniature repository under a temporary directory: a daemon module with a
+# legion command, the target list, and a stand-in scripts/go-third-party-notices.sh that writes
+# where it ran, its environment and its arguments to the file the notices go to. The real script
+# is symlinked into it, so the script under test is the file the release runs. Needs Go and jq.
+#
+# Run from anywhere: .github/scripts/release-build-legion.test.sh
+# CI runs it in ci.yaml's test job, after setup-go.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+build_script="$script_dir/release-build-legion.sh"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+# fixture <name>: a tree whose target list names a linux and a darwin target for legion, as the
+# real one does. Echoes its root.
+fixture() {
+  local root="$work/$1"
+  mkdir -p "$root/.github/scripts" "$root/scripts" "$root/packages/daemon/cmd/legion"
+  ln -s "$build_script" "$root/.github/scripts/release-build-legion.sh"
+  printf 'module example.com/daemon\n\ngo 1.22\n' > "$root/packages/daemon/go.mod"
+  cat > "$root/packages/daemon/cmd/legion/main.go" <<'GO'
+package main
+
+var revision, release, piLegionVersion, piEnvoyVersion string
+
+func main() { println(revision, release, piLegionVersion, piEnvoyVersion) }
+GO
+  printf '{\n  "legion": ["linux/amd64", "darwin/arm64"],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+  cat > "$root/scripts/go-third-party-notices.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+out=$1
+shift
+printf 'dir=%s CGO_ENABLED=%s GOOS=%s GOARCH=%s args=%s\n' \
+  "${PWD##*/}" "${CGO_ENABLED-unset}" "${GOOS-unset}" "${GOARCH-unset}" "$*" > "$out"
+SH
+  chmod +x "$root/scripts/go-third-party-notices.sh"
+  echo "$root"
+}
+
+# run_build <root>: the build, from <root>, with the five variables release.yaml's step gives it.
+# Leaves its exit code in status and its output in out.
+run_build() {
+  local root=$1
+  set +e
+  out=$(cd "$root" && VERSION=1.2.3 PI_LEGION_VERSION=0.4.0 PI_ENVOY_VERSION=0.5.0 \
+    GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_WORKSPACE="$root" \
+    .github/scripts/release-build-legion.sh 2>&1)
+  status=$?
+  set -e
+}
+
+# run_mode <root> <arg>...: the script with <arg>..., from <root>, with none of the build's five
+# variables set. Leaves its exit code in status, its stdout in out and its stderr in err.
+run_mode() {
+  local root=$1
+  shift
+  set +e
+  out=$(cd "$root" && env -u VERSION -u PI_LEGION_VERSION -u PI_ENVOY_VERSION -u GITHUB_SHA -u GITHUB_WORKSPACE \
+    .github/scripts/release-build-legion.sh "$@" 2>"$work/err")
+  status=$?
+  set -e
+  err=$(<"$work/err")
+}
+
+echo "case: the build packs one archive per legion target, each built with its target's environment"
+root=$(fixture build)
+run_build "$root"
+check "exits 0" "$(is "$status" 0)"
+for target in linux/amd64 darwin/arm64; do
+  os=${target%/*} arch=${target#*/} dir="legion-${target%/*}-${target#*/}"
+  listing=$(tar tzf "$root/assets/$dir.tar.gz" 2>&1 | LC_ALL=C sort | tr '\n' ' ')
+  check "$target: the archive holds the binary and its notices" "$(is "$listing" "$dir/ $dir/THIRD_PARTY_NOTICES $dir/legion ")"
+  info=$(go version -m "$root/out/$dir/legion" 2>&1)
+  check "$target: the binary is built for $os/$arch without cgo" \
+    "$(is "$(contains "$info" "GOOS=$os$")|$(contains "$info" "GOARCH=$arch$")|$(contains "$info" 'CGO_ENABLED=0$')" 'true|true|true')"
+  check "$target: the binary carries the release's version and its plugin pair" \
+    "$(contains "$info" '-X main.revision=0123456789abcdef0123456789abcdef01234567 -X main.release=v1.2.3 -X main.piLegionVersion=0.4.0 -X main.piEnvoyVersion=0.5.0')"
+  check "$target: the notices are written in packages/daemon for ./cmd/legion with the same environment" \
+    "$(is "$(cat "$root/out/$dir/THIRD_PARTY_NOTICES")" "dir=daemon CGO_ENABLED=0 GOOS=$os GOARCH=$arch args=./cmd/legion")"
+done
+
+echo "case: the build stops when it cannot read the targets"
+root=$(fixture build-no-list)
+printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_build "$root"
+check "exits non-zero" "$([ "$status" -ne 0 ] && echo true || echo false)"
+check "packs no archive" "$(is "$(find "$root/assets" -type f 2>/dev/null | wc -l)" 0)"
+
+echo "case: targets prints the legion targets, one a line"
+root=$(fixture targets)
+run_mode "$root" targets
+check "exits 0, saying nothing on stderr" "$(is "$status|$err" '0|')"
+check "prints both targets in the list's order" "$(is "$out" $'linux/amd64\ndarwin/arm64')"
+
+echo "case: targets with no legion list"
+root=$(fixture targets-none)
+printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_mode "$root" targets
+check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
+
+echo "case: targets refuses a target that is not <os>/<arch>"
+# The build loops over the words of the list and a reader of this mode over its lines; a target
+# of lower-case letters and digits on each side of one / is one word and one line, so both read
+# the same targets.
+root=$(fixture targets-bad)
+printf '{\n  "legion": ["linux/amd64", "darwin/arm64 linux/386"]\n}\n' > "$root/.github/go-release-targets.json"
+run_mode "$root" targets
+check "exits 1 printing nothing" "$(is "$status|$out" '1|')"
+check "names the target" "$(contains "$err" "^::error file=.github/go-release-targets.json::release-build-legion.sh: the legion target 'darwin/arm64 linux/386' of .github/go-release-targets.json is not <os>/<arch>")"
+
+echo "case: list runs go list over ./cmd/legion in packages/daemon with the target's environment"
+root=$(fixture list)
+printf '//go:build darwin\n\npackage main\n' > "$root/packages/daemon/cmd/legion/darwin.go"
+format='{{context.GOOS}}/{{context.GOARCH}} cgo={{context.CgoEnabled}} {{.ImportPath}} {{.GoFiles}}'
+run_mode "$root" list darwin/arm64 -f "$format"
+check "darwin/arm64: exits 0" "$(is "$status" 0)"
+check "darwin/arm64: lists the command for darwin/arm64 without cgo, with its darwin file" \
+  "$(is "$out" 'darwin/arm64 cgo=false example.com/daemon/cmd/legion [darwin.go main.go]')"
+run_mode "$root" list linux/amd64 -f "$format"
+check "linux/amd64: lists the command for linux/amd64 without cgo, without the darwin file" \
+  "$(is "$status|$out" '0|linux/amd64 cgo=false example.com/daemon/cmd/legion [main.go]')"
+run_mode "$root" list linux/amd64 -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}'
+check "passes every flag on: -deps lists the command among its dependencies" \
+  "$(is "$status|$(grep -v '^$' <<<"$out")" '0|example.com/daemon/cmd/legion')"
+
+echo "case: env runs go env in packages/daemon with the target's environment"
+root=$(fixture env)
+run_mode "$root" env darwin/arm64 GOOS GOARCH CGO_ENABLED
+check "prints the target's GOOS, GOARCH and CGO_ENABLED" "$(is "$status|$out" $'0|darwin\narm64\n0')"
+run_mode "$root" env linux/amd64 GOWORK
+check "no go.work: GOWORK is empty" "$(is "$status|$out" '0|')"
+printf 'go 1.22\n\nuse ./packages/daemon\n' > "$root/go.work"
+run_mode "$root" env linux/amd64 GOWORK
+check "a go.work at the root: GOWORK names it" "$(is "$status|$out" "0|$(cd "$root" && pwd -P)/go.work")"
+
+echo "case: a mode it does not know, or one without its target"
+root=$(fixture usage)
+run_mode "$root" bogus
+check "an unknown mode: exits 2 printing nothing, with the usage" \
+  "$(is "$status|$out|$(contains "$err" '^::error::release-build-legion.sh: unknown mode bogus; usage: release-build-legion.sh ')" '2||true')"
+run_mode "$root" list
+check "list without a target: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
+run_mode "$root" env
+check "env without a target: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
+run_mode "$root" targets extra
+check "targets with an argument: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
+check "builds nothing" "$(is "$([ -e "$root/out" ] || [ -e "$root/assets" ] && echo built || echo none)" none)"
+
+summary "release-build-legion.sh"

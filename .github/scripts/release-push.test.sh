@@ -2,7 +2,9 @@
 # Tests for `release-push.sh version`, the one version step every build job
 # calls: the tag an earlier attempt pushed, the bump release-bump.sh computes
 # since the newest tag, the npm fallback for a first release, --expect and the
-# refusals; for `release-push.sh tagged`, which finds the tag an earlier
+# refusals; for `release-push.sh version-paths`, which prints the paths of the
+# same arguments, and refuses what `version` refuses; for
+# `release-push.sh tagged`, which finds the tag an earlier
 # attempt pushed and refuses one whose name is not <prefix>X.Y.Z; for
 # `release-push.sh tag`, which makes the release tag on $GITHUB_SHA, commits
 # nothing and pushes nothing; for `release-push.sh pair-version`, which prints
@@ -590,6 +592,44 @@ check "--expect abc: exits 2 printing nothing" "$(is "$rc|$out" "2|")"
 check "--expect abc: the error names it" "$(contains "$err" '^::error::release-push.sh version: --expect abc is not X\.Y\.Z')"
 version_run "$clone" pkg-v --bogus -- packages/pkg/
 check "an unknown option: exits 2 printing nothing, with the usage" "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version: unknown option --bogus; usage: release-push.sh version ')" "2||true")"
+
+echo
+echo "Case 10b2: version-paths prints the paths version reads, after the options version takes"
+# version_paths_run <arg>...: runs `release-push.sh version-paths <arg>...` from $work, which is
+# no repository, since the command reads none; leaves its exit code in rc, its stdout with each
+# NUL shown as a | in out, and its stderr in err.
+version_paths_run() {
+  set +e
+  (cd "$work" && "$release_push" version-paths "$@" >"$work/version-paths.out" 2>"$work/version-paths.err")
+  rc=$?
+  set -e
+  out=$(tr '\0' '|' <"$work/version-paths.out")
+  err=$(<"$work/version-paths.err")
+}
+version_paths_run pkg-v --first-npm @example/pkg --expect 1.0.1 --patch-path docs/ -- packages/pkg/ 'a path' docs/ '*'
+check "paths: exits 0, saying nothing on stderr" "$(is "$rc|$err" '0|')"
+check "paths: prints each word after --, each ended by a NUL, and none of the options" "$(is "$out" 'packages/pkg/|a path|docs/|*|')"
+version_paths_run pkg-v --patch-path docs/ --
+check "no word after --: exits 0 printing nothing, not even a NUL" \
+  "$(is "$rc|$([ -s "$work/version-paths.out" ] && echo printed || echo empty)" '0|empty')"
+version_paths_run pkg-v --bogus -- packages/pkg/
+check "an unknown option: exits 2 printing nothing, with the usage, as version refuses it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: unknown option --bogus; usage: release-push.sh version-paths ')" "2||true")"
+version_paths_run pkg-v packages/pkg/
+check "a path with no -- before it: exits 2 printing nothing, an unknown option as version reads it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: unknown option packages/pkg/; usage: ')" "2||true")"
+version_paths_run pkg-v --patch-path
+check "an option without its value: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: --patch-path needs a value; usage: ')" "2||true")"
+version_paths_run pkg-v --expect abc -- packages/pkg/
+check "--expect abc: exits 2 printing nothing, as version refuses it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: --expect abc is not X\.Y\.Z')" "2||true")"
+version_paths_run 'pkg v' -- packages/pkg/
+check "a prefix with a space: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: tag prefix pkg\\ v holds more than letters, digits')" "2||true")"
+version_paths_run
+check "no tag prefix: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: a tag prefix is needed; usage: ')" "2||true")"
 
 echo
 echo "Case 10c: tag makes the release tag on \$GITHUB_SHA, committing nothing and pushing nothing"
