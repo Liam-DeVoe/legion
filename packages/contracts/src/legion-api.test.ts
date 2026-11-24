@@ -2923,13 +2923,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
   // The mark holds no `daemon`: `TestStateNarrowedRepositoriesGolden` takes out the daemon's own
   // number, which an entry moves, and holds it to that number apart.
-  // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
-  // `plan` off each assignment, so the golden's rows are compared without it, the intake's
-  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the pod hold's at 246,
-  // which leaves `podHold` off every issue (`withoutPodHold`). One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
-  // row is served here without its `source`, every other field of it and every other row as the
-  // state golden holds them.
+  // Five bands stand above 199: the repositories block's at 202, contract 220's, which takes
+  // `plan` off each assignment, the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off, the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`), and contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`, so the golden's issues are compared without `plan`, `podHold` and `priority`.
+  // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
+  // row, arrived at contract 213, so that row is served here without its `source`, every other
+  // field of it and every other row as the state golden holds them.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
@@ -2950,18 +2951,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   } = fixtureBody("state.json");
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, ...kept } = issue;
-      return [
-        key,
-        kept.assignments === undefined
-          ? kept
-          : {
-              ...kept,
-              assignments: (kept.assignments as Record<string, unknown>[]).map(
-                ({ plan: _plan, ...row }) => row
-              ),
-            },
-      ];
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        kept.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        kept.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      return [key, kept];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
