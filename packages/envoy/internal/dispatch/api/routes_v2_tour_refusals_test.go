@@ -1,0 +1,173 @@
+package api
+
+// routes_v2_tour_refusals_test.go holds each refusal the route tour draws to the committed /api/v2
+// document, as R6 of dispatch://INFRA-4071 asks: the document states what the server answers, so
+// the operation a refusal answers on names its code, at the status it was answered, in its
+// x-refusal-codes, and declares a response of that status, or a default one, whose schema its
+// body holds to. A code the document lists once for the whole of /api/v2 tells a client nothing
+// about the operation it calls.
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// tourRefusal is a refusal a route's handler answers that no other subtest of the tour sends: the
+// change to its step's request that draws it, and the code it is answered with.
+type tourRefusal struct {
+	Name   string
+	Change func(t *testing.T, tour *routeTour, request tourRequest) tourRequest
+	Code   apicode.Code
+}
+
+// tourRefusals are the refusals of tourRefusal by the route their step calls, "<method>
+// /api/v2<pattern>". Each is a refusal the route's description says it answers.
+var tourRefusals = map[string][]tourRefusal{
+	"GET /api/v2/deploy-runs/{id}": {
+		{Name: "an id that is not a positive integer", Change: refusalPath("id", "0"), Code: apicode.RunIDInput},
+		{Name: "an id no run of the deploy repository has", Change: refusalPath("id", "999999"), Code: apicode.NotFound},
+		{Name: "no delivery settings", Change: withoutDeliverySettings, Code: apicode.DeliveryNotConfigured},
+	},
+	"GET /api/v2/nodes": {
+		{Name: "a project that is no project key", Change: refusalQuery("project", "lower"), Code: apicode.InvalidProject},
+	},
+}
+
+// TestV2RouteTourRefusalsAreListedOnTheirOperations sends, for each step of the route tour, the
+// refusals the tour's own subtests send - a query key the route does not declare
+// (unknown-keys), each path value that names no stored object (missing-objects), no credential
+// on a route that is not public (unauthenticated) - and the refusals of tourRefusals, and holds
+// each answer to its operation in the committed /api/v2 document (holdRefusal).
+func TestV2RouteTourRefusalsAreListedOnTheirOperations(t *testing.T) {
+	tour := newRouteTour(t)
+	contract := newTourContract(t)
+	steps := tourSteps()
+	first := map[string]tourStep{}
+	for _, step := range steps {
+		if _, seen := first[step.route()]; !seen {
+			first[step.route()] = step
+		}
+		t.Run(step.name(), func(t *testing.T) {
+			route := tour.stepRoute(t, step)
+			t.Run("an undeclared query key", func(t *testing.T) {
+				request := step.Setup(t, tour)
+				request.Query = withQueryValue(request.Query, "zz_undeclared", "1")
+				contract.holdRefusal(t, route, tour, request, apicode.QueryKeyUnknown)
+			})
+			for _, missing := range step.Missing {
+				t.Run("{"+missing.Param+"} naming no stored object", func(t *testing.T) {
+					request := step.Setup(t, tour)
+					request.Path = maps.Clone(request.Path)
+					request.Path[missing.Param] = missing.Value
+					contract.holdRefusal(t, route, tour, request, missing.Code)
+				})
+			}
+			if route.Auth != authPublic {
+				t.Run("no credential", func(t *testing.T) {
+					request := step.Setup(t, tour)
+					request.As = tourCaller{}
+					contract.holdRefusal(t, route, tour, request, cmp.Or(step.NoCredential, apicode.NoIdentity))
+				})
+			}
+		})
+	}
+	for _, name := range slices.Sorted(maps.Keys(tourRefusals)) {
+		step, stepped := first[name]
+		if !stepped {
+			t.Errorf("tourRefusals names %s, which no step of the route tour calls", name)
+			continue
+		}
+		for _, refusal := range tourRefusals[name] {
+			t.Run(name+": "+refusal.Name, func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := refusal.Change(t, tour, step.Setup(t, tour))
+				contract.holdRefusal(t, route, tour, request, refusal.Code)
+			})
+		}
+	}
+}
+
+// holdRefusal sends request to route and holds its answer: answered code at its status, a code
+// the operation lists at that status in x-refusal-codes, and a body that holds to the response
+// the operation declares at that status, or to its default response where it declares none.
+func (contract *tourContract) holdRefusal(t *testing.T, route apiRoute, tour *routeTour, request tourRequest, want apicode.Code) {
+	t.Helper()
+	response := tour.send(t, route, request, "")
+	code, _ := refusalOf(t, response)
+	if code != want.Name() || response.Code != want.Status() {
+		t.Fatalf("answered %d %s, want %d %s", response.Code, response.Body.String(), want.Status(), want.Name())
+	}
+	method, status := strings.ToLower(route.Method), strconv.Itoa(response.Code)
+	operation := openAPIAt(contract.document, "paths", route.Pattern, method)
+	listed, _ := operation["x-refusal-codes"].(map[string]any)
+	if at, held := listed[code]; !held || fmt.Sprint(at) != status {
+		t.Errorf("%s %s answered %s %s, and its x-refusal-codes lists it at %v (absent: %v)",
+			route.Method, route.Pattern, status, code, at, !held)
+	}
+	if openAPIAt(operation, "responses", status) != nil {
+		contract.hold(t, route, response)
+		return
+	}
+	if openAPIAt(operation, "responses", "default", "content", "application/json") == nil {
+		t.Fatalf("%s %s answered the refusal %s %s, and declares neither a response at %s nor a default JSON one",
+			route.Method, route.Pattern, status, code, status)
+	}
+	schema := contract.schemaAt(t, "paths", route.Pattern, method, "responses", "default", "content", "application/json", "schema")
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(response.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("answered %s %s, which is no JSON: %v", status, response.Body.String(), err)
+	}
+	if err := schema.Validate(value); err != nil {
+		t.Errorf("the refusal %s %s of %s %s holds to no default response the document declares:\n%v",
+			status, code, route.Method, route.Pattern, err)
+	}
+}
+
+// refusalPath changes the value of the path wildcard name to value.
+func refusalPath(name, value string) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(_ *testing.T, _ *routeTour, request tourRequest) tourRequest {
+		request.Path = maps.Clone(request.Path)
+		request.Path[name] = value
+		return request
+	}
+}
+
+// refusalQuery sets the query key name to value.
+func refusalQuery(name, value string) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(_ *testing.T, _ *routeTour, request tourRequest) tourRequest {
+		request.Query = withQueryValue(request.Query, name, value)
+		return request
+	}
+}
+
+// withoutDeliverySettings deletes the deployment's delivery settings for the length of the
+// subtest, and writes them back after it, so later steps find them as their setup left them.
+func withoutDeliverySettings(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+	t.Helper()
+	settings, err := delivery.GetSettings(t.Context(), tour.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	if _, err := tour.database.Pool.Exec(t.Context(), `delete from delivery_settings`); err != nil {
+		t.Fatalf("delete the delivery settings: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := delivery.PutSettings(context.Background(), tour.database.Pool, settings, model.Actor{Kind: "system", ID: "tour"}); err != nil {
+			t.Errorf("write the delivery settings back: %v", err)
+		}
+	})
+	return request
+}
