@@ -54,11 +54,9 @@ func quoted(word string) string {
 
 // listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
 // count of the rest.
+// Acceptance control (scratch, not for merge): every id is listed.
 func listed(ids []string) string {
-	if len(ids) <= MostReasons {
-		return strings.Join(ids, ", ")
-	}
-	return fmt.Sprintf("%s and %d more", strings.Join(ids[:MostReasons], ", "), len(ids)-MostReasons)
+	return strings.Join(ids, ", ")
 }
 
 // noTask is the reason a plan with no task block gets. No later release takes such a plan, so it
@@ -215,16 +213,13 @@ func Validate(p Plan, d Deployment) []Refusal {
 // chainOf is a cycle's chain as its reason names it, each task needing the next and the last the
 // first: every need of a cycle of at most MostReasons tasks, and of a longer one its first
 // MostReasons - 1 needs, a count of the needs between, and the need that closes it.
+// Acceptance control (scratch, not for merge): every need of a cycle is named.
 func chainOf(cycle []string) string {
-	link := func(i int) string { return cycle[i] + " needs " + cycle[(i+1)%len(cycle)] }
-	chain := make([]string, 0, MostReasons+1)
-	for i := range min(len(cycle), MostReasons) - 1 {
-		chain = append(chain, link(i))
+	chain := make([]string, len(cycle))
+	for i := range cycle {
+		chain[i] = cycle[i] + " needs " + cycle[(i+1)%len(cycle)]
 	}
-	if len(cycle) > MostReasons {
-		chain = append(chain, fmt.Sprintf("%d more needs", len(cycle)-MostReasons))
-	}
-	return strings.Join(append(chain, link(len(cycle)-1)), ", ")
+	return strings.Join(chain, ", ")
 }
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
