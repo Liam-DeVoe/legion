@@ -255,8 +255,8 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 2 steps in 1 tasks",
-        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
-        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown",
+        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running set - answered running",
       ].join("\n")
     );
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
@@ -271,7 +271,92 @@ describe("dispatch steps", () => {
     const { result } = await readSteps(answer);
 
     expect(result.text.split("\n")[2]).toBe(
-      "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
+      "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed set - answered unknown"
+    );
+  });
+
+  // The five records the route's test writes and reads back. Each line keeps main's twelve words,
+  // and then names the set model, `-` for none, and the models that answered, by the record.
+  test("the five records end in their set model and their answers", async () => {
+    const records: readonly StepRecord[] = [
+      // Only the fields a record held before the set model and the answers, and the model X.
+      { ...implementer, id: "0a1b2c3d-4e5f-5a6b-8c7d-9e0f1a2b3c4d", model: "X" },
+      // Still running: only the end writes the set model and the answers.
+      { ...tester, id: "1b2c3d4e-5f6a-5b7c-9d8e-0f1a2b3c4d5e" },
+      // Set to A, with no counts.
+      {
+        ...implementer,
+        id: "2c3d4e5f-6a7b-5c8d-8e9f-1a2b3c4d5e6f",
+        attempt: 2,
+        model: "A",
+        set_model: "A",
+      },
+      // Set to A, which answered 41 calls, and B 3.
+      {
+        ...implementer,
+        id: "3d4e5f6a-7b8c-5d9e-9f0a-2b3c4d5e6f7a",
+        attempt: 3,
+        model: "A",
+        set_model: "A",
+        answers: [
+          { model: "A", calls: 41 },
+          { model: "B", calls: 3 },
+        ],
+      },
+      // Set to A, with no call, so no model answered last.
+      {
+        ...implementer,
+        id: "4e5f6a7b-8c9d-5e0f-8a1b-3c4d5e6f7a8b",
+        attempt: 4,
+        model: "",
+        set_model: "A",
+        answers: [],
+      },
+    ];
+    const mainWords = [
+      "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer X 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+      "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+      "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer A 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+      "default 2 step implementer implementation attempt 3 legion-leg-leg-1-implementer A 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+      "default 2 step implementer implementation attempt 4 legion-leg-leg-1-implementer - 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+    ];
+    const ends = [
+      "set - answered unknown",
+      "set - answered running",
+      "set A answered unknown",
+      "set A answered A=41(93%),B=3(7%)",
+      "set A answered none",
+    ];
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [...records] }],
+    };
+
+    const { result } = await readSteps(answer);
+
+    const lines = result.text.split("\n").slice(1);
+    expect(lines).toHaveLength(records.length);
+    for (const [index, line] of lines.entries()) {
+      const words = line.split(" ");
+      expect(words, line).toHaveLength(16);
+      expect(words.slice(0, 12).join(" "), line).toBe(mainWords[index]);
+      expect(words.slice(12).join(" "), line).toBe(ends[index]);
+    }
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
+  });
+
+  // A Dispatch older than the set model and the answers sends neither key, and its record reads
+  // as one that names no set model and does not know its counts, in the same sixteen words.
+  test("a record that holds neither key ends set - answered unknown", async () => {
+    const { set_model: _setModel, answers: _answers, ...older } = implementer;
+
+    const { result } = await readSteps({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [older as StepRecord] }],
+    });
+
+    expect(result.text.split("\n")[1]).toBe(
+      "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown"
     );
   });
 
@@ -286,7 +371,7 @@ describe("dispatch steps", () => {
     const { result } = await readSteps(answer);
 
     expect(result.text.split("\n")[2]).toBe(
-      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed set - answered unknown"
     );
     expect(result.details).toEqual({
       issue: "LEG-1",
@@ -319,7 +404,7 @@ describe("dispatch steps", () => {
       });
 
       expect(result.text.split("\n")[1], run.result).toEndWith(
-        ` 2026-11-16T09:40:00Z ${run.result}`
+        ` 2026-11-16T09:40:00Z ${run.result} set - answered unknown`
       );
     }
   });
@@ -349,7 +434,7 @@ describe("dispatch steps", () => {
     });
 
     expect(result.text.split("\n")[2]).toBe(
-      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed set - answered unknown"
     );
   });
 
@@ -369,9 +454,9 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 3 steps in 2 tasks",
-        "docs 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T08:00:00Z 2026-11-16T08:30:00Z passed",
-        "docs 2 step reviewer review attempt 2 legion-leg-leg-1-reviewer openai/gpt-6.1-sol 2026-11-16T11:00:00Z 2026-11-16T11:20:00Z failed",
-        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+        "docs 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T08:00:00Z 2026-11-16T08:30:00Z passed set - answered unknown",
+        "docs 2 step reviewer review attempt 2 legion-leg-leg-1-reviewer openai/gpt-6.1-sol 2026-11-16T11:00:00Z 2026-11-16T11:20:00Z failed set - answered unknown",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown",
       ].join("\n")
     );
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
@@ -445,7 +530,7 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 1 steps in 2 tasks",
-        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown",
       ].join("\n")
     );
     expect(result.details).toEqual({
@@ -530,8 +615,8 @@ describe("dispatch steps on the command line", () => {
       expect(stdout, label).toContain(
         [
           "LEG-1: 2 steps in 1 tasks",
-          "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
-          "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+          "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set - answered unknown",
+          "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running set - answered running",
         ].join("\n")
       );
     }
