@@ -154,8 +154,9 @@ func (e *Engine) tellAsk(ctx context.Context, tx pgx.Tx, issue record.Issue, ask
 // (record.StandsAt): the worker of the step the task stands at, addressed as that step's worker
 // (record.MergeForwardWorker: the owner's claim at a place the owner works, and elsewhere the claim
 // the role's phases row names), and false where no hold goes: at the implementation step
-// (asked.Own), and where the hold does not reach that worker. tellAsk sends it, and askOwnerAgain
-// reads it for the ask's cover.
+// (asked.Own), and where the hold does not reach that worker. tellAsk sends it, askOwnerAgain reads
+// it for the ask's cover, and mergedForwardRefusal for whether the hold told the claim that
+// completes to wait for the landing.
 func mergeForwardHold(issue record.Issue, asked record.MergeForward) (roleRecipient, bool, error) {
 	if asked.Own {
 		return roleRecipient{}, false, nil
@@ -464,20 +465,22 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // Neither refusal sends the role to the head the pull request stands at while the record's ask of
 // that head has not landed and its hold was sent to that role - the head an earlier merge left
 // conflicts in its turn, its merge forward is asked in the phase the completion reports, and the
-// hold reaches the role that completes it (record.MergeForwardReaches) - since that hold tells
-// the role not to complete at that head (record.MergeForwardHold). Then the refusal names the
-// head the pull request stands at, says its merge forward is asked and has not landed, and tells
-// the role to wait for the daemon's landed message (record.MergeForwardLanded) and do the phase's
-// work at the head that message names (awaitedMergeForward). That wait is told only to a role the
-// ask's hold was sent to: every other completion is answered as above, at the head the pull
-// request stands at, since no hold told its role not to complete there. The retro's agent (the
-// agent of the task's last step of the type implementation, or the owner), whose completion of
-// retro is fenced, is sent no hold, since a hold goes only to the tester, the reviewer or the
-// merger of the phase; an ask made at the implementation step (record.MergeForward.Own) sends
-// none, and stands into the next step when the move there does not ask again (mergeForwardOnEntry),
-// as at a head the record no longer holds in a confirmed conflict; and the claim the ask reached
-// (record.MergeForward.Agent), by, the claim that completes, is sent the ask in place of the hold
-// (addressRoles names each claim once) and no landed, since it pushed the merge itself: an owner
+// hold went to the worker of the step the task stands at (mergeForwardHold, the rule tellAsk sends
+// it by), which is the claim that completes, since the step's own fences hold a completion to that
+// worker (intake.StepsWorkerFence, or the owner's own report) - since that hold tells the role not
+// to complete at that head (record.MergeForwardHold). Then the refusal names the head the pull
+// request stands at, says its merge forward is asked and has not landed, and tells the role to wait
+// for the daemon's landed message (record.MergeForwardLanded) and do the phase's work at the head
+// that message names (awaitedMergeForward). That wait is told only to a role the ask's hold was
+// sent to: every other completion is answered as above, at the head the pull request stands at,
+// since no hold told its role not to complete there. The retro's agent (the agent of the task's
+// last step of the type implementation, or the owner), whose completion of retro is fenced, is
+// sent no hold, since the hold reaches no worker of the retro (record.MergeForwardReaches); an ask
+// made at the implementation step (record.MergeForward.Own) sends none, and stands into the next
+// step when the move there does not ask again (mergeForwardOnEntry), as at a head the record no
+// longer holds in a confirmed conflict; and where by, the claim that completes, is the claim the
+// ask reached (record.MergeForward.Agent), its ask covered the hold (addressMergeForward,
+// record.MergeForwardCovers) and it is sent no landed, since it pushed the merge itself: an owner
 // that does both the task's implementation step and the step that completes, or one keyed agent
 // that does both.
 //
@@ -532,7 +535,8 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, by claim.Token, r
 		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
 			issue.Key, word)
 	}
-	pending := asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role) &&
+	_, held, err := mergeForwardHold(issue, *asked)
+	pending := err == nil && held && asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported &&
 		(asked.Agent == "" || by != asked.Agent)
 	var next string
 	if pending {
