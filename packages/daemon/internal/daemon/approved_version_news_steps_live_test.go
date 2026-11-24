@@ -1,10 +1,11 @@
 package daemon
 
-// approved_version_news_steps_live_test.go holds the bodies of part two's three steps
-// (sessionsBodies) and the tasks and helpers each step alone uses: the driver that runs them and
-// its reads of the daemon and of Dispatch are approved_version_news_sessions_live_test.go, its
-// services, seed and boot are approved_version_news_sessions_setup_live_test.go, and the step
-// table they run from, with its picks, is approved_version_news_transcript_test.go.
+// approved_version_news_steps_live_test.go holds the bodies of part two's three steps (each step's
+// body in the step table, sessionsSteps) and the tasks and helpers each step alone uses: the
+// driver that runs them and its reads of the daemon and of Dispatch are
+// approved_version_news_sessions_live_test.go, its services, seed and boot are
+// approved_version_news_sessions_setup_live_test.go, and the step table they run from, with its
+// picks, is approved_version_news_transcript_test.go.
 
 import (
 	"bytes"
@@ -20,15 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
-
-// sessionsBodies is the body of each step of the step table (sessionsSteps), by the step's name.
-// The table is untagged, so that `go test` runs the test of the picks it makes; the bodies drive
-// real sessions and stay under the e2e tag.
-var sessionsBodies = map[string]func(*sessionsRun) (sessionsOutcome, string){
-	sessionsA4:      (*sessionsRun).a4,
-	sessionsOff:     (*sessionsRun).off,
-	sessionsAnswers: (*sessionsRun).answers,
-}
 
 // architectTask is the task the driver gives an architect: one edit of one document, the tree as
 // its catch-up would show it, and nothing about who to tell.

@@ -94,17 +94,18 @@ type Rig struct {
 	Registry string
 	// GitHub is the fake GitHub, which the cluster's pods reach as github.com and api.github.com.
 	GitHub *fakegithub.Server
-	// Sites is the stand-in for the public TLS hosts the pods reach beside GitHub (the sites the
-	// daemon's image probe reaches, the npm registry and the web-search provider), which the
-	// cluster's pods reach under the hosts' own names.
+	// Sites is the stand-in for the public TLS hosts the pods reach beside GitHub (the npm
+	// registry and the web-search provider), which the cluster's pods reach under the hosts' own
+	// names.
 	Sites *TLSSites
 	// Image is the image every pod of a kind test starts, the image probe's included, by its digest
 	// in Registry, and already in the node's containerd: built FROM the worker image under test to
 	// read the stand-ins as the real services (buildStandInImage).
 	Image string
 
-	// Evidence is the directory a failed test's cluster state goes to (LogDirEnv), where a test
-	// keeps its own logs for the same upload.
+	// Evidence is the directory a test's evidence goes to (evidenceDir): its stand-ins' requests
+	// and its nodes' containerd journals, and at a failure the cluster's state. A test keeps its
+	// own logs there for the same upload.
 	Evidence string
 
 	lib, work, kind, fetched string
@@ -192,7 +193,6 @@ func Start(t *testing.T) *Rig {
 type workerLoad struct {
 	rig         *Rig
 	done        chan struct{}
-	started     time.Time
 	took        time.Duration
 	image, note string
 	err         error
@@ -207,11 +207,12 @@ type workerLoad struct {
 func (r *Rig) startWorkerImage(t *testing.T) *workerLoad {
 	t.Helper()
 	ctx := t.Context()
-	load := &workerLoad{rig: r, done: make(chan struct{}), started: time.Now()}
+	load := &workerLoad{rig: r, done: make(chan struct{})}
+	started := time.Now()
 	go func() {
 		defer close(load.done)
 		load.image, load.note, load.err = loadWorkerImage(ctx)
-		load.took = time.Since(load.started)
+		load.took = time.Since(started)
 	}()
 	t.Cleanup(func() {
 		<-load.done
@@ -697,11 +698,21 @@ func (r *Rig) kubectl(stdin io.Reader, args ...string) (string, error) {
 // docker runs docker and returns its combined output; a failure fails t with it.
 func (r *Rig) docker(t *testing.T, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	out, err := dockerOutput(context.Background(), args...)
 	if err != nil {
-		t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, out)
+		t.Fatal(err)
 	}
-	return string(out)
+	return out
+}
+
+// dockerOutput runs docker with args, killed when ctx ends, and returns its combined output; a
+// failure's error names the command and holds that output.
+func dockerOutput(ctx context.Context, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return string(out), nil
 }
 
 // checkIssuer reads the issuer's discovery document from this process with no credential, trusting
@@ -736,8 +747,8 @@ func loadWorkerImage(ctx context.Context) (string, string, error) {
 		if !strings.Contains(reference, "@sha256:") {
 			return "", "", fmt.Errorf("%s must name the worker image by digest (<image>@sha256:<64 hex>), got %s", ImageEnv, reference)
 		}
-		if out, err := exec.CommandContext(ctx, "docker", "pull", "--quiet", reference).CombinedOutput(); err != nil {
-			return "", "", fmt.Errorf("docker pull --quiet %s: %v: %s", reference, err, out)
+		if _, err := dockerOutput(ctx, "pull", "--quiet", reference); err != nil {
+			return "", "", err
 		}
 		return reference, "pulled the worker image " + reference, nil
 	}
@@ -747,12 +758,7 @@ func loadWorkerImage(ctx context.Context) (string, string, error) {
 	if strings.HasSuffix(archive, ".zst") {
 		out, err = loadZstdArchive(ctx, archive)
 	} else {
-		var printed []byte
-		printed, err = exec.CommandContext(ctx, "docker", "load", "--input", archive).CombinedOutput()
-		out = string(printed)
-		if err != nil {
-			err = fmt.Errorf("docker load --input %s: %v: %s", archive, err, out)
-		}
+		out, err = dockerOutput(ctx, "load", "--input", archive)
 	}
 	if err != nil {
 		return "", "", err
@@ -850,8 +856,8 @@ func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 	dockerfile := "FROM " + worker + "\nUSER root\n" +
 		"COPY fake-github-ca.crt tls-sites-ca.crt /usr/local/share/ca-certificates/\n" +
 		"COPY authorities.pem /usr/local/share/legion-kind/authorities.pem\n" +
-		"COPY chrome-policy.json /etc/opt/chrome_for_testing/policies/managed/legion-kind.json\n"
-	dockerfile += "RUN /usr/sbin/update-ca-certificates\n" +
+		"COPY chrome-policy.json /etc/opt/chrome_for_testing/policies/managed/legion-kind.json\n" +
+		"RUN /usr/sbin/update-ca-certificates\n" +
 		"ENV NODE_EXTRA_CA_CERTS=/usr/local/share/legion-kind/authorities.pem UV_SYSTEM_CERTS=1\n"
 	user := strings.TrimSpace(r.docker(t, "image", "inspect", "--format", "{{.Config.User}}", worker))
 	if user != "" {
@@ -893,8 +899,9 @@ func (r *Rig) push(t *testing.T, image, repository string) string {
 // test failed, it keeps the fake GitHub's requests and what the cluster held too. Then it deletes
 // the cluster, the route to its pods and the registry. The script's status 3 is
 // kind_sandbox_teardown's verdict that CHECK kind-node-pulls failed (a node pulled an image from
-// outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, or its journal holds no pull),
-// which fails the test; any other failure of the teardown is logged.
+// outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, or, in a test that had not
+// failed, its journals hold no pull), which fails the test; any other failure of the teardown is
+// logged.
 func (r *Rig) teardown(t *testing.T) {
 	status := "0"
 	if r.Sites != nil {
@@ -957,6 +964,7 @@ func evidenceDir(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("the rig's evidence goes to %s, which outlives the test", dir)
 	return dir
 }
 

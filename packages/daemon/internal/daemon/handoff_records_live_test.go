@@ -733,11 +733,21 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 }
 
 // liveCLICheckout is the checkout whose packages/envoy-client holds the dispatch CLI a live proof
-// runs under bun, and whose packages/envoy its driver builds Dispatch from. testbuild.RootEnv
-// names it; unset, as in the daemon-live job's `go test`, which runs in the package directory, the
-// checkout is four directories up. On GitHub Actions a missing bun fails the test naming liveJob,
-// the job that gives it bun (testprereq.Require).
+// runs under bun, and whose packages/envoy its driver builds Dispatch from (liveCheckout). On
+// GitHub Actions a missing bun fails the test naming liveJob, the job that gives it bun
+// (testprereq.Require).
 func liveCLICheckout(t *testing.T) string {
+	t.Helper()
+	root := liveCheckout(t)
+	_, err := exec.LookPath("bun")
+	testprereq.Require(t, err == nil, liveJob, "bun is not on PATH, and the dispatch CLI runs under it: %v", err)
+	return root
+}
+
+// liveCheckout is the checkout a live proof builds Dispatch from: the one testbuild.RootEnv names,
+// else, as in the daemon-live job's `go test`, which runs in the package directory, the checkout
+// four directories up.
+func liveCheckout(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv(testbuild.RootEnv)
 	if root == "" {
@@ -747,8 +757,6 @@ func liveCLICheckout(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exec.LookPath("bun")
-	testprereq.Require(t, err == nil, liveJob, "bun is not on PATH, and the dispatch CLI runs under it: %v", err)
 	return root
 }
 

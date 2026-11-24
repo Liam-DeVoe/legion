@@ -1,15 +1,15 @@
-// The reads part two of dispatch://INFRA-175's c-live (approved_version_news_sessions_live_test.go,
-// built with -tags e2e) makes of a session's transcript and of the comments on an issue, the word
-// each of its runs ends with, the steps it makes and the picks of them, and the tests that hold
-// them against fixture transcripts written as Oh My Pi writes a session file: which steps and arms
-// a pick makes and the plan of them the script reads, which Envoy card counts as a holder told of
-// a new version, which call of the architect's counts as its own envoy_publish to that holder's
-// role topic, which comment counts as a parent's approving review of a child's new version, which
-// tool result is the plugin refusing a daemon answer, and which word a run's line prints, which
-// the script counts. A run of real sessions costs forty-five minutes of model calls, so these
-// reads are proved here, where each wrong message is one line. The file is untagged so `go test`
-// runs these tests on every run: a change that breaks a read fails this package's tests, not the
-// live proof the next time its sessions run.
+// The reads part two of dispatch://INFRA-175's c-live (approved_version_news_sessions_live_test.go)
+// makes of a session's transcript and of the comments on an issue, the word each of its runs ends
+// with, the steps it makes and the picks of them, and the tests that hold them against fixture
+// transcripts written as Oh My Pi writes a session file: which steps and arms a pick makes and the
+// plan of them the script reads, which Envoy card counts as a holder told of a new version, which
+// call of the architect's counts as its own envoy_publish to that holder's role topic, which
+// comment counts as a parent's approving review of a child's new version, which tool result is the
+// plugin refusing a daemon answer, and which word a run's line prints, which the script counts. A
+// run of real sessions costs forty-five minutes of model calls, so these reads are proved here,
+// where each wrong message is one line: `go test` runs these tests with the package's others, so a
+// change that breaks a read fails this package's tests, not the live proof the next time its
+// sessions run.
 package daemon
 
 import (
@@ -55,14 +55,15 @@ const (
 // names another count.
 const sessionsRuns = 3
 
-// sessionsStep is one step of part two: its name, which each run's line prints and the driver
-// finds its body by (sessionsBodies, under the e2e tag); its word, which the script's last line
-// names it by and APPROVED_VERSION_NEWS_STEP picks it by; the design gate its runs boot under; and
-// the arms a run that picks no arm makes it in.
+// sessionsStep is one step of part two: its name, which each run's line prints; its word, which
+// the script's last line names it by and APPROVED_VERSION_NEWS_STEP picks it by; the design gate
+// its runs boot under; the arms a run that picks no arm makes it in; and its body, which drives
+// one run of it (approved_version_news_steps_live_test.go).
 type sessionsStep struct {
 	name, word string
 	gates      config.DesignGate
 	arms       []string
+	body       func(*sessionsRun) (sessionsOutcome, string)
 }
 
 // sessionsSteps is every step of part two, in the order a run makes them. a4 and answers run in the
@@ -72,9 +73,9 @@ type sessionsStep struct {
 // and keeps only the measurement that retired each base arm (head_only), which the driver does not
 // know.
 var sessionsSteps = []sessionsStep{
-	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
-	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},
-	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead}},
+	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}, (*sessionsRun).a4},
+	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}, (*sessionsRun).off},
+	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead}, (*sessionsRun).answers},
 }
 
 // sessionsPick is what one run of part two makes: the steps, the one arm every step runs in (""

@@ -77,7 +77,7 @@ func StartTLSSites(t *testing.T, listen string) *TLSSites {
 	authority, authorityKey := newRoot(t, "legion kind rig sites authority")
 	s := &TLSSites{authority: pemOf(authority), npm: map[string][]byte{}}
 	certificates := map[string]tls.Certificate{}
-	for _, name := range []string{NPMHost, WebSearchHost} {
+	for _, name := range s.Hosts() {
 		certificates[name] = leafOf(t, name, authority, authorityKey)
 	}
 	listener, err := tls.Listen("tcp", listen, &tls.Config{GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {

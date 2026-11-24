@@ -89,7 +89,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -221,16 +220,7 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 	t.Helper()
 	testdb.DSNFor(t, liveJob)
 	natsURL := workflowNATS(t)
-	// The checkout Dispatch is built from: the one testbuild.RootEnv names, else the checkout
-	// four directories above the package's, where go test runs it.
-	checkout := os.Getenv(testbuild.RootEnv)
-	if checkout == "" {
-		checkout = filepath.Join("..", "..", "..", "..")
-	}
-	checkout, err := filepath.Abs(checkout)
-	if err != nil {
-		t.Fatal(err)
-	}
+	checkout := liveCheckout(t)
 	r := &versionNewsLive{natsURL: natsURL, client: &http.Client{Timeout: 30 * time.Second}}
 	r.t = t
 	r.running = "setup"

@@ -134,15 +134,11 @@ func startSessionsListener(t *testing.T, logs, natsURL string) string {
 	return base
 }
 
-// sessionsLog is the file name in the evidence directory, appended to, with also when it is not
-// nil.
+// sessionsLog is the file name in the evidence directory, appended to (evidenceFile), with also
+// when it is not nil.
 func sessionsLog(t *testing.T, logs, name string, also io.Writer) io.Writer {
 	t.Helper()
-	file, err := os.OpenFile(filepath.Join(logs, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
-	}
-	t.Cleanup(func() { file.Close() })
+	file := evidenceFile(t, filepath.Join(logs, name))
 	if also == nil {
 		return file
 	}

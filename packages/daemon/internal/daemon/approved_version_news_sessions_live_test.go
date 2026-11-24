@@ -292,11 +292,6 @@ func realSessionsTellAndAnswerANewVersion(t *testing.T) {
 		fmt.Printf("plan refused: %v\n", err)
 		t.Fatal(err)
 	}
-	for _, step := range pick.steps {
-		if sessionsBodies[step.name] == nil {
-			t.Fatalf("the step table names %s, which sessionsBodies holds no body of", step.name)
-		}
-	}
 	fmt.Print(pick.plan())
 	if *sessionsPlanOnly {
 		return
@@ -366,11 +361,7 @@ func newSessionsLive(t *testing.T) *sessionsLive {
 	s.natsURL = startSessionsNATS(t, logs)
 	s.listener = startSessionsListener(t, logs, s.natsURL)
 	root := proofCheckoutRoot(t)
-	dispatchLog, err := os.OpenFile(filepath.Join(logs, "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		t.Fatalf("open Dispatch's log: %v", err)
-	}
-	t.Cleanup(func() { dispatchLog.Close() })
+	dispatchLog := evidenceFile(t, filepath.Join(logs, "dispatch.log"))
 	s.dispatch = startScratchDispatchOn(t, scratchDispatchOptions{natsURL: s.natsURL, root: root, log: dispatchLog})
 	version, err := exec.Command(s.omp, "--version").Output()
 	if err != nil {
@@ -504,7 +495,7 @@ func (s *sessionsLive) run(step sessionsStep, arm string, n int) (ran bool, outc
 			}
 		}()
 		r = s.newRun(t, name, arm, step.gates)
-		line.outcome, line.why = sessionsBodies[step.name](r)
+		line.outcome, line.why = step.body(r)
 	})
 	if !succeeded {
 		s.t.Fatalf("the harness failed in run %s; its log is above", name)

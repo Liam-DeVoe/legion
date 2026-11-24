@@ -73,7 +73,7 @@ func DSN(t testing.TB) string {
 // test fails naming that job (testprereq.Require).
 func DSNFor(t testing.TB, job string) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
+	dsn := os.Getenv(dsnName)
 	testprereq.Require(t, dsn != "", job, "%s", skipMessage)
 	return dsn
 }
