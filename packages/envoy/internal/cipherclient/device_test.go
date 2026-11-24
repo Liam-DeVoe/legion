@@ -271,8 +271,8 @@ func TestASignInWhoseCodeLapsesBeforeItsFirstPollTimesOut(t *testing.T) {
 // 8628 section 3.5 has a client wait at least the interval named, up to the hour, past which no
 // code could be polled before it lapses. A lifetime inside the hour, or one already past, is kept.
 // It reports the hour as what ends the code where the server named a longer lifetime or none, so
-// a refusal names that limit and not the server's. A lifetime x/oauth2 wraps to one the hour does
-// not reach is kept as that.
+// a refusal names that limit and not the server's. A lifetime x/oauth2 wraps to one under the hour
+// is kept as that.
 func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 	now := time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
@@ -302,8 +302,8 @@ func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 		t.Error("the bounded end carries no monotonic reading, so a comparison with it reads the wall clock")
 	}
 	// x/oauth2 counts a lifetime's nanoseconds modulo 2^64, so one past about 584 years can wrap
-	// forward, to a time the hour does not reach: 18446744974 s comes out as about 900 s, which the
-	// bounds keep, as though the server had named it.
+	// forward, to one under the hour: 18446744974 s comes out as about 900 s, which the bounds
+	// keep, as though the server had named it.
 	var wrapped oauth2.DeviceAuthResponse
 	if err := json.Unmarshal([]byte(`{"device_code": "d", "user_code": "u", "expires_in": 18446744974}`), &wrapped); err != nil {
 		t.Fatalf("read a device authorization whose lifetime wraps: %v", err)

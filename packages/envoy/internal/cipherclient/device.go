@@ -200,10 +200,10 @@ const (
 // and a negative one the least; a lifetime of 0 or none is the hour, a negative one lapses the code
 // before its first poll, and one past what a time.Duration holds (about 292 years) but inside an
 // int64 wraps, as x/oauth2 counts its nanoseconds modulo 2^64: one of about 292 to 584 years to a
-// time that has passed, and a longer one to a time that has passed, that the hour bounds, or that
-// the hour does not reach, which is polled as if the server had named it, as 18446744974 s wraps
-// to about 900 s; a fraction of either, a count past an int64, or a value sent as a string fails
-// the device authorization.
+// time that has passed, and a longer one to a time that has passed, to one more than an hour on,
+// which the hour bounds, or to one under the hour, which is kept as if the server had named it, as
+// 18446744974 s wraps to about 900 s; a fraction of either, a count past an int64, or a value sent
+// as a string fails the device authorization.
 func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) (hourEnds bool) {
 	da.Interval = min(max(cmp.Or(da.Interval, defaultDeviceInterval), LeastDeviceInterval), MostDeviceInterval)
 	hourEnds = da.Expiry.IsZero() || da.Expiry.Sub(now) > mostDeviceLifetime

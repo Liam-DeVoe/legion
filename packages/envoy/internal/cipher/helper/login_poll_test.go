@@ -393,7 +393,8 @@ func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 	const lapses = `: the code would lapse before its first poll; no machine login works at that broker until `
 	const lapsed = `a device code that had lapsed by the time its answer arrived \(a negative lifetime, or one this machine's OAuth library wraps into the past, as it does one of about 292 to 584 years\), with `
-	const longer = `a poll interval of 1 s; no machine login works at that broker until its codes live longer than 1 s, the least poll interval this machine keeps, and less than about 292 years`
+	const unwrapped = `, and this machine's OAuth library does not wrap their lifetime into the past, as it wraps none under about 292 years`
+	const longer = `a poll interval of 1 s; no machine login works at that broker until its codes live longer than 1 s, the least poll interval this machine keeps` + unwrapped
 	const hour = `, and this machine polls a device code for an hour at most` + lapses + `its poll interval is shorter than an hour`
 	for _, c := range []struct {
 		name   string
@@ -425,8 +426,14 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		{"a code that had already lapsed", map[string]any{"expires_in": -5}, 0, lapsed + longer},
 		// 1e10 s is past what a time.Duration holds: x/oauth2 wraps it to a time 268 years past.
 		{"a lifetime past what a time.Duration holds", map[string]any{"expires_in": int64(1e10)}, 0, lapsed + longer},
+		// 18446744974 s is past 2^64 ns: x/oauth2 wraps it forward to about 900 s, which the line
+		// names as the broker's, where the TypeScript device login holds it to the hour and polls.
+		{"a lifetime x/oauth2 wraps forward under the interval", map[string]any{"interval": 1000, "expires_in": int64(18446744974)}, 0, `a device code that lives 90[01] s, with a poll interval of 1000 s` + lapses + `its poll interval is shorter than its codes' lifetime`},
+		// 18446744074 s wraps forward to about 0.29 s: a code that had not passed, so no lapsed one,
+		// but one of 0 s in whole seconds, which a slow answer may outlast.
+		{"a lifetime x/oauth2 wraps forward to under a second", map[string]any{"expires_in": int64(18446744074)}, 0, `a device code that lives [01] s, with a poll interval of 1 s(: the code would lapse before its first poll; no machine login works at that broker until its codes live longer than 1 s, the least poll interval this machine keeps|, but its answer took \d+\.\d{3} s to arrive, so the code had lapsed; no machine login works at that broker until its codes live longer than 1 s, the least poll interval this machine keeps, and then only once its codes outlive its poll interval by more than its answers take to arrive)`},
 		// An interval of the hour or more cannot be polled whatever the lifetime: the hour must go.
-		{"a code that had already lapsed and an interval past the hour", map[string]any{"interval": 5000, "expires_in": -5}, 0, lapsed + `a poll interval of 5000 s, so one of 3600 s; no machine login works at that broker until its poll interval is shorter than an hour and its codes live longer than it, and less than about 292 years`},
+		{"a code that had already lapsed and an interval past the hour", map[string]any{"interval": 5000, "expires_in": -5}, 0, lapsed + `a poll interval of 5000 s, so one of 3600 s; no machine login works at that broker until its poll interval is shorter than an hour and its codes live longer than it` + unwrapped},
 		// A slow answer leaves less than the hour of a code that lives past it, but no faster answer
 		// cures an interval of the hour: the hour ends the code.
 		{"a round trip under a code past the hour and an interval past it", map[string]any{"interval": 7200, "expires_in": 3601}, 1500 * time.Millisecond, `a poll interval of 7200 s, so one of 3600 s` + hour},

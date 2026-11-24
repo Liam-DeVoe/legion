@@ -557,8 +557,10 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 	if hourEnds || (used == cipherclient.MostDeviceInterval && lifetime > interval) {
 		return fmt.Errorf("the broker answered %s, and this machine polls a device code for an hour at most: %s; %s its poll interval is shorter than an hour", poll, lapses, verdict)
 	}
-	if lifetime <= 0 {
-		return fmt.Errorf("the broker answered a device code that had lapsed by the time its answer arrived (a negative lifetime, or one this machine's OAuth library wraps into the past, as it does one of about 292 to 584 years), with %s; %s %s, and less than about 292 years", poll, verdict, unpollableRemedy(named, used, lifetime))
+	// The end came no later than Login asked: a negative lifetime, or one x/oauth2 wrapped into the
+	// past. One it wraps forward to under half a second rounds to 0 s but has not passed.
+	if lived <= 0 {
+		return fmt.Errorf("the broker answered a device code that had lapsed by the time its answer arrived (a negative lifetime, or one this machine's OAuth library wraps into the past, as it does one of about 292 to 584 years), with %s; %s %s, and this machine's OAuth library does not wrap their lifetime into the past, as it wraps none under about 292 years", poll, verdict, unpollableRemedy(named, used, lifetime))
 	}
 	lives := fmt.Sprintf("the broker answered a device code that lives %d s, with %s", lifetime/time.Second, poll)
 	if interval >= lifetime && left > 0 {
@@ -578,12 +580,13 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 
 // unpollableRemedy is what must change at the broker before a code it answers can be polled, for a
 // broker that named the interval named (0 for none, as x/oauth2 reads it), polled at used, and a
-// code whose lifetime, as the broker named it, is lifetime, no longer than used seconds, and 0 or
-// less where it is negative or x/oauth2 wrapped it into the past. This machine polls at the
-// interval named, cipherclient.LeastDeviceInterval at least and cipherclient.MostDeviceInterval,
-// the hour, at most (cipherclient.BoundDeviceAuth), so where the interval used is the least, or
-// the code lives that or less, no shorter interval alone helps: the code must live longer, and
-// where the interval used is the most, the interval must also be shorter than the hour.
+// code whose lifetime, as the broker named it, is lifetime, no longer than used seconds: 0 or less
+// where it is negative or x/oauth2 wrapped it into the past, and 0 where x/oauth2 wrapped it
+// forward to under half a second. This machine polls at the interval named,
+// cipherclient.LeastDeviceInterval at least and cipherclient.MostDeviceInterval, the hour, at most
+// (cipherclient.BoundDeviceAuth), so where the interval used is the least, or the code lives that
+// or less, no shorter interval alone helps: the code must live longer, and where the interval used
+// is the most, the interval must also be shorter than the hour.
 func unpollableRemedy(named, used int64, lifetime time.Duration) string {
 	switch {
 	case named == 0 && lifetime > cipherclient.LeastDeviceInterval*time.Second:
@@ -748,13 +751,16 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 //     a code no poll could reach before its code is shown, so an interval past what a
 //     time.Duration holds, kept there and held to an hour here, is refused in both. A lifetime of
 //     0 is a code already lapsed there, refused so; here it is none, polled for the hour. A
-//     lifetime past about 584 years can wrap here, as x/oauth2 counts it, to one the hour does
-//     not reach, polled for that, as 18446744974 s is polled for about 900 s; there the hour holds
-//     it. Here the code's end is dated less the device authorization's round trip, as x/oauth2
-//     dates it, and there from when the answer arrived, so on a slow path this helper refuses an
-//     answer that login shows: an interval of 599 s against a 600 s code, with a round trip over a
-//     second. There the test counts whole milliseconds, so it refuses an interval less than one
-//     shorter than its code, as 5 s against 5.0005 s, where this helper reads only whole seconds.
+//     lifetime past about 584 years can wrap here, as x/oauth2 counts it, to one under the hour,
+//     which this helper takes for the broker's: 18446744974 s comes out as about 900 s, polled
+//     for that against a shorter interval and refused against a longer one, as against 1000 s,
+//     where the line names a code that lives about 900 s and asks for an interval shorter than its
+//     codes' lifetime; there the hour holds it, and a 1000 s interval is polled. Here the code's
+//     end is dated less the device authorization's round trip, as x/oauth2 dates it, and there
+//     from when the answer arrived, so on a slow path this helper refuses an answer that login
+//     shows: an interval of 599 s against a 600 s code, with a round trip over a second. There the
+//     test counts whole milliseconds, so it refuses an interval less than one shorter than its
+//     code, as 5 s against 5.0005 s, where this helper reads only whole seconds.
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	client := b.tokenClient(key)
 	ctx, cancel := context.WithDeadline(context.Background(), da.Expiry)
