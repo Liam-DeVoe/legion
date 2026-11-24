@@ -38,10 +38,12 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro. |
 | `acceptance` | review | `accepting` | No fresh reading of the whole work. With it, a fresh agent reads the evidence and ends the step by its verdict. |
 
-Without `acceptance:owner`, a reviewer step approves, or passes by its verdict, only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.
+Without `acceptance:owner`, a reviewer step approves, or passes by its verdict, only once a pass stands for every `before_merge` check at the head.
+Without it, retro's first step sends back a check with no pass there, except a `ci_check` whose run has not concluded or cannot be read.
+Such a `ci_check` moves nothing back.
 A `ci_check` that reads `absent` moves nothing back either: the retro sends it to you as a finding.
 One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check.
-So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires.
+So with no reviewer, `acceptance:owner` or `acceptance` step, a `ci_check` whose run has not concluded holds the merge only where the base requires it.
 
 ## A role of your plan
 
@@ -77,8 +79,9 @@ What the task must deliver.
 - A later version that takes away a role block that a step still names is refused whether the task runs or not (`… which neither the deployment nor the plan defines.`).
   Keep the block, or change the task's steps too, and the rule above for a running task applies.
 
-- Once an operator adds a role of the deployment with your role's name, your issue keeps its plan's role, but Legion refuses every later version that keeps a role of that name.
-  A new name changes each task whose steps name the role: stop that task with `stop_task` first, then give a version whose role has a new name.
+- Once an operator adds a role of the deployment with your role's name, your issue keeps its plan's role.
+  But Legion refuses every later version that keeps a role of that name.
+  A new name changes each task naming the role: stop that task with `stop_task` first, then give a version whose role has a new name.
 
 ## What Legion refuses
 
@@ -90,7 +93,8 @@ Such a block that no step names is refused as a cause of the whole plan (`the pl
 A step that names a role neither the deployment nor the plan defines is refused (`step <n> of task <t> names the role <role>, which neither the deployment nor the plan defines.`).
 A key whose steps name roles of two models is refused (`… one agent runs on one model.`).
 So is one whose steps name roles of two harnesses (`… one agent runs on one harness.`).
-A reason that ends `This release of Legion does not carry it out yet.` names what a later release takes, more than one task or a task block's attribute `needs`, `owner`, `part_of` or `merges`: write it again as one task without them.
+A reason ending `This release of Legion does not carry it out yet.` names what a later release takes: more than one task or a task block's attribute `needs`, `owner`, `part_of` or `merges`.
+Write the plan again as one task without them.
 A step's key `owner` is no such attribute.
 
 Your role prompt gives the reasons a version gets for where its task stands.
@@ -104,7 +108,8 @@ Your role prompt gives the reasons a version gets for where its task stands.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
-The version you give replaces them with your own one block: delete theirs, and put what the next steps need from the planner's plan into your task's text.
+The version you give replaces them with your own one block.
+Delete theirs, and put what the next steps need from the planner's plan into your task's text.
 
 ## Reading how plans went
 
