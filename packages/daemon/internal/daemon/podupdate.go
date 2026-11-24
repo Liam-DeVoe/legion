@@ -1169,8 +1169,11 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	// runtime returns nil without asking the last word: the Sandbox runtime does that for a
 	// Sandbox that is absent or suspended, or whose pod is no longer the locator's, and replaces
 	// nothing there.
-	var ended roundEnd
-	if err := s.runtime.ReplacePod(limited, reading.process, s.recordedDue(recorded, s.replacementDue(issue, round, read.at, &ended))); err != nil {
+	var (
+		ended roundEnd
+		asked bool
+	)
+	if err := s.runtime.ReplacePod(limited, reading.process, s.recordedDue(recorded, askedDue(&asked, s.replacementDue(issue, round, read.at, &ended)))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -1186,7 +1189,37 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		}
 		return
 	}
+	if s.overtakenByLaunch(ctx, recorded, round, asked, "replacement through a process") {
+		return
+	}
 	s.roundReplaced(ctx, issue, round, pod, reasons, ended, notWaitedFor(live, round, clock), read, live, recorded)
+}
+
+// askedDue is due, a replacement's last word, that records in asked whether the runtime asked it.
+func askedDue(asked *bool, due func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		*asked = true
+		return due(ctx)
+	}
+}
+
+// overtakenByLaunch is whether a round's replacement whose call answered nil took nothing because
+// a launch replaced the round's pod as the round's own replacement while the call waited for the
+// pod's launch turn: the call asked no last word (asked false), since the Sandbox no longer ran
+// the round's pod, and this daemon remembers that launch (launchReplaced). The act is then the
+// launch's, under its own record, and the walk ends the round as that replacement
+// (endRoundALaunchReplaced), told from the launcher's read at the launch. So the call's record,
+// recorded, goes, and the architect is told of the one act once, from that read (the Legion
+// reviewer's Important 1 on #5285 at 7da847c0, trace a, for a replacement by issue, and its
+// Important 2 at acda4d1e, for a replacement through a process). which names the call on the line.
+func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodReplacement, round string, asked bool, which string) bool {
+	if _, launched := s.launchReplaced(recorded.Issue, round); asked || !launched {
+		return false
+	}
+	s.forgetReplacement(ctx, recorded)
+	s.log.Info("supervise: a launch replaced the pod of this update round as the round's own replacement while the round's call waited; the call took nothing, and the round ends as the launch's",
+		"issue", recorded.Issue, "round", round, "pod", recorded.PodUID, "call", which)
+	return true
 }
 
 // roundReplaced is what each of a round's own replacements owes once it is made: through a process
@@ -1803,11 +1836,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		ended roundEnd
 		asked bool
 	)
-	due := s.issueReplacementDue(issue, round, read.at, &ended)
-	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(recorded, func(ctx context.Context) error {
-		asked = true
-		return due(ctx)
-	})); err != nil {
+	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(recorded, askedDue(&asked, s.issueReplacementDue(issue, round, read.at, &ended)))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -1820,16 +1849,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		}
 		return
 	}
-	// A call that asked no last word took nothing: the Sandbox no longer ran the round's pod. Where
-	// a launch replaced that pod as the round's own replacement while the call waited for the
-	// pod's launch turn, the act is the launch's, under its own record, and the walk ends the round
-	// as that replacement (endRoundALaunchReplaced), told from the launcher's read at the launch:
-	// this call's record goes, so the architect is told of the one act once (the Legion
-	// reviewer's Important 1 on #5285 at 7da847c0, trace a).
-	if _, launched := s.launchReplaced(issue, round); !asked && launched {
-		s.forgetReplacement(ctx, recorded)
-		s.log.Info("supervise: a launch replaced the pod of this update round as the round's own replacement while the replacement by issue waited; the replacement by issue took nothing, and the round ends as the launch's",
-			"issue", issue, "round", round, "pod", pod)
+	if s.overtakenByLaunch(ctx, recorded, round, asked, "replacement by issue") {
 		return
 	}
 	s.roundReplaced(ctx, issue, round, pod, reasons, ended, lost, read, told, recorded)
