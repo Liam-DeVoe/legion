@@ -18,9 +18,9 @@ import {
 } from "./dispatch-command";
 import { apiCommand } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
+import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
+import { hostedDispatch, hostSession } from "./dispatch-commands/host-session";
 import { loginCommand } from "./dispatch-commands/login";
-import type { ActiveDispatchConfig } from "./dispatch-config";
-import type { DispatchHost } from "./dispatch-cwd";
 import {
   checkDispatchCall,
   dispatchServerUrls,
@@ -42,13 +42,7 @@ import {
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
-import {
-  handedConfigFile,
-  type SessionConfigFile,
-  sessionConfigFile,
-  sessionDispatchSettings,
-  sessionEnvoySettings,
-} from "./session-settings";
+import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
 
@@ -68,16 +62,6 @@ export interface DispatchCliIo {
    *  a test that answers the poll at once. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
-
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
-
-const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
  *  (`BASH_MAX_OUTPUT_LENGTH`), and Codex cuts the middle out of a long command output, so under
@@ -242,54 +226,6 @@ function commandHost(
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
-/** The host a command runs under and the session it acts as there, with the envoy.json that
- *  host's plugin chose, or the usage error a command refuses the absence of either with. */
-export type HostSession =
-  | {
-      readonly host: DispatchHost;
-      readonly sessionId: string;
-      readonly file: SessionConfigFile;
-    }
-  | { readonly problem: string };
-
-/**
- * The session a command acts as under the host `hostName` names (`commandHost`): Claude Code's
- * `claudeSession`, Codex's `CODEX_THREAD_ID`, else `DISPATCH_SESSION_ID`; and the file the
- * session's plugin handed its shell (each plugin sets `DISPATCH_HOST` and `ENVOY_CONFIG_FILE`
- * together), else the host's own rule. A host that is none of `HOSTS`, or a session id that is not
- * set, is the usage error every command refuses with.
- */
-function hostSession(
-  hostName: string | undefined,
-  env: Readonly<Record<string, string>>,
-  claudeSession: string | undefined
-): HostSession {
-  const host = HOSTS.find((name) => name === hostName);
-  if (host === undefined) {
-    return {
-      problem:
-        hostName === undefined
-          ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-          : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
-    };
-  }
-  const [sessionId, sessionVariable] =
-    host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
-  if (sessionId === undefined) {
-    return {
-      problem: `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
-    };
-  }
-  const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
-    sessionConfigFile(host, env);
-  return { host, sessionId, file };
-}
-
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -424,27 +360,11 @@ export async function runDispatchCli(
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
   }
-  if (file.path === null) {
-    return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
-  }
-  // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
-    cwd: io.cwd,
-    session: sessionId,
-  });
+  const resolved = hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of warnings) print(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const config: ActiveDispatchConfig = resolution;
+  for (const line of resolved.warnings) print(line);
+  if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+  const { config } = resolved;
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing

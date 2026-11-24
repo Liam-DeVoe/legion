@@ -24,10 +24,11 @@ body: |-
   that holds `id-token: write` then trades its run's OIDC token, which the client asks GitHub for at
   `ACTIONS_ID_TOKEN_REQUEST_URL` with `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, for the audience
   `AGENT_SECRETS_MACHINE_AUDIENCE` names. That audience must equal the broker's
-  `BROKER_EXCHANGE_GITHUB_AUDIENCE`. The helper, the Legion controller and `natsprobe` take the
-  identity. `agent-secrets` refuses it (exit 2), as it refuses `kubernetes`, since the broker mints
-  no launcher credential for a workflow run. `scripts/dev-broker.sh` lists a job pod and a job
-  workflow, and `dev-oidc-issuer --actions-token` stands in for GitHub's token request.
+  `BROKER_EXCHANGE_GITHUB_AUDIENCE`. The Legion controller and `natsprobe` take the identity. The
+  broker mints no launcher credential for a workflow run, so the helper gets none with it, and
+  `agent-secrets` refuses it (exit 2), as it refuses `kubernetes`. `scripts/dev-broker.sh` lists a
+  job pod and a job workflow, and `dev-oidc-issuer --actions-token` stands in for GitHub's token
+  request.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens

@@ -1846,22 +1846,46 @@ func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, err
 
 // parseExchangeJobAccounts reads setting's whitespace-separated
 // <service account>=<projects>[=<session>] entries, the job accounts BROKER_EXCHANGE_JOB_ACCOUNTS
-// lists, in order, each with its projects as Job and no person and no project. The session is
-// everything after the second "=", so it alone may carry one. It refuses, naming the setting and
-// the entry: one not of that form or with a blank account; an account podAccountRefusal refuses;
-// projects parseJobProjects refuses; and an account listed twice, since one account writes as one
-// identity. An account another exchange setting lists too is Load's to refuse, since it reads
-// them all. exchange.NewSet is the second gate, and the session name's own form is its to refuse.
+// lists, in order, each with its projects as Job and no person and no project. It refuses what
+// parseJobEntries refuses, an account podAccountRefusal refuses among them. An account another
+// exchange setting lists too is Load's to refuse, since it reads them all. exchange.NewSet is the
+// second gate, and the session name's own form is its to refuse.
 func parseExchangeJobAccounts(setting, value string) ([]exchange.AccountEntry, error) {
+	parsed, err := parseJobEntries(setting, value, "<service account>=<projects>[=<session>]", podAccountRefusal)
+	if err != nil {
+		return nil, err
+	}
 	var entries []exchange.AccountEntry
+	for _, entry := range parsed {
+		entries = append(entries, exchange.AccountEntry{Account: entry.account, Job: entry.job, Session: entry.session})
+	}
+	return entries, nil
+}
+
+// jobEntry is one entry of a job setting (BROKER_EXCHANGE_JOB_ACCOUNTS,
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS): the account it names, the job list its tokens carry, the
+// session name it fixes, if any, and its text as the setting gave it.
+type jobEntry struct {
+	account       string
+	job           exchange.JobProjects
+	session, text string
+}
+
+// parseJobEntries reads setting's whitespace-separated entries of form, an account, its projects
+// and an optional session, in order. The session is everything after the second "=", so it alone
+// may carry one. It refuses, naming the setting and the entry: one not of that form or with a
+// blank account; an account accountRefusal refuses; projects parseJobProjects refuses; and an
+// account named twice, since one account writes as one identity.
+func parseJobEntries(setting, value, form string, accountRefusal func(setting, text, account string) error) ([]jobEntry, error) {
+	var entries []jobEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 3)
 		if !ok || fields[0] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<projects>[=<session>] entries, the session everything after the second =, got %q", setting, text)
+			return nil, fmt.Errorf("%s must be %s entries, the session everything after the second =, got %q", setting, form, text)
 		}
 		account := fields[0]
-		if err := podAccountRefusal(setting, text, account); err != nil {
+		if err := accountRefusal(setting, text, account); err != nil {
 			return nil, err
 		}
 		job, err := parseJobProjects(setting, text, fields[1])
@@ -1872,7 +1896,7 @@ func parseExchangeJobAccounts(setting, value string) ([]exchange.AccountEntry, e
 			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account writes as one identity, so name it once", setting, account, text)
 		}
 		seen[account] = true
-		entries = append(entries, exchange.AccountEntry{Account: account, Job: job, Session: fields[2]})
+		entries = append(entries, jobEntry{account: account, job: job, session: fields[2], text: text})
 	}
 	return entries, nil
 }
@@ -1916,47 +1940,6 @@ func parseVMExchangeGrants(setting, value string) ([]vmExchangeGrant, error) {
 		}
 		seen[fields[0]] = true
 		grants = append(grants, vmExchangeGrant{account: fields[0], project: fields[1], person: fields[2], session: fields[3], text: text})
-	}
-	return grants, nil
-}
-
-// vmExchangeJobGrant is one BROKER_VM_EXCHANGE_JOB_ACCOUNTS entry: the account it names, the job
-// list its tokens carry, the session name it fixes, if any, and its text as the setting gave it.
-type vmExchangeJobGrant struct {
-	account       string
-	job           exchange.JobProjects
-	session, text string
-}
-
-// parseVMExchangeJobGrants reads setting's whitespace-separated
-// <service account email>=<projects>[=<session>] entries, the job lists
-// BROKER_VM_EXCHANGE_JOB_ACCOUNTS gives the accounts BROKER_VM_SERVICES lists, in order. It
-// refuses, naming the setting and the entry: one not of that form or with a blank account; an
-// account vmAccountRefusal refuses; projects parseJobProjects refuses; and an account named
-// twice, since one account writes as one identity. Whether the account is listed at all, and
-// whether BROKER_VM_EXCHANGE_ACCOUNTS names it too, are Load's to refuse, and exchange.NewSet is
-// the second gate.
-func parseVMExchangeJobGrants(setting, value string) ([]vmExchangeJobGrant, error) {
-	var grants []vmExchangeJobGrant
-	seen := map[string]bool{}
-	for _, text := range strings.Fields(value) {
-		fields, ok := exchangeFields(text, 3)
-		if !ok || fields[0] == "" {
-			return nil, fmt.Errorf("%s must be <service account email>=<projects>[=<session>] entries, the session everything after the second =, got %q", setting, text)
-		}
-		account := fields[0]
-		if err := vmAccountRefusal(setting, text, account); err != nil {
-			return nil, err
-		}
-		job, err := parseJobProjects(setting, text, fields[1])
-		if err != nil {
-			return nil, err
-		}
-		if seen[account] {
-			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account writes as one identity, so name it once", setting, account, text)
-		}
-		seen[account] = true
-		grants = append(grants, vmExchangeJobGrant{account: account, job: job, session: fields[2], text: text})
 	}
 	return grants, nil
 }
@@ -2657,11 +2640,14 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		granted[grant.account] = grant
 	}
-	jobGrants, err := parseVMExchangeJobGrants("BROKER_VM_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_VM_EXCHANGE_JOB_ACCOUNTS"))
+	// BROKER_VM_EXCHANGE_JOB_ACCOUNTS gives job lists to the accounts BROKER_VM_SERVICES lists:
+	// an account it names that is not listed, or that BROKER_VM_EXCHANGE_ACCOUNTS names too, is
+	// refused here, and exchange.NewSet is the second gate.
+	jobGrants, err := parseJobEntries("BROKER_VM_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_VM_EXCHANGE_JOB_ACCOUNTS"), "<service account email>=<projects>[=<session>]", vmAccountRefusal)
 	if err != nil {
 		return Config{}, err
 	}
-	jobGranted := map[string]vmExchangeJobGrant{}
+	jobGranted := map[string]jobEntry{}
 	for _, grant := range jobGrants {
 		if _, listed := cfg.VMServicesByAccount[grant.account]; !listed {
 			return Config{}, fmt.Errorf("BROKER_VM_EXCHANGE_JOB_ACCOUNTS names %s, got %q, but BROKER_VM_SERVICES does not list it; a job's projects are given to a listed VM account", grant.account, grant.text)

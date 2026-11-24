@@ -280,14 +280,24 @@ func person(email, group string) map[string]any {
 	return claims
 }
 
+// loopbackCaller reports whether r comes from this machine's loopback, and otherwise refuses it,
+// 403 with "<what> answers loopback callers only". Each control below answers loopback callers
+// only, since whoever can reach one acts for the person or the run it stands in for.
+func loopbackCaller(w http.ResponseWriter, r *http.Request, what string) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+		http.Error(w, what+" answers loopback callers only", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // signInAsHandler is POST /_dev/sign-in-as: it queues the JSON object of claims its body holds as
 // the person the next authorization signs in as. It answers loopback callers only: whoever can
 // reach it chooses who signs in, so a listener opened wider than loopback must not open it too.
 func signInAsHandler(issuer *oidctest.Issuer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the sign-in control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the sign-in control") {
 			return
 		}
 		var claims map[string]any
@@ -308,9 +318,7 @@ func signInAsHandler(issuer *oidctest.Issuer) http.Handler {
 // a sign-in nobody asked for.
 func approveDeviceCodeHandler(issuer *oidctest.Issuer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the device approval control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the device approval control") {
 			return
 		}
 		var want struct {
@@ -335,9 +343,7 @@ func approveDeviceCodeHandler(issuer *oidctest.Issuer) http.Handler {
 // the sign-in control does: whoever can reach it mints a token for any account the broker lists.
 func mintHandler(issuer *oidctest.Issuer, key *oidctest.Key, p *process, lifetime time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the mint control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the mint control") {
 			return
 		}
 		var want struct {
@@ -442,9 +448,7 @@ func actionsTokenHandler(issuer *oidctest.Issuer, key *oidctest.Key, p *process,
 	owner, _, _ := strings.Cut(spec.repository, "/")
 	run := spec.repository + "/" + spec.workflow + "@" + spec.ref
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the Actions token request answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the Actions token request") {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

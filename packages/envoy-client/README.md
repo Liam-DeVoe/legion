@@ -1275,9 +1275,9 @@ reads Dispatch from the environment alone and no envoy.json: `DISPATCH_URL`, and
 Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
 session, which the fixed session of the job's broker entry answers; with none, the broker refuses
 the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
-exits 2, naming those variables. The AskGate record of every session the environment names
-(`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
-host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
+exits 2, naming those variables. For a write, the AskGate record of every session the environment
+names (`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is
+read, host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
 every other method before any request with exit 1, naming the `dispatch` command that makes that
 write (`WRITE_ROUTES`), which AskGate reviews. A variable that holds no valid session id (1 to 128
 letters, digits, `.`, `_` or `-`) is a usage error that names the variable, a `GET` included.

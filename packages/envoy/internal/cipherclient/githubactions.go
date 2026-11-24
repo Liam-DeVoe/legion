@@ -45,17 +45,12 @@ type GitHubActionsIdentity struct {
 	HTTP *http.Client
 }
 
-// Describe names the identity and the variables it is read from: the audience as written where
-// it is a plain http(s) URL (internal/redact's allow-list) and by MachineAudienceVar otherwise,
-// and the request URL and the request token by their variables alone. The URL GitHub gives a job
-// is its own, and the token lets anyone who holds it ask for the job's tokens; this text is in
-// every trade's log line and error.
+// Describe names the identity and the variables it is read from: the audience as audienceText
+// names it, and the request URL and the request token by their variables alone. The URL GitHub
+// gives a job is its own, and the token lets anyone who holds it ask for the job's tokens; this
+// text is in every trade's log line and error.
 func (g *GitHubActionsIdentity) Describe() string {
-	audience := "the audience " + MachineAudienceVar + " names"
-	if redact.Clean(g.Audience) {
-		audience = g.Audience + " (" + MachineAudienceVar + ")"
-	}
-	return "this GitHub Actions run's OIDC token for " + audience + ", asked for at the URL " +
+	return "this GitHub Actions run's OIDC token for " + audienceText(g.Audience) + ", asked for at the URL " +
 		ActionsIDTokenRequestURLVar + " names with the token " + ActionsIDTokenRequestTokenVar + " names"
 }
 

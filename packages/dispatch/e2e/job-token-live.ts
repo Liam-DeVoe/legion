@@ -55,9 +55,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { baseUrl, createProject } from "./api";
+import { dispatchEntry } from "./dispatch-cli";
 import { harnessPorts } from "./harness-ports";
 
 /** The job pod entry's project (dev-broker.sh's EXCHANGE_PROJECT): its token writes it alone. */
@@ -76,10 +76,6 @@ const workflowAudience = "legion-broker-github";
  *  (EXCHANGE_SESSION), which that entry does not fix. */
 const person = "ada@example.com";
 const personSession = "example-worker-session";
-/** This checkout's `dispatch` command. */
-const dispatchCommand = fileURLToPath(
-  new URL("../../envoy-client/bin/dispatch.ts", import.meta.url)
-);
 /** How long one `dispatch api` run may take, its broker trade included. */
 const RUN_DEADLINE_MS = 60_000;
 
@@ -121,7 +117,7 @@ async function dispatchApi(
     const value = process.env[name];
     if (value !== undefined) kept[name] = value;
   }
-  const child = Bun.spawn([process.execPath, dispatchCommand, "api", ...args], {
+  const child = Bun.spawn([process.execPath, dispatchEntry, "api", ...args], {
     env: {
       ...kept,
       DISPATCH_URL: baseUrl,

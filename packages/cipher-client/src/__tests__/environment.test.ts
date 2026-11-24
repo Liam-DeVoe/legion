@@ -102,11 +102,6 @@ test("an identity named with its variables missing is refused naming them", () =
   expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow(
     `${MACHINE_TOKEN_FILE_VAR} is required by ${IDENTITY_VAR}=pool`
   );
-  // A run asks GitHub at the URL GitHub gave it, so that is the first variable it asks for; each
-  // of its three is held to its order in the row below.
-  expect(() => machineIdentity({ [IDENTITY_VAR]: "github-actions" })).toThrow(
-    `${ACTIONS_ID_TOKEN_REQUEST_URL_VAR} is required by ${IDENTITY_VAR}=github-actions`
-  );
   // Its value is not quoted, which a secret pasted into the wrong variable would be.
   const pasted = "canary-pasted-identity-secret";
   let refused = "";
@@ -122,23 +117,18 @@ test("an identity named with its variables missing is refused naming them", () =
 });
 
 // GitHub sets the request URL and its token in a job that holds `id-token: write`; the audience is
-// the broker's. A missing one is refused by name, the first missing first, and the identity names
-// each by its variable, never the URL or the token. A caller keys the client it made by
+// the broker's. The identity names each by its variable, never the URL or the token (the order a
+// missing one is refused in is machine-identities.test.ts's). A caller keys the client it made by
 // BROKER_VARIABLES (envoy-client's broker-credential.ts), and Codex hands its server only the
 // variables the manifest lists from them, so the two GitHub names are among them.
-test("github-actions is read from its three variables in order", () => {
+test("github-actions names its variables, never the URL or the token", () => {
   const requestToken = fixtureSecret("request");
-  const env: Record<string, string> = { [IDENTITY_VAR]: "github-actions" };
-  for (const [name, value] of [
-    [ACTIONS_ID_TOKEN_REQUEST_URL_VAR, `https://token.actions.example/idtoken?sig=${requestToken}`],
-    [ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR, requestToken],
-    [MACHINE_AUDIENCE_VAR, "https://cipher.example"],
-  ] as const) {
-    expect(() => machineIdentity(env)).toThrow(
-      `${name} is required by ${IDENTITY_VAR}=github-actions`
-    );
-    env[name] = value;
-  }
+  const env: Record<string, string> = {
+    [IDENTITY_VAR]: "github-actions",
+    [ACTIONS_ID_TOKEN_REQUEST_URL_VAR]: `https://token.actions.example/idtoken?sig=${requestToken}`,
+    [ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR]: requestToken,
+    [MACHINE_AUDIENCE_VAR]: "https://cipher.example",
+  };
   expect(machineIdentity(env)?.describe()).toBe(
     "this GitHub Actions run's OIDC token for https://cipher.example (AGENT_SECRETS_MACHINE_AUDIENCE), asked for at the URL ACTIONS_ID_TOKEN_REQUEST_URL names with the token ACTIONS_ID_TOKEN_REQUEST_TOKEN names"
   );

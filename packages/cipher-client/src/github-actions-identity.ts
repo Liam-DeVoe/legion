@@ -6,6 +6,8 @@
 
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl } from "@legion/contracts/log-text";
+import { answerText } from "./answer-text";
+import { LOOPBACK_HOST } from "./loopback";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GITHUB } from "./wire";
 
@@ -20,21 +22,15 @@ export const ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR = "ACTIONS_ID_TOKEN_REQUEST_TOKE
 /** Bounds one request for a run's token (Go's `githubActionsTimeout`). */
 const TIMEOUT_MS = 20_000;
 
-/** The most of an answer that is read, as Go's `io.LimitReader` bounds it, so a server in
- *  GitHub's place cannot grow this process without bound. */
-const MAX_ANSWER_BYTES = 1 << 20;
-
-/** A host a plain-http request URL may be on: this machine's loopback, as a stand-in GitHub is;
- *  the rule `device-login.ts` holds an http broker to. */
-const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
-
 /** What begins every refusal of a request for the run's token. */
 const ASKING = `ask GitHub for this run's OIDC token at the URL ${ACTIONS_ID_TOKEN_REQUEST_URL_VAR} names`;
 
 /** The refusal of a request URL the request token may not be sent to. */
 const NOT_HTTPS = `${ACTIONS_ID_TOKEN_REQUEST_URL_VAR} is not an https URL: the request token is sent there, so it takes https, or http to 127.0.0.1, ::1 or localhost`;
 
-/** What {@link githubActionsIdentity} takes, member for member Go's `GitHubActionsIdentity`. */
+/** What {@link githubActionsIdentity} takes: Go's `GitHubActionsIdentity`'s members, and
+ *  `audienceSetting`, which Go has no member for, since its `Describe` names `MachineAudienceVar`
+ *  itself. */
 export interface GitHubActionsIdentityOptions {
   /** Where the job asks for its token: {@link ACTIONS_ID_TOKEN_REQUEST_URL_VAR}'s value. */
   readonly requestUrl: string;
@@ -47,23 +43,6 @@ export interface GitHubActionsIdentityOptions {
   /** The fetch the request goes through; the global one by default (Go's `HTTP`). Only a test
    *  replaces it. */
   readonly fetch?: typeof fetch | undefined;
-}
-
-/** The first {@link MAX_ANSWER_BYTES} of `answer`'s body, as text. */
-async function answerText(answer: Response): Promise<string> {
-  const reader = answer.body?.getReader();
-  if (reader === undefined) return "";
-  const chunks: Uint8Array[] = [];
-  let read = 0;
-  while (read < MAX_ANSWER_BYTES) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const kept = value.subarray(0, MAX_ANSWER_BYTES - read);
-    chunks.push(kept);
-    read += kept.length;
-  }
-  await reader.cancel().catch(() => undefined);
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** `requestUrl` with `audience` added to its own query, refused, unquoted, where it is no https
@@ -109,7 +88,6 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
       const endpoint = requestEndpoint(options.requestUrl, options.audience);
       const signals = [AbortSignal.timeout(TIMEOUT_MS), signal].filter((one) => one !== undefined);
       let answer: Response;
-      let text: string;
       try {
         answer = await send(endpoint, {
           method: "GET",
@@ -117,12 +95,18 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
           signal: AbortSignal.any(signals),
           redirect: "manual",
         });
-        text = await answerText(answer);
       } catch (error) {
         throw new Error(`${ASKING}: no answer: ${errorClass(error)}`);
       }
       if (answer.status < 200 || answer.status > 299) {
+        await answer.body?.cancel().catch(() => undefined);
         throw new Error(`${ASKING}: HTTP ${answer.status}`);
+      }
+      let text: string;
+      try {
+        text = await answerText(answer);
+      } catch (error) {
+        throw new Error(`${ASKING}: no answer: ${errorClass(error)}`);
       }
       let parsed: unknown;
       try {

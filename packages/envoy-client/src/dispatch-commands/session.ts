@@ -84,18 +84,20 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   const brokerService = owner === null && service !== null && proved !== null;
   const job = brokerService && (projectScope === "named" || projectScope === "public");
   const signInNeeded = brokerService && !job;
-  const acting =
-    owner !== null
-      ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
-      : service !== null
-        ? // The text names the identity the way every other surface does; details
-          // keeps the subject whole, because that is the persisted value.
-          job
-          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, and writes as that service with ${unowned}`
-          : signInNeeded
-            ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
-            : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
-        : `Session ${session} runs under the shared token: ${unowned}`;
+  let acting: string;
+  if (owner !== null) {
+    acting = `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`;
+  } else if (service === null) {
+    acting = `Session ${session} runs under the shared token: ${unowned}`;
+  } else if (job) {
+    // Each service sentence names the identity the way every other surface does; details keeps
+    // the subject whole, because that is the persisted value.
+    acting = `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, and writes as that service with ${unowned}`;
+  } else if (signInNeeded) {
+    acting = `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else {
+    acting = `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`;
+  }
   const elsewhere =
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`

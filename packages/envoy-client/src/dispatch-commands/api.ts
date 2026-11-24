@@ -17,22 +17,18 @@ import { errorClass, urlForText } from "@legion/contracts/log-text";
 import { type AskgateState, askgateState } from "../askgate-marker";
 import { credentialDeadline } from "../bearer";
 import { brokerRouteConfigured } from "../broker-credential";
-import type { DispatchCliIo, HostSession } from "../dispatch-cli";
+import type { DispatchCliIo } from "../dispatch-cli";
 import {
   type ActiveDispatchConfig,
   type DispatchEnvironment,
   dispatchSettings,
 } from "../dispatch-config";
-import { DISPATCH_TOOL_DEADLINE_MS } from "../dispatch-http";
+import { asErrorShape, DISPATCH_TOOL_DEADLINE_MS, isJson } from "../dispatch-http";
 import { sessionDirectory } from "../dispatch-session-directory";
 import type { EnvoyConfig } from "../envoy-config";
 import { messageFor } from "../errors";
-import { sessionDispatchSettings } from "../session-settings";
-
-/** The exit codes of every `dispatch` command: done, refused, and a usage error. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
+import { OK, REFUSED, USAGE } from "./exit-codes";
+import { type HostSession, hostedDispatch } from "./host-session";
 
 /** The methods it sends. */
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -42,7 +38,7 @@ type Method = (typeof METHODS)[number];
 const API_ROOT = "/api/v1";
 
 /** The variables a session's id is read from, by host: the ids `runDispatchCli`'s refusal ledger
- *  reads. The gate is read for each one set, whatever host the command finds. */
+ *  reads. For a write, the gate is read for each one set, whatever host the command finds. */
 const SESSION_VARIABLES = [
   "ENVOY_SESSION_ID",
   "CLAUDE_CODE_SESSION_ID",
@@ -62,7 +58,7 @@ const API_HELP = [
   "  --help",
   "      Prints this help.",
   "",
-  "The answer's body goes to standard output; every line of the command's own goes to standard error. It exits 0 on a 2xx answer; 1 on any other answer, naming its status and Dispatch's code, on no answer, and on a write this session's AskGate refuses; and 2 on a usage error, which sends nothing. It sends the request once: it follows no redirect and sends no Idempotency-Key.",
+  "The answer's body goes to standard output; every line of the command's own goes to standard error. It exits 0 on a 2xx answer; 1 on any other answer, naming its status and Dispatch's code, on no answer, on a credential that could not be presented, and on a write this session's AskGate refuses; and 2 on a usage error, which sends nothing. It sends the request once: it follows no redirect and sends no Idempotency-Key.",
   "",
   "Under an agent's host it acts as that host's session, as every dispatch command does. With no host, as in a GitHub Actions job, it reads the environment alone: DISPATCH_URL, and DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, or the secrets broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, whose trade names DISPATCH_SESSION_ID, else AGENT_SECRETS_SESSION.",
   "",
@@ -103,11 +99,9 @@ export interface WriteRoute {
 /**
  * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
  * of a gated session names. A route that writes nothing (`markdown/round-trip`, `related`,
- * `results/dry-run`) names the command that sends it, since the gate refuses it all the same.
- * Three write methods of `DispatchClient` have no row, since no command calls them:
- * `deliveryReply` (the plugins' `delivery.ts`), `acceptMessageDelivery` (pi-shared's acceptance
- * of a person's turn) and `nameArtifactVersion`. `dispatch-api-routes.test.ts` holds the table to
- * every write `DispatchClient` sends.
+ * `results/dry-run`) names the command that sends it, since the gate refuses it all the same. A
+ * write method of `DispatchClient` that no command calls has no row: `dispatch-api-routes.test.ts`
+ * names each in its `NO_COMMAND`, and holds the table to every write `DispatchClient` sends.
  */
 export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
@@ -264,17 +258,22 @@ function namesNoCredential(env: DispatchEnvironment): boolean {
   }
 }
 
-/** The answer's `code` where its body is Dispatch's JSON refusal, else `with no code`. */
-function codeOf(text: string): string {
+/** The answer's `code` where its body is Dispatch's own JSON refusal, by the rule `DispatchClient`
+ *  reads one by (`writeAnswer`, dispatch-http.ts): typed JSON (`isJson`) whose `error` is a
+ *  string. Any other body, and a code that is no word of Dispatch's codes, is `with no code`. */
+function codeOf(answer: Response, text: string): string {
+  if (!isJson(answer)) return "with no code";
   try {
-    const parsed: unknown = JSON.parse(text);
-    const code =
-      typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>).code
-        : undefined;
-    if (typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code)) return code;
+    const shape = asErrorShape(JSON.parse(text));
+    if (
+      typeof shape.error === "string" &&
+      typeof shape.code === "string" &&
+      /^[A-Z][A-Z0-9_]*$/.test(shape.code)
+    ) {
+      return shape.code;
+    }
   } catch {
-    // Not JSON: something in Dispatch's place answered.
+    // Typed as JSON and not JSON: no refusal of Dispatch's.
   }
   return "with no code";
 }
@@ -320,23 +319,22 @@ export async function apiCommand(
     return refuse(`${parsed.problem}. Run dispatch api --help.`, USAGE);
   const { method, path, bodyFile } = parsed;
 
-  // The gate of every session the environment names, host or none: an Oh My Pi session's shell
-  // with DISPATCH_HOST emptied still names its session. An id that names no directory fails
-  // closed, a GET too, naming the variable to unset rather than the value it holds.
-  const gates: AskgateState[] = [];
+  // The directory of every session the environment names, host or none: an Oh My Pi session's
+  // shell with DISPATCH_HOST emptied still names its session. An id that names no directory fails
+  // closed, a GET too, naming the variable to unset rather than the value it holds. Each one's
+  // AskGate record is read for a write alone (below).
+  const sessions: string[] = [];
   for (const variable of SESSION_VARIABLES) {
     const id = env[variable];
     if (id === undefined) continue;
-    let dir: string;
     try {
-      dir = sessionDirectory(env, id);
+      sessions.push(sessionDirectory(env, id));
     } catch {
       return refuse(
         `${variable} holds no session id whose AskGate record can be read: an id is 1-128 letters, digits, ".", "_" or "-". Unset ${variable}, or set it to the id of your own session.`,
         USAGE
       );
     }
-    gates.push(askgateState(dir));
   }
 
   let config: ActiveDispatchConfig;
@@ -352,26 +350,16 @@ export async function apiCommand(
     config = resolution;
   } else {
     if ("problem" in hosted) return stop(hosted.problem, USAGE);
-    if (hosted.file.path === null) return stop(`dispatch: ${hosted.file.error}`, USAGE);
-    const { dispatch: resolution, warnings } = sessionDispatchSettings(hosted.file, env, {
-      cwd: io.cwd,
-      session: hosted.sessionId,
-    });
-    for (const warning of warnings) say(`dispatch: ${warning}`);
-    if (!resolution.enabled) {
-      return stop(
-        resolution.error === null
-          ? `dispatch: ${resolution.notice}`
-          : `dispatch: dispatch config: ${resolution.error}`,
-        USAGE
-      );
-    }
-    config = resolution;
+    const resolved = hostedDispatch(hosted.file, env, { cwd: io.cwd, session: hosted.sessionId });
+    for (const line of resolved.warnings) say(line);
+    if ("problem" in resolved) return stop(resolved.problem, USAGE);
+    config = resolved.config;
   }
 
   // The path as the URL parser reads it against this Dispatch: its origin, under /api/v1, and
   // spelled as the parser keeps it, so a `..`, a `%2e%2e` or a `\` the parser would turn into
-  // another route is refused rather than sent. The query goes as written, and is not printed.
+  // another route is refused rather than sent. The query goes as written: the path refusal below
+  // names the route without it, and each line that names the request (`request`) names it too.
   const query = path.indexOf("?");
   const route = query < 0 ? path : path.slice(0, query);
   let target: URL | undefined;
@@ -393,6 +381,7 @@ export async function apiCommand(
   }
 
   if (method !== "GET") {
+    const gates = sessions.map((dir) => askgateState(dir));
     const broken = gates.find(
       (gate): gate is Extract<AskgateState, { readonly kind: "broken" }> => gate.kind === "broken"
     );
@@ -460,6 +449,6 @@ export async function apiCommand(
   }
   io.stdout(text);
   if (answer.ok) return OK;
-  say(`dispatch api: ${request} answered ${answer.status} ${codeOf(text)}`);
+  say(`dispatch api: ${request} answered ${answer.status} ${codeOf(answer, text)}`);
   return REFUSED;
 }

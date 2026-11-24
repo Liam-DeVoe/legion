@@ -17,6 +17,8 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { DeviceLoginIdentity } from "../device-login";
 import { newDpopKey } from "../dpop";
+import { MACHINE_AUDIENCE_VAR } from "../environment";
+import { githubActionsIdentity } from "../github-actions-identity";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
 import type { SubjectToken, TokenSource } from "../source";
@@ -167,12 +169,43 @@ function metadataSource(token: string): TokenSource {
 }
 
 /**
+ * GitHub's OIDC token endpoint answering `token`, and the identity of the run that reads it. It
+ * refuses a request that does not ask the way the contract says: the request token as its bearer
+ * and the audience in its query.
+ */
+function githubActionsSource(token: string): TokenSource {
+  const audience = "https://cipher.example";
+  const requestToken = "example-actions-request-token";
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request) => {
+      if (request.headers.get("Authorization") !== `bearer ${requestToken}`) {
+        return new Response("another request token", { status: 401 });
+      }
+      if (new URL(request.url).searchParams.get("audience") !== audience) {
+        return new Response("another audience", { status: 400 });
+      }
+      return Response.json({ value: token });
+    },
+  });
+  servers.push(server);
+  return githubActionsIdentity({
+    requestUrl: `http://127.0.0.1:${server.port}/idtoken`,
+    requestToken,
+    audience,
+    audienceSetting: MACHINE_AUDIENCE_VAR,
+  });
+}
+
+/**
  * The identity an entry's subject names, built from the real reader wherever one exists: a
  * projected token is read from a file this test writes, a machine's Google identity token from a
- * metadata server this test serves, and a machine login's access token from the device login file
- * this test writes for `brokerUrl`, holding that token live, so the trade spends it with no
- * refresh. A person's sign-in is scripted here, its own reader being the device grant, which
- * `agent-secrets login` runs through the Go client.
+ * metadata server this test serves, a GitHub Actions run's token from a GitHub endpoint this test
+ * serves, and a machine login's access token from the device login file this test writes for
+ * `brokerUrl`, holding that token live, so the trade spends it with no refresh. A person's sign-in
+ * is scripted here, its own reader being the device grant, which `agent-secrets login` runs
+ * through the Go client.
  */
 async function corpusSource(spec: CorpusToken, brokerUrl: string): Promise<TokenSource> {
   switch (spec.kind) {
@@ -183,6 +216,8 @@ async function corpusSource(spec: CorpusToken, brokerUrl: string): Promise<Token
     }
     case "google-metadata":
       return metadataSource(spec.token);
+    case "github-actions-run":
+      return githubActionsSource(spec.token);
     case "person-device-sign-in":
       return {
         read: async (): Promise<SubjectToken> => ({

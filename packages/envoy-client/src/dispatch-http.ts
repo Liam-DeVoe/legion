@@ -276,7 +276,9 @@ export class DispatchWriteLandedError extends Error {
   }
 }
 
-function asErrorShape(value: unknown): DispatchServiceErrorShape {
+/** `value`, a parsed body, as Dispatch's error shape: its members where it is an object, and none
+ *  where it is not. A body is Dispatch's own refusal where its `error` is a string. */
+export function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
 
@@ -285,7 +287,7 @@ function asErrorShape(value: unknown): DispatchServiceErrorShape {
  * `+json`, its parameters left out and letter case aside, as Dispatch's own rule reads it
  * (`compressibleAnswer`, packages/envoy/internal/dispatch/api/response_compression.go).
  */
-function isJson(response: Response): boolean {
+export function isJson(response: Response): boolean {
   const [type = ""] = (response.headers.get("content-type") ?? "").split(";");
   const mediaType = type.trim().toLowerCase();
   return (

@@ -68,6 +68,7 @@ import {
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
+import { LOOPBACK_HOST } from "./loopback";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -125,9 +126,6 @@ const MOST_POLL_SECONDS = 60;
  *  names: an hour, four times the broker's own access tokens' 900 s. A longer one would keep a
  *  poll, or a token the broker no longer honours, past any use. */
 const MOST_LIFETIME_SECONDS = 3600;
-
-/** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
-const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
 /** A control or format character: a terminal may run the one as an escape sequence rather than
  *  print it, and the other (a right-to-left override) changes what it shows. */

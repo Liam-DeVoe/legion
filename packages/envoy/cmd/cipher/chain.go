@@ -434,8 +434,9 @@ var noLauncherCredential = map[string]string{
 // AGENT_SECRETS_MACHINE_IDENTITY=kubernetes or github-actions is a usage error here, before
 // anything is traded: the exchange mints a launcher credential for a Google subject and a person
 // alone, so a pod's token or a workflow run's registers no session and acts as no sign-in's
-// machine. The helper, the Legion controller and natsprobe, which read the same setting through
-// cipherclient.MachineIdentity, take both.
+// machine. The Legion controller and natsprobe, which read the same setting through
+// cipherclient.MachineIdentity and decline the launcher credential, take both; the helper reads it
+// too, and gets no launcher credential with either.
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one

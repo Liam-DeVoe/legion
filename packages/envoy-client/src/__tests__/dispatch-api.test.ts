@@ -3,9 +3,9 @@
 // `dispatch api <METHOD> <path> [--body-file <file>|-]` sends one request of Dispatch's HTTP API
 // with the credential every `dispatch` command resolves, and prints the answer's body. These rows
 // drive it through `runDispatchCli` against a stub secrets broker (`stubBroker`) and a stub
-// Dispatch of this file's own, which keeps each request it was sent and answers by path what a
-// production Dispatch answered: whoami, its 401 and its 404 (the plan's capture), a proxy's 502
-// page and a redirect. They hold the paths it refuses before anything is sent, the credential it
+// Dispatch of this file's own, which keeps each request it was sent and answers by path: its own
+// whoami, the 401 and the 404 captured from a production Dispatch, a proxy's 502 page and a
+// redirect. They hold the paths it refuses before anything is sent, the credential it
 // presents and the session its trade names, with a host and without one, and the AskGate rule: in
 // a session whose gate is on it sends GET alone, and names the command that makes the write.
 
@@ -14,8 +14,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { SUBJECT_TOKEN_TYPE_GITHUB } from "@legion/cipher-client/wire";
+import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { processStart } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
+import { type ResultEntry, readResultsSince } from "../dispatch-session-state";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { servers, tempDir, stubBroker, podEnvironment } = brokerStandIns("dispatch-api");
@@ -23,9 +26,9 @@ const { servers, tempDir, stubBroker, podEnvironment } = brokerStandIns("dispatc
 /** The session the rows with a host act as. */
 const SESSION = "ses-1";
 
-/** What a production Dispatch answered a request with no credential (the plan's capture). */
+/** What Dispatch answers a request with no credential, captured from a production Dispatch. */
 const NO_IDENTITY = { code: "NO_IDENTITY", error: "unauthorized" };
-/** What a production Dispatch answered `GET /api/v1/no-such-route` (the plan's capture). */
+/** What Dispatch answers `GET /api/v1/no-such-route`, captured from a production Dispatch. */
 const NO_ROUTE = {
   code: "NOT_FOUND",
   error: "no route for GET /api/v1/no-such-route",
@@ -40,6 +43,9 @@ const WHOAMI = {
 };
 /** A proxy's page in Dispatch's place, which is no JSON. */
 const PROXY_PAGE = "<html><body><h1>502 Bad Gateway</h1></body></html>";
+/** A JSON answer in Dispatch's place that carries a `code` and is no refusal of Dispatch's,
+ *  which always carries its `error`. */
+const FOREIGN_JSON = { code: "UPSTREAM_DOWN", message: "the upstream is down" };
 
 /** One request a stub server was sent, as it arrived. */
 interface Sent {
@@ -52,8 +58,8 @@ interface Sent {
 /**
  * A Dispatch that keeps every request it is sent and answers by path: `/api/v1`, whoami, the
  * captured 401 (`/api/v1/signed-out`) and 404 (`/api/v1/no-such-route`), a proxy's 502 page
- * (`/api/v1/proxied`), a 307 to `redirectTo` (`/api/v1/moved`), and any other request with the
- * method and path it was sent.
+ * (`/api/v1/proxied`), a JSON 503 that is no refusal of Dispatch's (`/api/v1/foreign`), a 307 to
+ * `redirectTo` (`/api/v1/moved`), and any other request with the method and path it was sent.
  */
 function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: Sent[] } {
   const sent: Sent[] = [];
@@ -82,6 +88,8 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
             status: 502,
             headers: { "Content-Type": "text/html" },
           });
+        case "/api/v1/foreign":
+          return Response.json(FOREIGN_JSON, { status: 503 });
         case "/api/v1/moved":
           return new Response(null, {
             status: 307,
@@ -161,12 +169,6 @@ function jobEnvironment(
   return { ...podEnvironment(brokerUrl, dispatchUrl), DISPATCH_STATE_DIR: stateDir };
 }
 
-/** Field 22 of /proc/<pid>/stat: the process's start time, in clock ticks since boot. */
-function startOf(pid: number): string {
-  const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? "";
-}
-
 /**
  * The AskGate record of session `id` under `stateDir`, in the format the gate writes and as
  * dispatch-askgate.test.ts writes it: one owner file naming its process and its marker store, in
@@ -178,7 +180,7 @@ function writeRecord(
   id: string,
   owner: { readonly pid: number; readonly start: string } = {
     pid: process.pid,
-    start: startOf(process.pid),
+    start: processStart(process.pid) ?? "",
   }
 ): string {
   const store = join(stateDir, "askgate", `${owner.pid}-${owner.start}`);
@@ -191,16 +193,10 @@ function writeRecord(
 
 /** Session `id`'s ledger under `stateDir`, one entry per line, as the CLI appends it; none where
  *  no line was ever written. */
-function ledgerOf(
-  stateDir: string,
-  id: string
-): { readonly at: string; readonly tool: string; readonly error?: string }[] {
-  const path = join(stateDir, "sessions", id, "results.jsonl");
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf-8")
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => JSON.parse(line));
+function ledgerOf(stateDir: string, id: string): ResultEntry[] {
+  return readResultsSince(join(stateDir, "sessions", id), 0, (problem) => {
+    throw new Error(problem);
+  }).entries;
 }
 
 /** A file of `text` in a directory of this test's own, by its absolute path. */
@@ -248,7 +244,7 @@ describe("a request", () => {
     expect(proof.jti).toEqual(expect.any(String));
     expect(proof.jti).not.toBe(trade?.proof.jti);
     // One request, no key: a script that repeats it decides that itself.
-    expect(sent?.headers.get("Idempotency-Key")).toBeNull();
+    expect(sent?.headers.get(IDEMPOTENCY_KEY_HEADER)).toBeNull();
   });
 
   test("a GET with a query sends the query and signs the URL without it", async () => {
@@ -283,7 +279,7 @@ describe("a request", () => {
     expect(sent?.method).toBe("POST");
     expect(sent?.body).toBe(COMMENT);
     expect(sent?.headers.get("Content-Type")).toBe("application/json");
-    expect(sent?.headers.get("Idempotency-Key")).toBeNull();
+    expect(sent?.headers.get(IDEMPOTENCY_KEY_HEADER)).toBeNull();
     expect(claimsOf(sent?.headers.get("DPoP") ?? null).htm).toBe("POST");
   });
 
@@ -332,6 +328,18 @@ describe("a request", () => {
     expect(ran.code).toBe(1);
     expect(ran.stdout).toBe(PROXY_PAGE);
     expect(ran.stderr).toBe("dispatch api: GET /api/v1/proxied answered 502 with no code\n");
+  });
+
+  test("a JSON answer with a code but no Dispatch error exits 1 naming no code", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const ran = await dispatch(
+      ["api", "GET", "/api/v1/foreign"],
+      jobEnvironment(broker.url, server.url, tempDir())
+    );
+    expect(ran.code).toBe(1);
+    expect(JSON.parse(ran.stdout)).toEqual(FOREIGN_JSON);
+    expect(ran.stderr).toBe("dispatch api: GET /api/v1/foreign answered 503 with no code\n");
   });
 
   test("/api/v1 itself is sent", async () => {
