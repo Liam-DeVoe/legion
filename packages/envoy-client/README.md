@@ -1473,8 +1473,10 @@ adds aliases or descriptions of its own. No spec defines `dispatch proxy` or `di
 which `dispatch-command.ts` lists in `COMMANDS_OUTSIDE_THE_SPECS`: `dispatch-proxy-command.ts`
 holds the proxy's parser and help, and `dispatch-login-command.ts` holds the login's help.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
-session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
-`priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
+session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
+set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
+Dispatch's write and keeping the others; never beside `labels`, which is refused before any
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —
