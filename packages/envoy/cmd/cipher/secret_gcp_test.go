@@ -1318,8 +1318,8 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 // account, answers `auth print-access-token` with stubTokenPrefix + account, and answers
 // `auth list` (account, active) and `config list` (no auth property) as authList and configList
 // say: "" answers, "fail" fails as gcloud does, naming the failure on its standard error, and
-// "hang" answers nothing until t ends, or until the moment every wait for a fact in these tests
-// gives up (untilGiveUp), or until this test process is gone: never for a span of its own, so no
+// "hang" answers nothing until t ends, or until the test binary's deadline less waitMargin
+// (testwait.Remaining), or until this test process is gone: never for a span of its own, so no
 // run answers by the hang's own end before the deadline under test ends it. It first clears every
 // other source, as useNoADC does.
 func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
