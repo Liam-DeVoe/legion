@@ -288,8 +288,12 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
 		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
 
-	measurePriorityNewestEvent(t, runner)
-	measureParkedMoveAndMemberWalk(t, runner)
+	// The newest event, the parked move and the walk all read the priorities read's seed, read
+	// once here through a pool on the measurement database.
+	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
+	keys, priorities := priorityReadSeed(t, database)
+	measurePriorityNewestEvent(t, runner, database, keys, priorities)
+	measureParkedMoveAndMemberWalk(t, runner, keys, priorities)
 }
 
 // priorityNewestEventTiming and priorityKeyedWalkTiming name the newest event's pair and the
@@ -341,8 +345,9 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 	group by m.priority`
 
 // measurePriorityNewestEvent measures the newest event under each priority over the arguments
-// readPriorities binds for every live priority with no project named (priorityReadSeed), with an
-// empty project list beside them, never nil, which pgx would send as null.
+// readPriorities binds for every live priority with no project named (keys and priorities, read
+// by priorityReadSeed), with an empty project list beside them, never nil, which pgx would send
+// as null. database is a pool on the measurement database, which the rows are read through.
 //
 // The pair is main's text against priorityNewestEventQuery, timed (benchtime.Runner.Pair) and
 // gated on the shared buffers of its top plan node under the plan made for its values and under
@@ -359,10 +364,8 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 // (benchtime.Runner.ReportCachedPlans). That bounds nothing: it shows whether the probe of each
 // member's event holds once Postgres may run its cached generic plan, which pgx's prepared
 // statements reach from their sixth run.
-func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner) {
+func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database *store.Store, keys, priorities []string) {
 	t.Helper()
-	database := openMeasurementStore(t)
-	keys, priorities := priorityReadSeed(t, database, priorityNewestEventTiming)
 	arguments := []any{keys, priorities, []string{}}
 	texts := []struct{ name, sql string }{
 		{"main's text (mainPriorityNewestEventQuery)", mainPriorityNewestEventQuery},
@@ -373,10 +376,10 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner) {
 		t.Logf("%s: %s, sha256 %x:\n%s", priorityNewestEventTiming, text.name, sha256.Sum256([]byte(text.sql)), text.sql)
 	}
 	mains := benchtime.Statement{SQL: mainPriorityNewestEventQuery, Args: arguments}
-	heads := benchtime.Statement{SQL: priorityNewestEventQuery, Args: arguments}
+	reads := benchtime.Statement{SQL: priorityNewestEventQuery, Args: arguments}
 	keyed := benchtime.Statement{SQL: priorityNewestEventKeyedWalkQuery, Args: arguments}
 
-	runner.Pair(t, priorityNewestEventTiming, mains, heads)
+	runner.Pair(t, priorityNewestEventTiming, mains, reads)
 	runner.Report(t, priorityKeyedWalkTiming, mains, keyed)
 	t.Run(priorityKeyedWalkTiming+", its rows", func(t *testing.T) {
 		want := newestEventTimes(t, database, priorityNewestEventQuery, keys, priorities, []string{})
@@ -390,26 +393,25 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner) {
 		}
 	})
 	t.Run(priorityNewestEventTiming+", its top node's buffers", func(t *testing.T) {
-		mainBuffers, headBuffers := runner.PairBuffers(t, priorityNewestEventTiming, mains, heads)
-		_, keyedBuffers := runner.ReportBuffers(t, priorityKeyedWalkTiming, mains, keyed)
-		for index, buffers := range []benchtime.Buffers{mainBuffers, headBuffers, keyedBuffers} {
+		mainBuffers, readBuffers := runner.PairBuffers(t, priorityNewestEventTiming, mains, reads)
+		keyedBuffers := runner.ReportBuffers(t, priorityKeyedWalkTiming, mainBuffers, keyed)
+		for index, buffers := range []benchtime.Buffers{mainBuffers, readBuffers, keyedBuffers} {
 			for _, plan := range buffers.Plans() {
 				logNewestEventWalk(t, texts[index].name, plan)
 			}
 		}
 	})
 	t.Run(priorityNewestEventTiming+", its cached plans", func(t *testing.T) {
-		runner.ReportCachedPlans(t, priorityNewestEventTiming, mains, heads)
+		runner.ReportCachedPlans(t, priorityNewestEventTiming, mains, reads)
 	})
 }
 
 // priorityReadSeed reads the seed of the priorities read as readPriorities binds it for every live
 // priority with no project named: the live priorities (prioritystore.List) and their relations
 // as readPriorityRelations reads them, the pair of arrays every statement of the read takes. It
-// logs how many of each it read under name, the measurement that reads them. A database that
-// holds no relation fails the measurement, since every statement over the seed would then read
-// nothing.
-func priorityReadSeed(t *testing.T, database *store.Store, name string) (keys, priorities []string) {
+// logs how many of each it read. A database that holds no relation fails the measurement, since
+// every statement over the seed would then read nothing.
+func priorityReadSeed(t *testing.T, database *store.Store) (keys, priorities []string) {
 	t.Helper()
 	ctx := context.Background()
 	nodes, err := prioritystore.List(ctx, database.Pool)
@@ -420,15 +422,15 @@ func priorityReadSeed(t *testing.T, database *store.Store, name string) (keys, p
 	for _, node := range nodes {
 		ids = append(ids, node.ID)
 	}
-	keys, priorities, err = (&server{deps: Deps{Store: database}}).readPriorityRelations(ctx, ids)
+	keys, priorities, err = directServer(Deps{Store: database}).readPriorityRelations(ctx, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(keys) == 0 {
-		t.Fatalf("the database holds %d live priorities and no advances relation of one, so %s reads nothing; is it the database cmd/dispatch-seed filled?",
-			len(nodes), name)
+		t.Fatalf("the database holds %d live priorities and no advances relation of one, so every statement over the priorities read's seed reads nothing; is it the database cmd/dispatch-seed filled?",
+			len(nodes))
 	}
-	t.Logf("%s: %d live priorities and %d advances relations, with no project named", name, len(nodes), len(keys))
+	t.Logf("the priorities read's seed: %d live priorities and %d advances relations, with no project named", len(nodes), len(keys))
 	return keys, priorities
 }
 
@@ -453,7 +455,8 @@ var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 // measureParkedMoveAndMemberWalk measures, in the group parkedMoveTiming:
 //
 //   - the full parked fault (parkedQuery), over the arguments readPriorities binds for every live
-//     priority with no project named (priorityReadSeed), as the newest event is measured;
+//     priority with no project named (keys and priorities, read by priorityReadSeed), as the
+//     newest event is measured;
 //   - the listing with ?moved=true (listIssuesQuery), over the arguments the listing route binds
 //     for `?project=<the largest project>&moved=true` (listIssues): the project of the subjects,
 //     the empty status list, no parent, no updated_since, the empty label list, open false, the
@@ -471,12 +474,11 @@ var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 // listing's work, a page of every row of a project, so its gain can sit inside the run-to-run
 // spread of the rest of the statement, and a slower listing is still a regression. The walk has
 // no before side. It is timed alone (benchtime.Runner.After), and its top node's shared buffers
-// under each plan are logged (benchtime.Runner.TopBuffers), which are its buffer reads for each
+// under each plan are logged (benchtime.Runner.AfterBuffers), which are its buffer reads for each
 // call. Each text is logged with its sha256.
-func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner) {
+func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, keys, priorities []string) {
 	t.Helper()
 	t.Run(parkedMoveTiming, func(t *testing.T) {
-		keys, priorities := priorityReadSeed(t, openMeasurementStore(t), parkedFaultTiming)
 		project := runner.Subjects().Project
 		t.Logf("%s: the listing of project %s, with no other filter, and moved true", parkedListingTiming, project)
 		for _, text := range []struct{ name, sql string }{
@@ -487,37 +489,25 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner) {
 			t.Logf("%s, sha256 %x:\n%s", text.name, sha256.Sum256([]byte(text.sql)), text.sql)
 		}
 		withoutIndex := []string{"drop index " + parkedMoveIndex}
-		fault := []any{keys, priorities, []string{}}
-		listing := []any{project, []string{}, "", (*time.Time)(nil), []string{}, false, []int16{}, false,
-			(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, true}
-		for _, pair := range []struct {
-			name          string
-			before, after benchtime.Statement
-			within        bool
-		}{
-			{parkedFaultTiming,
-				benchtime.Statement{SQL: parkedQuery, Args: fault, Setup: withoutIndex},
-				benchtime.Statement{SQL: parkedQuery, Args: fault}, false},
-			{parkedListingTiming,
-				benchtime.Statement{SQL: listIssuesQuery, Args: listing, Setup: withoutIndex},
-				benchtime.Statement{SQL: listIssuesQuery, Args: listing}, true},
-		} {
-			if pair.within {
-				runner.PairWithin(t, pair.name, []benchtime.Statement{pair.before}, []benchtime.Statement{pair.after})
-			} else {
-				runner.Pair(t, pair.name, pair.before, pair.after)
-			}
-			t.Run(pair.name+", its top node's buffers", func(t *testing.T) {
-				runner.PairBuffers(t, pair.name, pair.before, pair.after)
+		pairBuffers := func(name string, before, after benchtime.Statement) {
+			t.Run(name+", its top node's buffers", func(t *testing.T) {
+				runner.PairBuffers(t, name, before, after)
 			})
 		}
+		fault := []any{keys, priorities, []string{}}
+		faultBefore := benchtime.Statement{SQL: parkedQuery, Args: fault, Setup: withoutIndex}
+		faultAfter := benchtime.Statement{SQL: parkedQuery, Args: fault}
+		runner.Pair(t, parkedFaultTiming, faultBefore, faultAfter)
+		pairBuffers(parkedFaultTiming, faultBefore, faultAfter)
+		listing := projectListingArguments(project, true)
+		listingBefore := benchtime.Statement{SQL: listIssuesQuery, Args: listing, Setup: withoutIndex}
+		listingAfter := benchtime.Statement{SQL: listIssuesQuery, Args: listing}
+		runner.PairWithin(t, parkedListingTiming, []benchtime.Statement{listingBefore}, []benchtime.Statement{listingAfter})
+		pairBuffers(parkedListingTiming, listingBefore, listingAfter)
 		walk := benchtime.Statement{SQL: memberWalkQuery, Args: []any{keys, priorities}}
 		runner.After(t, memberWalkTiming, walk)
 		t.Run(memberWalkTiming+", its top node's buffers", func(t *testing.T) {
-			for _, plan := range runner.TopBuffers(t, memberWalkTiming, walk).Plans() {
-				t.Logf("%s: under %s reads %d shared buffers at its top node (%d hit, %d read) for each call, its plan:\n%s",
-					memberWalkTiming, plan.Mode, plan.Shared(), plan.Hit, plan.Read, plan.Explained)
-			}
+			runner.AfterBuffers(t, memberWalkTiming, walk)
 		})
 	})
 }
@@ -525,17 +515,6 @@ func measureParkedMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner) {
 // newestEventWalkCTE is the name EXPLAIN gives the plan of the walk over each priority's members,
 // the recursive CTE every newest event text descends through.
 const newestEventWalkCTE = "CTE members_spread"
-
-// bufferNode is one node of a plan explained with BUFFERS in FORMAT JSON, with what the walk's
-// share is read from: the subplan it begins, the relation it reads, its shared buffers, which
-// count every node under it, and the nodes under it.
-type bufferNode struct {
-	SubplanName      string       `json:"Subplan Name"`
-	RelationName     string       `json:"Relation Name"`
-	SharedHitBlocks  int64        `json:"Shared Hit Blocks"`
-	SharedReadBlocks int64        `json:"Shared Read Blocks"`
-	Plans            []bufferNode `json:"Plans"`
-}
 
 // logNewestEventWalk logs the walk's share of plan's top-node buffers: the buffers of the plan of
 // newestEventWalkCTE, which descends from the stated issues to every member, and the buffers of
@@ -545,21 +524,21 @@ type bufferNode struct {
 // the test, since its share would then be read off nothing.
 func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
 	t.Helper()
-	var top bufferNode
+	var top analyzedNode
 	if err := json.Unmarshal(plan.Plan, &top); err != nil {
 		t.Fatalf("read the plan of %s under %s: %v", text, plan.Mode, err)
 	}
 	var walks int
 	var walk, members int64
-	var visit func(node bufferNode, inWalk bool)
-	visit = func(node bufferNode, inWalk bool) {
+	var visit func(node analyzedNode, inWalk bool)
+	visit = func(node analyzedNode, inWalk bool) {
 		switch {
 		case node.SubplanName == newestEventWalkCTE:
 			walks++
-			walk += node.SharedHitBlocks + node.SharedReadBlocks
+			walk += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 			inWalk = true
 		case !inWalk && node.RelationName == "issues":
-			members += node.SharedHitBlocks + node.SharedReadBlocks
+			members += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 		}
 		for _, child := range node.Plans {
 			visit(child, inWalk)
@@ -662,7 +641,9 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
-	database := openMeasurementStore(t)
+	// The refresh runs each project of a pass in a transaction of its own, so it takes a pool
+	// rather than the one connection the statement timings share.
+	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
 	projects := refreshTimingProjects(t, database)
 
 	before := mainRefreshPass(t, database, projects)
@@ -696,21 +677,6 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 			t.Errorf("round %d took %v, not below the released whole pass at %v", round+1, took, before)
 		}
 	}
-}
-
-// openMeasurementStore opens a pool on the measurement database, for the work the one connection
-// the statement timings share does not serve: the refresh, which runs each project of a pass in a
-// transaction of its own, and the arguments of the newest event and of the parked fault and the
-// newest event's rows, which this package's readers read through a store (readPriorityRelations,
-// newestEventTimes).
-func openMeasurementStore(t *testing.T) *store.Store {
-	t.Helper()
-	database, err := store.Open(context.Background(), os.Getenv(benchtime.DatabaseURLEnv))
-	if err != nil {
-		t.Fatalf("open the measurement database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	return database
 }
 
 // refreshTimingProjects is every project a whole pass refreshes, in the order

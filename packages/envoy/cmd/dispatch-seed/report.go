@@ -183,7 +183,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			       ' over ' || count(distinct i.key) filter (where i.status in (` + priorityParkedStatuses + `)) ||
 			       ' parked issues'
 			from events e join issues i on i.key = e.issue_key
-			where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`},
+			where ` + statusMoveEvent},
 	}
 	for _, item := range readings {
 		rows, err := r.database.Pool.Query(ctx, item.query)

@@ -36,8 +36,9 @@
 // each side's shared buffers at its top plan node, under the plan made for its values and under
 // the generic plan a prepared statement settles on (TopBuffers), logs every count with its plan,
 // and fails where the after text does not read fewer under each plan. ReportBuffers is the same
-// reading with no bound, for a candidate text. ReportCachedPlans runs each side as a prepared
-// statement seven times under the session's own plan_cache_mode and logs which plan each
+// reading with no bound, for a candidate text beside a before side already read, and
+// AfterBuffers reads and logs one statement's alone. ReportCachedPlans runs each side as a
+// prepared statement seven times under the session's own plan_cache_mode and logs which plan each
 // execution ran, with its buffers, and its whole plan from the sixth on, when Postgres may run
 // its cached generic plan; it bounds nothing.
 //
@@ -46,9 +47,10 @@
 // alone, each line naming the side it read, the after side on this release's schema and the
 // before side on a database migrated from the release before it, which holds none of this
 // release's migrations, 20261101182419 to 20261101182522; that is protocol 2. A statement whose
-// gain needs an index of this release has a pair all the same: its before side's Setup puts the
-// release before's index back in the measuring transaction, which explain rolls back, so one
-// database holds both sides and the two differ by that setup rather than by their text alone.
+// gain needs an index of this release has a pair all the same: its before side's Setup drops that
+// index, or puts back the release before's index it replaced, in the measuring transaction, which
+// explain rolls back, so one database holds both sides and the two differ by that setup rather
+// than by their text alone.
 // AfterSeries measures a series alone and bounds nothing, as After does, for a read's new work
 // that no before text did and so has nothing to be measured against.
 //
@@ -71,6 +73,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // DatabaseURLEnv names the seeded measurement database (cmd/dispatch-seed). It is deliberately
@@ -155,6 +159,20 @@ func Open(t *testing.T, databaseURL string) *Runner {
 	runner.subjects = bindSubjects(t, conn)
 	t.Logf("measurement subjects: %s", runner.subjects)
 	return runner
+}
+
+// OpenStore opens a pool on the measurement database, for the work the one connection a Runner
+// shares does not serve: a reader that reads through a store, and work that runs transactions of
+// its own. databaseURL is what DatabaseURLEnv names, read by the caller as for Open, and a caller
+// opens the pool after Open, which skips t where the URL is empty. The pool is closed when t ends.
+func OpenStore(t *testing.T, databaseURL string) *store.Store {
+	t.Helper()
+	database, err := store.Open(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("open the measurement database: %v", err)
+	}
+	t.Cleanup(database.Pool.Close)
+	return database
 }
 
 // Subjects are the rows the statements read.

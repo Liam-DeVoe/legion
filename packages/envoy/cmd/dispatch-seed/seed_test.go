@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
@@ -653,14 +652,7 @@ func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, ru
 		}
 	}
 
-	var before int
-	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from events e
-		where `+answerswindow.DeliveredPersonEvent+` and e.created_at < $1 and e.published_destinations @> array[$2::text]
-	`, subjects.Since, contracts.LegacyAgentSubject(subjects.Old.Session)).Scan(&before); err != nil {
-		t.Fatalf("count the old session's deliveries before the window: %v", err)
-	}
-	if before < run.sizes.OldDeliveries {
+	if before := subjects.Old.BeforeWindow; before < run.sizes.OldDeliveries {
 		t.Errorf("the old session %s holds %d deliveries before the window, want at least %d",
 			subjects.Old.Session, before, run.sizes.OldDeliveries)
 	}
@@ -670,9 +662,10 @@ func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, ru
 // ask it carries. Its payload decodes as its type's payload, with no field the type does not
 // know: model.AskAnsweredEventPayload for an answer and model.AskEventPayload for a decline,
 // whose resolution is of kind declined. It names an ask the database holds, whose row holds the
-// answer or the resolution the event carries. And its id is above the id of the ask's ask.opened
-// event, so that event stays the lowest of the ask's events, which events.OpenedEventIDs resolves
-// as the ask's identity.
+// answer or the resolution the event carries. And its id is above the id of the ask's identity
+// event as events.OpenedEventIDs resolves it, the lowest id of the ask's events, so the ask's
+// ask.opened stays that event: an event numbered below its ask.opened resolves to itself, and
+// fails.
 func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -680,13 +673,12 @@ func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) 
 		id       int64
 		kind     string
 		payload  []byte
-		opened   *int64
-		heldBy   bool
+		askID    string
+		askHeld  bool
 		rowAgree bool
 	}
 	rows, err := database.Pool.Query(ctx, `
-		select e.id, e.type, e.payload::text,
-		       (select min(o.id) from events o where o.type = 'ask.opened' and o.payload->>'id' = e.payload->>'id'),
+		select e.id, e.type, e.payload::text, coalesce(e.payload->>'id', ''),
 		       a.id is not null,
 		       coalesce(case e.type when 'ask.answered' then a.answer = e.payload->'answer'
 		                            else a.resolution = e.payload->'resolution' end, false)
@@ -701,12 +693,20 @@ func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) 
 	closings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closing, error) {
 		var read closing
 		var payload string
-		err := row.Scan(&read.id, &read.kind, &payload, &read.opened, &read.heldBy, &read.rowAgree)
+		err := row.Scan(&read.id, &read.kind, &payload, &read.askID, &read.askHeld, &read.rowAgree)
 		read.payload = []byte(payload)
 		return read, err
 	})
 	if err != nil {
 		t.Fatalf("read the answers and declines: %v", err)
+	}
+	askIDs := make([]string, 0, len(closings))
+	for _, read := range closings {
+		askIDs = append(askIDs, read.askID)
+	}
+	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs)
+	if err != nil {
+		t.Fatalf("resolve the asks' identity events: %v", err)
 	}
 	written := map[string]int{}
 	for _, read := range closings {
@@ -726,15 +726,16 @@ func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) 
 				t.Errorf("ask.resolved event %d carries resolution %+v, not a decline", read.id, ask.Resolution)
 			}
 		}
+		opened, resolved := openedEventIDs[read.askID]
 		switch {
 		case err != nil:
 			t.Errorf("%s event %d does not decode as its payload: %v\n%s", read.kind, read.id, err, read.payload)
-		case ask.ID == "" || !read.heldBy:
+		case ask.ID == "" || !read.askHeld:
 			t.Errorf("%s event %d names ask %q, which the database does not hold", read.kind, read.id, ask.ID)
 		case !read.rowAgree:
 			t.Errorf("%s event %d carries an answer or a resolution that ask %s's row does not hold", read.kind, read.id, ask.ID)
-		case read.opened == nil || *read.opened >= read.id:
-			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%v)", read.kind, read.id, ask.ID, read.opened)
+		case !resolved || opened >= read.id:
+			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%d)", read.kind, read.id, ask.ID, opened)
 		}
 	}
 	for _, kind := range []string{"ask.answered", "ask.resolved"} {
@@ -787,7 +788,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 	var moves, parkedElsewhere int
 	rows, err = database.Pool.Query(ctx, `
 		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
-		where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb
+		where `+statusMoveEvent+`
 		order by e.issue_key, e.seq
 	`)
 	if err != nil {

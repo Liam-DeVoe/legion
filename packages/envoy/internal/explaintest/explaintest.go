@@ -10,20 +10,24 @@
 // it, which is what tells a read served by an index from one that reads the whole index and
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
-// or run and measured (AnalyzedGenericPlan). For a statement over a batch of rows (batch.go) it
-// runs the statement a writer sent, after the statements it sent first, under each plan-cache
-// mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each named table
-// by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a control that must
-// fail it (RequireTheCheckFails).
-// dispatch/api, dispatch/refs, dispatch/graphstore and cipher/requests each pin a plan with these
-// checks, so they live here once rather than as a second (or third) hand copy of the same
-// recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
-// test-only code across packages (see internal/stacktest's identical reasoning).
+// or run and measured (AnalyzedGenericPlan), and the plan made for a statement's values, run and
+// measured (AnalyzedPlan). A test that holds such a plan to a check it writes itself holds the
+// same check to failing a control's plan (RequireControlFails, through Failures). For a statement
+// over a batch of rows (batch.go) it runs the statement a writer sent, after the statements it
+// sent first, under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading
+// the batch once and each named table by a probe of one row's key (UnprobedReads,
+// RequireEachRowProbedOnce), with a control that must fail it (RequireTheCheckFails).
+// dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/sessionanswers and cipher/requests
+// each pin a plan with these checks, so they live here once rather than as a second (or third)
+// hand copy of the same recursive walk; it is an ordinary package rather than a _test.go file
+// because Go cannot share test-only code across packages (see internal/stacktest's identical
+// reasoning).
 package explaintest
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -528,6 +532,71 @@ func AnalyzedGenericPlan(
 ) json.RawMessage {
 	t.Helper()
 	return explainGenericPlan(t, ctx, connection, "analyze, buffers, format json", false, name, statement, parameters, literals, settings)
+}
+
+// AnalyzedPlan is the plan Postgres makes for statement with the values arguments, run and
+// measured (EXPLAIN (ANALYZE, BUFFERS)) under settings, the `set local` statements the caller
+// names (none: the planner's default settings), in a transaction of db that it rolls back. An
+// EXPLAIN that binds its own parameters is planned for their values, a custom plan, the plan
+// AnalyzedGenericPlan's forced mode leaves out.
+func AnalyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments ...any) json.RawMessage {
+	t.Helper()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return OnePlan(t, raw)
+}
+
+// Failures is the testing.TB a control's plan is run through a check by (RequireControlFails). It
+// keeps each failure that the check reports through Errorf rather than failing the test, so the
+// test can hold the check to failing the control. Every other call goes to the test, a fatal
+// failure of the test's own making among them.
+type Failures struct {
+	testing.TB
+	failures []string
+}
+
+func (f *Failures) Errorf(format string, args ...any) {
+	f.failures = append(f.failures, fmt.Sprintf(format, args...))
+}
+
+// FirstLines is the first line of each failure, which names the read without the plan it prints.
+func (f *Failures) FirstLines() []string {
+	lines := make([]string, 0, len(f.failures))
+	for _, failure := range f.failures {
+		line, _, _ := strings.Cut(failure, "\n")
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// RequireControlFails runs check, a check of plan that reports each failure through Errorf, on
+// Failures, and fails t where the check reports none, since the check would then be one that
+// cannot fail. subject names the plan, control names the plan's part ("the control", or "a
+// control" where there are several), and cannotTell is what such a check cannot tell apart: the
+// failure says all three and prints plan. Where the check fails, as the control must, it logs the
+// first line of each failure.
+func RequireControlFails(t testing.TB, subject, control, cannotTell string, plan json.RawMessage, check func(testing.TB)) {
+	t.Helper()
+	failures := &Failures{TB: t}
+	check(failures)
+	lines := failures.FirstLines()
+	if len(lines) == 0 {
+		t.Errorf("%s, %s, passes the check, so the check cannot tell %s:\n%s", subject, control, cannotTell, plan)
+		return
+	}
+	t.Logf("%s fails the check, as the control must:\n  %s", subject, strings.Join(lines, "\n  "))
 }
 
 // explainGenericPlan is the body GenericPlan and AnalyzedGenericPlan share: it prepares statement

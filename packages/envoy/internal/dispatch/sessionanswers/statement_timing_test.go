@@ -1,10 +1,7 @@
 package sessionanswers
 
 import (
-	"bytes"
-	"context"
 	"os"
-	"slices"
 	"testing"
 	"time"
 
@@ -35,7 +32,7 @@ import (
 func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
-	database := openMeasurementStore(t)
+	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
 	for _, session := range subjects.AnswerSessions {
 		name := "the answers read for " + session.Name
 		arguments := []any{session.Session, subjects.AnswersSince, contracts.LegacyAgentSubject(session.Session)}
@@ -52,9 +49,10 @@ func TestStatementTimings(t *testing.T) {
 }
 
 // requireTheSameAnswerRows holds query to mainQuery's rows for session since since, compared as
-// requireMainsRows compares them over the fixture: the same columns, and the same rows in the
-// same order, each column the same bytes the server sent. main's read must answer some row, so
-// the comparison holds something and the pair beside it times a read that lists items.
+// requireMainsRows compares them over the fixture (sameAnswerRows): the same columns, and the same
+// rows in the same order, each column the same bytes the server sent. It stops the test where the
+// columns or the number of rows differ. main's read must answer some row, so the comparison holds
+// something and the pair beside it times a read that lists items.
 func requireTheSameAnswerRows(t *testing.T, database *store.Store, session benchtime.AnswerSession, since time.Time) {
 	t.Helper()
 	want := readAnswerRows(t, database, mainQuery, session.Session, since)
@@ -64,31 +62,7 @@ func requireTheSameAnswerRows(t *testing.T, database *store.Store, session bench
 	if len(want.raw) == 0 {
 		t.Errorf("main's read answers no row for %s, so the comparison holds nothing", session)
 	}
-	if !slices.Equal(got.columns, want.columns) {
-		t.Fatalf("the read answers the columns %v for %s, want main's %v", got.columns, session, want.columns)
+	if !sameAnswerRows(t, "the read for "+session.String(), got, want) {
+		t.FailNow()
 	}
-	if len(got.raw) != len(want.raw) {
-		t.Fatalf("the read answers %d rows for %s, want main's %d:\n%s\nmain's:\n%s", len(got.raw), session, len(want.raw), got, want)
-	}
-	for row := range want.raw {
-		for column := range want.raw[row] {
-			if !bytes.Equal(got.raw[row][column], want.raw[row][column]) || (got.raw[row][column] == nil) != (want.raw[row][column] == nil) {
-				t.Errorf("the read answers row %d's %s for %s as %v, want main's %v", row, want.columns[column], session,
-					got.values[row][column], want.values[row][column])
-			}
-		}
-	}
-}
-
-// openMeasurementStore opens a pool on the measurement database for the rows the two texts
-// answer, which readAnswerRows reads through a store, as the oracle test reads them. The times and
-// the buffers are read on the runner's one connection, not through this pool.
-func openMeasurementStore(t *testing.T) *store.Store {
-	t.Helper()
-	database, err := store.Open(context.Background(), os.Getenv(benchtime.DatabaseURLEnv))
-	if err != nil {
-		t.Fatalf("open the measurement database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	return database
 }

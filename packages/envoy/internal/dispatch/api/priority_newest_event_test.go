@@ -12,14 +12,13 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
-	"regexp"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -189,11 +188,12 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 	return corpus
 }
 
-// seed reads the relations of the corpus's priorities as the read does (readPriorityRelations):
-// the pair of arrays that every statement of the read takes as its seed.
-func (c newestEventCorpus) seed(t *testing.T) (keys, ids []string) {
+// priorityCorpusSeed reads the relations of a corpus's priorities, served by served, as the read
+// does (readPriorityRelations): the pair of arrays that every statement of the read takes as its
+// seed.
+func priorityCorpusSeed(t *testing.T, served *server, priorities []string) (keys, ids []string) {
 	t.Helper()
-	keys, ids, err := c.served.readPriorityRelations(context.Background(), c.priorities)
+	keys, ids, err := served.readPriorityRelations(context.Background(), priorities)
 	if err != nil {
 		t.Fatalf("read the relations of the corpus's priorities: %v", err)
 	}
@@ -251,7 +251,7 @@ func newestEventTimes(t *testing.T, database *store.Store, statement string, see
 func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 	t.Parallel()
 	corpus := seedNewestEventCorpus(t)
-	seedKeys, seedIDs := corpus.seed(t)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
 	answered := make([]map[string]time.Time, 0, len(newestEventScopes))
 	for _, scope := range newestEventScopes {
 		want := newestEventTimes(t, corpus.database, mainPriorityNewestEventQuery, seedKeys, seedIDs, scope.projects)
@@ -314,7 +314,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	t.Parallel()
 	corpus := seedNewestEventCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := corpus.seed(t)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
 	ctx := context.Background()
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)
@@ -332,7 +332,8 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	}
 	for scopeNumber, scope := range newestEventScopes {
 		members := newestEventMemberRows(t, corpus.database, seedKeys, seedIDs, scope.projects, scope.name)
-		literals := []string{textArrayLiteral(seedKeys), textArrayLiteral(seedIDs), textArrayLiteral(scope.projects)}
+		arguments := []any{seedKeys, seedIDs, scope.projects}
+		parameters, literals := benchtime.PreparedArguments(t, "the newest event over "+scope.name, arguments...)
 		for textNumber, text := range texts {
 			plans := []struct {
 				name string
@@ -340,11 +341,11 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 			}{
 				{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection,
 					fmt.Sprintf("newest_event_%d_%d", scopeNumber, textNumber), text.statement,
-					[]string{"text[]", "text[]", "text[]"}, literals, "set local enable_seqscan = off")},
-				{"the plan for its values", analyzedNewestEventPlan(t, corpus.database, text.statement,
-					[]string{"set local enable_seqscan = off"}, seedKeys, seedIDs, scope.projects)},
-				{"the plan for its values with the default settings", analyzedNewestEventPlan(t, corpus.database,
-					text.statement, nil, seedKeys, seedIDs, scope.projects)},
+					parameters, literals, "set local enable_seqscan = off")},
+				{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool, text.statement,
+					[]string{"set local enable_seqscan = off"}, arguments...)},
+				{"the plan for its values with the default settings", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+					text.statement, nil, arguments...)},
 			}
 			for _, plan := range plans {
 				subject := fmt.Sprintf("%s under %s over %s", text.name, plan.name, scope.name)
@@ -352,14 +353,8 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 					requireOneEventOfEachMember(t, keys, plan.plan, subject, members)
 					continue
 				}
-				control := &newestEventCheckFailures{TB: t}
-				requireOneEventOfEachMember(control, keys, plan.plan, subject, members)
-				if len(control.failures) == 0 {
-					t.Errorf("%s, the control, passes the check, so the check cannot tell a read of every event from one read of a member:\n%s",
-						subject, plan.plan)
-					continue
-				}
-				t.Logf("%s fails the check, as the control must:\n  %s", subject, strings.Join(firstLines(control.failures), "\n  "))
+				explaintest.RequireControlFails(t, subject, "the control", "a read of every event from one read of a member",
+					plan.plan, func(t testing.TB) { requireOneEventOfEachMember(t, keys, plan.plan, subject, members) })
 			}
 		}
 	}
@@ -389,20 +384,16 @@ func newestEventMemberRows(t *testing.T, database *store.Store, seedKeys, seedID
 	return members
 }
 
-// newestEventCondWord matches one lower-case identifier of a plan's Index Cond. A word of a
-// longer identifier is not one of these: `seq` does not match inside `last_seq`.
-var newestEventCondWord = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
-
-// requireOneEventOfEachMember holds plan, an analyzed plan of a newest event statement, to R2's
-// read of events. Every scan of events is an Index Scan of newestEventIndex whose Index Cond names
-// both columns of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each
-// such scan answers at most one row each time it runs, and at least one of them ran, so a plan
-// that read no event shows nothing. A scan of events of any other kind is a read beyond the one
-// event of a member. The scans of events run at most members times in all, the member rows the
-// read joins (newestEventMemberRows): a plan that probes the events of an issue before it joins
-// the issue to the members probes every issue the project filter keeps. Each failure names
-// subject and prints the plan through t.Errorf, which is what a control reads
-// (newestEventCheckFailures).
+// requireOneEventOfEachMember holds plan, an analyzed plan of a newest event statement, to reading
+// one event of each member row it joins, the member's event of last_seq, and no other event.
+// Every scan of events is an Index Scan of newestEventIndex whose Index Cond names both columns
+// of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each such scan
+// answers at most one row each time it runs, and at least one of them ran, so a plan that read no
+// event shows nothing. A scan of events of any other kind is a read beyond the one event of a
+// member. The scans of events run at most members times in all, the member rows the read joins
+// (newestEventMemberRows): a plan that probes the events of an issue before it joins the issue to
+// the members probes every issue the project filter keeps. Each failure names subject and prints
+// the plan through t.Errorf, which is what a control reads (explaintest.RequireControlFails).
 func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, members int) {
 	t.Helper()
 	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
@@ -416,7 +407,7 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 			t.Errorf("%s reads events by %s, want only Index Scans of %s:\n%s", subject, node, newestEventIndex, plan)
 			continue
 		}
-		if !slices.Contains(newestEventCondWord.FindAllString(node.IndexCond, -1), "seq") {
+		if !explaintest.CondNamesFirstKey(node.IndexCond, "seq") {
 			t.Errorf("%s reads %s on `%s`, which names no seq, so it reads every event of an issue, want its one event of last_seq:\n%s",
 				subject, node, node.IndexCond, plan)
 		}
@@ -435,71 +426,16 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 	}
 }
 
-// newestEventCheckFailures is the testing.TB that the control runs the check through. It keeps
-// each failure that the check reports through Errorf rather than failing the test, so the test
-// can hold the check to failing main's text. Every other call goes to the test, a fatal failure
-// of the test's own making among them.
-type newestEventCheckFailures struct {
-	testing.TB
-	failures []string
-}
-
-func (f *newestEventCheckFailures) Errorf(format string, args ...any) {
-	f.failures = append(f.failures, fmt.Sprintf(format, args...))
-}
-
-// firstLines is the first line of each failure, which names the read without the plan it prints.
-func firstLines(failures []string) []string {
-	lines := make([]string, 0, len(failures))
-	for _, failure := range failures {
-		line, _, _ := strings.Cut(failure, "\n")
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// textArrayLiteral writes values as the text[] literal that an EXECUTE names, since an EXECUTE
-// under EXPLAIN takes no bound parameter.
-func textArrayLiteral(values []string) string {
-	quoted := make([]string, 0, len(values))
-	for _, value := range values {
-		quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", "''")+"'")
-	}
-	return "array[" + strings.Join(quoted, ", ") + "]::text[]"
-}
-
-// analyzedNewestEventPlan is the plan Postgres makes for statement with the values arguments, run
-// and measured (EXPLAIN (ANALYZE, BUFFERS)) under settings, the `set local` statements the caller
-// names (none: the planner's default settings), in a transaction it rolls back. An EXPLAIN that
-// binds its own parameters is planned for their values, a custom plan.
-func analyzedNewestEventPlan(t *testing.T, database *store.Store, statement string, settings []string, arguments ...any) json.RawMessage {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	for _, setting := range settings {
-		if _, err := tx.Exec(ctx, setting); err != nil {
-			t.Fatalf("%s: %v", setting, err)
-		}
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
-		t.Fatalf("explain the statement: %v", err)
-	}
-	return explaintest.OnePlan(t, raw)
-}
-
-// TestPriorityNewestEventIsEarlierOnlyInsideItsBound holds the newest event under each priority
-// to R2's bound where two writes of an issue overlap. Each write is an append through the broker
-// (events.Broker.Append) on a transaction of the test's own pool, as Dispatch appends an event.
-// In each case, the transaction that began first commits last, so its event is the issue's event
-// of last_seq, and its created_at, its own start, is earlier than the other write's. The newest
-// event is then that earlier time, main's is the later one, and the two stand apart by less than
-// the time from the first write's start to the other write's commit. The commit is read as the
-// server's clock_timestamp() once the commit has returned, which is after the commit.
+// TestPriorityNewestEventIsEarlierOnlyInsideItsBound holds the newest event under each priority,
+// where two writes of an issue overlap, to a time earlier than main's by less than the time from
+// the start of the write that began first to the other write's commit. Each write is an append
+// through the broker (events.Broker.Append) on a transaction of the test's own pool, as Dispatch
+// appends an event. In each case, the transaction that began first commits last, so its event is
+// the issue's event of last_seq, and its created_at, its own start, is earlier than the other
+// write's. The newest event is then that earlier time, main's is the later one, and the two stand
+// apart by less than the time from the first write's start to the other write's commit. The
+// commit is read as the server's clock_timestamp() once the commit has returned, which is after
+// the commit.
 //
 // Each case holds a priority of its own, whose members no other case writes to. The cases run one
 // after another, since the second counts the backends of the test's database that wait on a lock.
@@ -698,10 +634,10 @@ func requireOverlap(t *testing.T, first overlapWrite, earlier, later model.Event
 	}
 }
 
-// requireNewestInsideBound holds priority's two times to R2 after an overlap. The newest event is
-// wantNew, the created_at of the write that began first and committed last. Main's is wantMain,
-// the created_at of the other write. The newest event is never later than main's, and main's is
-// later by less than bound, the time from that start to that commit.
+// requireNewestInsideBound holds priority's two times to that bound after an overlap. The newest
+// event is wantNew, the created_at of the write that began first and committed last. Main's is
+// wantMain, the created_at of the other write. The newest event is never later than main's, and
+// main's is later by less than bound, the time from that start to that commit.
 func requireNewestInsideBound(t *testing.T, database *store.Store, seedKeys, seedIDs []string, priority string, wantNew, wantMain time.Time, bound time.Duration) {
 	t.Helper()
 	newest, has := newestEventTimes(t, database, priorityNewestEventQuery, seedKeys, seedIDs, []string{})[priority]

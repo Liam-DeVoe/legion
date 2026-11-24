@@ -142,6 +142,12 @@ func (r *seedRun) askEventIDBase() int64 {
 	return int64(r.sizes.Events)
 }
 
+// askEventIDEnd is the id of the last ask's opening event, the highest id the seed writes before
+// the deliveries, which number their own events past it (writeDeliveries).
+func (r *seedRun) askEventIDEnd() int64 {
+	return r.askEventIDBase() + int64(len(r.plan.asks))
+}
+
 // askOpenedPayload is the payload of an ask's opening event, built by model.NewAskEventPayload,
 // which is how a producer builds an ask payload (api/asks.go's create route builds the same
 // value through events.AskEventPayload), so a reader finds on a seeded event the fields it finds
@@ -169,6 +175,12 @@ func askOpenedPayload(ask model.Ask) (string, error) {
 // filler events, one type in five), so one in three gives an issue about three moves, which is
 // the walk from triage of an issue in the middle of its lifecycle.
 const statusMoveOneIn = 3
+
+// statusMoveEvent is the SQL predicate, on the event aliased e, that holds for a status move: an
+// `issue.updated` event whose payload names `status` in `changed`, which are the parked read's own
+// conditions on the event beside its status (api's parkedMoveLateral). The report counts the moves
+// by it, and the seed's test reads them by it.
+const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`
 
 // planStatusMoves chooses the filler `issue.updated` events that record a status move, and the
 // status each one moves its issue into, by the position of the event in events. Each such event
@@ -388,8 +400,7 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 	}
 	// The sequence is set past every id the seed wrote, the asks' opening events included, so a
 	// server appending its first event after the seed does not collide with one of them.
-	_, err = r.database.Pool.Exec(ctx, `select setval('events_id_seq', $1, true)`,
-		r.askEventIDBase()+int64(len(r.plan.asks)))
+	_, err = r.database.Pool.Exec(ctx, `select setval('events_id_seq', $1, true)`, r.askEventIDEnd())
 	if err != nil {
 		return fmt.Errorf("set the events sequence past the seeded ids: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -268,7 +269,7 @@ func (r *seedRun) writeDeliveries(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	next := r.askEventIDBase() + int64(len(r.plan.asks))
+	next := r.askEventIDEnd()
 	for index := range deliveries {
 		next++
 		deliveries[index].id = next
@@ -329,7 +330,7 @@ func (r *seedRun) ownerTopic(owner eventOwner, eventType string) string {
 		document := r.plan.documents[owner.document]
 		return documentTopicPrefix + r.plan.projects[document.Project].Key + "." + document.Slug + "." + eventType
 	}
-	return contracts.DispatchIssueTopicPrefix + r.plan.issues[owner.issue].Key + "." + eventType
+	return contracts.LegacyDispatchIssueSubject(r.plan.issues[owner.issue].Key, eventType)
 }
 
 // ownerLastSeqs is the highest seq each owner the deliveries are appended on carries, its filler
@@ -343,14 +344,7 @@ func (r *seedRun) ownerLastSeqs(ctx context.Context, deliveries []delivery) (map
 			byIssue[r.plan.issues[planned.owner.issue].Key] = planned.owner
 		}
 	}
-	issueKeys := make([]string, 0, len(byIssue))
-	for key := range byIssue {
-		issueKeys = append(issueKeys, key)
-	}
-	artifactIDs := make([]string, 0, len(byArtifact))
-	for id := range byArtifact {
-		artifactIDs = append(artifactIDs, id)
-	}
+	issueKeys, artifactIDs := slices.Collect(maps.Keys(byIssue)), slices.Collect(maps.Keys(byArtifact))
 	rows, err := r.database.Pool.Query(ctx, `
 		select issue_key, artifact_id::text, max(seq) from events
 		where issue_key = any($1) or artifact_id = any($2::uuid[])

@@ -76,34 +76,45 @@ func (b Buffers) Plans() []PlanBuffers { return []PlanBuffers{b.ForValues, b.Gen
 // The generic plan is read as explaintest.AnalyzedGenericPlan reads one: the statement is
 // prepared, plan_cache_mode is force_generic_plan for the transaction, and EXPLAIN runs its
 // EXECUTE. An EXECUTE under EXPLAIN takes no bound parameter, so each argument is written into it
-// as a literal (sqlLiteral) and the statement is prepared with the literals' types. A prepared
-// statement belongs to the session rather than to the transaction, so it is deallocated after
-// the rollback.
+// as a literal (PreparedArguments) and the statement is prepared with the literals' types. A
+// prepared statement belongs to the session rather than to the transaction, so it is deallocated
+// after the rollback.
 func (r *Runner) TopBuffers(t *testing.T, name string, statement Statement) Buffers {
 	t.Helper()
-	prepare, execute := preparedForm(t, name, buffersStatement, statement)
-	forValues := r.explainBuffers(t, name, planForValues, statement.Setup, "", statement.SQL, statement.Args)
-	generic := r.explainBuffers(t, name, genericPlan,
-		append(slices.Clone(statement.Setup), "set local plan_cache_mode = force_generic_plan"),
-		prepare, execute, nil)
-	return Buffers{ForValues: forValues, Generic: generic}
+	forValues := r.explainBuffers(t, name, planForValues, "", statement)
+	generic := statement
+	generic.Setup = append(slices.Clone(statement.Setup), "set local plan_cache_mode = force_generic_plan")
+	return Buffers{ForValues: forValues, Generic: r.explainBuffers(t, name, genericPlan, buffersStatement, generic)}
 }
 
-// preparedForm is statement as a PREPARE under the name prepared, with each argument's type, and
-// as the EXECUTE of it that writes each argument in as a literal (sqlLiteral): an EXECUTE under
-// EXPLAIN takes no bound parameter. name says which statement it is, in a failure.
-func preparedForm(t *testing.T, name, prepared string, statement Statement) (string, string) {
+// PreparedArguments writes each of arguments as the type a statement is prepared with for it and
+// the literal an EXECUTE takes in its place (sqlLiteral), in order: an EXECUTE under EXPLAIN takes
+// no bound parameter. TopBuffers and ReportCachedPlans prepare a measured statement with them, and
+// a plan test hands them to explaintest.GenericPlan or explaintest.AnalyzedGenericPlan for the
+// arguments it binds the same statement with elsewhere, rather than keeping a second list by hand.
+// An argument of a type sqlLiteral writes no literal for fails t, naming name, the statement, and
+// the argument's place.
+func PreparedArguments(t *testing.T, name string, arguments ...any) (parameters, literals []string) {
 	t.Helper()
-	types := make([]string, 0, len(statement.Args))
-	literals := make([]string, 0, len(statement.Args))
-	for index, argument := range statement.Args {
+	parameters = make([]string, 0, len(arguments))
+	literals = make([]string, 0, len(arguments))
+	for index, argument := range arguments {
 		parameter, literal, err := sqlLiteral(argument)
 		if err != nil {
 			t.Fatalf("%s: the argument $%d: %v", name, index+1, err)
 		}
-		types = append(types, parameter)
+		parameters = append(parameters, parameter)
 		literals = append(literals, literal)
 	}
+	return parameters, literals
+}
+
+// preparedForm is statement as a PREPARE under the name prepared, with each argument's type, and
+// as the EXECUTE of it that writes each argument in as a literal (PreparedArguments). name says
+// which statement it is, in a failure.
+func preparedForm(t *testing.T, name, prepared string, statement Statement) (string, string) {
+	t.Helper()
+	types, literals := PreparedArguments(t, name, statement.Args...)
 	prepare, execute := "prepare "+prepared, "execute "+prepared
 	if len(types) > 0 {
 		prepare += " (" + strings.Join(types, ", ") + ")"
@@ -149,7 +160,7 @@ func (r *Runner) cachedPlans(t *testing.T, name, side, cacheMode string, stateme
 	var generics int64
 	for execution := 1; execution <= cachedPlanExecutions; execution++ {
 		mode := fmt.Sprintf("execution %d of %d of the prepared statement, under plan_cache_mode %s", execution, cachedPlanExecutions, cacheMode)
-		reading := r.explainBuffers(t, measured, mode, statement.Setup, "", execute, nil)
+		reading := r.explainBuffers(t, measured, mode, "", Statement{SQL: execute, Setup: statement.Setup})
 		var genericCount, customCount int64
 		if err := r.conn.QueryRow(ctx, `select generic_plans, custom_plans from pg_prepared_statements where name = $1`,
 			cachedPlansStatement).Scan(&genericCount, &customCount); err != nil {
@@ -171,18 +182,24 @@ func (r *Runner) cachedPlans(t *testing.T, name, side, cacheMode string, stateme
 }
 
 // explainBuffers is one reading of TopBuffers or of ReportCachedPlans: in a transaction it rolls
-// back, it runs setup, then prepare where it is not empty, and explains explained with arguments.
-// A statement it prepared is deallocated after the rollback, a failed run's too, so the next
-// reading can prepare its own under the same name.
-func (r *Runner) explainBuffers(t *testing.T, name, mode string, setup []string, prepare, explained string, arguments []any) PlanBuffers {
+// back, it runs statement's Setup and explains statement with its arguments. Where prepared names
+// a statement, it prepares statement under that name after the Setup (preparedForm) and explains
+// the EXECUTE of it instead, and deallocates that name after the rollback, a failed run's too, so
+// the next reading can prepare its own under the same name.
+func (r *Runner) explainBuffers(t *testing.T, name, mode, prepared string, statement Statement) PlanBuffers {
 	t.Helper()
 	ctx := context.Background()
-	prepared := false
+	prepare, explained, arguments := "", statement.SQL, statement.Args
+	if prepared != "" {
+		prepare, explained = preparedForm(t, name, prepared, statement)
+		arguments = nil
+	}
+	held := false
 	defer func() {
-		if !prepared {
+		if !held {
 			return
 		}
-		if _, err := r.conn.Exec(ctx, "deallocate "+buffersStatement); err != nil {
+		if _, err := r.conn.Exec(ctx, "deallocate "+prepared); err != nil {
 			t.Errorf("%s: deallocate the statement %s's buffers were read under: %v", name, mode, err)
 		}
 	}()
@@ -191,7 +208,7 @@ func (r *Runner) explainBuffers(t *testing.T, name, mode string, setup []string,
 		t.Fatalf("%s: begin the reading of %s: %v", name, mode, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	for _, setting := range setup {
+	for _, setting := range statement.Setup {
 		if _, err := tx.Exec(ctx, setting); err != nil {
 			t.Fatalf("%s: %s before the reading of %s: %v", name, setting, mode, err)
 		}
@@ -200,7 +217,7 @@ func (r *Runner) explainBuffers(t *testing.T, name, mode string, setup []string,
 		if _, err := tx.Exec(ctx, prepare); err != nil {
 			t.Fatalf("%s: prepare the statement for %s: %v", name, mode, err)
 		}
-		prepared = true
+		held = true
 	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+explained, arguments...).Scan(&raw); err != nil {
@@ -260,32 +277,38 @@ func sqlLiteral(argument any) (string, string, error) {
 // it answers both readings, for a caller that reads more of the plans.
 func (r *Runner) PairBuffers(t *testing.T, name string, before, after Statement) (Buffers, Buffers) {
 	t.Helper()
-	beforeBuffers, afterBuffers := r.bothBuffers(t, name, before, after)
+	beforeBuffers := r.TopBuffers(t, name+": "+beforeSide, before)
+	afterBuffers := r.TopBuffers(t, name+": "+afterSide, after)
+	logBuffers(t, name, beforeSide, beforeBuffers)
+	logBuffers(t, name, afterSide, afterBuffers)
 	afterPlans := afterBuffers.Plans()
 	for index, plan := range beforeBuffers.Plans() {
 		if read := afterPlans[index]; read.Shared() >= plan.Shared() {
-			t.Errorf("%s: under %s the after text's top node reads %d shared buffers, not fewer than the before text's %d; both plans are logged above this line, under %q and %q",
-				name, plan.Mode, read.Shared(), plan.Shared(), name+": "+beforeSide, name+": "+afterSide)
+			t.Errorf("%s: under %s the after text's top node reads %d shared buffers, not fewer than the before text's %d; %s",
+				name, plan.Mode, read.Shared(), plan.Shared(), plansLogged(name))
 		}
 	}
 	return beforeBuffers, afterBuffers
 }
 
-// ReportBuffers reads and logs the two sides as PairBuffers does, and bounds neither: for a
-// candidate text, measured beside the text it may replace, that no rule yet holds.
-func (r *Runner) ReportBuffers(t *testing.T, name string, before, after Statement) (Buffers, Buffers) {
+// ReportBuffers reads the after side's buffers as PairBuffers does, logs both sides as it does,
+// and bounds neither: for a candidate text, measured beside the text it may replace, that no rule
+// yet holds. before is the before side's reading, which the caller has already read (PairBuffers
+// answers it), so the text it may replace is not run again; it answers the after side's.
+func (r *Runner) ReportBuffers(t *testing.T, name string, before Buffers, after Statement) Buffers {
 	t.Helper()
-	return r.bothBuffers(t, name, before, after)
+	afterBuffers := r.TopBuffers(t, name+": "+afterSide, after)
+	logBuffers(t, name, beforeSide, before)
+	logBuffers(t, name, afterSide, afterBuffers)
+	return afterBuffers
 }
 
-// bothBuffers reads the two sides' buffers and logs every reading under its side's name.
-func (r *Runner) bothBuffers(t *testing.T, name string, before, after Statement) (Buffers, Buffers) {
+// AfterBuffers reads one statement's buffers as TopBuffers does, logs them as PairBuffers logs
+// the after side's, and bounds nothing: for a read's new work that no before text did, as
+// AfterSeries times it.
+func (r *Runner) AfterBuffers(t *testing.T, name string, after Statement) {
 	t.Helper()
-	beforeBuffers := r.TopBuffers(t, name+": "+beforeSide, before)
-	afterBuffers := r.TopBuffers(t, name+": "+afterSide, after)
-	logBuffers(t, name, beforeSide, beforeBuffers)
-	logBuffers(t, name, afterSide, afterBuffers)
-	return beforeBuffers, afterBuffers
+	logBuffers(t, name, afterSide, r.TopBuffers(t, name+": "+afterSide, after))
 }
 
 // logBuffers is the one line each plan's buffers are reported in, with the plan, so that a count

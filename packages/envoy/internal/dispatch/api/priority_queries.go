@@ -297,10 +297,11 @@ func priorityParkedQuery(summary bool) string {
 // `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for one issue.
 // An issue whose events do not reach back to the move answers both null.
 //
-// The lateral walks the issue's events backwards over the unique (issue_key, seq) index and stops
-// at the first match, so a read costs the issues it is asked for rather than the table. gate,
-// where it is not empty, is a condition the read runs under at all; it is written against the
-// request's parameters and the outer issue alone, so the planner makes it a one-time filter
+// The lateral walks the partial index events_parked_moves (migration 20261124005151), whose
+// predicate is the lateral's own conditions on the event, backwards from the issue's newest move
+// and stops at the first row, so a read costs the issues it is asked for rather than the table.
+// gate, where it is not empty, is a condition the read runs under at all; it is written against
+// the request's parameters and the outer issue alone, so the planner makes it a one-time filter
 // above the index scan and a row it is false for reads no event.
 func parkedMoveLateral(issue, gate string) string {
 	if gate != "" {

@@ -102,8 +102,7 @@ const query = `
 		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
 		where e.actor->>'kind' = 'user'
-		  and e.type in ('ask.answered', 'comment.created', 'message.created', 'message.answered',
-		                 'ask.resolved')
+		  and e.type in ` + model.PersonWordsEventTypesSQL + `
 		  and e.created_at >= $2
 		  and e.published_destinations @> array[$3::text]
 	), mentioned as (

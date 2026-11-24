@@ -505,7 +505,7 @@ func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unpla
 	issues := make([][]any, 0, 2*bulkFaultRows)
 	events := make([][]any, 0, bulkFaultRows)
 	tuples := make([][]any, 0, bulkFaultRows)
-	moved := seededStatusMovePayload(t, "backlog")
+	moved := seededIssuePayload(t, "backlog", "status")
 	for index := range bulkFaultRows {
 		at := base.Add(-time.Duration(index) * time.Minute)
 		unplacedKey := seededIssueKey(bulkFaultProject, index+1)

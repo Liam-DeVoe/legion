@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -115,7 +116,7 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 	}
 	move := func(seq int, to string, mover bool, changed ...string) {
 		current = to
-		add(seq, "issue.updated", parkedMovePayload(t, to, changed...), mover)
+		add(seq, "issue.updated", seededIssuePayload(t, to, changed...), mover)
 		if slices.Contains(priorityParkedStatuses, to) {
 			login := parkedMoveOtherLogin
 			if mover {
@@ -136,7 +137,7 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 	if h.parkedBefore {
 		pool = parkedMoveStatuses
 	}
-	add(1, "issue.created", parkedMovePayload(t, current), false)
+	add(1, "issue.created", seededIssuePayload(t, current), false)
 	for seq := 2; seq <= h.events; seq++ {
 		forcedTo, isForced := forced[seq]
 		switch {
@@ -171,27 +172,12 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 			}
 			move(seq, to, false, "status")
 		case random.IntN(7) == 0:
-			add(seq, "issue.updated", parkedMovePayload(t, current, "title"), false)
+			add(seq, "issue.updated", seededIssuePayload(t, current, "title"), false)
 		default:
 			add(seq, "comment.created", `{}`, false)
 		}
 	}
 	return rows, newest
-}
-
-// parkedMovePayload is the payload of an issue event: the status the issue stands in after it,
-// and the fields the write changed, where it names any.
-func parkedMovePayload(t testing.TB, status string, changed ...string) string {
-	t.Helper()
-	fields := map[string]any{"status": status}
-	if len(changed) > 0 {
-		fields["changed"] = changed
-	}
-	payload, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatalf("encode an issue event payload: %v", err)
-	}
-	return string(payload)
 }
 
 // parkedMoveCorpus is what seedParkedMoveCorpus wrote: the server that reads it, its store, the
@@ -311,17 +297,6 @@ func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 	return corpus
 }
 
-// seed reads the relations of the corpus's priorities as the read does (readPriorityRelations):
-// the pair of arrays that every statement of the read takes as its seed.
-func (c parkedMoveCorpus) seed(t *testing.T) (keys, ids []string) {
-	t.Helper()
-	keys, ids, err := c.served.readPriorityRelations(context.Background(), c.priorities)
-	if err != nil {
-		t.Fatalf("read the relations of the corpus's priorities: %v", err)
-	}
-	return keys, ids
-}
-
 // standingParked is how many issues of the corpus the listing reads the move of: every issue that
 // stands in backlog or icebox, whatever it advances.
 func (c parkedMoveCorpus) standingParked() int {
@@ -334,23 +309,15 @@ func (c parkedMoveCorpus) standingParked() int {
 	return listed
 }
 
-// parkedMoveListingArguments are the arguments the listing route binds for
-// `?project=PARK&moved=true` (listIssues): no filter but the project, and the gate of the move
-// read ($14) true. parkedMoveListingParameters are their types, as Postgres reads them from the
-// statement, and parkedMoveListingLiterals the same values as the literals an EXECUTE takes.
-var (
-	parkedMoveListingArguments = []any{
-		parkedMoveProject, []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, true,
-	}
-	parkedMoveListingParameters = []string{
-		"text", "text[]", "text", "timestamptz", "text[]", "boolean", "smallint[]", "boolean",
-		"timestamptz", "timestamptz", "text[]", "boolean", "boolean", "boolean",
-	}
-	parkedMoveListingLiterals = []string{
-		"'" + parkedMoveProject + "'", "'{}'", "''", "null", "'{}'", "false", "'{}'", "false",
-		"null", "null", "'{}'", "false", "false", "true",
-	}
-)
+// projectListingArguments are the arguments the listing route binds for
+// `?project=<project>&moved=<moved>` (listIssues): no filter but the project, and the gate of the
+// move read ($14) moved. The three times it names none of, updated_since and the closed window's
+// two ends, are typed nils: pgx sends one as null, as it sends an untyped nil, and
+// benchtime.PreparedArguments writes one as a timestamptz null.
+func projectListingArguments(project string, moved bool) []any {
+	return []any{project, []string{}, "", (*time.Time)(nil), []string{}, false, []int16{}, false,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved}
+}
 
 // parkedMoveSchemas are the index under the name events_parked_moves that each reading runs
 // with: the migration's own, and the three a control runs with. Each is made by statements that
@@ -397,7 +364,7 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 	t.Parallel()
 	corpus := seedParkedMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := corpus.seed(t)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
 	ctx := context.Background()
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)
@@ -407,26 +374,15 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 	defer connection.Release()
 
 	statements := []struct {
-		name, sql            string
-		parameters, literals []string
-		arguments            []any
-		reads                int
+		name, sql string
+		arguments []any
+		reads     int
 	}{
-		{
-			name: "the parked fault", sql: parkedQuery,
-			parameters: []string{"text[]", "text[]", "text[]"},
-			literals:   []string{textArrayLiteral(seedKeys), textArrayLiteral(seedIDs), textArrayLiteral([]string{})},
-			arguments:  []any{seedKeys, seedIDs, []string{}},
-			reads:      len(corpus.parked),
-		},
-		{
-			name: "the listing with ?moved=true", sql: listIssuesQuery,
-			parameters: parkedMoveListingParameters, literals: parkedMoveListingLiterals,
-			arguments: parkedMoveListingArguments,
-			reads:     corpus.standingParked(),
-		},
+		{"the parked fault", parkedQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.parked)},
+		{"the listing with ?moved=true", listIssuesQuery, projectListingArguments(parkedMoveProject, true), corpus.standingParked()},
 	}
 	for statementNumber, statement := range statements {
+		parameters, literals := benchtime.PreparedArguments(t, statement.name, statement.arguments...)
 		for schemaNumber, schema := range parkedMoveSchemas {
 			withSeqScansOff := append([]string{"set local enable_seqscan = off"}, schema.setup...)
 			withBitmapScansOff := append([]string{"set local enable_seqscan = off", "set local enable_bitmapscan = off"}, schema.setup...)
@@ -436,12 +392,12 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 			}{
 				{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection,
 					fmt.Sprintf("parked_move_%d_%d", statementNumber, schemaNumber), statement.sql,
-					statement.parameters, statement.literals, withSeqScansOff...)},
-				{"the plan for its values", analyzedNewestEventPlan(t, corpus.database, statement.sql,
+					parameters, literals, withSeqScansOff...)},
+				{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool, statement.sql,
 					withSeqScansOff, statement.arguments...)},
-				{"the plan for its values with the default settings", analyzedNewestEventPlan(t, corpus.database,
+				{"the plan for its values with the default settings", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
 					statement.sql, schema.setup, statement.arguments...)},
-				{"the plan for its values with bitmap scans off", analyzedNewestEventPlan(t, corpus.database,
+				{"the plan for its values with bitmap scans off", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
 					statement.sql, withBitmapScansOff, statement.arguments...)},
 			}
 			for _, plan := range plans {
@@ -450,64 +406,36 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 					requireParkedMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads)
 					continue
 				}
-				control := &newestEventCheckFailures{TB: t}
-				requireParkedMoveThroughItsIndex(control, keys, plan.plan, subject, statement.reads)
-				if len(control.failures) == 0 {
-					t.Errorf("%s, a control, passes the check, so the check cannot tell a read through the partial index from a read of the issue's other events:\n%s",
-						subject, plan.plan)
-					continue
-				}
-				t.Logf("%s fails the check, as the control must:\n  %s", subject, strings.Join(firstLines(control.failures), "\n  "))
+				explaintest.RequireControlFails(t, subject, "a control",
+					"a read through the partial index from a read of the issue's other events", plan.plan,
+					func(t testing.TB) { requireParkedMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads) })
 			}
 		}
 	}
 }
 
-// parkedMoveNode is what requireParkedMoveThroughItsIndex reads of one node of an `EXPLAIN
-// (ANALYZE, FORMAT JSON)` plan. It reads the scan direction, which explaintest.Node does not
-// carry: an Index Scan reads an issue's entries of the index newest first only where it is
-// Backward. Rows is the rows the node answered each time it ran, and the two counts removed are
-// the rows it read and threw away each time it ran.
-type parkedMoveNode struct {
-	NodeType         string           `json:"Node Type"`
-	RelationName     string           `json:"Relation Name"`
-	IndexName        string           `json:"Index Name"`
-	ScanDirection    string           `json:"Scan Direction"`
-	IndexCond        string           `json:"Index Cond"`
-	Filter           string           `json:"Filter"`
-	Rows             float64          `json:"Actual Rows"`
-	Loops            float64          `json:"Actual Loops"`
-	RemovedByFilter  float64          `json:"Rows Removed by Filter"`
-	RemovedByRecheck float64          `json:"Rows Removed by Index Recheck"`
-	Plans            []parkedMoveNode `json:"Plans"`
-}
-
-// String names the node as EXPLAIN's text names it: its type, its direction where it reads an
-// index backwards, its index and its relation. A Bitmap Heap Scan names no index, so the indexes
-// of the bitmap it reads its rows through follow it.
-func (n parkedMoveNode) String() string {
-	described := n.NodeType
-	if n.ScanDirection == "Backward" {
+// describeParkedMoveRead names node, a read of events, as EXPLAIN's text names it: its type, its
+// direction where it reads an index backwards (an Index Scan reads an issue's entries of the index
+// newest first only where it is Backward), its index and its relation. A Bitmap Heap Scan names no
+// index, so the indexes of the bitmap it reads its rows through follow it.
+func describeParkedMoveRead(node analyzedNode) string {
+	described := node.NodeType
+	if node.ScanDirection == "Backward" {
 		described += " Backward"
 	}
-	if n.IndexName != "" {
-		described += " using " + n.IndexName
+	if node.IndexName != "" {
+		described += " using " + node.IndexName
 	}
-	if n.RelationName != "" {
-		described += " on " + n.RelationName
+	if node.RelationName != "" {
+		described += " on " + node.RelationName
 	}
 	var bitmap []string
-	var visit func(node parkedMoveNode)
-	visit = func(node parkedMoveNode) {
-		if node.NodeType == "Bitmap Index Scan" {
-			bitmap = append(bitmap, node.IndexName)
+	for _, child := range node.Plans {
+		for _, under := range child.everyNode() {
+			if under.NodeType == "Bitmap Index Scan" {
+				bitmap = append(bitmap, under.IndexName)
+			}
 		}
-		for _, child := range node.Plans {
-			visit(child)
-		}
-	}
-	for _, child := range n.Plans {
-		visit(child)
 	}
 	if len(bitmap) > 0 {
 		described += " through a bitmap of " + strings.Join(bitmap, " and ")
@@ -519,20 +447,20 @@ func (n parkedMoveNode) String() string {
 // first node above it that is not a Result. The listing's gate on the read is a one-time filter,
 // which a Result between the lateral's Limit and its scan tests.
 type parkedMoveRead struct {
-	node  parkedMoveNode
+	node  analyzedNode
 	under string
 }
 
 // parkedMoveReads is every node of plan that reads events, each with the node it runs under.
 func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
 	t.Helper()
-	var root parkedMoveNode
+	var root analyzedNode
 	if err := json.Unmarshal(plan, &root); err != nil {
 		t.Fatalf("decode the plan: %v\n%s", err, plan)
 	}
 	var reads []parkedMoveRead
-	var visit func(node parkedMoveNode, under string)
-	visit = func(node parkedMoveNode, under string) {
+	var visit func(node analyzedNode, under string)
+	visit = func(node analyzedNode, under string) {
 		if node.RelationName == "events" {
 			reads = append(reads, parkedMoveRead{node: node, under: under})
 		}
@@ -548,8 +476,9 @@ func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
 }
 
 // requireParkedMoveThroughItsIndex holds plan, an analyzed plan of a statement that splices
-// parkedMoveLateral, to R5's read of events. Every read of events is an Index Scan Backward of
-// parkedMoveIndex whose Index Cond names issue_key, the index's first key column
+// parkedMoveLateral, to reading, for each parked row, one walk back through parkedMoveIndex that
+// reads the issue's newest move and no other event. Every read of events is an Index Scan
+// Backward of parkedMoveIndex whose Index Cond names issue_key, the index's first key column
 // (IndexKeys.RequireIndexKeyed), and that runs right under the lateral's Limit, so it stops at the
 // first entry it reads. It carries no Filter: the index's predicate is the lateral's every
 // condition on the event, so every entry it reads is a move the lateral wants. Each time it runs
@@ -557,31 +486,32 @@ func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
 // event for an issue whose events record a move, and none for one whose events record none. The
 // reads of events run reads times in all, once for each parked row the statement reads the move
 // of, and at least once, so a plan that read no event shows nothing. Each failure names subject
-// and prints the plan through t.Errorf, which is what a control reads (newestEventCheckFailures).
+// and prints the plan through t.Errorf, which is what a control reads
+// (explaintest.RequireControlFails).
 func requireParkedMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, reads int) {
 	t.Helper()
 	keys.RequireIndexKeyed(t, plan, parkedMoveIndex, subject, explaintest.CondRequired)
 	var loops float64
 	for _, read := range parkedMoveReads(t, plan) {
-		node := read.node
+		node, described := read.node, describeParkedMoveRead(read.node)
 		loops += node.Loops
 		t.Logf("%s reads events by %s under a %s, on `%s`, with the Filter `%s`: %v times, %v rows each time, %v rows removed by its Filter and %v by a recheck each time",
-			subject, node, read.under, node.IndexCond, node.Filter, node.Loops, node.Rows, node.RemovedByFilter, node.RemovedByRecheck)
+			subject, described, read.under, node.IndexCond, node.Filter, node.Loops, node.Rows, node.RemovedByFilter, node.RemovedByRecheck)
 		if node.NodeType != "Index Scan" || node.ScanDirection != "Backward" || node.IndexName != parkedMoveIndex {
-			t.Errorf("%s reads events by %s, want only an Index Scan Backward using %s:\n%s", subject, node, parkedMoveIndex, plan)
+			t.Errorf("%s reads events by %s, want only an Index Scan Backward using %s:\n%s", subject, described, parkedMoveIndex, plan)
 			continue
 		}
 		if read.under != "Limit" {
 			t.Errorf("%s reads %s under a %s, want it right under the lateral's Limit, so it stops at the first entry it reads:\n%s",
-				subject, node, read.under, plan)
+				subject, described, read.under, plan)
 		}
 		if node.Filter != "" {
 			t.Errorf("%s reads %s with the Filter `%s`, so the index holds events the lateral does not want:\n%s",
-				subject, node, node.Filter, plan)
+				subject, described, node.Filter, plan)
 		}
 		if node.Rows > 1 || node.RemovedByFilter > 0 || node.RemovedByRecheck > 0 {
 			t.Errorf("%s reads %s for %v rows each time it runs, and removes %v by its Filter and %v by a recheck each time, want at most one row and none removed:\n%s",
-				subject, node, node.Rows, node.RemovedByFilter, node.RemovedByRecheck, plan)
+				subject, described, node.Rows, node.RemovedByFilter, node.RemovedByRecheck, plan)
 		}
 	}
 	if loops == 0 {
@@ -628,7 +558,7 @@ func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, s
 	if err != nil {
 		t.Fatalf("read the parked fault: %v", err)
 	}
-	listed, err := tx.Query(ctx, listIssuesQuery, parkedMoveListingArguments...)
+	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(parkedMoveProject, true)...)
 	if err != nil {
 		t.Fatalf("run the listing: %v", err)
 	}
@@ -684,7 +614,7 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	t.Parallel()
 	corpus := seedParkedMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := corpus.seed(t)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
 	withIndex := parkedMoveAnswers(t, corpus.database, seedKeys, seedIDs, nil)
 	withoutIndex := parkedMoveAnswers(t, corpus.database, seedKeys, seedIDs, parkedMoveSchemas[1].setup)
 

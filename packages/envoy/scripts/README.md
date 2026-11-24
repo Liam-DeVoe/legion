@@ -1540,9 +1540,10 @@ cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs ./internal/dispatch/sessionanswers
 ```
 
-A statement whose gain needs an index or a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
+A statement whose gain needs a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
 `Before` and `After` measure one side of such a statement alone, with its plan and no bound, each line naming the side it read: the after side on a database at this release's schema, the before side on one migrated from the release before it.
 Running this same test against each of the two databases is what puts the two sides together.
+A statement whose gain needs only an index is a pair all the same, as `benchtime`'s package comment says: its before side's `Setup` drops that index, or puts back the one the release before read through, in the measuring transaction, which the run rolls back, so one database holds both sides.
 Each test file says which statement is under which protocol and why.
 
 `TestRelatedTermsRefreshTiming`, in `internal/dispatch/api`, measures the related-terms refresh,

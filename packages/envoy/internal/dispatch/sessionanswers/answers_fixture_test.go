@@ -83,7 +83,7 @@ type eventOwner struct {
 }
 
 func issueOwner(key string) eventOwner {
-	return eventOwner{issueKey: &key, key: key, topicStem: "notifications.dispatch.issue." + key + "."}
+	return eventOwner{issueKey: &key, key: key, topicStem: contracts.DispatchIssueTopicPrefix + key + "."}
 }
 
 // fixtureDocument is a document of project AN, which owns the comments and asks written on it.

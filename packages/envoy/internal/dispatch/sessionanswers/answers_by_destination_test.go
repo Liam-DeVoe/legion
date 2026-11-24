@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -165,24 +165,34 @@ func requireMainsRows(t *testing.T, f *answersFixture, step string) {
 			if len(want.raw) == 0 {
 				t.Errorf("%s: main's read answers no row, so the comparison holds nothing", subject)
 			}
-			if !slices.Equal(got.columns, want.columns) {
-				t.Errorf("%s answers the columns %v, want main's %v", subject, got.columns, want.columns)
-				continue
-			}
-			if len(got.raw) != len(want.raw) {
-				t.Errorf("%s answers %d rows, want main's %d:\n%s\nmain's:\n%s", subject, len(got.raw), len(want.raw), got, want)
-				continue
-			}
-			for row := range want.raw {
-				for column := range want.raw[row] {
-					if !bytes.Equal(got.raw[row][column], want.raw[row][column]) || (got.raw[row][column] == nil) != (want.raw[row][column] == nil) {
-						t.Errorf("%s answers row %d's %s as %v, want main's %v", subject, row, want.columns[column],
-							got.values[row][column], want.values[row][column])
-					}
-				}
+			sameAnswerRows(t, subject, got, want)
+		}
+	}
+}
+
+// sameAnswerRows holds got, what query answered as subject, to want, what mainQuery answered: the
+// same columns, and the same rows in the same order, each column the same bytes the server sent
+// and null only where main's is. It fails t through Errorf for each difference, and answers false
+// where the columns or the number of rows differ, since no row is compared then.
+func sameAnswerRows(t testing.TB, subject string, got, want answerRows) bool {
+	t.Helper()
+	if !slices.Equal(got.columns, want.columns) {
+		t.Errorf("%s answers the columns %v, want main's %v", subject, got.columns, want.columns)
+		return false
+	}
+	if len(got.raw) != len(want.raw) {
+		t.Errorf("%s answers %d rows, want main's %d:\n%s\nmain's:\n%s", subject, len(got.raw), len(want.raw), got, want)
+		return false
+	}
+	for row := range want.raw {
+		for column := range want.raw[row] {
+			if !bytes.Equal(got.raw[row][column], want.raw[row][column]) || (got.raw[row][column] == nil) != (want.raw[row][column] == nil) {
+				t.Errorf("%s answers row %d's %s as %v, want main's %v", subject, row, want.columns[column],
+					got.values[row][column], want.values[row][column])
 			}
 		}
 	}
+	return true
 }
 
 // answerRows is what an answers statement answered: its columns, by name and type, and each row
@@ -268,9 +278,8 @@ func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
 		t.Fatalf("acquire a connection for the generic plans: %v", err)
 	}
 	defer connection.Release()
-	literals := []string{
-		"'" + answersReader + "'", "'" + since.Format(time.RFC3339Nano) + "'::timestamptz", "'" + topic + "'",
-	}
+	arguments := []any{answersReader, since, topic}
+	parameters, literals := benchtime.PreparedArguments(t, "the answers read", arguments...)
 
 	texts := []struct {
 		name, statement string
@@ -285,20 +294,15 @@ func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
 			plan json.RawMessage
 		}{
 			{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection, fmt.Sprintf("answers_read_%d", number),
-				text.statement, []string{"text", "timestamptz", "text"}, literals, "set local enable_seqscan = off")},
-			{"the plan for its values", analyzedAnswersPlan(t, f.database, text.statement, answersReader, since, topic)},
+				text.statement, parameters, literals, "set local enable_seqscan = off")},
+			{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, f.database.Pool, text.statement,
+				[]string{"set local enable_seqscan = off"}, arguments...)},
 		}
 		for _, plan := range plans {
 			subject := fmt.Sprintf("%s under %s", text.name, plan.name)
 			if text.control {
-				control := &answersPlanCheckFailures{TB: t}
-				readsTheSessionsWindow(control, plan.plan, subject)
-				if len(control.failures) == 0 {
-					t.Errorf("%s, the control, passes the check, so the check cannot tell a read of the window's every event from a read of the session's:\n%s",
-						subject, plan.plan)
-					continue
-				}
-				t.Logf("%s fails the check, as the control must:\n  %s", subject, strings.Join(firstLines(control.failures), "\n  "))
+				explaintest.RequireControlFails(t, subject, "the control", "a read of the window's every event from a read of the session's",
+					plan.plan, func(t testing.TB) { readsTheSessionsWindow(t, plan.plan, subject) })
 				continue
 			}
 			if read := readsTheSessionsWindow(t, plan.plan, subject); read != nil {
@@ -318,10 +322,6 @@ func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
 	}
 }
 
-// planCondWord matches one lower-case identifier of a plan's Index Cond. A word of a longer
-// identifier is not one of these.
-var planCondWord = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
-
 // readsTheSessionsWindow holds plan, an analyzed plan of an answers read, to its read of events.
 // Every scan of events is one Bitmap Heap Scan whose bitmap is one Bitmap Index Scan of
 // destinationsIndex, whose Index Cond names both published_destinations and created_at, except
@@ -329,7 +329,7 @@ var planCondWord = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
 // read its CTE and Postgres materializes a CTE that more than one reads. It answers that one
 // Bitmap Heap Scan, and nil where the plan holds none or more than one. Each failure names
 // subject and prints the plan through t.Errorf, which is what a control reads
-// (answersPlanCheckFailures).
+// (explaintest.RequireControlFails).
 func readsTheSessionsWindow(t testing.TB, plan json.RawMessage, subject string) *explaintest.BitmapHeapScan {
 	t.Helper()
 	for _, node := range explaintest.Nodes(t, plan) {
@@ -355,8 +355,8 @@ func readsTheSessionsWindow(t testing.TB, plan json.RawMessage, subject string) 
 				subject, scan.Bitmap, destinationsIndex, plan)
 			continue
 		}
-		words := planCondWord.FindAllString(scan.Bitmap.IndexCond, -1)
-		if !slices.Contains(words, "published_destinations") || !slices.Contains(words, "created_at") {
+		if cond := scan.Bitmap.IndexCond; !explaintest.CondNamesFirstKey(cond, "published_destinations") ||
+			!explaintest.CondNamesFirstKey(cond, "created_at") {
 			t.Errorf("%s reads %s on `%s`, want a condition on both published_destinations and created_at, which keeps the read to the session's events in the window:\n%s",
 				subject, scan.Bitmap, scan.Bitmap.IndexCond, plan)
 			continue
@@ -368,48 +368,4 @@ func readsTheSessionsWindow(t testing.TB, plan json.RawMessage, subject string) 
 		return nil
 	}
 	return &reads[0]
-}
-
-// answersPlanCheckFailures is the testing.TB that the control runs the check through. It keeps
-// each failure that the check reports through Errorf rather than failing the test, so the test
-// can hold the check to failing main's text. Every other call goes to the test, a fatal failure
-// of the test's own making among them.
-type answersPlanCheckFailures struct {
-	testing.TB
-	failures []string
-}
-
-func (f *answersPlanCheckFailures) Errorf(format string, args ...any) {
-	f.failures = append(f.failures, fmt.Sprintf(format, args...))
-}
-
-// firstLines is the first line of each failure, which names the read without the plan it prints.
-func firstLines(failures []string) []string {
-	lines := make([]string, 0, len(failures))
-	for _, failure := range failures {
-		line, _, _ := strings.Cut(failure, "\n")
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// analyzedAnswersPlan is the plan Postgres makes for statement with the values arguments, run and
-// measured (EXPLAIN (ANALYZE, BUFFERS)) with sequential scans off, in a transaction it rolls back.
-// An EXPLAIN that binds its own parameters is planned for their values, a custom plan.
-func analyzedAnswersPlan(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("disable sequential scans: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
-		t.Fatalf("explain the statement: %v", err)
-	}
-	return explaintest.OnePlan(t, raw)
 }

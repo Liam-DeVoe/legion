@@ -14,18 +14,20 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// typesSQL is the five event types that the answers read lists (sessionanswers.query,
-// reached_by_destination), as an SQL list: an answer, a comment, a new message, a reply to a
-// message, and a decline (an ask.resolved whose resolution is of kind declined).
-const typesSQL = `('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')`
+// personWordsEvent is the SQL predicate, on the event aliased e, that holds for a person's event
+// of the five types that the answers read lists (sessionanswers.query, reached_by_destination;
+// model.PersonWordsEventTypesSQL): an answer, a comment, a new message, a reply to a message, and
+// a decline (an ask.resolved whose resolution is of kind declined).
+const personWordsEvent = `e.actor->>'kind' = 'user' and e.type in ` + model.PersonWordsEventTypesSQL
 
 // DeliveredPersonEvent is the SQL predicate, on the event aliased e, that holds for a person's
-// event of the five types whose published_destinations name at least one session's topic
-// (contracts.AgentTopicPrefix): a delivery of a person's words to a session, which is what the
-// answers read lists.
-const DeliveredPersonEvent = `e.actor->>'kind' = 'user' and e.type in ` + typesSQL + `
+// event of the five types (personWordsEvent) whose published_destinations name at least one
+// session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, which
+// is what the answers read lists.
+const DeliveredPersonEvent = personWordsEvent + `
 	  and exists (select 1 from unnest(e.published_destinations) reached (topic)
 	              where reached.topic like '` + contracts.AgentTopicPrefix + `%')`
 
@@ -45,22 +47,22 @@ const Length = 72 * time.Hour
 // newest one's exact time (cmd/dispatch-seed, planDeliveries): the deliveries in the window are in
 // the last 72 hours of the seed's span, and every older one is at least a day before the earliest
 // start that the rule can then answer.
-const StartQuery = `
-	select max(e.created_at) - interval '72 hours'
+var StartQuery = `
+	select max(e.created_at) - ` + fmt.Sprintf("interval '%d seconds'", int64(Length/time.Second)) + `
 	from events e
 	where ` + DeliveredPersonEvent
 
 // SessionsQuery is, for each session that a delivery of a person's words names, how many of those
-// deliveries are inside the window (StartQuery) and how many are before it, in the order of the
-// session ids: what Read chooses the read's three subjects from.
+// deliveries are inside the window that starts at $1, the start StartQuery answers, and how many
+// are before it, in the order of the session ids: what Read chooses the read's three subjects
+// from.
 const SessionsQuery = `
 	select substr(reached.topic, length('` + contracts.AgentTopicPrefix + `') + 1),
-	       count(*) filter (where e.created_at >= w.start),
-	       count(*) filter (where e.created_at < w.start)
+	       count(*) filter (where e.created_at >= $1),
+	       count(*) filter (where e.created_at < $1)
 	from events e
-	cross join (` + StartQuery + `) w (start)
 	cross join lateral unnest(e.published_destinations) reached (topic)
-	where e.actor->>'kind' = 'user' and e.type in ` + typesSQL + `
+	where ` + personWordsEvent + `
 	  and reached.topic like '` + contracts.AgentTopicPrefix + `%'
 	group by 1
 	order by 1`
@@ -100,7 +102,8 @@ type Queryer interface {
 }
 
 // Read reads the answers window's start by its one rule (StartQuery) and chooses the three
-// subjects over the deliveries that each session holds (SessionsQuery), as Subjects states them.
+// subjects over the deliveries that each session holds on either side of that start
+// (SessionsQuery), as Subjects states them.
 func Read(ctx context.Context, q Queryer) (Subjects, error) {
 	var subjects Subjects
 	var since *time.Time
@@ -111,7 +114,7 @@ func Read(ctx context.Context, q Queryer) (Subjects, error) {
 		return subjects, nil
 	}
 	subjects.Since = since.UTC()
-	rows, err := q.Query(ctx, SessionsQuery)
+	rows, err := q.Query(ctx, SessionsQuery, subjects.Since)
 	if err != nil {
 		return Subjects{}, fmt.Errorf("count the deliveries of each session: %w", err)
 	}

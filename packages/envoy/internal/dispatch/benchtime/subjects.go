@@ -204,7 +204,7 @@ func answerSubjects(t *testing.T, conn *pgx.Conn) (time.Time, []AnswerSession) {
 	}
 	for _, session := range sessions {
 		if session.Session == "" {
-			t.Fatalf("the database holds no %s for the agents' answers read: it was seeded before cmd/dispatch-seed wrote deliveries, or at a scale too small for three sessions; seed it again with this checkout's cmd/dispatch-seed",
+			t.Fatalf("%s for the agents' answers read is missing: the database was seeded before cmd/dispatch-seed wrote deliveries, or at a scale too small for three sessions; seed it again with this checkout's cmd/dispatch-seed",
 				session.Name)
 		}
 	}

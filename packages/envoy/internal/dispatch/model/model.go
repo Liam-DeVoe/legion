@@ -2507,6 +2507,18 @@ func DeliveryTaken(state string) bool {
 	return state == DeliveryStateSent || state == DeliveryStateQueued
 }
 
+// PersonWordsEventTypesSQL is the five event types that carry a person's words to a session, as
+// the SQL list an `in` test over an event's type takes: an answer (ask.answered), a comment
+// (comment.created), a new message (message.created), a reply to a message (message.answered),
+// and an ask's resolution (ask.resolved), of which the readers take the declines. Each query that
+// asks it reads this one definition: the agents' answers read (sessionanswers.query, its
+// reached_by_destination), and the rule for the window it is measured over and its sessions
+// (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery). The predicates of the
+// partial indexes that read is served by hold the same list in the same order, written out in
+// their migrations, which Go cannot reach (events_person_words_with_declines, 20261111002444, and
+// events_person_words_destinations, 20261124005058): a change of this list is a new index too.
+const PersonWordsEventTypesSQL = "('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')"
+
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
 // duplicate (contracts.DeliveryDuplicateWindow), so a resend of one that did land is dropped
