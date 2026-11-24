@@ -3140,7 +3140,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       version: 1,
       author: { kind: "agent", session_id: "ses_fix" },
       created_at: "2026-11-23T07:30:00Z",
-      body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "REPO-43", head: pushed }),
+      body: JSON.stringify({
+        schemaVersion: 1,
+        phase: "implement",
+        issue: "REPO-43",
+        head: pushed,
+      }),
     };
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
@@ -3159,7 +3164,15 @@ describe.skipIf(skip)("Legion OMP extension", () => {
             repo: "acme/widgets",
             defaultBranch: "main",
             workers: {},
-            fix: { task: "a", step: 1, check: "unit", head: pushed, dir: fixDir, entry: 2, givenEntry: 2 },
+            fix: {
+              task: "a",
+              step: 1,
+              check: "unit",
+              head: pushed,
+              dir: fixDir,
+              entry: 2,
+              givenEntry: 2,
+            },
           });
         }
         if (url.pathname === "/legion/v1/grants") {
