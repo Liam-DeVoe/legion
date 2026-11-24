@@ -79,7 +79,11 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// owner lock this transaction holds: a closed issue still takes the delete of its comment,
 	// so its document takes this reject too, where the accept and the reject routes are refused.
 	// An orphaned mark is already out of the document: the delete records that on the anchor and
-	// stands, where an accept and a reject answer 409.
+	// stands, where an accept and a reject answer 409. A retired document takes no new text, so
+	// its suggestion can never apply there and stays in its frozen text
+	// (docs.ErrRetiredDocumentKeepsText): the delete rejects nothing and writes no version, clears
+	// the suggestion off the row alone, and decides the quote by the stored kind as for an
+	// orphaned mark, with the anchor left as it stands.
 	//
 	// An insert suggestion's mark wraps the text it inserted, so its anchor's quote is that text
 	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
@@ -127,9 +131,13 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		}
 		var kind string
 		markGone := comment.Suggestion.Accepted != nil
+		// retired is that the anchor's document is retired, so the reject read no kind.
+		retired := false
 		if !markGone {
 			kind, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
-			if err != nil {
+			if errors.Is(err, docs.ErrRetiredDocumentKeepsText) {
+				retired = true
+			} else if err != nil {
 				if !errors.Is(err, docs.ErrAnchorOrphaned) {
 					s.writeHandlerError(w, err)
 					return
@@ -143,7 +151,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		}
 		rejectedInsert = kind == "insert"
 		quoteIsBody = rejectedInsert || storedKind == "insert" ||
-			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
+			((markGone || retired) && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions

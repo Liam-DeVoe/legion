@@ -57,6 +57,11 @@ var (
 	ErrAnchorMissing = errors.New("anchor mark is not in the document")
 	// ErrAnchorOrphaned reports a suggestion mark that no longer exists.
 	ErrAnchorOrphaned = errors.New("anchor mark no longer exists")
+	// ErrRetiredDocumentKeepsText answers RejectDeletedCommentSuggestion for a suggestion in a
+	// retired document (RetireDocument): a retired document takes no new text, so the suggestion
+	// can never apply there, and its mark, an insert's words with it, stays in the frozen text.
+	// The reject writes nothing.
+	ErrRetiredDocumentKeepsText = errors.New("a retired document keeps the suggestion in its text")
 )
 
 type skippedAnchorRefreshKey struct{}
@@ -295,7 +300,26 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // which this reject takes out again (rejectedInsert); a replace's and a delete's wrap document
 // text, which an accept would replace and a reject leaves. So only an insert's anchor quote, the
 // text its mark wrapped, is a copy of the comment's own text.
+//
+// A retired document (RetireDocument), read under its owner's lock as ProjectMark reads it
+// (retiredUnderOwnerLock), takes no new text, so its suggestion can never apply and stays in the
+// frozen text: the reject writes nothing and answers ErrRetiredDocumentKeepsText. A transaction
+// that holds its write to the document already read the document standing under that lock
+// (joinLiveWrite), so it reads nothing again.
 func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return "", errUnjoined
+	}
+	if joinedLiveWrite(ctx, artifactID) == nil {
+		retired, err := retiredUnderOwnerLock(ctx, tx, artifactID)
+		if err != nil {
+			return "", err
+		}
+		if retired {
+			return "", ErrRetiredDocumentKeepsText
+		}
+	}
 	return s.applySuggestion(context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
 }
 

@@ -170,8 +170,9 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 // Every writer that walks an issue's documents reads it before it writes into one, and skips a
 // document it reads retired: it writes nothing into it, refuses nothing, and goes on with the
 // issue's other documents (WriteIssueAskStates, FollowClosedIssueVersions, KeepAskBlockInStep). A
-// comment thread's margin record skips a retired document as they do (ProjectMark). A
-// list that leaves retired documents out is read before this lock is, or under a lock its caller
+// comment thread's margin record skips a retired document as they do (ProjectMark), and so does
+// the reject of a deleted comment's pending suggestion (RejectDeletedCommentSuggestion). A list
+// that leaves retired documents out is read before this lock is, or under a lock its caller
 // took, so it is never the read that decides.
 func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {
 	owner, _, err := lockArtifactOwner(ctx, tx, artifactID)
