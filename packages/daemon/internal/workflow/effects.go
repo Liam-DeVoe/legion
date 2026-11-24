@@ -781,10 +781,37 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
+	leave, err := e.leaveSession(ctx, tx, issue, role)
+	if err != nil {
+		return err
+	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
-		RefusedPod: marks.refusedPod}, e.now(), move)
+		RefusedPod: marks.refusedPod, LeaveSession: leave}, e.now(), move)
+}
+
+// leaveSession is the session a start of role's worker leaves (record.PlanStep.LeaveSession): the
+// one the stored step the issue stands at names, where that step is role's, and "" for every
+// other start. Only the default steps of a new generation name one, for an agent that took a name a
+// key's agent held (defaultRows), so every start of that agent in the generation carries it, and
+// its claim leaves it where it still records it (supervise's revive).
+func (e *Engine) leaveSession(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
+	if !recordsSteps(issue) {
+		return "", nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	place, ok := w.placeIn(record.StandsAt(issue))
+	if !ok {
+		return "", nil
+	}
+	if step, ok := w.stepAt(place); ok && step.Role == string(role) {
+		return step.LeaveSession, nil
+	}
+	return "", nil
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1026,13 +1053,21 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // reads; EnterArchitect gives none.
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
-// Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
-// that claim: it is the higher of the row's own entry plus one and one above the highest entry of
-// every row of the issue that names the claim. The steps of one key are one claim, whose given
-// entry is the last its agent was handed, so an entry numbered on the row alone would fall at or
-// below it and the queue would refuse the task of the agent's next step; and no entry falls below
-// its own row's, which a row the release before raised and no completion named a claim on keeps.
-// An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
+// Engine.stepToken), which record.WorkerClaim reads back.
+//
+// Every entry of an issue is one above the highest entry of every phases row of the issue, read in
+// this transaction: one counter for the issue, whatever role, claim, version or generation a row is
+// of. That is what makes each entry a claim is handed above every entry that claim was handed
+// before. No write lowers a row's entry or deletes a row (record.Store.ClearGeneration keeps the
+// number), and every entry a claim is handed is the entry of a row of its own issue at the moment
+// it was raised, so the highest entry of the issue's rows is at or above every entry any claim of
+// the issue holds, a start still queued or in flight included. A number counted on the role's row,
+// or across the rows that name the claim now, falls at or below a claim's given entry wherever a
+// version moves the row that held the claim's highest entry to another claim, and the claim's queue
+// then takes its next task as given already (supervise's given) and no sweep owes it. Readers
+// compare entries for order alone, never for nearness: a role's entries need not be consecutive.
+// The facts that raise an entry are applied one at a time (intake.SerializeFacts), so two raises
+// of one issue never read the same highest entry.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -1040,7 +1075,11 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	}
 	row := record.PhaseRowOf(rows, role)
 	row.Issue, row.Role = issue.Key, role
-	entry := row.Entry + 1
+	var entry int64
+	for _, other := range rows {
+		entry = max(entry, other.Entry)
+	}
+	entry++
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	worker := role != claim.RoleArchitect
 	var agent claim.Token
@@ -1057,11 +1096,6 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 			}
 			if err != nil {
 				return 0, "", err
-			}
-			for _, other := range rows {
-				if other.Claim == agent && other.Entry >= entry {
-					entry = other.Entry + 1
-				}
 			}
 			row.Claim = agent
 		}

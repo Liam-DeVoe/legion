@@ -1684,6 +1684,9 @@ type Machine struct {
 	// mu (setRefusedPod), so a mark stands only while the refusal it names does.
 	unrecordedMu sync.Mutex
 	unrecorded   map[string]unrecordedFact
+	// reporting is the pod of each refusal whose report is being tried now
+	// (BeginRefusalReport), under unrecordedMu.
+	reporting map[string]bool
 	// podLoad is the gate's hold of the session load of the claim's process in its issue pod, from
 	// that process's start until its load ends, at its settle after the registration or at an end
 	// of the process before it (podStarted, endPodLoad), nil for none and for every claim the pod
@@ -2449,23 +2452,6 @@ func (m *Machine) RefusedPod() string {
 	return m.refusedPod
 }
 
-// RefusalStands is the refusal of the claim's last launch where the issue pod that refused it
-// still stands, or where which pod the issue holds cannot be read (podStillRefuses), and nil where
-// no launch of the claim is refused or another pod stands now, which drops the refusal. It is
-// asked under the decision lock, so it waits out a decision in flight as Claim does, and like every
-// launch refused while that pod stands it tells the issue and the controller at most hourly.
-//
-// The outbox asks it of a start whose decision answered no error (internal/daemon's start): while
-// the pod still refuses the claim, no path of the machine launched into it, so that start brought
-// nothing back, and it waits for the pod rather than ending, whichever path answered it
-// (internal/daemon's startRowEnded says why). A launch that ran, or that the wake pacing parked,
-// dropped the refusal first (launchAfter), so this answers nil for it.
-func (m *Machine) RefusalStands() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.podStillRefuses()
-}
-
 // UnrecordedRefusal is a refused launch's fact the store has not taken (Claim.UnrecordedRefusal):
 // Since is when the first failed try of it failed, Attempts how many tries of it have failed, and
 // Error the last failed try's error, kept as a far side's text is (storetext.FarSideError).
@@ -2517,6 +2503,31 @@ func (m *Machine) RefusalRecorded(id string) {
 	m.unrecordedMu.Lock()
 	defer m.unrecordedMu.Unlock()
 	delete(m.unrecorded, id)
+}
+
+// BeginRefusalReport records that a report of pod's refusal of the claim's launch is being tried,
+// and is false where one already is: the daemon then starts no second report of the same refusal,
+// whose tries would each tell the issue and the controller again once the store took them
+// (internal/daemon's podRefused). Its caller ends the record when its tries end (EndRefusalReport).
+func (m *Machine) BeginRefusalReport(pod string) bool {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	if m.reporting[pod] {
+		return false
+	}
+	if m.reporting == nil {
+		m.reporting = map[string]bool{}
+	}
+	m.reporting[pod] = true
+	return true
+}
+
+// EndRefusalReport ends the record BeginRefusalReport made: the report of pod's refusal was taken,
+// dropped or stopped, so the next report of it may start.
+func (m *Machine) EndRefusalReport(pod string) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	delete(m.reporting, pod)
 }
 
 // setRefusedPod records pod as the issue pod that refuses the claim's launches, "" for none, and

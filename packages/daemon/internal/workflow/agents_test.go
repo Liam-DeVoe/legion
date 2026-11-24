@@ -95,12 +95,72 @@ func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
 func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	engine := returnEngine()
 	engine.cfg.DefaultSteps = []plan.Step{{Role: "implementer"}, {Role: "tester", Key: "r"}, {Role: "reviewer", Key: "r"}}
-	_, _, steps := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 1})
+	_, _, steps, handed := engine.defaultRows(record.Issue{Key: "LEGION-208", Generation: 1}, nil, nil)
+	if len(handed) != 0 {
+		t.Fatalf("the default steps with no earlier rows handed on %+v, want no name", handed)
+	}
 	var names []claim.Agent
 	for _, step := range steps {
 		names = append(names, step.Agent)
 	}
 	if want := []claim.Agent{"implementer", "tester", "tester"}; !slices.Equal(names, want) {
 		t.Fatalf("the default steps are named %q, want %q", names, want)
+	}
+}
+
+// The project's default steps of a new generation are named from the issue's earlier rows, so a
+// name a key held stays that key's, but they cannot be refused as an owner's version is. Generation
+// 1 ran `implementer tester:k reviewer:k`, key k named tester, whose claim records key k's session;
+// generation 2 runs the default steps, whose tester step takes the name tester all the same. So the
+// step is written with that claim's session to leave (record.PlanStep.LeaveSession), every start of
+// the tester's step carries it (record.SuperviseRequest.LeaveSession), and the issue and the
+// controller are told that the agent starts in a session of its own, which was key k's. No agent but
+// key k resumes key k's session. The implementer's step, whose name no key held, carries none.
+func TestTheDefaultStepsOfANewGenerationLeaveTheSessionOfAKeysName(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key := root.Key
+	mustTake(t, "version 1", apply(planID(key, 1, 1), ownersPlan(t, key, 1, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
+	keyed := claim.Token(token(t, key, claim.RoleTester))
+	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ($1, 'legion', $2, $2, 'reviewer', 3, 'ses-key-k', '/sessions/ses-key-k.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
+		string(keyed), key); err != nil {
+		t.Fatalf("seed key k's claim: %v", err)
+	}
+	next := root
+	next.Generation = 2
+	seedIssue(t, pool, next)
+
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	stored := planStandingOf(t, pool, engine, key, 2).plan
+	steps := stored.Steps[defaultTask]
+	if len(steps) < 2 || steps[1].Role != "tester" || steps[1].Agent != "tester" || steps[1].LeaveSession != "ses-key-k" || steps[0].LeaveSession != "" {
+		t.Fatalf("generation 2's default steps are %+v, want the tester's step named tester leaving key k's session ses-key-k, and the implementer's leaving none", steps)
+	}
+	starts := superviseRowsOf(t, pool, key, "start")
+	var tester, implementer []record.SuperviseRequest
+	for _, start := range starts {
+		switch start.Role {
+		case claim.RoleTester:
+			tester = append(tester, start)
+		case claim.RoleImplementer:
+			implementer = append(implementer, start)
+		}
+	}
+	if len(tester) != 1 || tester[0].LeaveSession != "ses-key-k" {
+		t.Fatalf("the tester's starts are %+v, want one carrying the session to leave, ses-key-k", tester)
+	}
+	for _, start := range implementer {
+		if start.LeaveSession != "" {
+			t.Fatalf("an implementer's start carries the session to leave %q, want none", start.LeaveSession)
+		}
+	}
+	told := strings.Join(messageBodies(t, pool), "\n")
+	if !strings.Contains(told, "key k") || !strings.Contains(told, `"ses-key-k"`) {
+		t.Fatalf("the issue was told %q, want the tester's step's new session named, with key k and its session ses-key-k", told)
 	}
 }

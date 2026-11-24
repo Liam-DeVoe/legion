@@ -1332,6 +1332,15 @@ type SuperviseRequest struct {
 	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
 	// 20261123203837_plan_step_agent deletes the key from each queued row before that release boots.
 	RefusedPod string `json:"refusedPod,omitempty"`
+	// LeaveSession is the session a start's claim must not resume: the session the claim recorded
+	// when the step was written whose agent took a name a key's agent held in an earlier generation
+	// (PlanStep.LeaveSession), which every start of that agent carries. The claim leaves it where it
+	// still records it, so the agent starts in a session of its own, and a claim that runs it is
+	// suspended first (the daemon outbox's start, supervise's revive); a claim that records another
+	// session has left it already, and the start resumes that one. Every other start carries none.
+	// The release before decodes strictly, so the way back of 20261123203837_plan_step_agent deletes
+	// the key from each queued row before that release boots.
+	LeaveSession string `json:"leaveSession,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -2544,6 +2553,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.RefusedPod != "" && value.Op != "start" {
 			return fmt.Errorf("a supervise %s names the refused pod %q; only a start a refused launch queued names one", value.Op, value.RefusedPod)
+		}
+		if value.LeaveSession != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the session %q to leave; only a start names one", value.Op, value.LeaveSession)
 		}
 	case RoleMessage:
 		if value.Role == "" {

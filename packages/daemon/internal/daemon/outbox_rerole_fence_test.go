@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -72,9 +73,12 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 			role, at := claim.RoleTester, phase.Testing
 			if tc.step {
 				role, at = claim.Role("checker"), phase.Step
-				issue.Phase, issue.StepRole, issue.Status = phase.Step, "checker", "in_progress"
+				issue.Phase, issue.Status = phase.Step, "in_progress"
 			}
 			putOutboxIssue(t, pool, records, issue)
+			if tc.step {
+				seedKeyedStepPlan(t, pool, records, issue.Key)
+			}
 			keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: role, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
@@ -104,9 +108,11 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 			switch {
 			case tc.move && tc.step:
 				moving.move = func() {
-					next := issue
-					next.StepRole = "linter"
-					putOutboxIssue(t, pool, records, next)
+					if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+						return records.MoveTask(ctx, tx, issue.Key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+					}); err != nil {
+						t.Fatalf("move the task to the linter's step: %v", err)
+					}
 				}
 			case tc.move:
 				moving.move = func() {
@@ -150,6 +156,30 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 				t.Errorf("after a move overtook the %s's start the claim is %s, want it suspended, running nothing", role, got)
 			}
 		})
+	}
+}
+
+// seedKeyedStepPlan records key's plan of generation 1, `implementer:a checker:a linter`, all at the
+// phase step but the implementer's, its one task running at the checker's step 2: key a's agent,
+// named implementer, works the implementer's step and then the checker's.
+func seedKeyedStepPlan(t *testing.T, pool *store.Pool, records record.Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := record.NameAgents(nil, []record.PlanStep{
+			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a"},
+			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: "testing", AgentKey: "a"},
+			{Issue: key, Generation: 1, Task: "a", Position: 3, Role: "linter", Type: "testing"},
+		})
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
 	}
 }
 

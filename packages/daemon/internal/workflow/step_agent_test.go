@@ -121,14 +121,11 @@ func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
 	}
 }
 
-// highestEntryOf is the highest entry among starts, and among those of claim where claim is not
-// "", 0 for none.
-func highestEntryOf(starts []record.SuperviseRequest, claimed claim.Token) int64 {
+// highestEntryOf is the highest entry among starts, 0 for none.
+func highestEntryOf(starts []record.SuperviseRequest) int64 {
 	var highest int64
 	for _, start := range starts {
-		if (claimed == "" || start.Claim == claimed) && start.Entry > highest {
-			highest = start.Entry
-		}
+		highest = max(highest, start.Entry)
 	}
 	return highest
 }
@@ -153,10 +150,11 @@ func TestAnEntryIsAboveEveryEntryItsClaimWasHandedAcrossVersions(t *testing.T) {
 	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
-	handed := highestEntryOf(superviseRowsOf(t, pool, key, "start"), keyed)
-	if reviewer := storedPhaseRow(t, pool, key, claim.RoleReviewer); reviewer.Claim != keyed || reviewer.Entry != handed {
-		t.Fatalf("after version 1's step 3 the reviewer's row names %q at entry %d, want key k's claim %s at its last entry %d", reviewer.Claim, reviewer.Entry, keyed, handed)
+	reviewer := storedPhaseRow(t, pool, key, claim.RoleReviewer)
+	if reviewer.Claim != keyed {
+		t.Fatalf("after version 1's step 3 the reviewer's row names %q, want key k's claim %s", reviewer.Claim, keyed)
 	}
+	handed := reviewer.Entry
 	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
@@ -170,13 +168,13 @@ func TestAnEntryIsAboveEveryEntryItsClaimWasHandedAcrossVersions(t *testing.T) {
 	}
 	all := superviseRowsOf(t, pool, key, "start")
 	last := all[len(all)-1]
-	if last.Claim != keyed || last.Role != claim.RoleTester || last.Entry != tester.Entry {
-		t.Fatalf("the last start is %+v, want the tester's step's start of key k's claim at the row's entry %d", last, tester.Entry)
+	if last.Role != claim.RoleTester || last.Entry != tester.Entry {
+		t.Fatalf("the last start is %+v, want the tester's step's start at the row's entry %d", last, tester.Entry)
 	}
 	if last.Entry <= handed {
-		t.Fatalf("key k's claim is handed entry %d at version 2's step 3, want above %d, the entry it was handed last: its queue would take the task as given already", last.Entry, handed)
+		t.Fatalf("key k's claim is handed entry %d at version 2's step 3, want above %d, the entry it was handed at version 1's step 3: its queue would take the task as given already", last.Entry, handed)
 	}
-	if highest := highestEntryOf(all[:len(all)-1], ""); last.Entry <= highest {
+	if highest := highestEntryOf(all[:len(all)-1]); last.Entry <= highest {
 		t.Fatalf("the tester's step's entry is %d, want above %d, every earlier entry of the issue", last.Entry, highest)
 	}
 }

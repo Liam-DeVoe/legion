@@ -125,42 +125,6 @@ func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStand
 	h.wantCalls("Spawn", 2)
 }
 
-// RefusalStands answers the refusal of the claim's last launch while the pod that refused it still
-// stands, which the outbox holds a start on (internal/daemon's start), and nil once another pod
-// stands, which drops the refusal, as it answers nil for a claim no launch of which was refused. It
-// launches nothing and writes nothing of the claim.
-func TestRefusalStandsWhileThePodThatRefusedTheLaunchStands(t *testing.T) {
-	h := newHarness(t)
-	issue := h.claim().Issue
-	if err := h.m.RefusalStands(); err != nil {
-		t.Fatalf("a claim no launch of which was refused answered %v, want nil", err)
-	}
-	h.rt.ScriptIssuePod(issue, "pod-1")
-	h.rt.ScriptSpawn(fake.SpawnResult{Err: runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(testToken) + ": the pod pod-1 of " + issue + " was built without checker"}})
-	if err := h.handle(RequestSpawn{Claim: testToken}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
-		t.Fatalf("the spawn answered %v, want the runtime's refusal", err)
-	}
-	writes := 0
-	h.store.onPut = func(Claim) { writes++ }
-
-	var awaits runtime.AwaitsPodUpdate
-	if err := h.m.RefusalStands(); !errors.As(err, &awaits) || awaits.Pod != "pod-1" {
-		t.Fatalf("while pod-1 stands the refusal answered %v, want pod-1's refusal, which is runtime.AwaitsPodUpdate", err)
-	}
-	h.rt.ScriptIssuePod(issue, "pod-2")
-	if err := h.m.RefusalStands(); err != nil {
-		t.Fatalf("once pod-2 stands the refusal answered %v, want nil", err)
-	}
-	if pod := h.m.RefusedPod(); pod != "" {
-		t.Fatalf("once pod-2 stands the claim is refused by %q, want the refusal dropped", pod)
-	}
-	h.wantCalls("Spawn", 1)
-	h.wantState(StateSuspended)
-	if writes != 0 {
-		t.Fatalf("asking whether the refusal stands wrote the claim %d times, want none", writes)
-	}
-}
-
 // Each fact of a refused launch that the store does not take has a mark of its own on the claim,
 // keyed by the fact's event id, and the claim shows the oldest (Claim.UnrecordedRefusal). Here the
 // refusal's report fails twice, then a re-check at the end of a start row fails once and is taken:
@@ -195,8 +159,11 @@ func TestEachUnrecordedRefusalFactKeepsItsOwnMarkUntilItsRefusalGoes(t *testing.
 
 	h.m.RefusalNotRecorded(recheck, "pod-1", errors.New("the serializer was busy"))
 	h.rt.ScriptIssuePod(issue, "pod-2")
-	if err := h.m.RefusalStands(); err != nil {
-		t.Fatalf("once pod-2 stands the refusal answered %v, want nil", err)
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "pod-2 stands"}); err != nil {
+		t.Fatalf("the resume once pod-2 stands answered %v, want the claim brought back", err)
+	}
+	if pod := h.m.RefusedPod(); pod != "" {
+		t.Fatalf("once pod-2 stands the claim is refused by %q, want the refusal dropped", pod)
 	}
 	if got := h.m.View().UnrecordedRefusal; got != nil {
 		t.Fatalf("once the refusal is dropped the view shows %+v, want no mark", *got)

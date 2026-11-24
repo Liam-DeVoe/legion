@@ -1445,6 +1445,20 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 	return session, nil
 }
 
+func (s *Postgres) ClaimLaunchedSince(ctx context.Context, tx pgx.Tx, token claim.Token, generation uint64) (bool, error) {
+	if generation == 0 {
+		return false, nil
+	}
+	var stored int64
+	if err := tx.QueryRow(ctx, "select generation from claims where token = $1 for update", string(token)).Scan(&stored); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the generation of claim %s: %w", token, err)
+	}
+	return uint64(stored) > generation, nil
+}
+
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
 // the counters of one still open, its design gate, what its holders took of the approved design
 // and its recorded handoffs. now is when the publication a cleared gate queues is due.
@@ -3634,6 +3648,54 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		return nil, err
 	}
 	return runs, nil
+}
+
+func (s *Postgres) ClaimQueued(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, generation uint64) ([]QueuedSupervise, error) {
+	entries, err := s.PhaseEntries(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
+		coalesce(payload->>'claim', ''),
+		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
+		from outbox where kind = $1 and issue = $2 order by id`, string(OutboxKindSupervise), issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+	}
+	defer rows.Close()
+	var queued []QueuedSupervise
+	for rows.Next() {
+		var role, at, named string
+		var age time.Duration
+		var running bool
+		row, err := scanOutbox(rows, &role, &at, &named, &age, &running)
+		if err != nil {
+			return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+		}
+		if at != strconv.FormatUint(generation, 10) {
+			continue
+		}
+		reaches := claim.Token(named)
+		if reaches == "" {
+			reaches = roleRunWorker(token, issue, claim.Role(role), entries)
+		}
+		if reaches != token {
+			continue
+		}
+		decoded, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, err
+		}
+		request, ok := decoded.(SuperviseRequest)
+		if !ok {
+			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
+		}
+		queued = append(queued, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts, Running: running, Age: age})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+	}
+	return queued, nil
 }
 
 // roleRunWorker is the claim a supervise row of role on issue that names no claim reaches when it

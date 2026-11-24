@@ -2145,6 +2145,13 @@ type Store interface {
 	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
 	// registers; the claim the outbox makes holds none until then.
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
+	// ClaimLaunchedSince is whether claims holds token at a generation above generation: the
+	// claim's generation when a launch of it was refused, so a claim held at a later one has
+	// launched since (each try of a launch writes the claim at the next generation first, supervise's
+	// writeTry). It locks the claim's row for the rest of tx (for update), so a launch whose first
+	// write comes after this read waits for tx's commit. False where the token holds no row, and
+	// for generation 0, which names no refused launch.
+	ClaimLaunchedSince(ctx context.Context, tx pgx.Tx, token claim.Token, generation uint64) (bool, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate with what its holders took of it
@@ -2195,6 +2202,9 @@ type Store interface {
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
 	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
+	// KeyNames is every name a key's agent held on issue (plan_key_names), the lasting record that
+	// no deletion of a plan removes: NameAgents reserves each for its key beside the plan_steps rows.
+	KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error)
 	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
 	// state, with its stored role, ordered by token: what a walk over every claim of an issue
 	// reads, so each row it writes names one stored claim.
@@ -2566,6 +2576,13 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
+	// ClaimQueued is every supervise row of issue at generation that reaches token when it runs,
+	// whatever role its payload names, oldest first: a row that names the claim, and a row that
+	// names none whose role's worker is token (WorkerClaimOf over the issue's phases rows, as the
+	// outbox derives it). A keyed agent's claim holds the role of each of its steps in turn, so the
+	// start of its next step reaches it as much as a start of the role it holds now, which RoleRuns,
+	// keyed by one role, does not read.
+	ClaimQueued(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, generation uint64) ([]QueuedSupervise, error)
 	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' last statement without
 	// the two before it, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.

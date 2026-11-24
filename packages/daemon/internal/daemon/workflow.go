@@ -2631,13 +2631,24 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // refused and reported again, while every other claim of the deployment would be stopped and
 // started for it; and an hourly report, which finds the start the first one queued, would restart
 // the daemon for a fact that queues nothing.
+//
+// While a report of pod's refusal is still being tried, the machine's next report of it, the
+// hourly one, starts no tries of its own (supervise.Machine.BeginRefusalReport): the first is the
+// same fact in substance, and each that the store took would tell the issue and the controller
+// again. The fact carries the claim's generation at the refusal, which its apply judges the stored
+// claim by (workflow's refusalStands).
 func (w *workflowRuntime) podRefused(m *supervise.Machine, c supervise.Claim, pod, detail string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
 	}
+	if !m.BeginRefusalReport(pod) {
+		w.log.Info("a report of a refused launch is not started: an earlier report of that refusal is still being tried", "claim", c.Token, "pod", pod)
+		return
+	}
 	id := fmt.Sprintf("pod-refused:%s:%d", c.Token, time.Now().UnixNano())
-	fact := intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail}
+	fact := intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail, Generation: c.Generation}
 	go func() {
+		defer m.EndRefusalReport(pod)
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker).
 		ctx := store.ForConcurrentWorker(w.untilStop())

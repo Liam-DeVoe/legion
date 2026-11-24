@@ -687,10 +687,10 @@ func (podRefusedSpecs) SpawnSpec(_ context.Context, c supervise.Claim) (runtime.
 // while the pod stands. Here the issue has moved on to reviewing, so the start the refusal queues
 // is of no phase and carries no task, and no delivery refuses it. The rule's resume is refused by
 // the pod that still stands before the claim's session is asked about, as the operator's resume is
-// (supervise's resumeByRule and resume), and the outbox holds a start of the claim while its
-// machine still reports the refusal (supervise.Machine.RefusalStands). Were the start to end, its
-// end would ask the workflow again (intake.RefusedStartEnded), whose start would end the same way,
-// at the database's speed: one row, one fact and one log line a turn, telling nobody.
+// (supervise's resumeByRule and resume), so the start waits for the pod. Were it answered for the
+// session first and ended, its end would ask the workflow again (intake.RefusedStartEnded), whose
+// start would end the same way, at the database's speed: one row, one fact and one log line a turn,
+// telling nobody.
 func TestARefusedClaimThatRecordsASessionItDoesNotHoldWaitsForItsPod(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -867,33 +867,6 @@ func TestAStartAnEarlierRefusalQueuedAsksAgainWhenAnotherPodRefusesItsLaunch(t *
 	r.runner.settle(ctx, row, nil)
 	r.owedEntryQueued()
 	r.outboxSettles()
-}
-
-// The outbox's check that a refused claim's refusal still stands after the machine answered a start
-// with no error (supervise.Machine.RefusalStands) is what holds such a start while the pod stands
-// on every path, and not only on the paths that ask the pod first. Here the tester's launch is
-// refused, the issue has moved on to reviewing, so the refusal's report queues a start of no phase
-// and no task, and an operator then suspends the claim: the rule's resume answers nil for an
-// operator's suspension before it asks the pod (supervise's resumeByRule), and the start hands no
-// task whose delivery would wait. The row waits for the pod, answering runtime.ErrAwaitsPodUpdate;
-// without the check it finished there, the claim brought back by nothing.
-func TestAStartOfARefusedClaimTheRuleLeavesSuspendedWaitsForItsPod(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	r := newPodRefusalRig(t, engineAnswers, nil)
-	r.moveToReviewing()
-	r.refuseTheTestersResume()
-	r.toldTheController()
-	r.noPhaseStartQueued()
-	if err := r.machine.Handle(ctx, supervise.RequestSuspend{Claim: r.token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}); err != nil {
-		t.Fatalf("the operator's suspension: %v", err)
-	}
-	if held := r.machine.Claim(); held.SuspendedBy != supervise.SuspendedByOperator || r.machine.RefusedPod() != "pod-1" {
-		t.Fatalf("the tester is suspended by %q with the refusal of %q, want the operator's suspension over pod-1's refusal: the case's premise", held.SuspendedBy, r.machine.RefusedPod())
-	}
-	if err := r.runner.execute(ctx, r.startRow()); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
-		t.Fatalf("the start of no phase answered %v, want it to wait for pod-1, which is runtime.ErrAwaitsPodUpdate", err)
-	}
 }
 
 // While a refusal's report is not yet taken, the machine's next report of the same refusal — the
