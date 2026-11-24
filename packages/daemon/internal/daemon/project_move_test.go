@@ -287,20 +287,6 @@ func (m *projectMove) askCounts() map[string]int {
 	return counts
 }
 
-// bundleRequests is every bundle request a role process of the move was sent, which no project
-// release sends.
-func (m *projectMove) bundleRequests() []string {
-	var sent []string
-	for _, issue := range m.issues() {
-		for _, role := range issue.roles {
-			for _, bundle := range m.rig.agents.role(issue.key, string(role)).Bundles {
-				sent = append(sent, idleRigKey(issue.key, string(role))+": "+bundle.ID)
-			}
-		}
-	}
-	return sent
-}
-
 // moveClaim is what the move test reads of one claim, to hold the claim's next run to: its state
 // and who suspended it, its session, its launch failures and deaths, the pod its process runs in,
 // its pending task, and how many processes of its role have registered and tasks it was given.
@@ -408,16 +394,9 @@ type moveRelease struct {
 	stopped    []claim.Token
 	asksBefore map[string]int
 	asksAfter  map[string]int
-	// bundles is workspace_bundles' rows before the release, and bundlesTable whether the table
-	// stands (bundleRows); bundleReqs is the bundle requests the role processes had been sent, and
-	// copyLines the running copies cybermonklabs/legion#3831 had logged (runningCopyLines).
-	bundles      []string
-	bundlesTable bool
-	bundleReqs   int
-	copyLines    int
-	created      int
-	starts       *startWatcher
-	restarted    time.Time
+	created    int
+	starts     *startWatcher
+	restarted  time.Time
 	// entryTask is the work of the entry raised during the release, "" when none was.
 	entryTask string
 	// heldThrough is the newest start row written before the daemon stopped for its restart: a
@@ -434,8 +413,7 @@ func (m *projectMove) beginRelease(t *testing.T, name string) *moveRelease {
 	r := m.rig
 	r.awaitReportsSinceLastTurn()
 	rd := &moveRelease{name: name, before: m.claimsNow(), running: map[string][]claim.Role{}, asksBefore: m.askCounts(),
-		bundleReqs: len(m.bundleRequests()), copyLines: r.runningCopyLines(), created: len(r.aimed().createdNames()), starts: r.watchStarts()}
-	rd.bundles, rd.bundlesTable = r.bundleRows()
+		created: len(r.aimed().createdNames()), starts: r.watchStarts()}
 	for _, issue := range m.issues() {
 		rd.running[issue.key] = m.runningRoles(issue)
 	}
@@ -667,7 +645,6 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 		}
 	}
 	m.checkNoCharge(t, rd.before, "the "+rd.name+" release")
-	m.checkNoBundle(t, rd)
 }
 
 // checkAsks holds the release's asks: each running role of the five pods with work, a
@@ -720,30 +697,6 @@ func (m *projectMove) checkNoCharge(t *testing.T, before map[claim.Token]moveCla
 			t.Errorf("the claim %s has %d launch failures and %d deaths after %s, want the %d and %d it had",
 				token, now.launchFailures, now.deaths, when, was.launchFailures, was.deaths)
 		}
-	}
-}
-
-// checkNoBundle holds the release to saving nothing: workspace_bundles, where it stands, has the
-// rows it had, and no role process was sent a bundle request by the release.
-//
-// With cybermonklabs/legion#3831 the daemon copies each running workspace over the same bundle
-// request (shimwire.BundleWorkspace), which names no caller, so a request is told by the daemon's
-// caller instead: each copy that asks writes one line of its own (runningCopyLines), and only the
-// requests beyond those lines are another caller's, which here is the release.
-func (m *projectMove) checkNoBundle(t *testing.T, rd *moveRelease) {
-	t.Helper()
-	rows, bundlesTable := m.rig.bundleRows()
-	if bundlesTable != rd.bundlesTable || !slices.Equal(rows, rd.bundles) {
-		t.Errorf("workspace_bundles holds %v after the %s release, want the %v it held before", rows, rd.name, rd.bundles)
-	}
-	sent := m.bundleRequests()
-	beyond := len(sent) - rd.bundleReqs
-	if m.rig.holdsRunningCopies() {
-		beyond -= m.rig.runningCopyLines() - rd.copyLines
-	}
-	if beyond > 0 {
-		t.Errorf("the role processes were sent the bundle requests %v by the end of the %s release, %d of them beyond the first %d and the running copies' own",
-			sent, rd.name, beyond, rd.bundleReqs)
 	}
 }
 
@@ -950,16 +903,13 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 // stops the run.
 //
 // The controls a tester makes of scratch copies of the release, each of which must fail this test:
-//   - a release that saves each workspace's bundle as the idle release saves it
-//     (outbox.bundleIssueWorkspace) fails on the row it adds to workspace_bundles and on the bundle
-//     request a role process records (checkNoBundle);
 //   - a release that deletes each pod with unpushed work as soon as its ask is sent fails on the
 //     pod whose role pushes and answers, because the issue's branch on the remote then lacks that
 //     commit (checkMove);
 //   - a release that sends no ask fails on the same pod.
 //
 // A boot that gives the claim behind its phase entry two starts fails on that claim's starts
-// (checkStarts). The fourth control, the hand deletion with no release, is the last step of this
+// (checkStarts). The third control, the hand deletion with no release, is the last step of this
 // test, and it expects the charge it must see.
 //
 // Three more controls fail the first release's step:
@@ -974,7 +924,7 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 //     and on the pod whose role starts again, each of which the release then leaves
 //     (checkCutShort).
 func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newProjectMove); it binds the same ports again at each restart (newProjectMove).
+	// Not parallel: it sets environment variables of the whole process (newProjectMove).
 	began := time.Now()
 	m := newProjectMove(t)
 	r := m.rig
@@ -1523,7 +1473,7 @@ func (m *projectMove) handDeletion(t *testing.T) {
 // the daemon still aimed at the second cluster, where a claim then starts in the cluster the
 // release emptied; and a copy of the boot that starts a stopped claim on a new session.
 func TestAProjectMovesBackToTheFirstCluster(t *testing.T) {
-	// Not parallel: it binds the same ports again at each restart (newIdleRigWith).
+	t.Parallel()
 	rig := newIdleRigWith(t, idleRigOptions{holdStream: true, wallClock: true, secondCluster: true, aimSecond: true, configure: moveConfiguration},
 		idleRigSeed{name: "tree", roles: []claim.Role{claim.RoleImplementer, claim.RoleArchitect}},
 		idleRigSeed{name: "worker", roles: []claim.Role{claim.RoleImplementer}},

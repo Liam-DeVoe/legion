@@ -431,10 +431,6 @@ func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 	return errors.New("the stream stub does not compact sessions")
 }
 
-func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
-	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
-}
-
 func (c *stubConn) ReadUnpushed(context.Context, runtime.UnpushedRead, time.Duration) (runtime.UnpushedWork, error) {
 	return runtime.UnpushedWork{}, errors.New("the stream stub reads no workspace")
 }

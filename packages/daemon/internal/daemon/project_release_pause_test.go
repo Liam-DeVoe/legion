@@ -268,7 +268,7 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 	const check = "E18"
 	implementer := []claim.Role{claim.RoleImplementer}
 	rig := newIdleRigWith(t, idleRigOptions{wallClock: true, configure: pauseReleaseConfiguration},
-		idleRigSeed{name: "waiting", roles: implementer, plan: &idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2}}},
+		idleRigSeed{name: "waiting", roles: implementer, plan: &idleRigPlan{TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 2}}},
 		idleRigSeed{name: "clean", roles: implementer, plan: &idleRigPlan{TakeTurn: true}})
 	legion := buildLegion(t)
 	rig.launchAll()

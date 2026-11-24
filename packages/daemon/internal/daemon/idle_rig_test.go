@@ -66,6 +66,12 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigOutboxSweep is how often the rig's daemon sweeps its outbox lanes (overrides.outboxSweep,
+// outboxLease in production). A row the rig makes due or frees behind the daemon, such as a
+// teardown or a start whose slot opened, runs at the next sweep, and at outboxLease that is up to
+// 30 s of the wall clock per such row.
+const idleRigOutboxSweep = time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -686,7 +692,7 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	o := overrides{
 		listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, orphanSweep: r.options.orphanSweep,
-		entrySweep:     r.options.entrySweep,
+		entrySweep: r.options.entrySweep, outboxSweep: idleRigOutboxSweep,
 		workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.owner()),
 		// The still clock fires no timer, and the pod start gate ends a role's session load on a
 		// timer a settle after its registration (supervise.PodStarts), so on it the second role of
@@ -868,14 +874,6 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	}
 	tools := r.toolsDir()
 	opts.Conns, opts.StreamURL, opts.Store, opts.ProjectReleaseHolds = listener, address, st, held
-	// The two halves of a release's saved work, as the daemon's own factory hands them to the
-	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
-	// one is sent before any role of that pod starts, and what the launcher's confirmation
-	// drops. Without them no pod of this rig is ever offered a bundle. They cost a rig whose
-	// releases save none one indexed read per role start, which answers no row: the save of a
-	// workspace with nothing unpushed stores nothing and deletes what the issue had
-	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))

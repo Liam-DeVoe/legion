@@ -17,18 +17,18 @@ import (
 // goroutine of its own (answer), the context every such command runs on, which the shim ends at
 // its own end and waits out before Run returns (endCommands, drainCommands), and the start of
 // every command that runs in a workspace: openWorkspaceAt, and above it openWorkspace for the
-// requests that read their workspace from LEGION_WORKSPACE. The release's save, the update round's
-// workspace read and the project release's read of unpushed work are commands of this kind too,
-// each in a file of its own (bundle.go, workspace_work.go, unpushed.go).
+// requests that read their workspace from LEGION_WORKSPACE. The update round's workspace read and
+// the project release's read of unpushed work are commands of this kind too, each in a file of
+// its own (workspace_work.go, unpushed.go).
 
-// answer runs one frame's answer — the adoption, the release's save, the update round's workspace
-// read, the project release's read — in a goroutine of its own, so the connection's reader never
-// waits on the git and jj it starts, and counts it so that Run waits for it before it returns
-// (drainCommands). Every one of them is dispatched from fromDaemon, which the reader calls one
-// frame at a time, so a command is counted before the frame after it is read. Two counts are kept:
-// commandRuns, which the drain waits on, and commandsInFlight, which says whether there is
-// anything to wait for at all. The second is lowered first, so a count of 0 means every command
-// has returned and nothing but the goroutines' own last line is left.
+// answer runs one frame's answer — the adoption, the update round's workspace read, the project
+// release's read — in a goroutine of its own, so the connection's reader never waits on the git and
+// jj it starts, and counts it so that Run waits for it before it returns (drainCommands). Every one
+// of them is dispatched from fromDaemon, which the reader calls one frame at a time, so a command
+// is counted before the frame after it is read. Two counts are kept: commandRuns, which the drain
+// waits on, and commandsInFlight, which says whether there is anything to wait for at all. The
+// second is lowered first, so a count of 0 means every command has returned and nothing but the
+// goroutines' own last line is left.
 func (s *shim) answer(command func()) {
 	s.commandsInFlight.Add(1)
 	s.commandRuns.Add(1)
@@ -124,18 +124,17 @@ type openedWorkspace struct {
 	run func(stdin []byte, args ...string) (string, error)
 }
 
-// openWorkspace is the start of the requests a shim answers in the workspace its role works in,
-// the one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role:
-// the save (runBundle), the update round's workspace read (readWorkspaceWork) and the adoption
-// (runAdoption). It refuses a shim with no LEGION_WORKSPACE with "no workspace to <verb>", and
-// opens the workspace on the shim's command context (s.commands) with openWorkspaceAt, so the
-// shim's own end ends the request's commands at once. env is the environment the request's
-// commands run with: the shim's own (s.cfg.Env) for the save and the read, and for the adoption
-// that environment with the requested identity added (JJ_USER, JJ_EMAIL). verb is what the caller
-// does to the workspace ("bundle", "read", "adopt"). The project release's read of unpushed work
-// (readUnpushed) does not go through it: it refuses a shim with no LEGION_WORKSPACE in words of its
-// own, and opens the workspace with openWorkspaceAt through ReadUnpushed, which a test's stand-in
-// agent runs on a workspace of its own.
+// openWorkspace is the start of the requests a shim answers in the workspace its role works in, the
+// one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role: the
+// update round's workspace read (readWorkspaceWork) and the adoption (runAdoption). It refuses a
+// shim with no LEGION_WORKSPACE with "no workspace to <verb>", and opens the workspace on the
+// shim's command context (s.commands) with openWorkspaceAt, so the shim's own end ends the
+// request's commands at once. env is the environment the request's commands run with: the shim's
+// own (s.cfg.Env) for the read, and for the adoption that environment with the requested identity
+// added (JJ_USER, JJ_EMAIL). verb is what the caller does to the workspace ("read", "adopt"). The
+// project release's read of unpushed work (readUnpushed) does not go through it: it refuses a shim
+// with no LEGION_WORKSPACE in words of its own, and opens the workspace with openWorkspaceAt
+// through ReadUnpushed, which a test's stand-in agent runs on a workspace of its own.
 func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {

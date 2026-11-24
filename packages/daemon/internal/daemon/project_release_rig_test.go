@@ -229,7 +229,7 @@ func (r *idleWakeRig) releaseAsks(key string, role claim.Role) []idleRigMessage 
 func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
-		"unpushed": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1, WorkingCopyChanged: true}, AnswerRelease: true},
+		"unpushed": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1, WorkingCopyChanged: true}, AnswerRelease: true},
 	}, "clean", "unpushed", "unread", "held")
 	clean, unpushed, unread, held := rig.issue("clean"), rig.issue("unpushed"), rig.issue("unread"), rig.issue("held")
 	// The pod no role process runs in: its one claim is stopped, and its Sandbox stays, which
@@ -349,7 +349,7 @@ func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
 	t.Parallel()
 	// A role that does not answer holds its pod to the bound, which is what keeps the release
 	// running while the state is read.
-	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2}}}, "waiting")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 2}}}, "waiting")
 	waiting := rig.issue("waiting")
 	if served := rig.stateRelease(); served != nil {
 		t.Fatalf("the state before any release carries %v, want no projectRelease", served)
@@ -662,7 +662,7 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 	t.Parallel()
 	// A role that does not answer holds its pod to the bound, so the release lists the project
 	// again only after the Sandboxes below landed.
-	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "waiting")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}}}, "waiting")
 	waiting := rig.issue("waiting")
 	project := rig.kube.label(waiting.pod, "legion.dev/project")
 	lateIssue := rig.cfg.Project + "-99"
@@ -710,7 +710,7 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *testing.T) {
 	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
-		"ended": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2, WorkingCopyChanged: true}},
+		"ended": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 2, WorkingCopyChanged: true}},
 	}, "ended")
 	ended := rig.issue("ended")
 
@@ -749,7 +749,7 @@ func (r *idleWakeRig) refuseAsks() {
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskItCouldNotWrite(t *testing.T) {
 	t.Parallel()
-	rig := newIdleWakeRig(t, map[string]idleRigPlan{"unasked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "unasked")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"unasked": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}}}, "unasked")
 	unasked := rig.issue("unasked")
 	rig.refuseAsks()
 
@@ -839,7 +839,7 @@ func (r *idleWakeRig) writesCaught(name string) int64 {
 func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
-		"asked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true},
+		"asked": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}, AnswerRelease: true},
 	}, "asked")
 	asked := rig.issue("asked")
 	rig.refuseFirstAsk()
@@ -873,7 +873,7 @@ func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
 	t.Parallel()
-	rig := newIdleWakeRig(t, map[string]idleRigPlan{"late": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "late")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"late": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}}}, "late")
 	late := rig.issue("late")
 	rig.refuseAsksBeforeTheBound()
 
@@ -906,7 +906,7 @@ const releaseAskWaitsLine = "outbox update ask of the running project release wa
 // as it starts.
 func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 	t.Parallel()
-	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}
+	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"slow": plan}, "slow")
 	slow := rig.issue("slow")
 
@@ -941,7 +941,7 @@ func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 func TestProjectReleaseLeavesAPodWhoseAskReachedNoSession(t *testing.T) {
 	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
-		"unheld": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true},
+		"unheld": {TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true},
 	}, "unheld")
 	unheld := rig.issue("unheld")
 

@@ -3,8 +3,8 @@ package daemon
 // What the project move tests (dispatch://INFRA-3583 R9, project_move_test.go) read and drive on
 // the idle rig: the real `legion` command an operator runs, the outbox rows the daemon's boot
 // writes and the rows a release holds, the wakes its pacing holds, the claims as the operator's
-// listing answers them, the workspace bundles the idle release would have saved, the pod the rig
-// holds back, the pod whose launchers stop and the Sandbox built for another disk.
+// listing answers them, the pod the rig holds back, the pod whose launchers stop and the Sandbox
+// built for another disk.
 
 import (
 	"bytes"
@@ -210,41 +210,9 @@ func (r *idleWakeRig) claimsByToken() map[claim.Token]api.OperatorClaim {
 	return listed
 }
 
-// bundleRows is every row of workspace_bundles, one line each in a stable order, and whether the
-// table stands at all (bundlesTable false, with no rows, where it does not):
-// cybermonklabs/legion#3831 replaces it, and the move test reads it where it still stands.
-func (r *idleWakeRig) bundleRows() (rows []string, bundlesTable bool) {
-	r.t.Helper()
-	ctx := context.Background()
-	if err := r.pool.QueryRow(ctx, `select to_regclass('workspace_bundles') is not null`).Scan(&bundlesTable); err != nil {
-		r.t.Fatalf("read whether workspace_bundles stands: %v", err)
-	}
-	if !bundlesTable {
-		return nil, false
-	}
-	listed, err := r.pool.Query(ctx, `select row_to_json(b)::text from workspace_bundles b`)
-	if err != nil {
-		r.t.Fatalf("read workspace_bundles: %v", err)
-	}
-	defer listed.Close()
-	for listed.Next() {
-		var row string
-		if err := listed.Scan(&row); err != nil {
-			r.t.Fatalf("read a row of workspace_bundles: %v", err)
-		}
-		rows = append(rows, row)
-	}
-	if err := listed.Err(); err != nil {
-		r.t.Fatalf("read workspace_bundles: %v", err)
-	}
-	slices.Sort(rows)
-	return rows, true
-}
-
 // holdsRunningCopies is whether the migrated database holds cybermonklabs/legion#3831's table of
-// each issue pod's running copy, which decides how the move test reads a deletion's lost work and
-// the bundle requests the role processes get, so whichever of that change and this one lands
-// second changes no test.
+// each issue pod's running copy, which decides how the move test reads a deletion's lost work,
+// so whichever of that change and this one lands second changes no test.
 func (r *idleWakeRig) holdsRunningCopies() bool {
 	r.t.Helper()
 	var held bool
@@ -270,24 +238,6 @@ func (r *idleWakeRig) runningCopyAt(issue string) (time.Time, bool) {
 		r.t.Fatalf("read the running copy of %s: %v", issue, err)
 	}
 	return at, true
-}
-
-// runningCopyLines is how many lines cybermonklabs/legion#3831's copy of a running workspace has
-// logged, each beginning "running copy:" (its workspace_copies.go). That copy asks a shim over the
-// same bundle request the idle release sends (shimwire.BundleWorkspace), which names no caller,
-// and every copy that asks ends on one such line whatever its end, so a bundle request beyond
-// those lines was sent by another caller of the daemon.
-func (r *idleWakeRig) runningCopyLines() int {
-	count := 0
-	for _, line := range strings.Split(r.logs.String(), "\n") {
-		var entry struct {
-			Msg string `json:"msg"`
-		}
-		if json.Unmarshal([]byte(line), &entry) == nil && strings.HasPrefix(entry.Msg, "running copy:") {
-			count++
-		}
-	}
-	return count
 }
 
 // idleRigStart is one `start` row of the outbox as the rig's database recorded it when the row was

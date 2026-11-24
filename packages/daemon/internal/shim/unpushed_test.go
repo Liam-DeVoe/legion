@@ -24,9 +24,7 @@ import (
 // facts: the line the shim wrote is the frame's own members and nothing else, so no commit, file or
 // description of the workspace rides along. The read builds no bundle: every git the shim starts is
 // recorded (recordingGit), a bundle is only ever written by `git bundle create`, and the read's
-// record stays empty. The last case runs the shim's bundle builder on a workspace with nothing
-// unpushed and finds a bundle that is not empty, which is why the release reads no bundle: one
-// cannot tell such a workspace from one with work in it.
+// record stays empty.
 //
 // The first cases are in the layout a pod's provisioning makes (podWorkspace). The first is what
 // every pod reads when its roles have pushed everything: the pod's shared clone holds a workspace
@@ -183,29 +181,6 @@ func TestTheShimReadsUnpushedWork(t *testing.T) {
 		if got.OK || got.Error != refusal {
 			t.Fatalf("the shim answered %#v, want a refusal reading %q and no answer that nothing is unpushed", got, refusal)
 		}
-	})
-
-	t.Run("the bundle builder's bundle of a workspace with nothing unpushed is not empty", func(t *testing.T) {
-		f := newPodWorkspace(t)
-		p, record := unpushedShim(t, f.home, f.ws)
-		if got := readUnpushed(t, p, unpushedRequest("read-3")); !got.OK || got.Commits != 0 || got.WorkingCopyChanged {
-			t.Fatalf("the shim answered %#v, want nothing unpushed", got)
-		}
-		if calls := gitRecord(t, record); calls != "" {
-			t.Fatalf("the read ran git, which is what a bundle is written with:\n%s", calls)
-		}
-		p.send(t, shimwire.BundleWorkspace{ID: "bundle-1", Issue: unpushedIssue, MaxBytes: 40 << 20, TimeoutMs: 120_000})
-		bundle, _ := shimAnswer[shimwire.BundleWorkspaceResult](t, p, "bundle-1")
-		if !bundle.OK || bundle.SizeBytes == 0 || len(bundle.Bundle) != bundle.SizeBytes || len(bundle.Tips) == 0 {
-			t.Fatalf("the bundle builder answered ok=%v with %d bytes saying %d on heads %v (%s), want a bundle that is not empty",
-				bundle.OK, len(bundle.Bundle), bundle.SizeBytes, bundle.Tips, bundle.Error)
-		}
-		// The record sees the git the bundle builder writes with, so a read whose record is empty
-		// wrote no bundle.
-		if calls := gitRecord(t, record); !strings.Contains(calls, " bundle create ") {
-			t.Fatalf("the bundle builder's git is not in the record, so an empty record says nothing of a bundle:\n%s", calls)
-		}
-		t.Logf("a workspace with nothing unpushed bundles to %d bytes on %d heads", bundle.SizeBytes, len(bundle.Tips))
 	})
 }
 

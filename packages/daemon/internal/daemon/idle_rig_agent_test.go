@@ -43,9 +43,8 @@ const idleRigURLVariable = "LEGION_IDLE_RIG_URL"
 
 // idleRigRole is one role process the rig has seen: the claim it registered, the session it
 // became, every message it was given — the daemon's prompts over the worker stream, and the
-// messages the session's own consumer was relayed — every adopt-working-copy frame the daemon
-// sent it ahead of a prompt, and every bundle request the daemon sent it, which no project
-// release may send (Bundles).
+// messages the session's own consumer was relayed — and every adopt-working-copy frame the daemon
+// sent it ahead of a prompt.
 type idleRigRole struct {
 	Claim       string
 	Secret      string
@@ -58,7 +57,6 @@ type idleRigRole struct {
 	Prompts      []idleRigMessage
 	Messages     []idleRigMessage
 	Adoptions    []idleRigAdoption
-	Bundles      []idleRigMessage
 }
 
 // idleRigMessage is one message a role process recorded, with the moment it arrived. Delivery is
@@ -135,21 +133,22 @@ type idleRigAdoption struct {
 // newIdleWakeRig, or to newIdleRigWith on its seed (idleRigSeed.plan), each of which sets it
 // before the boot; a plan for a woken process is set before its wake.
 type idleRigPlan struct {
-	TakeTurn                    bool             `json:"takeTurn"`
-	Topics                      []string         `json:"topics"`
-	Background                  []string         `json:"background"`
-	ExitsAsReleasedInProduction bool             `json:"exitsAsReleasedInProduction"`
-	HoldsBeforeEnvoy            bool             `json:"holdsBeforeEnvoy"`
-	Unpushed                    *idleRigUnpushed `json:"unpushed,omitempty"`
-	RefuseRead                  string           `json:"refuseRead,omitempty"`
-	AnswerRelease               bool             `json:"answerRelease,omitempty"`
-	PushOnRelease               bool             `json:"pushOnRelease,omitempty"`
-	StayInTurn                  bool             `json:"stayInTurn,omitempty"`
-	WithholdRole                bool             `json:"withholdRole,omitempty"`
+	TakeTurn                    bool                 `json:"takeTurn"`
+	Topics                      []string             `json:"topics"`
+	Background                  []string             `json:"background"`
+	ExitsAsReleasedInProduction bool                 `json:"exitsAsReleasedInProduction"`
+	HoldsBeforeEnvoy            bool                 `json:"holdsBeforeEnvoy"`
+	Unpushed                    *idleRigReadUnpushed `json:"unpushed,omitempty"`
+	RefuseRead                  string               `json:"refuseRead,omitempty"`
+	AnswerRelease               bool                 `json:"answerRelease,omitempty"`
+	PushOnRelease               bool                 `json:"pushOnRelease,omitempty"`
+	StayInTurn                  bool                 `json:"stayInTurn,omitempty"`
+	WithholdRole                bool                 `json:"withholdRole,omitempty"`
 }
 
-// idleRigUnpushed is a workspace's unpushed work as a shim's read answers it.
-type idleRigUnpushed struct {
+// idleRigReadUnpushed is a workspace's unpushed work as a shim's read of it for a project release
+// answers it (shimwire.ReadUnpushedResult).
+type idleRigReadUnpushed struct {
 	Commits            int  `json:"commits"`
 	WorkingCopyChanged bool `json:"workingCopyChanged"`
 }
@@ -256,7 +255,6 @@ func (a *idleRigAgents) role(pod, role string) idleRigRole {
 	copied.Prompts = append([]idleRigMessage(nil), seen.Prompts...)
 	copied.Messages = append([]idleRigMessage(nil), seen.Messages...)
 	copied.Adoptions = append([]idleRigAdoption(nil), seen.Adoptions...)
-	copied.Bundles = append([]idleRigMessage(nil), seen.Bundles...)
 	return copied
 }
 
@@ -377,8 +375,6 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 // is filed apart from both lists of what the role was told: it is no message, and a frame filed
 // under Messages would read as one the session was given, which is the list
 // ARoleMessageThatKeepsNothingStillWakesTheRole reads for a woken session that was given nothing.
-// A bundle request is filed apart too, since it is the daemon asking the shim for the workspace's
-// work and not a word to the agent.
 func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 	var request struct{ Pod, Role, Kind, ID, Delivery, Text, Identity string }
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -398,8 +394,6 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 		seen.Prompts = append(seen.Prompts, message)
 	case "adopt":
 		seen.Adoptions = append(seen.Adoptions, idleRigAdoption{ID: request.ID, Identity: request.Identity, Ahead: len(seen.Prompts)})
-	case "bundle":
-		seen.Bundles = append(seen.Bundles, message)
 	default:
 		seen.Messages = append(seen.Messages, message)
 	}
@@ -1248,17 +1242,11 @@ func (p *idleRigRoleProcess) serve() (shutdown bool, err error) {
 			if err := p.prompted(f); err != nil {
 				return false, err
 			}
-		case shimwire.BundleWorkspace:
-			// The idle release's save of the workspace's unpushed work, recorded before it is
-			// answered, since a project release must send none. The answer is the empty bundle a
-			// clean workspace saves.
-			if err := p.post(p.rig+"/agent/record", map[string]any{
-				"pod": p.pod, "role": p.role, "kind": "bundle", "id": f.ID, "text": f.Issue,
-			}, nil); err != nil {
-				return false, err
-			}
-			if err := p.write(shimwire.BundleWorkspaceResult{
-				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000", At: time.Now().UTC(),
+		case shimwire.WorkspaceWork:
+			// The release's check of the workspace for work origin does not hold. This workspace
+			// holds none: its working copy is empty and every commit under it is on origin.
+			if err := p.write(shimwire.WorkspaceWorkResult{
+				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000",
 			}); err != nil {
 				return false, err
 			}

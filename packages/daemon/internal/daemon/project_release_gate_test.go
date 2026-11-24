@@ -369,7 +369,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindCheckWake:          {{"a check's wake", record.CheckWakeDue{}, true}},
 		record.OutboxKindCheckLook:          {{"a check's look", record.CheckLook{}, true}},
 		record.OutboxKindCheckBound:         {{"a check's bound", record.CheckBound{}, true}},
-		record.OutboxKindIssueBundle:        {{"an idle release's save", record.IssueBundle{}, true}},
+		record.OutboxKindIssueBundle:        {{"an idle release's workspace check", record.IssueWorkspaceCheck{}, true}},
 		record.OutboxKindIssueRelease:       {{"an idle release's teardown", record.IssueRelease{}, true}},
 		record.OutboxKindDispatchStatus:     {{"a status write", record.StatusWrite{}, false}},
 		record.OutboxKindDispatchMessage:    {{"a message post", record.MessagePost{}, false}},

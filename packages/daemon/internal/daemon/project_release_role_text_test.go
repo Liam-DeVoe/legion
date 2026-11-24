@@ -18,7 +18,7 @@ import (
 // TestReleaseTaskTellsOnlyARoleThatCommitsToCommitAndPush checks what each text says.
 func TestProjectReleaseAsksEachRoleOfAPodWithItsOwnText(t *testing.T) {
 	t.Parallel()
-	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true}
+	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigReadUnpushed{Commits: 1}, AnswerRelease: true}
 	rig := newIdleRigWith(t, idleRigOptions{},
 		idleRigSeed{name: "pair", roles: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, plan: &plan})
 	pair := rig.issue("pair")
