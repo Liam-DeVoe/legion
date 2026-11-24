@@ -84,7 +84,7 @@ and a check the base's newer code breaks is the merger's to fix in that merge to
 When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and send its verdict on the new head with `review_verdict`, and asks you the same once your step `acceptance:owner` has passed; any other push after a review step passed asks the same.
+A merge forward that lands after a review step passed, and any other push then, has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed.
 That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
 The merger merges the new head only once `legion-verdict` there is `success`.
 A reviewer step after yours reviews the new head when it runs.

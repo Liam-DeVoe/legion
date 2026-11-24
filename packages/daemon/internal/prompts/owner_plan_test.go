@@ -820,8 +820,11 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 		want, gone []string
 	}{
 		{
+			// B: the daemon reads no approval of the reviewer's; it writes legion-verdict from the
+			// verdicts of the task's review steps, so the sentence names the reads it does not make
+			// without naming an approval.
 			"merger.md",
-			[]string{"It makes none of your reads of the head you merge: its checks, and the reviewer's approval where your task has a reviewer step."},
+			[]string{"it reads neither the head you merge nor its checks for you"},
 			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
 		},
 		{
@@ -830,10 +833,13 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 			[]string{"`handoff_complete` is the only way to finish a phase"},
 		},
 		{
+			// B: a review on GitHub decides no round (RefusesRound); the completion's verdict is the
+			// round's decision, and an approve ends the round once the daemon has read GitHub's
+			// merge state for its head. So the part says what ends the round under that rule.
 			"reviewer.md",
 			[]string{
-				"Your review ends the round whether or not your completion has come: a `REQUEST_CHANGES` at once, and an approval once GitHub reports the approved head one the issue may advance on",
-				"a completion that comes after it is recorded on the round it ended, so complete all the same.",
+				"`changes` ends the round whatever head it names; an `approve` ends it only while its head is the pull request's current head",
+				"Your `approve` ends the round once the daemon has read GitHub's merge state for its head",
 			},
 			[]string{"Your approval does not end the round on its own", "whichever of the two is second"},
 		},
@@ -1017,7 +1023,10 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 			[]string{
 				"It acts only when the next step needs a mergeable head, which is so in four cases. The issue stands in `merging`.",
 				"Where every step of the task has run, in `retro` or in `accepting` with no step of the task after it, the merge comes next, so the conflict waits for the merger whatever the base requires.",
-				"Where the task's reviewer step already ran, the reviewer is asked as well to read the merge and approve the new head or request changes.",
+				// B: the reviewer sends its verdict to the daemon with review_verdict, never as a review
+				// on GitHub, so the sentence names the call; "asked as well" is retired text of B's
+				// TestEachReviewStepSendsItsVerdictAtTheHeadItRead, since each review step's agent is asked.
+				"Where the task's reviewer step already ran, the reviewer is asked too, to read the merge and send its verdict on the new head, `approve` or `changes`, with the `legion` tool's `review_verdict`, never as a review on GitHub.",
 				"A reviewer step still to come reviews the new head when it runs.",
 			},
 			[]string{
@@ -1138,9 +1147,12 @@ func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
 		},
 		{
 			"go/merger.md", func(t *testing.T) string { return goPart(t, "merger.md") },
+			// B: the daemon reads no approval of the reviewer's, since the reviewer sends its verdict
+			// with review_verdict, and it asks the agent of each review step that has passed, not the
+			// reviewer alone; both sentences name the task's steps as main's do.
 			[]string{
-				"the reviewer's approval where your task has a reviewer step.",
-				"When your push lands, it tells you the old head and the new one, and, where your task has a reviewer step, asks the reviewer to read the merge and approve the new head.",
+				"it reads neither the head you merge nor its checks for you",
+				"When your push lands, it tells you the old head and the new one, and, where your task has a reviewer step, asks the agent of each review step of the task that has passed for its verdict on the new head",
 			},
 			[]string{"its checks and the reviewer's approval: the merge is yours", "it tells you the old head and the new one and asks the reviewer to read the merge"},
 		},
