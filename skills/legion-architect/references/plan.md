@@ -50,8 +50,9 @@ So on a task with no reviewer step and no `acceptance:owner`, such a check holds
 
 ## What Legion refuses
 
-`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-Past 20 causes of one kind, it names the first 20 and counts the rest of that kind in one more reason, of the whole plan.
+`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, a reason for each cause, its `task` empty for a cause of the whole plan.
+Past the first reasons of one kind, it counts the rest of that kind in one more reason, of the whole plan.
+Give each task block an id of lowercase letters, digits and hyphens, starting with a letter or a digit: Legion refuses any other id, since Dispatch records no step of such a task.
 Fix each reason and give a new version; the next refusal names what is left.
 A need that names no task of the plan, and a task that needs itself through other tasks, are refused.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.

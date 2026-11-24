@@ -204,7 +204,7 @@ func ParseSteps(text string) ([]Step, error) {
 	for _, word := range words {
 		role, key, keyed := strings.Cut(word, ":")
 		if !nameWord.MatchString(role) || keyed && !nameWord.MatchString(key) {
-			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", word)
+			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", quoted(word))
 		}
 		steps = append(steps, Step{Role: role, Key: key})
 	}
@@ -279,7 +279,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
-		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
+		if len(steps) > 0 && len(Supported(p)) == 0 && len(Validate(p, d)) == 0 {
 			// The plan's one task is the one no task needs, so it merges, and its line ends with
 			// the retro and the merge; a task another task needs walks the same line without them.
 			line := Line(steps, true)

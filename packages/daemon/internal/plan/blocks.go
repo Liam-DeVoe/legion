@@ -31,8 +31,10 @@ type Block struct {
 // every other block is skipped. Each task's needs are the ids of the tasks they name, read against
 // issue (resolveNeeds), so no plan holds a need as a word. A document with no task block is read as
 // a plan with no task, which Validate refuses. It answers an error only for a block it cannot read
-// at all: a task or a role with no id, one id on two such blocks, and a task whose `steps` is
-// outside the grammar (ParseSteps); the error names the block.
+// at all: a task or a role with no id, one id on two such blocks, a task whose id is outside
+// Dispatch's task form (taskIDForm), whose steps Dispatch could never record, and a task whose
+// `steps` is outside the grammar (ParseSteps); the error names the block, its id or word quoted
+// (quoted).
 func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -44,12 +46,16 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !taskIDForm.MatchString(block.ID) {
+			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, lowercase letters, digits and hyphens, starting with a letter or a digit, at most %d bytes, so Dispatch could record none of its steps",
+				quoted(block.ID), len(block.ID), MostTaskIDBytes)
 		}
 		task, err := taskOf(block)
 		if err != nil {
@@ -106,11 +112,11 @@ func resolveNeeds(p Plan, issue string) Plan {
 // resolved is one task's `needs` words as the ids of the tasks of ids they name, the words that
 // name none, and the `dispatch://` references not of issue (issueOf), each kept once in the
 // block's order. Each word is looked up in a set of what is kept already, so the read takes time
-// linear in the words: a scan of the kept list for each word was quadratic in the words of one
-// block, and one `needs` attribute within Dispatch's document limit holds hundreds of thousands of
-// words. TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no
-// count kept here sees a scan. A word is a reference not of issue or it is not, so one set holds
-// the words kept in either list.
+// linear in the words, where a scan of the kept list for each word would be quadratic in the words
+// of one block, and one `needs` attribute within Dispatch's document limit holds hundreds of
+// thousands of words. TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU
+// time, since no count kept here would see a scan. A word is a reference not of issue or it is
+// not, so one set holds the words kept in either list.
 func resolved(words []string, ids map[string]bool, issue string) (needs, unresolved, outside []string) {
 	if len(words) == 0 {
 		return nil, nil, nil

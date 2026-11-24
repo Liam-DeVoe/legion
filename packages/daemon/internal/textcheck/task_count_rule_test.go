@@ -28,7 +28,7 @@ type taskCountSite struct{ dir, fn string }
 // entry whose function no longer branches fails the check, so the list stays the list of what is.
 var taskCountRules = map[taskCountSite]string{
 	{"workflow", "textNamesTask"}: "the one presentation rule: a text names the task only where the plan holds a choice of tasks",
-	{"plan", "validate"}:          "a plan's validation refuses a plan that holds no task",
+	{"plan", "Validate"}:          "a plan's validation refuses a plan that holds no task",
 	{"api", "withoutTasks"}:       "the served issue's task views, taken off for a client below their contract: whether the field was on the wire, not a rule of a plan",
 }
 

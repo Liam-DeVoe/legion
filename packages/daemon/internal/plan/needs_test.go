@@ -36,11 +36,11 @@ func planOfTasksAToE(t *testing.T) Plan {
 // id can read, and which Validate takes; the control is a FromBlocks that keeps each word whole,
 // under which d needs the words.
 func TestFromBlocksReadsEachNeedAsTheTaskItNames(t *testing.T) {
-	read := planOf(t, 1, taskNeeding("a.b"), taskNeeding("c"),
-		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Eb"), "x", "c"),
+	read := planOf(t, 1, taskNeeding("a-b"), taskNeeding("c"),
+		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Db"), "x", "c"),
 		taskNeeding("e", "d", needWord("d")+"@vx"))
-	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a.b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
-		t.Fatalf("d needs %q and leaves %q unresolved, want [c a.b] and [x]", got.Needs, got.Unresolved)
+	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a-b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
+		t.Fatalf("d needs %q and leaves %q unresolved, want [c a-b] and [x]", got.Needs, got.Unresolved)
 	}
 	// A pin that is no `@v<N>` makes the reference name no block, as Dispatch reads it.
 	if got := read.Tasks[3]; !reflect.DeepEqual(got.Needs, []string{"d"}) || !reflect.DeepEqual(got.Unresolved, []string{needWord("d") + "@vx"}) {
@@ -312,7 +312,7 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 	}
-	if got := Supported(two, builtin); !reflect.DeepEqual(got, want) {
+	if got := Supported(two); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
 	}
 
@@ -320,7 +320,7 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 	if got := Sinks(aToE.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
 		t.Fatalf("Sinks(the plan of tasks a to e) = %q, want [e]", got)
 	}
-	if got := Supported(aToE, builtin); len(got) != 0 {
+	if got := Supported(aToE); len(got) != 0 {
 		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want none: e alone is a task that no task needs", got)
 	}
 }

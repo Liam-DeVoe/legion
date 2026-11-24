@@ -3,7 +3,6 @@
 package plan
 
 import (
-	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -38,16 +37,14 @@ func threadCPU(t *testing.T) time.Duration {
 // 50,000 words that name no task, each written twice, a task that needs each of 50,000 others,
 // and 20,000 references into another issue, each written twice. The fault is a read that scans
 // what the task has kept for each word, quadratic in the words of one block; the control is
-// resolved with slices.Contains over the needs and the words kept in place of its two sets, under
-// which the first two plans take 10.6 s and 5.58 s.
+// resolved with slices.Contains over the needs and the words kept in place of its two sets.
 //
 // A count of steps cannot hold this read, as one holds the check of cycles. resolved makes one
 // lookup for each word, by a set or by a scan, and the scan's loop runs inside slices.Contains, in
-// the standard library, where no count of this package runs: a count the read kept reads the same
-// with the scan as without it. The earlier count of this read, one read of the request's context
-// for each 1,024 words, read 97 times on 100,000 words under the scan and passed. So the read is
-// held to the thread's CPU time, about 16 to 100 times the right read's cost and 5 to 10 times
-// under the scan's.
+// the standard library, where no count of this package runs: a count the read kept would read the
+// same with the scan as without it. So the read is held to 1 s of the thread's CPU time: in this
+// pull request's runs the right read took 10 to 80 ms of it on the first two plans, and the control
+// 3.9 to 15.8 s. It catches that scan at these sizes; it proves no bound of time in general.
 func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 	// needing is a plan of a task a whose `needs` writes words, then a task of each id of ids.
 	needing := func(words []string, ids []string) []Block {
@@ -57,14 +54,6 @@ func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 		}
 		return blocks
 	}
-	// named is size ids, prefix then a number of six digits.
-	named := func(prefix string, size int) []string {
-		ids := make([]string, size)
-		for i := range ids {
-			ids[i] = fmt.Sprintf("%s%06d", prefix, i)
-		}
-		return ids
-	}
 	// other starts a reference to a block of another issue's plan, which names no task of this
 	// plan whatever its block id.
 	other := "dispatch://ACME-2/artifact/plan-md#b-x"
@@ -73,10 +62,10 @@ func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 		blocks                     []Block
 		needs, unresolved, outside []string
 	}{
-		{name: "50,000 words that name no task, each twice", blocks: needing(append(named("x", 50_000), named("x", 50_000)...), nil), unresolved: named("x", 50_000)},
-		{name: "one task needing each of 50,000 others", blocks: needing(named("t", 50_000), named("t", 50_000)), needs: named("t", 50_000)},
-		{name: "20,000 references into another issue, each twice", blocks: needing(append(named(other, 20_000), named(other, 20_000)...), nil),
-			outside: named(other, 20_000)},
+		{name: "50,000 words that name no task, each twice", blocks: needing(append(numbered("x", 50_000), numbered("x", 50_000)...), nil), unresolved: numbered("x", 50_000)},
+		{name: "one task needing each of 50,000 others", blocks: needing(numbered("t", 50_000), numbered("t", 50_000)), needs: numbered("t", 50_000)},
+		{name: "20,000 references into another issue, each twice", blocks: needing(append(numbered(other, 20_000), numbered(other, 20_000)...), nil),
+			outside: numbered(other, 20_000)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runtime.LockOSThread()
