@@ -254,7 +254,7 @@ func idleRigLegionTool(t *testing.T, dir, rigURL string) string {
 	path := filepath.Join(dir, "legion")
 	script := "#!/bin/sh\n" + idleRigURLVariable + "=" + shellQuote(rigURL) + "\nexport " + idleRigURLVariable + "\n" +
 		"exec " + shellQuote(self) + " -test.run='^TestIdleRigRoleProcess$' -test.timeout=0 -test.count=1 \"$@\"\n"
-	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil { // CONTROL ONLY
 		t.Fatalf("write the rig's legion stand-in: %v", err)
 	}
 	return path
