@@ -916,7 +916,7 @@ func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
 	ctx := context.Background()
 	records := record.NewStore()
 	started := time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: "CAPTURE-1", Generation: 1, Version: 1, ArtifactID: "plan-CAPTURE-1", Source: record.PlanSourceOwner,
 			GivenBy: "owner", GivenAt: started}
 		tasks := []record.PlanTask{{Issue: "CAPTURE-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting, FixesCI: true}}
