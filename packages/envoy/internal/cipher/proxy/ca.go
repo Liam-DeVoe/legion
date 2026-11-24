@@ -262,17 +262,18 @@ const intermediateLifeSlack = 5 * time.Minute
 // of this shape with leaves its own key signed. Go's crypto/tls never takes a subject's common name
 // as the server's name, so it refuses every leaf that names a host only there; GnuTLS refused
 // every such leaf too. Clients built on OpenSSL (openssl verify, curl, Python's ssl, Node) read the
-// common name when the leaf has no DNS name, and hold a multi-label common name such as
-// a.evil.example to the DNS constraints, but not a wildcard (*.evil.example, *.github.com) or
-// single-label (localhost) one: such a leaf is trusted for any name it matches. Bun refuses a leaf
-// with no subject alternative name under a constrained issuer, but once the leaf carries any that
-// is not a DNS or IP name (a URI, email or registeredID name) it trusts the common name with no
-// constraint at all, a multi-label one included. So against those clients a leaked pod key is
-// bounded by the intermediate's life, at most 7 days and intermediateLifeSlack, and not by its
-// names. The constraints are critical because RFC 5280 says they MUST be, and because a verifier
-// that does not implement them ignores a non-critical extension. Its one extended key usage is
-// serverAuth, so the key signs no certificate a verifier takes for e-mail protection, for a client
-// or for code, uses the system stores the pool's root is installed in serve too.
+// common name of a leaf with no DNS alternative name, and accept a name outside the allowed ones
+// when that common name is one label, such as localhost, or a wildcard over two or more labels,
+// such as *.evil.example for a.evil.example. They refuse a plain name, such as evil.example, and a
+// wildcard over one label, such as *.example, so for them the key reaches names of one label, and
+// names of three or more labels through a wildcard, but no name of two labels. Bun accepts any
+// name through the common name when the leaf also has a URI, email or registered-ID alternative
+// name. So against those clients a leaked pod key is bounded by the intermediate's life, at most 7
+// days and intermediateLifeSlack, and not by its names. The constraints are critical because RFC
+// 5280 says they MUST be, and because a verifier that does not implement them ignores a
+// non-critical extension. Its one extended key usage is serverAuth, so the key signs no
+// certificate a verifier takes for e-mail protection, for a client or for code, uses the system
+// stores the pool's root is installed in serve too.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
 		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))
