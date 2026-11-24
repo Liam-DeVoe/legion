@@ -9,7 +9,7 @@ import {
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, an edit into the control a send holds read-only, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { createRef, type ReactNode, useState } from "react";
+import { type ComponentProps, createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
@@ -482,6 +482,190 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
     view.unmount();
   }
 });
+
+/** Draws the composer `props` describe with `queryClient`'s store, where a row has kept a draft
+ *  first, and answers what draws it again with other props on the live instance. */
+function drawOverStore(queryClient: QueryClient, props: ComponentProps<typeof MentionComposer>) {
+  const tree = (next: ComponentProps<typeof MentionComposer>) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer {...next} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(props));
+  return {
+    rerender: (next: ComponentProps<typeof MentionComposer>) => view.rerender(tree(next)),
+    view,
+  };
+}
+
+/** A composer drawn with an offer beside its field (`KeptDraftOffers`): its field, and what ends
+ *  the row, unmounting the composer and putting back what the row replaced. */
+interface OfferRow {
+  readonly end: () => void;
+  readonly field: HTMLTextAreaElement;
+}
+
+const OFFER_OWNER: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+const KEPT_FOR_OTHER_WORDS = "Half a thought";
+const MY_EDIT = "Original comment, as I edited it";
+const KEPT_REPLY = "Reply to the status";
+
+/** A margin compose at the words "brown", whose name keeps a draft written at the words "quick" of
+ *  the same document: it offers that draft beside its empty field. */
+async function offerKeptForOtherWords(): Promise<OfferRow> {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["margin-compose", "artifact-1"];
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    anchor: { artifact: "artifact-1", mark_id: "mark-1", quote: "quick" },
+    draft: { body: KEPT_FOR_OTHER_WORDS, mentions: [], replacement: "" },
+    owner: OFFER_OWNER,
+    replyTo: null,
+  });
+  const { view } = drawOverStore(queryClient, {
+    anchor: { artifact: "artifact-1", mark_id: "mark-2", quote: "brown" },
+    mutationKey: sendKey,
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  await screen.findByText(/for other words: “quick”/);
+  return {
+    end: () => view.unmount(),
+    field: screen.getByLabelText<HTMLTextAreaElement>("Comment"),
+  };
+}
+
+/** An edit another writer changed the comment under: the field shows the comment as it reads now,
+ *  and the reader's edit waits beside it. Its host keeps the editor drawn after its `onClose`. */
+async function offerChangedEdit(user: UserEvent): Promise<OfferRow> {
+  // The editor reads the comment's blocks when it opens: this comment carries none.
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue(alphaBetaBlocks(false));
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const editOf = (body: string): ComponentProps<typeof MentionComposer> => ({
+    edit: { body, id: "comment-1" },
+    kind: "comment",
+    mutationKey: ["comment-edit", "comment-1"],
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  const { rerender, view } = drawOverStore(queryClient, editOf("Original comment"));
+  const field = screen.getByLabelText<HTMLTextAreaElement>("Edit comment");
+  await user.click(field);
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(MY_EDIT);
+  rerender(editOf("Changed by another writer"));
+  await screen.findByText(/This comment changed since you wrote your edit/);
+  return {
+    end: () => {
+      view.unmount();
+      commentBlocks.mockRestore();
+    },
+    field,
+  };
+}
+
+/** A composer at the issue's own address, whose name keeps a reply for a message its host lists
+ *  no longer: it draws that reply beside its empty field, with Discard my draft and Use it here. */
+async function offerGoneReply(): Promise<OfferRow> {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    draft: { body: KEPT_REPLY, mentions: [], replacement: "" },
+    owner: OFFER_OWNER,
+    replyTo: { actor: plannerAuthor, excerpt: "Status?", id: "message-1", parentKind: "message" },
+  });
+  const { view } = drawOverStore(queryClient, {
+    listed: new Set(),
+    mutationKey: sendKey,
+    onClose: () => {},
+    onSent: () => {},
+    owner: OFFER_OWNER,
+  });
+  await screen.findByText(/that your reply answered is no longer listed/);
+  return {
+    end: () => view.unmount(),
+    field: screen.getByLabelText<HTMLTextAreaElement>("Comment"),
+  };
+}
+
+// Each press of an offer beside the field (`KeptDraftOffers`) takes the offer away, and with it
+// the button that held the focus. The field the offer stood beside takes the focus then, with no
+// scroll, and the caret at the end of what the field holds: a draft taken in is ready to go on.
+// Discard my edit is the composer's own Discard, which ends it (`onClose`); a host that keeps the
+// editor drawn, as this one does, has its field take the focus the same way.
+for (const row of [
+  {
+    draw: offerKeptForOtherWords,
+    offer: "a draft kept for other words",
+    press: "Discard my draft",
+    text: "",
+  },
+  {
+    draw: offerKeptForOtherWords,
+    offer: "a draft kept for other words",
+    press: "Use my draft",
+    text: KEPT_FOR_OTHER_WORDS,
+  },
+  {
+    draw: offerChangedEdit,
+    offer: "an edit its comment changed under",
+    press: "Discard my edit",
+    text: "",
+  },
+  {
+    draw: offerChangedEdit,
+    offer: "an edit its comment changed under",
+    press: "Use my edit",
+    text: MY_EDIT,
+  },
+  {
+    draw: offerGoneReply,
+    offer: "a reply kept for a message no longer listed",
+    press: "Discard my draft",
+    text: "",
+  },
+  {
+    draw: offerGoneReply,
+    offer: "a reply kept for a message no longer listed",
+    press: "Use it here",
+    text: KEPT_REPLY,
+  },
+]) {
+  test(`${row.press} on ${row.offer} hands the focus to the field, with no scroll and the caret at the end`, async () => {
+    const user = userEvent.setup();
+    const { end, field } = await row.draw(user);
+    const focuses = spyOn(field, "focus");
+
+    try {
+      await user.click(screen.getByRole("button", { name: row.press }));
+      expect({
+        caret: [field.selectionStart, field.selectionEnd],
+        focused: focusedName(),
+        focuses: focuses.mock.calls,
+        offered: screen.queryByRole("button", { name: row.press }) !== null,
+        text: field.value,
+      }).toEqual({
+        caret: [row.text.length, row.text.length],
+        focused: field.getAttribute("aria-label") ?? "",
+        focuses: [[{ preventScroll: true }]],
+        offered: false,
+        text: row.text,
+      });
+    } finally {
+      focuses.mockRestore();
+      end();
+    }
+  });
+}
 
 /** Send's refusal as a reader meets it: `aria-disabled`, and the reason on `title` and in the
  *  element `aria-describedby` names. */

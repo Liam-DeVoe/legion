@@ -1441,6 +1441,7 @@ export function MentionComposer({
           with no word: it offers Discard my draft alone. */}
       <KeptDraftOffers
         changed={changed}
+        field={textarea}
         gone={goneAway}
         goneTakes={awayTakes}
         kind={kind}

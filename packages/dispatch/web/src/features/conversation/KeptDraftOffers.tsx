@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
+import { flushSync } from "react-dom";
 
+import { focusLost } from "../../components/focus-place";
 import {
   dangerText,
   linkHoverText,
@@ -98,10 +100,12 @@ export function DraftOffer({
  * kept for other words of its document (`offered`), and each reply it keeps whose comment or
  * message its host no longer lists (`gone`). Each waits with the words that say why, and with the
  * reader's presses for it: one takes it into the field, where the composer can send it, and the
- * other drops it. Nothing is saved or sent meanwhile.
+ * other drops it. Either press hands the focus to the field (`field`). Nothing is saved or sent
+ * meanwhile.
  */
 export function KeptDraftOffers({
   changed,
+  field,
   gone,
   goneTakes,
   kind,
@@ -114,6 +118,8 @@ export function KeptDraftOffers({
   onTakeOffered,
 }: {
   readonly changed: SentDraft | undefined;
+  /** The composer's text box, which each press of an offer here hands the focus to. */
+  readonly field: RefObject<HTMLTextAreaElement | null>;
   readonly gone: readonly GoneReplyDraft[];
   /** Where Use it here can put a draft of `gone` (`KeptDrafts.awayTakes`). */
   readonly goneTakes: KeptDrafts["awayTakes"];
@@ -132,6 +138,19 @@ export function KeptDraftOffers({
    *  refuses - leaves out, so the offer waits until the reader drops it. */
   readonly onTakeOffered: (() => void) | undefined;
 }): ReactNode {
+  /** Each press below takes its offer away, and with it the button that held the focus. The press
+   *  is committed at once (`flushSync`), so the field holds what it took in, and where the focus
+   *  went with the button (`focusLost`), the field takes it, with no scroll and the caret at the
+   *  end of what it holds: a draft taken in is ready to go on. The caret is set first and the
+   *  focus restores it, so no engine scrolls to show it. A host that moved the focus itself, or
+   *  took the composer away with Discard my edit, the composer's Discard (`onClose`), keeps that. */
+  const intoField = (press: () => void) => () => {
+    flushSync(press);
+    const box = field.current;
+    if (box === null || !focusLost()) return;
+    box.setSelectionRange(box.value.length, box.value.length);
+    box.focus({ preventScroll: true });
+  };
   return (
     <>
       {/* An edit written over a body the comment no longer holds: the field shows the comment as
@@ -140,9 +159,9 @@ export function KeptDraftOffers({
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
-          drop={{ label: "Discard my edit", press: onDiscardChanged }}
+          drop={{ label: "Discard my edit", press: intoField(onDiscardChanged) }}
           lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
-          take={{ label: "Use my edit", press: onTakeChanged }}
+          take={{ label: "Use my edit", press: intoField(onTakeChanged) }}
         />
       )}
       {/* A draft the margin's compose kept for other words of the document: a newer compose there
@@ -155,14 +174,14 @@ export function KeptDraftOffers({
       {offered === undefined ? null : (
         <DraftOffer
           body={offered.draft.body}
-          drop={{ label: "Discard my draft", press: onDropOffered }}
+          drop={{ label: "Discard my draft", press: intoField(onDropOffered) }}
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}
           take={
             onTakeOffered === undefined
               ? undefined
-              : { label: "Use my draft", press: onTakeOffered }
+              : { label: "Use my draft", press: intoField(onTakeOffered) }
           }
         />
       )}
@@ -174,7 +193,7 @@ export function KeptDraftOffers({
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: () => onDropGone(away) }}
+          drop={{ label: "Discard my draft", press: intoField(() => onDropGone(away)) }}
           key={away.replyTo.id}
           lead={
             <GoneReply
@@ -186,7 +205,7 @@ export function KeptDraftOffers({
           replacement={away.draft.replacement}
           take={
             goneTakes === "here"
-              ? { label: "Use it here", press: () => onTakeGone(away) }
+              ? { label: "Use it here", press: intoField(() => onTakeGone(away)) }
               : undefined
           }
         />

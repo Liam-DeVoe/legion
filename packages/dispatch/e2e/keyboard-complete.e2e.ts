@@ -7795,7 +7795,7 @@ test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin
 
 // SLOW(>=2s): the spec opened and connected, and one comment started on it and sent with every
 // frame of the page late.
-test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the commented word when the page's frames come later than its focus rescue waits for one", async ({
+test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the commented word while every frame of the page comes late", async ({
   page,
 }) => {
   const seed = await seedCommentFocus();
@@ -7815,7 +7815,7 @@ test("k-comment-focus: at 1440x900 a sent comment puts the caret back in the com
 
 // SLOW(>=2s): the spec opened and connected at a sheet's width, and one comment started on it and
 // sent with every frame of the page late.
-test("k-comment-focus: at 1024x768 a sent comment closes the sheet and puts the caret back in the commented word when the page's frames come later than its focus rescue waits for one", async ({
+test("k-comment-focus: at 1024x768 a sent comment closes the sheet and puts the caret back in the commented word while every frame of the page comes late", async ({
   page,
 }) => {
   const seed = await seedCommentFocus();
