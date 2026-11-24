@@ -15,8 +15,13 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json", "read at module load by packages/dispatch/e2e/visual-guard.ts, the new URL of SHOT_READS_FILE, which e2e/__tests__/visual-guard.test.ts, a test this job runs, imports: the routes a visual row's page may read"),
     (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:358-360, the new URL at :359"),
     ("packages/contracts/schemas/dispatch-openapi.json",
-     "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
+     "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:59-62, the new URL at :60: the generated API "
      "document every committed recording's body is held to, which this job's test step runs"),
+    (f"{ENVOY}/internal/dispatch/githubapi/testdata/proxy-contract.json",
+     "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:206-216, the new URL at :209-212: the GitHub "
+     "proxy's contract (its prefix, forwarded paths, workflow-runs query, error codes and trimmed fields, which "
+     "githubapi/contract_test.go holds to proxy.go) that every committed GitHub entry is held to, which this "
+     "job's test step runs"),
     (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
     ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
