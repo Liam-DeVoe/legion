@@ -581,10 +581,10 @@ function judge(comparison: string, taken: Judged, window: Window, lowerOne: bool
       );
     }
   }
-  if (faults.length > 0) {
-    return faults.map((fault) => `FAIL: ${comparison}: ${stepName(step)}: ${fault}`);
-  }
-  return [`PASS: ${comparison}: ${stepName(step)}: ${countsText(answers ?? [])}`];
+  // Each line of a taken step names its harness, so a pass shows each harness it covered.
+  const head = `${comparison}: harness ${agent.harness}: ${stepName(step)}`;
+  if (faults.length > 0) return faults.map((fault) => `FAIL: ${head}: ${fault}`);
+  return [`PASS: ${head}: ${countsText(answers ?? [])}`];
 }
 
 /**

@@ -42,9 +42,10 @@ const tester = "legion-legion-legion-3550-tester";
 const omp = "gateway-openai/openai/gpt-6.1-sol";
 const fallback = "gateway/openai/gpt-6.1-sol";
 const sonnet = "anthropic/claude-sonnet-4-5";
-// The lines that A1 and A6 pass with, in each row that takes them.
-const A1Passes = `PASS: c-real: ${A} default 2 step attempt 1: ${omp}=4,${fallback}=2`;
-const A6Passes = `PASS: live-at-both-reads: ${A} default 2 step attempt 6: ${omp}=2`;
+// The lines that A1 and A6 pass with, in each row that takes them. A taken step's line names its
+// harness.
+const A1Passes = `PASS: c-real: harness omp: ${A} default 2 step attempt 1: ${omp}=4,${fallback}=2`;
+const A6Passes = `PASS: live-at-both-reads: harness omp: ${A} default 2 step attempt 6: ${omp}=2`;
 
 /** What `dispatch steps --issue <issue>` prints of these run lines: a header, then each line. */
 function answer(issue: string, runs: string[]): string {
@@ -126,14 +127,18 @@ describe("step-models-check.sh", () => {
 
   test("a Claude Code step counts each response once by its id", () => {
     const run = check({ [A]: [C1] }, agentsFile("tester-background"));
-    expect(run.stdout).toContain(`PASS: c-real: ${A} default 3 step attempt 1: ${sonnet}=3`);
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness claude: ${A} default 3 step attempt 1: ${sonnet}=3`
+    );
     expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(0);
   });
 
   test("a synthetic response counts for no model", () => {
     const run = check({ [A]: [C2] }, agentsFile("tester-refusal"));
-    expect(run.stdout).toContain(`PASS: c-real: ${A} default 3 step attempt 2: ${sonnet}=1`);
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness claude: ${A} default 3 step attempt 2: ${sonnet}=1`
+    );
     expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(0);
   });
@@ -141,10 +146,12 @@ describe("step-models-check.sh", () => {
   test("both comparisons on both harnesses", () => {
     const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsJson);
     expect(run.stdout).toContain(A1Passes);
-    expect(run.stdout).toContain(`PASS: c-real: ${A} default 3 step attempt 1: ${sonnet}=3`);
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness claude: ${A} default 3 step attempt 1: ${sonnet}=3`
+    );
     expect(run.stdout).toContain(A6Passes);
     expect(run.stdout).toContain(
-      `PASS: live-at-both-reads: ${A} default 3 step attempt 3: ${sonnet}=1`
+      `PASS: live-at-both-reads: harness claude: ${A} default 3 step attempt 3: ${sonnet}=1`
     );
     expect(run.stdout).not.toContain("FAIL");
     expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: PASS"]);
@@ -154,7 +161,7 @@ describe("step-models-check.sh", () => {
   test("a record whose set model is not the settings' fails", () => {
     const run = check({ [A]: [A1] }, agentsFile("implementer-set-fallback"));
     expect(run.stdout).toContain(
-      `FAIL: c-real: ${A} default 2 step attempt 1: its set model is ${omp}, and the settings give its role ${fallback}`
+      `FAIL: c-real: harness omp: ${A} default 2 step attempt 1: its set model is ${omp}, and the settings give its role ${fallback}`
     );
     expect(run.verdicts).toEqual(["c-real: FAIL", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(1);
@@ -162,7 +169,9 @@ describe("step-models-check.sh", () => {
 
   test("a record that counts no call fails", () => {
     const run = check({ [A]: [A2] }, agentsFile("implementer"));
-    expect(run.stdout).toContain(`FAIL: c-real: ${A} default 2 step attempt 2: its counts total 0`);
+    expect(run.stdout).toContain(
+      `FAIL: c-real: harness omp: ${A} default 2 step attempt 2: its counts total 0`
+    );
     // Its counts equal the transcript's none, so only the clause of at least 1 call fails it.
     expect(run.stdout).not.toContain("between the two reads");
     expect(run.verdicts).toEqual(["c-real: FAIL", "live-at-both-reads: UNKNOWN"]);
@@ -281,16 +290,16 @@ describe("step-models-check.sh", () => {
   test("--lower-one fails the steps that pass", () => {
     const run = check({ [A]: [A1, A6, C1, C3, A0] }, agentsJson, { args: ["--lower-one"] });
     expect(run.stdout).toContain(
-      `FAIL: c-real: ${A} default 2 step attempt 1: its counts are ${omp}=3,${fallback}=2, and its transcript holds ${omp}=4,${fallback}=2 between the two reads`
+      `FAIL: c-real: harness omp: ${A} default 2 step attempt 1: its counts are ${omp}=3,${fallback}=2, and its transcript holds ${omp}=4,${fallback}=2 between the two reads`
     );
     expect(run.stdout).toContain(
-      `FAIL: c-real: ${A} default 3 step attempt 1: its counts are ${sonnet}=2, and its transcript holds ${sonnet}=3 between the two reads`
+      `FAIL: c-real: harness claude: ${A} default 3 step attempt 1: its counts are ${sonnet}=2, and its transcript holds ${sonnet}=3 between the two reads`
     );
     expect(run.stdout).toContain(
-      `FAIL: live-at-both-reads: ${A} default 2 step attempt 6: its counts are ${omp}=1, and its transcript holds ${omp}=2 between the two reads`
+      `FAIL: live-at-both-reads: harness omp: ${A} default 2 step attempt 6: its counts are ${omp}=1, and its transcript holds ${omp}=2 between the two reads`
     );
     expect(run.stdout).toContain(
-      `FAIL: live-at-both-reads: ${A} default 3 step attempt 3: its counts are ${sonnet}=0, and its transcript holds ${sonnet}=1 between the two reads`
+      `FAIL: live-at-both-reads: harness claude: ${A} default 3 step attempt 3: its counts are ${sonnet}=0, and its transcript holds ${sonnet}=1 between the two reads`
     );
     expect(run.stdout).not.toContain("PASS");
     expect(run.verdicts).toEqual(["c-real: FAIL", "live-at-both-reads: FAIL"]);
@@ -463,10 +472,12 @@ describe("step-models-check.sh", () => {
   test("two issues each answer their own records", () => {
     const run = check({ [A]: [A1, A6, A0], [B]: [C1b, C3b] }, agentsJson);
     expect(run.stdout).toContain(A1Passes);
-    expect(run.stdout).toContain(`PASS: c-real: ${B} default 3 step attempt 1: ${sonnet}=2`);
+    expect(run.stdout).toContain(
+      `PASS: c-real: harness claude: ${B} default 3 step attempt 1: ${sonnet}=2`
+    );
     expect(run.stdout).toContain(A6Passes);
     expect(run.stdout).toContain(
-      `PASS: live-at-both-reads: ${B} default 3 step attempt 2: ${sonnet}=1`
+      `PASS: live-at-both-reads: harness claude: ${B} default 3 step attempt 2: ${sonnet}=1`
     );
     expect(run.stdout).not.toContain("FAIL");
     expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: PASS"]);

@@ -5619,12 +5619,13 @@ Each item below names a comparison, then what it takes and judges.
 
 | exit | printed | when |
 | :--- | :--- | :--- |
-| 0 | `PASS: c-real: <ISSUE> <task> <step> <kind> attempt <a>: <model>=<calls>,…` for each harness, then `c-real: PASS` | each harness took a step that shows the four things, and no record names a model its transcript does not hold |
+| 0 | `PASS: c-real: harness <harness>: <ISSUE> <task> <step> <kind> attempt <a>: <model>=<calls>,…` for each harness, then `c-real: PASS` | each harness took a step that shows the four things, and no record names a model its transcript does not hold |
 | 1 | one `FAIL: …` line for each fault, then `c-real: FAIL` | a taken step's set model or counts do not hold, or a record names a model its transcript does not hold |
 | 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, or it could read nothing to judge |
 
 It could read nothing to judge where a command failed, a line has other than 16 words, or the log holds no read line.
 The same holds where a log line holds the read line's message and is no JSON, or where a record's agent has no transcript.
+Each `PASS:` or `FAIL:` line of a taken step names its harness, so a pass shows each harness that it covered.
 Its last two lines are `c-real: <verdict>` and `live-at-both-reads: <verdict>`, on every exit.
 A usage error is exit 2 too, with the usage on stderr.
 
