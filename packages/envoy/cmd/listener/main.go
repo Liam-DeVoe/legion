@@ -3004,7 +3004,7 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// within what is left of the HTTP stop's budget.
 	parts.delivery.drain(shutdownCtx)
 
-	// 4. NATS — wait (within the same deadline) for a self-health rebuild the monitor may still be
+	// 5. NATS — wait (within the same deadline) for a self-health rebuild the monitor may still be
 	// running, so nothing re-subscribes or re-watches during the drain. Retire every cache's KV
 	// watchers, so their end reads as the shutdown it is rather than a watcher failure, and a
 	// reconnect hook still running cannot arm a new one; then drain in-flight deliveries without

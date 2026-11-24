@@ -342,13 +342,21 @@ func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testi
 }
 
 // A leader read waited for through BoundedOn fails with ErrRequestLostWithConnection at the
-// reconnect when its connection is cut under it, rather than waiting out its bound. The leader
-// reads main's #5132 added on the listener's paths each run so: the delete of a session's entry
-// and its conditional delete (session.SessionRegistry.Delete and DeleteIf), the delete of a
-// session's interest row (store's deleteInterest), the read of a session's record before its
-// consumer is deleted (session.SessionRegistry.RefreshFromLeader), and the read of a role's claim
-// that the session relay judges a role message by and the kept lane's handover resolves the
-// role's holder with (store.Registry.RoleClaimFromLeader). A leader read is a stream message get,
+// reconnect when its connection is cut under it, rather than waiting out its bound. The
+// listener's leader reads run so, internal/cistore's two aside, among them: the delete of a
+// session's entry and its conditional delete (session.SessionRegistry.Delete and DeleteIf), the
+// delete of a session's interest row (store's deleteInterest), each read of a session's record
+// through session.SessionRegistry.RefreshFromLeader (before its consumer is deleted, in the
+// interest and role claim reapers' test of a session the cache does not hold, in a soft claim's
+// reads of the holder it would take the role from, and in the claim route's read of its
+// claimant), the read of a role's claim that the session relay judges a role message by and the
+// kept lane's handover resolves the role's holder with (store.Registry.RoleClaimFromLeader), and
+// the read of a controller role's claim that decides whether a session's consumer filter keeps
+// the role's notice lane (store's roleClaimFromLeader, under store.Registry.ReadLaneHolders).
+// cistore's two, the reads of a CI record main's #5132 added (Store.casState and
+// Store.ClaimStillHeld), are not waited for through BoundedOn: each passes context.Background, so
+// RequestTimeout alone bounds it (GetFromLeader), and one whose request died with its connection
+// waits all of that bound out. A leader read is a stream message get,
 // `$JS.API.STREAM.MSG.GET.KV_<bucket>` (NewestFromLeader), whose answer nats.go waits for on its
 // shared response subscription, and nats.go fails no request its connection drops, so a bare
 // leader read whose request died with the old socket waits out its whole bound. The read is

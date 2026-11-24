@@ -47,13 +47,13 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // by the one judgment every such filter is built with (storedTopicFiltered, which storedRowFilter
 // applies): either store can name a topic that filter drops, and its consumer delivers nothing on
 // it. A row an earlier build stored can name another session's inbox, a failed-delivery lane, a
-// wildcard reaching one, or a topic the filter cannot take (filterTakes: a role lane, or one the
-// server refuses as a filter subject), and a row or a record can name the notice lane of a
-// controller role the session no longer holds: a record keeps the lane of a role taken from its
-// session for the record's 30 days when that session had stopped, since nothing rewrites a stopped
-// session's record. A session the judgment leaves with no topic matching the message is no
-// recipient of it, and a publish no session follows that way answers recipients 0, as any stored
-// topic no session follows does.
+// wildcard reaching one, or a topic the filter cannot take (filterTakes, bus.CanFilterOn: one
+// outside bus.NotificationTopicPrefix, a role lane, or one the server refuses as a filter
+// subject), and a row or a record can name the notice lane of a controller role the session no
+// longer holds: a record keeps the lane of a role taken from its session for the record's 30 days
+// when that session had stopped, since nothing rewrites a stopped session's record. A session the
+// judgment leaves with no topic matching the message is no recipient of it, and a publish no
+// session follows that way answers recipients 0, as any stored topic no session follows does.
 //
 // That judgment holds a topic no stream subject captures yet as it holds any other (filterTakes),
 // so it cannot say whether the stream stores the message at all, and the count asks that first,

@@ -2000,7 +2000,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // no claim record may hold (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read
 // and the write of the claimant's interest record with the role's topic
 // (store.Registry.UpsertWithin); and the claim write. One more, the read that confirms that topic,
-// runs in the reserve after the claim's tries.
+// runs in the reserve after the claim's tries, as do the trips that narrow a former holder (below).
 // A claimant the cache holds saves the first read; a role a claim holds saves the marker read and
 // spends the write of a takeover record instead (takeoverTries.beforeTry); each conflict of a hard
 // claim's write adds a read and a write; and a soft claim adds the reads of its decision. The
@@ -2088,14 +2088,16 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // notice published once the claim is answered reaches the new holder alone. What stays open: a
 // notice published between the claim's write and that filter write still reaches the former
 // holder. Everything after the claim's write - the claimant's topic merged again, the old holder's
-// topic taken off its row, the record write, the wait for the former holder's session lock (which
-// a registration holds across its consumer call and its writes) and the fenced filter write - runs
-// inside this route's budget (sendRequestBudget), so that window ends, at the latest, 3.5 s after
-// the request arrived. A narrowing that did not land by then is logged at WARN naming the role,
-// the lane and both sessions, and the lane stays on the former holder's consumer until its next
-// registration (a heartbeat, at most 90 s) or its relay's restart. A stopped former holder has no
-// entry, so its record keeps the lane, which the publish count judges by the claim
-// (recipientCounts).
+// topic taken off its row, and the narrowing's round trips, up to seven in its first filter pass:
+// the row read and the record write (recordFollowedTopics), then, after the wait for the former
+// holder's session lock (which a registration holds across its consumer call and its writes), the
+// row read, a leader read of the lane's claim where the row still names the lane, the consumer's
+// read and its update, and the row read again (storedFilterWrite) - runs inside this route's
+// budget (sendRequestBudget), so that window ends, at the latest, 3.5 s after the request arrived.
+// A narrowing that did not land by then is logged at WARN naming the role, the lane and both
+// sessions, and the lane stays on the former holder's consumer until its next registration (a
+// heartbeat, at most 90 s) or its relay's restart. A stopped former holder has no entry, so its
+// record keeps the lane, which the publish count judges by the claim (recipientCounts).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -2275,15 +2277,14 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// cleared to the machine, the self-subscription and the claim token's projects, with its
 		// UpdatedAt stamped: a RePublish could set its own session's title, a non-consumer delivery
 		// that pauses its relay until the next registration, a display field or a gap mark, and none
-		// of them is written back as the session's own registration. The port is written out
-		// because no registration this build stores carries one (subscribeHandler refuses a
-		// registration that names a serving port)
-		// and no delivery opens a connection to a session, so a renewed entry still carrying the
-		// port an earlier build's listener stored would keep answering GET /v1/sessions with it
-		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry. One
-		// registration per session id is a non-goal, and a process that wants a registration of
-		// its own registers (POST /v1/sessions/subscribe). A leader read that did not answer is the
-		// bus-unavailable 503, so a hiccup never wipes a session's projects.
+		// of them is written back as the session's own registration. The port is written out because
+		// no registration this build stores carries one (subscribeHandler refuses a registration that
+		// names a serving port) and no delivery opens a connection to a session, so a renewed entry
+		// still carrying the port an earlier build's listener stored would keep answering GET
+		// /v1/sessions with it (listenerwire.SessionInfo.Port) for as long as the claims keep
+		// refreshing the entry. One registration per session id is a non-goal, and a process that
+		// wants a registration of its own registers (POST /v1/sessions/subscribe). A leader read that
+		// did not answer is the bus-unavailable 503, so a hiccup never wipes a session's projects.
 		prior, own, err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r))
 		if err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
@@ -2294,10 +2295,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// The claimant's registered client instance id, which the predecessor rule falls back to, is
 		// the one PutClearingGap's leader read found, as the record stood before the refresh, where
 		// that record is the session's own registration naming its key; any other record keeps the
-		// id of entry, liveSessionEntry's read, which is this listener's cached entry where the cache
-		// holds the claimant, and which a RePublish can have written, since neither the cache nor a
-		// direct get tells one from a registration. session.SessionRegistry.PutClearingGap says what
-		// each record answers.
+		// id of entry, liveSessionEntry's read: this listener's cached entry, or else the leader's record
+		// (RefreshFromLeader), either of which a RePublish can have written, since neither judges the
+		// headers that tell one from a registration. PutClearingGap says what each record answers.
 		registeredInstanceID := entry.ClientInstanceID
 		if own {
 			registeredInstanceID = prior.ClientInstanceID

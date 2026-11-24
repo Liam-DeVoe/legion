@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A publish (`POST /v1/messages/publish`) on a topic that no stream subject captures yet answers
+    `recipients 0`, and `recipients_connected 0` where the session copy can be served, although a
+    session's consumer filter now keeps such a topic. The publish goes over core NATS, which no
+    stream stores, so no consumer delivers it. The count and the send take one judgement of the
+    transport (`bus.Client.PublishTakesJetStream`), which the route makes once for each publish.
+    So a read of the stream's subjects that lands between the two cannot count a session for a
+    message the stream does not store, or count none for a message the stream stores.
+time: 2026-11-24T06:40:00.000000000Z
+custom:
+    Issue: pr2404

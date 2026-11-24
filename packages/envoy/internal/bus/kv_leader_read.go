@@ -1,10 +1,20 @@
 // The leader-answered reads of one key of a KV bucket, beside their test, each read so because a
 // copy behind the leader, which a direct get may reach, would answer it wrongly, and because only
 // the leader's answer carries the headers the stream stored a message with:
-// KeyValue.GetFromLeader, whose callers decide a delete on the strength of a key being absent
-// (session.SessionRegistry.RefreshFromLeader) or the revision a write or a delete is fenced on
-// (KeyValue.ReadStored, and store's latestStored); KeyValue.NewestFromLeader and
-// KeyValue.ReadFromLeader, whose callers decide a delete or the revision a write is fenced on; and
+// KeyValue.GetFromLeader, whose callers decide a delete or a release on the strength of a key
+// being absent (session.SessionRegistry.RefreshFromLeader, for the delete of a session's consumer
+// and the interest and role claim reapers, and internal/session's readForStop, for a conditional
+// stop), whether a claim takes a role from its holder or is written for its claimant
+// (RefreshFromLeader again: a soft claim's reads of the holder, and the claim route's read of its
+// claimant), the revision a write or a delete is fenced on (KeyValue.ReadStored, and store's
+// latestStored), whether a CI record's change is declined and the revision its retry writes at,
+// and whether a settlement's claim still holds before it is published (internal/cistore's
+// Store.casState and Store.ClaimStillHeld, each passing context.Background, so RequestTimeout
+// alone bounds it), and which session holds a Legion controller's notice lane, which decides a
+// session's consumer filter (store's roleClaimFromLeader, under Registry.ReadLaneHolders);
+// KeyValue.NewestFromLeader and KeyValue.ReadFromLeader, whose callers decide a delete or the
+// revision a write is fenced on, and who holds a role, for the session relay's judgement of a role
+// message and the kept lane's handover (store.Registry.RoleClaimFromLeader); and
 // KeyValue.GetLatestFromLeader, whose one caller, internal/session's readLatest, reads it for the
 // revision a conditional write that lost to another writes at next (session.SessionRegistry's
 // registration writes), for the record each pass of a rewrite of a session's entry decides from

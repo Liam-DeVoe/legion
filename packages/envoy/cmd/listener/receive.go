@@ -438,12 +438,12 @@ func (r *durableReceiver) Start() {
 // cancelled, and a holder hands every message it has not handled back to the next one, releases
 // the lease, so a standby takes it at its next poll, and keeps its subscription until the next
 // holder receives (durableReceiver.handBack). It returns once that is done or ctx ends; a lease
-// left unreleased at ctx's end is taken as an expired one. A loop that has already returned is
-// read before ctx (awaitDone), which a hand-back that ran to its bounds can have ended first, so
-// a stop that did everything it owed does not report itself unfinished. The release here is the
-// one that writes the record when the hand-back's own release outlasted its bound, and it writes
-// the ack-wait debt that release recorded (lease.Release). A lease that joined as the receive loop
-// stopped, which it never took up (join), is released all the same.
+// left unreleased at ctx's end is taken as an expired one. A loop that has already returned is read
+// again at ctx's end (awaitDone, closedWithin), which a hand-back that ran to its bounds can have
+// ended first, so a stop that did everything it owed does not report itself unfinished. The release
+// here is the one that writes the record when the hand-back's own release outlasted its bound, and
+// it writes the ack-wait debt that release recorded (lease.Release). A lease that joined as the
+// receive loop stopped, which it never took up (join), is released all the same.
 func (r *durableReceiver) Stop(ctx context.Context) {
 	r.mu.Lock()
 	stop, done := r.stop, r.done
@@ -1171,9 +1171,9 @@ func (r *durableReceiver) probe(ctx context.Context) error {
 	return errDurableUnbound
 }
 
-// waitLoops waits for each loop to return, until deadline. A loop that has already returned is
-// read before the deadline (awaitDone), so a pass that ended just as it ran out is not reported
-// as still running.
+// waitLoops waits for each loop to return, until deadline. A loop is read again once the deadline
+// has passed (awaitDone, through closedWithin), so a pass that ended just as it ran out is not
+// reported as still running.
 func waitLoops(logger *logging.Logger, loops []<-chan struct{}, deadline time.Time) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()

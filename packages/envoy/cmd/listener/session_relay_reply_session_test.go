@@ -160,8 +160,8 @@ const registrationSpare = 30 * time.Second
 // request, packages/envoy-client/src/transport.ts:1121-1128; LISTENER_CALL_RETRY_DELAY_MS and
 // LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy and
 // claude-envoy register again 20 to 40 s after a failed registration and then at every heartbeat
-// (packages/pi-envoy/extensions/envoy.ts:3764-3771 and :3804,
-// packages/claude-envoy/src/envoy-channel-server.ts:1925). So a registration refused because the
+// (packages/pi-envoy/extensions/envoy.ts:3829-3836 and :3869,
+// packages/claude-envoy/src/envoy-channel-server.ts:2005). So a registration refused because the
 // server answered the listener late - the 503 consumer_error of a session consumer call past its
 // bound, or the bus-unavailable 503 of store work past its own - is a registration the session
 // makes again, not one it never makes.

@@ -519,14 +519,14 @@ func (p *listenerProcess) waitStandby(t *testing.T, activeInstance string) {
 	p.waitHealth(t, "a healthy standby of "+activeInstance, map[string]any{"role": "standby", "active_instance": activeInstance})
 }
 
-// A shutdown's wait on a loop that is stopping reads the loop before the context (awaitDone):
-// every such wait runs with a context the stop can have run out of, and a select over the two
-// ready channels together would pick either, so half of those waits would report work undone
-// that was done - a lease left unreleased for a standby to wait out as an expired one
-// (lease.Release), a hand-back reported unfinished (durableReceiver.Stop), a warning about loops
-// that had returned (waitLoops, shutdownListener). A context that ended with the loop still
-// running is its error.
-func TestAwaitDoneReadsTheLoopBeforeTheContext(t *testing.T) {
+// A shutdown's wait on a loop that is stopping reads the loop again once the context has ended
+// (awaitDone, through closedWithin): every such wait runs with a context the stop can have run out
+// of, and a select over the two ready channels together picks either, so without that second read
+// half of those waits would report work undone that was done - a lease left unreleased for a
+// standby to wait out as an expired one (lease.Release), a hand-back reported unfinished
+// (durableReceiver.Stop), a warning about loops that had returned (waitLoops, shutdownListener). A
+// context that ended with the loop still running is its error.
+func TestAwaitDoneReadsTheLoopAgainOnceTheContextHasEnded(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	ended, cancel := context.WithCancel(context.Background())

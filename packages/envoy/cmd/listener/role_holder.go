@@ -95,16 +95,17 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 
 // liveSessionEntry is sessionID's record and the state that record puts its session in, for a
 // decision that turns on whether that session is still answering: a soft claim, the reapers, a
-// session lookup, a session-addressed send and an agent delivery. accept is the caller's rule
-// about that state, and read the caller's read of the session bucket.
+// session lookup, a session-addressed send, an agent delivery and a claim's read of its claimant.
+// accept is the caller's rule about that state, and read the caller's read of the session bucket.
 //
 // A caller that may act on a session which merely stopped answering passes notGone: the send
 // route, whose message is stored for such a session; the agent delivery path; both reapers
-// (sessionMayBeLive); and GET /v1/registry/<id> asked with include=unresponsive. The two that
-// may act only on a session answering now pass sessionIsLive: that same lookup asked without
-// include, and a soft claim weighing the holder it found (roleSupersessionVerdict). A
-// role-holder resolution reads its holder through roleHolderSessions.Holder instead, which asks
-// the same two reads in the same order and leaves the judgement to internal/roles.
+// (sessionMayBeLive); the claim route's read of its claimant (roleSetHandler); and GET
+// /v1/registry/<id> asked with include=unresponsive. The two that may act only on a session
+// answering now pass sessionIsLive: that same lookup asked without include, and a soft claim
+// weighing the holder it found (roleSupersessionVerdict). A role-holder resolution reads its
+// holder through roleHolderSessions.Holder instead, which asks the same two reads in the same
+// order and leaves the judgement to internal/roles.
 //
 // The cache answers when it holds a record accept takes (session.SessionRegistry.Lookup, which
 // judges the record's own age and never its membership of the cache); otherwise the session is
@@ -118,11 +119,13 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // caught up with.
 //
 // read is session.SessionRegistry.RefreshFromLeader for a caller that takes something away from
-// the session on a miss - both reapers, and a soft claim that takes the holder's role - and
-// Refresh, a direct get, for one that only answers or waits on it. On a replicated bucket a copy
-// that has not applied a registration made a moment ago answers that the session has no record,
-// and the reaper would delete a live session's interest or release its role, and the soft claim
-// take a live holder's role.
+// the session on a miss - both reapers, and a soft claim that takes the holder's role - or that
+// decides a write on the record it reads - the claim route's read of its claimant, which decides
+// the claim's write - and Refresh, a direct get, for one that only answers or waits on it. On a
+// replicated bucket a copy that has not applied a registration made a moment ago answers that the
+// session has no record, and the reaper would delete a live session's interest or release its
+// role, the soft claim take a live holder's role, and the claim route refuse a registered claimant
+// as unregistered or hand the predecessor rule an instance id the session has replaced.
 //
 // nats.ErrKeyNotFound is the answer for a session the bucket holds no record of and for one whose
 // record accept refuses, and the state returned with it says which: session.Gone for the first,
