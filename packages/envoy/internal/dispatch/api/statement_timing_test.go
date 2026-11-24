@@ -318,13 +318,14 @@ const (
 // issues_parent_key, and each member issue's own issues row is read through issues_pkey, each
 // written as a lateral probe that `offset 0` keeps the planner from flattening into a join it may
 // hash; the event of last_seq is read by a probe like that of priorityNewestEventQuery
-// (last_seq_event). As there, the issues row and the event are read for the distinct keys of
-// `members` (member_issue), and the one time of each issue is joined back to `members`. The
-// event's probe names i alone, but i is itself a lateral on member_issue, so the probe too runs
-// only after the walk and its dedupe, once for each member issue. It is written out whole, with
-// the depth cap (parentDepthCapSQL) and the project filter (priorityProjectFilter) as they stand
-// at this commit, because a run on production takes the text from the measurement's log and
-// checks it by its sha256.
+// (last_seq_event). As there, the issues row and the event are read inside a materialized CTE
+// (member_event) for the distinct keys of `members` (member_issue), and the one time of each
+// issue is joined back to `members`. The event's probe names i alone, but i is itself a lateral
+// on member_issue, so the probe too runs only after the walk and its dedupe; the fence keeps the
+// join to `members` above both probes, so each runs once for each member issue. It is written
+// out whole, with the depth cap (parentDepthCapSQL) and the project filter
+// (priorityProjectFilter) as they stand at this commit, because a run on production takes the
+// text from the measurement's log and checks it by its sha256.
 const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
@@ -339,20 +340,23 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 		where m.depth < 32
 	), members as (
 		select distinct key, priority from members_spread
+	), member_event as materialized (
+		select member_issue.key, last_seq_event.created_at
+		from (select distinct key from members) member_issue
+		cross join lateral (
+			select i.key, i.last_seq, i.project_key from issues i where i.key = member_issue.key offset 0
+		) i
+		cross join lateral (
+			select last_seq_event.created_at
+			from events last_seq_event
+			where last_seq_event.issue_key = i.key and last_seq_event.seq = i.last_seq
+			limit 1
+		) last_seq_event
+		where (cardinality($3::text[]) = 0 or i.project_key = any($3::text[]))
 	)
-	select m.priority, max(last_seq_event.created_at)
-	from (select distinct key from members) member_issue
-	cross join lateral (
-		select i.key, i.last_seq, i.project_key from issues i where i.key = member_issue.key offset 0
-	) i
-	cross join lateral (
-		select last_seq_event.created_at
-		from events last_seq_event
-		where last_seq_event.issue_key = i.key and last_seq_event.seq = i.last_seq
-		limit 1
-	) last_seq_event
-	join members m on m.key = member_issue.key
-	where (cardinality($3::text[]) = 0 or i.project_key = any($3::text[]))
+	select m.priority, max(member_event.created_at)
+	from members m
+	join member_event on member_event.key = m.key
 	group by m.priority`
 
 // mainPriorityNewestEventKeyedWalkQuery is main's text (mainPriorityNewestEventQuery) with its

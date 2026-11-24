@@ -169,21 +169,19 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 // planner may hash: for a plain join on (issue_key, seq) over a table of a million events, it
 // hashed all of them under both plans.
 //
-// The probe runs once for each distinct member issue, after the walk and its dedupe. The
-// statement reads the distinct keys of `members` (member_issue), joins each to its issues row,
-// and probes with that key (member_issue.key) as well as the issue (i.last_seq), so the probe
-// can run only on a key the dedupe answered; member_issue.key is i.key by the join. The one time
-// of each issue is then joined back to `members`, and the time of a priority is the newest over
-// its member issues. A probe for each member row, an (issue, priority) pair, reads an issue's
-// event once for every priority the issue advances: on the database cmd/dispatch-seed fills at
-// --scale 1, such a probe ran 14,712 times for 6,362 member issues, and its top plan node read
-// 62,914 shared buffers, more than the 56,832 and 58,602 that main's text, which hashes every
-// event of the table, read under its two plans (TestStatementTimings, 2026-11-24). The probe
-// names the member key, and not i alone, because a probe that names i alone can run before the
-// members are joined at all, and the planner runs it there where it plans more member rows than
-// issues: in the text that probed each member row, such a probe ran 1,029 times over a corpus of
-// 1,029 issues and 30 member rows, under each plan that
-// TestPriorityNewestEventReadsOneEventOfEachMember reads (PostgreSQL 18.7, 2026-11-24).
+// The probe runs once for each distinct member issue, inside a materialized CTE (member_event).
+// The CTE reads the distinct keys of `members` (member_issue), joins each to its issues row, and
+// probes with that key (member_issue.key) as well as the issue (i.last_seq), so the probe can run
+// only on a key the dedupe answered; member_issue.key is i.key by the join. It answers the one
+// time of each member issue, which is then joined back to `members`, and the time of a priority
+// is the newest over its member issues. `materialized` is a fence: the planner plans the CTE on
+// its own, so the join to `members` cannot move below the probe, whatever join order it prefers.
+// Without the fence, the planner joined the members before the probe on the database
+// cmd/dispatch-seed fills at --scale 1, and probed each member row, an (issue, priority) pair,
+// which reads an issue's event once for every priority the issue advances: 14,712 probes for
+// 6,362 member issues, and the statement's top plan node read 79,933 shared buffers under both
+// plans, against the 56,798 and 58,533 that main's text, which hashes every event of the table,
+// read under its two plans (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
@@ -200,18 +198,21 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 // the later of its value and the event's created_at (events/broker.go, QueueAppendWithLogins),
 // but a patch moves it too, to the clock time of its own statement (issueUpdatedNow), so
 // updated_at is not the time of an event.
-var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `
-	select m.priority, max(last_seq_event.created_at)
-	from (select distinct key from members) member_issue
-	join issues i on i.key = member_issue.key
-	cross join lateral (
-		select last_seq_event.created_at
-		from events last_seq_event
-		where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = i.last_seq
-		limit 1
-	) last_seq_event
-	join members m on m.key = member_issue.key
-	where ` + priorityProjectFilter + `
+var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `, member_event as materialized (
+		select member_issue.key, last_seq_event.created_at
+		from (select distinct key from members) member_issue
+		join issues i on i.key = member_issue.key
+		cross join lateral (
+			select last_seq_event.created_at
+			from events last_seq_event
+			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = i.last_seq
+			limit 1
+		) last_seq_event
+		where ` + priorityProjectFilter + `
+	)
+	select m.priority, max(member_event.created_at)
+	from members m
+	join member_event on member_event.key = m.key
 	group by m.priority`
 
 // priorityUnplacedQuery is the first fault: an open issue in flight that advances no live
