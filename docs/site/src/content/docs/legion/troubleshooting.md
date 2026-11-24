@@ -202,6 +202,34 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
 
+## An edited instructions file does not reach the workers
+
+A running daemon reads the deployment's `instructions` file, and each declared arm's, again before
+every launch, so an edit reaches each role at its next launch. A role that is running keeps the
+prompt it launched with until then.
+
+- **The daemon logs `legion daemon launches with the instructions it last read: the file no longer
+  reads` at WARN.** The file `file` names was missing, unreadable or blank when a launch read it
+  (`error` says which). Launches go on carrying the text the daemon read last. Fix the file: the
+  next launch reads it again and logs `legion daemon read an edited instructions file`, or
+  `legion daemon reads an instructions file again` when it holds the text the daemon kept.
+- **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
+  be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
+  directory, which the prompt is composed from (`error` names the path and the cause). Launches go
+  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
+  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
+  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
+  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
+  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  The next launch writes the copy and logs the edit.
+- **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
+  Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
+  mounted as a directory, but never a file mounted by `subPath`, so the daemon goes on reading the
+  text of its pod's start. The kubelet also takes up to its sync period, about a minute, to update
+  a mounted ConfigMap.
+
+The daemon logs each refusal once, so a launch with no new line carries the same text as the last.
+
 ## The daemon stops
 
 On SIGTERM (`legion stop`, a rollout, a node drain) the daemon logs `legion daemon stopping`, with
@@ -1772,8 +1800,13 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
   grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it, and nothing else
-  changes.
+  oldest message is `unavailable` on each consumer while messages wait on it. The same get
+  confirms the Dispatch consumer idle; when it does not answer within its bound, from a missing
+  grant or a loaded NATS server, a reconcile reads the consumer as not idle and holds the roots its
+  listing shows behind their log, and the hold poller releases them on the consumer's own count
+  (WARN lines `the Dispatch consumer's next stored message could not be read` say which, naming
+  both causes). That count can miss a message the server has stored and not yet counted, so a held
+  root can be released a moment early.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request
