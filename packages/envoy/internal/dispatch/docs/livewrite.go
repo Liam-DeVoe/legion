@@ -289,7 +289,7 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 	if err != nil {
 		return nil, err
 	}
-	if err := retiredWriteRefusal(artifactID, owner); err != nil {
+	if err := retiredWriteRefusal(ctx, ledger.tx, artifactID, owner); err != nil {
 		return nil, err
 	}
 	if err := s.awaitRoomRecovery(ctx, artifactID); err != nil {
