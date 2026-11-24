@@ -12,6 +12,11 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# The filter names the outputs read verdicts of are the changes job's filters, which no file of the
+# repository holds: the job computes them when it runs. The script reads them from the file
+# CI_FILTERS_FILE names - the test job hands it the file this run's changes job computed - and,
+# with none given, from this tree's, computed here with `check-ci-filters.sh generate`.
+#
 # It also holds the test job's step gates, which read one output, the paths filter's own list of
 # the filters that matched: a step whose filter matched runs, one whose filter did not is skipped,
 # even where another filter's name holds its own, and every one runs on a dispatched run and when
@@ -32,12 +37,23 @@ source "$script_dir/test-lib.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+filters=${CI_FILTERS_FILE:-}
+if [ -z "$filters" ]; then
+  filters=$work/computed-filters.yaml
+  if ! "$script_dir/check-ci-filters.sh" generate "$filters" > "$work/generate.log" 2>&1; then
+    tail -20 "$work/generate.log" >&2
+    echo "ci-router-outputs.test.sh: no CI_FILTERS_FILE is given, and \`check-ci-filters.sh generate\` could not compute the changes job's filters" >&2
+    exit 1
+  fi
+fi
+
 # outputs_of <workflow> <argument>...: every output as `name=value`, sorted, for one event and set
-# of labels; outputs <argument>... reads this repository's own ci.yaml.
+# of labels, the filter names read from the computed filters; outputs <argument>... reads this
+# repository's own ci.yaml.
 outputs_of() {
   local workflow=$1
   shift
-  "$script_dir/ci_router_outputs.py" "$workflow" "$@" | sort
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" "$@" | sort
 }
 outputs() { outputs_of "$repo/.github/workflows/ci.yaml" "$@"; }
 # value <outputs text> <name>: one output's value.
@@ -125,12 +141,20 @@ for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x"
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
 
-# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml and filters
-# under <dir> with <text> changed to <replacement> on that output's line alone (neither holds a
-# `|`, which the sed below delimits with).
+echo "case: a verdict for a filter the computed filters do not hold is refused, naming their file"
+set +e
+err=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" \
+  --event pull_request --verdict no_such_filter=false 2>&1 >/dev/null)
+status=$?
+set -e
+check "exits 2" "$(is "$status" 2)"
+check "names the verdict and the file" "$(contains "$err" "--verdict no_such_filter=false names no filter of $filters\$")"
+
+# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml under <dir>
+# with <text> changed to <replacement> on that output's line alone (neither holds a `|`, which the
+# sed below delimits with).
 broken_copy() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
   sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
   cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
   echo "$1/.github/workflows/ci.yaml"
@@ -161,7 +185,7 @@ broken=$(broken_copy "$work/whole-pr" envoy_smoke \
   "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$broken" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$broken" --filters "$filters" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
@@ -170,7 +194,7 @@ check "names envoy_smoke and the read" \
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
-printf 'f: []\n' > "$work/.github/ci-filters.yaml"
+printf 'f: []\n' > "$work/filters.yaml"
 cat > "$work/.github/workflows/ci.yaml" <<'YAML'
 jobs:
   changes:
@@ -178,7 +202,7 @@ jobs:
       x: ${{ github.actor == 'someone' && 'true' || 'false' }}
 YAML
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --filters "$work/filters.yaml" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
@@ -186,21 +210,21 @@ check "names the output and the context" "$(contains "$err" 'output x: context g
 
 # steps_of <workflow> <argument>...: each step of the test job gated on what the changes job hands
 # it, as `step=true|false`, sorted, for one event and set of verdicts (ci_router_outputs.py
-# --steps); steps <argument>... reads this repository's own ci.yaml and ci-job-test.yaml.
+# --steps), the filter names read from the computed filters; steps <argument>... reads this
+# repository's own ci.yaml and ci-job-test.yaml.
 steps_of() {
   local workflow=$1
   shift
-  "$script_dir/ci_router_outputs.py" "$workflow" --steps test "$@" | sort
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --steps test "$@" | sort
 }
 steps() { steps_of "$repo/.github/workflows/ci.yaml" "$@"; }
 # running <steps text>: the steps that run, one per line.
 running() { sed -n 's/=true$//p' <<<"$1"; }
-# list_copy <dir> <workflow file> <text> <replacement>: a copy of this repository's ci.yaml,
-# ci-job-test.yaml and filters under <dir> with <text> changed to <replacement> once in that one
-# workflow file (ci.yaml or ci-job-test.yaml), failing loudly if <text> is not in it.
+# list_copy <dir> <workflow file> <text> <replacement>: a copy of this repository's ci.yaml and
+# ci-job-test.yaml under <dir> with <text> changed to <replacement> once in that one workflow file
+# (ci.yaml or ci-job-test.yaml), failing loudly if <text> is not in it.
 list_copy() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
   cp "$repo/.github/workflows/ci.yaml" "$repo/.github/workflows/ci-job-test.yaml" "$1/.github/workflows/"
   local file="$1/.github/workflows/$2" text
   text=$(<"$file")
@@ -218,21 +242,22 @@ list_copy() {
 echo "case: the test job's step gates are read out of the one list"
 none=$(steps --event pull_request --verdicts false --verdict test=true)
 gated=$(grep -c . <<<"$none" || true)
-# Each step of the test job whose `if:` names the list in any spelling, with the filter its quoted
-# `contains` names, read from ci-job-test.yaml's text and not by the evaluator under test, so a
-# step the evaluator passed over fails the count below by name.
+# Each step of the test job whose `if:` names the list in any spelling, once per filter its
+# quoted `contains` terms name (the step that fetches the computed filters names two), read from
+# ci-job-test.yaml's text and not by the evaluator under test, so a step the evaluator passed over
+# fails the count below by name.
 gates_of_text=$(python3 -c '
 import re, sys, yaml
 jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
 for step in jobs["test"].get("steps") or []:
     condition = str(step.get("if", ""))
     if re.search(r"matched[_-]filters", condition, re.I):
-        names = re.findall(r"\x27\"([A-Za-z0-9_-]+)\"\x27", condition)
-        print(step["name"] + "\t" + (names[0] if len(names) == 1 else "?"))
+        for name in re.findall(r"\x27\"([A-Za-z0-9_-]+)\"\x27", condition) or ["?"]:
+            print(step["name"] + "\t" + name)
 ' "$repo/.github/workflows/ci-job-test.yaml")
-check "it finds every step whose if: names the list ($(grep -c . <<<"$gates_of_text"))" \
-  "$(is "$gated" "$(grep -c . <<<"$gates_of_text")")"
-check "each of them names one filter" "$(is "$(grep -c $'\t?$' <<<"$gates_of_text" || true)" 0)"
+gated_of_text=$(cut -f1 <<<"$gates_of_text" | sort -u | grep -c . || true)
+check "it finds every step whose if: names the list ($gated_of_text)" "$(is "$gated" "$gated_of_text")"
+check "each of them names a filter" "$(is "$(grep -c $'\t?$' <<<"$gates_of_text" || true)" 0)"
 check "with no step's filter matched, none of them runs" "$(is "$(running "$none")" "")"
 
 echo "case: each filter, matched alone, runs exactly the steps it gates"
@@ -246,6 +271,14 @@ while IFS= read -r filter; do
   [ "$got" = "$want" ] || wrong+="$filter: ran [${got//$'\n'/, }] where [${want//$'\n'/, }]; "
 done < <(cut -f2 <<<"$gates_of_text" | sort -u)
 check "all $(cut -f2 <<<"$gates_of_text" | sort -u | grep -c .) filters run their own steps and no other" "$(is "$wrong" "")"
+
+echo "case: the step that fetches the computed filters runs for either harness that reads them"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict check_ci_filters_test=true)
+check "check_ci_filters_test matched: the fetch runs" \
+  "$(is "$(running "$got" | grep -cx "Fetch the filters the changes job selected this run's jobs by" || true)" 1)"
+got=$(steps --event pull_request --verdicts false --verdict test=true --verdict ci_router_outputs_test=true)
+check "ci_router_outputs_test matched: the fetch runs" \
+  "$(is "$(running "$got" | grep -cx "Fetch the filters the changes job selected this run's jobs by" || true)" 1)"
 
 echo "case: a harness whose filter matched runs, and one whose filter did not is skipped"
 got=$(steps --event pull_request --verdicts false --verdict test=true --verdict release_push_test=true)
@@ -277,11 +310,11 @@ check "Test release scripts stays skipped" "$(is "$(running "$got")" "")"
 echo "case: tooling-checks, the file's other caller, runs its guides step on guide_layout alone"
 # The file holds one job per caller, each `if: inputs.job == '<id>'`: each caller is read for its
 # own job's steps, and the test job's harness gates are none of tooling-checks'.
-tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --steps tooling-checks \
+tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps tooling-checks \
   --event pull_request --verdicts false --verdict tooling_checks=true | sort)
 check "it reads one gated step" "$(is "$(grep -c . <<<"$tooling")" 1)"
 check "skipped when guide_layout did not match" "$(is "$(running "$tooling")" "")"
-tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --steps tooling-checks \
+tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps tooling-checks \
   --event pull_request --verdicts false --verdict tooling_checks=true --verdict guide_layout=true | sort)
 check "and run when it did" "$(is "$(running "$tooling")" "Check the guides' semantic line breaks")"
 got=$(steps --event pull_request --verdicts false --verdict test=true --verdict guide_layout=true)

@@ -39,7 +39,7 @@ name: CI job test
 # dispatched run. Each gated step reads its own filter out of it,
 # `inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"<filter>"')`, the quotes
 # matching one whole name of the list, and `.github/scripts/check-ci-filters.sh` resolves that
-# through the caller's `with:` and holds the step to that shape (its rule 22). A gate added here
+# through the caller's `with:` and holds the step to that shape (its rule 23). A gate added here
 # costs ci.yaml nothing (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 #
 # ci.yaml keeps both jobs running when `changes` did not succeed, "so this buys signal", and the
@@ -289,12 +289,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_tagged_tests_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-tagged-tests.test.sh .github/scripts/go-tagged-tests.test.sh
 
-      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
-      # lane labels and a label that names nothing.
-      - name: Test the router outputs' label terms
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_router_outputs_test"')
-        run: .github/scripts/harness-pool.sh start .github/scripts/ci-router-outputs.test.sh .github/scripts/ci-router-outputs.test.sh
-
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok.test.sh .github/scripts/ci-ok.test.sh
@@ -407,9 +401,23 @@ jobs:
           token: ''
           cache: false
 
+      # The filters this run's changes job computed, which no file of the repository holds: one
+      # case of the check below holds them to what this repository's Bun jobs compile and read, and
+      # the router outputs' harness reads the filter names from them, both reading the run's own
+      # file rather than computing them a second time. Before those two harnesses are queued: each
+      # takes the file's path in its step's env, and reads the file when the pool starts it.
+      - name: Fetch the filters the changes job selected this run's jobs by
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_ci_filters_test"') || contains(inputs.matched-filters, '"ci_router_outputs_test"')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters
+
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_ci_filters_test"')
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/harness-pool.sh start .github/scripts/check-ci-filters.test.sh .github/scripts/check-ci-filters.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
@@ -427,8 +435,17 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
 
+      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+      # lane labels and a label that names nothing. After the fetch above: the filter names are the
+      # computed filters'.
+      - name: Test the router outputs' label terms
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_router_outputs_test"')
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-router-outputs.test.sh .github/scripts/ci-router-outputs.test.sh
+
       # After setup-go, since held-port.test.ts builds the real envoy-listener and hands it a held
-      # socket; and after the three harnesses above are queued, so they run beside it rather than
+      # socket; and after the four harnesses above are queued, so they run beside it rather than
       # after it (check-ci-filters.test.sh alone took 100 s in run 45107561644's test job).
       # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
       # is one the floor takes" runs that file on every run, and lint runs whenever this job does.

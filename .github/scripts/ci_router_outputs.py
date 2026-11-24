@@ -23,16 +23,18 @@ JSON.stringify writes it, of every filter whose verdict is 'true', in the filter
 while no filter is named `changes`. Anything else, an unknown function or a context it does not
 model, is refused by name with exit 2, never read as false.
 
-Usage: ci_router_outputs.py <workflow> --event <name> [--label <name>]... [--verdict <filter>=<value>]...
-  [--verdicts <true|false>] [--steps <job> [--changes-result <result>]]
+Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--label <name>]...
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--steps <job> [--changes-result <result>]]
        ci_router_outputs.py <workflow> --label-readers
-Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
-sets every filter's verdict (default true); --verdict overrides one. --steps <job> prints instead,
-for the workflow that job of <workflow> calls, `<step>=<true|false>` for each step whose `if:`
-reads an input the job fills from the changes job, with that job's `with:` evaluated over those
-outputs and needs.changes.result (default success). --label-readers prints, one per line, each
-output whose expression reads the pull request's labels, found in the text rather than by
-evaluating it, so a broken term cannot drop an output from that list.
+Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
+the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
+and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
+verdict (default true); --verdict overrides one. --steps <job> prints instead, for the workflow
+that job of <workflow> calls, `<step>=<true|false>` for each step whose `if:` reads an input the
+job fills from the changes job, with that job's `with:` evaluated over those outputs and
+needs.changes.result (default success). --label-readers prints, one per line, each output whose
+expression reads the pull request's labels, found in the text rather than by evaluating it, so a
+broken term cannot drop an output from that list.
 Run from anywhere; ci.yaml's test job runs its harness."""
 import argparse
 import json
@@ -255,6 +257,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
     parser.add_argument("--event")
+    parser.add_argument("--filters")
     parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
@@ -269,14 +272,14 @@ def main():
             if "github.event.pull_request.labels" in str(expression):
                 print(name)
         return 0
-    if not args.event:
-        parser.error("--event is required unless --label-readers is given")
-    filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
+    if not args.event or not args.filters:
+        parser.error("--event and --filters are required unless --label-readers is given")
+    filters = yaml.safe_load(Path(args.filters).read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:
         name, _, value = pair.partition("=")
         if name not in verdicts:
-            print(f"ci_router_outputs: --verdict {pair} names no filter of ci-filters.yaml", file=sys.stderr)
+            print(f"ci_router_outputs: --verdict {pair} names no filter of {args.filters}", file=sys.stderr)
             return 2
         verdicts[name] = value
     # The action's own list of the filters that matched, which it writes only while no filter has
