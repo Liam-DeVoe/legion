@@ -202,8 +202,14 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		issue := rig.issue(name)
 		rig.agents.setPlan(issue.key, string(issue.role), plan)
 	}
+	// The boot starts the role process of every pod of the rig at once, while awaitListenerReady
+	// may start the listener again. A process that registered with the listener then would meet
+	// a refused connection or the starting listener's 503 "service starting", and end. So every
+	// role process waits before the listener until the daemon has read the listener ready.
+	rig.agents.holdEnvoy(true)
 	rig.boot()
 	rig.awaitListenerReady()
+	rig.agents.holdEnvoy(false)
 	for _, issue := range rig.issues {
 		rig.launch(issue)
 	}
@@ -232,7 +238,9 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // awaitListenerReady waits until the daemon has read a `listener_ready` report of the Envoy
 // listener, which is R7's gate: it releases nothing until it has. The listener publishes one at
 // its start and every five minutes after, so a listener that came up before this daemon's durable
-// consumer existed is started again rather than waited out.
+// consumer existed is started again rather than waited out. No role process may register with the
+// listener meanwhile: newIdleWakeRig holds them before it (idleRigAgents.holdEnvoy). A later call,
+// after a restart of the daemon, finds the report the first daemon recorded and starts nothing.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
 	defer func() {
