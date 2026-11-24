@@ -1603,7 +1603,9 @@ test("a report on its closed issue's production check carries a verdict and no c
   }
   expect(completed).toEqual(["ses_208", "ses_208", "ses_208"]);
 
-  // Refused after the record is read, with nothing minted or posted: a report with no verdict.
+  // Refused after the record is read, with nothing minted or posted: a report with no verdict from
+  // the role the check records. Another role's call with no verdict is no report but its phase's
+  // completion, and is posted (pi-shared's TestAMergersCompletionOnADoneIssueWithAnOpenCheckIsPosted).
   const noVerdict = await run(claimSession("implementer"), {
     op: "handoff_complete",
     summary: "Looked.",

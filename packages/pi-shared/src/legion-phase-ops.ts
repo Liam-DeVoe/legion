@@ -886,13 +886,16 @@ async function completeHandoff(
   // daemon's to say, and it says it from the caller's own live assignment (`api/handoff.go`,
   // `supervise.Claim.ServingCheck`), which the record does not show: a session working a look of
   // its issue's production check reports on that look, and every other session's completion is
-  // its phase's, which the daemon refuses on a `done` issue whatever it carries
-  // (`CHECK_LOOK_NOT_SERVED`). So the two can disagree: a look's report from an issue back in
-  // the workflow is refused here as a phase completion, and a phase's completion that outlived
-  // the close is posted here as a report and refused `CHECK_LOOK_NOT_SERVED`, before the phase
-  // path.
+  // its phase's, which the daemon records as the completion of the phase that role left, moving
+  // nothing, or refuses (`CHECK_LOOK_NOT_SERVED` among its answers). So the two can disagree: a
+  // look's report from an issue back in the workflow is refused here as a phase completion, and a
+  // phase's completion that outlived the close is posted here as it is, before the phase path.
   // The report's own refusals apply while the record shows the check it is of: the record carries
-  // that object only while the check is open. A refusal here posts nothing and mints nothing.
+  // that object only while the check is open. A refusal here posts nothing and mints nothing. They
+  // apply to the role the check records, and to another role's call that names a verdict, which
+  // is a report the check refuses; another role's call that names none is no report but the
+  // completion of the phase that role left, which a merge that closed the issue can leave owing
+  // (the merger's), and it is posted as it is, for the daemon to record or refuse.
   const record = await recordFrom(daemon, claim.issue);
   if (record.phase === "done") {
     // A completion on a done issue is a report on its production check or one the daemon refuses
@@ -904,7 +907,7 @@ async function completeHandoff(
       );
     }
     const check = record.check;
-    if (check !== undefined) {
+    if (check !== undefined && (claim.role === check.role || args.verdict !== undefined)) {
       if (args.verdict === undefined) {
         throw new Error(
           "handoff_complete on a production check names a verdict of pass, pending or fail"

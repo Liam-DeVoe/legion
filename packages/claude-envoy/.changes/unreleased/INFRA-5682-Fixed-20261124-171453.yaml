@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A role's `handoff_complete` on a done issue whose production check is open for another role is posted again when it names no verdict. Before, the tool asked every completion on such an issue for a verdict before it read whose check it was, so the merger whose merge closed the issue could never complete, and its phase reminder came back every turn. The daemon now answers that completion as the completion of the phase the role left, or with its own refusal. The role the check records still has to name a verdict, and another role that names one is still refused.
+time: 2026-11-24T17:14:53Z
+custom:
+  Issue: INFRA-5682

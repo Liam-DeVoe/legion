@@ -938,6 +938,43 @@ test("a report by a role the check does not record is refused before any call, n
   expect(posted).toEqual([]);
 });
 
+// A merge closes the issue and opens its production check for the role the check records, here the
+// tester, while the merger still owes the completion of the phase it ends. That completion names
+// no verdict, since it reports no look: the plugin posts it as it is, and the daemon answers it as
+// the merger's completion of the phase it left, or with its own refusal. Before, the plugin asked
+// it for a verdict before it read whose check it was, so the merger could never complete and its
+// phase reminder fired every turn (INFRA-1532's merger, 2026-11-24). The check's own role is held
+// to the verdict as before, and another role that names a verdict is refused as before.
+test("TestAMergersCompletionOnADoneIssueWithAnOpenCheckIsPosted", async () => {
+  const merger = closedRuntime({ ...implementer, role: "merger" }, checkRecord({ role: "tester" }));
+  await expect(
+    executePhaseOp(merger.ops, { op: "handoff_complete", summary: "Merged." })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(merger.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Merged.",
+    verdict: "",
+  });
+
+  const tester = closedRuntime({ ...implementer, role: "tester" }, checkRecord({ role: "tester" }));
+  await expect(
+    executePhaseOp(tester.ops, { op: "handoff_complete", summary: "Looked." })
+  ).rejects.toThrow(
+    new Error("handoff_complete on a production check names a verdict of pass, pending or fail")
+  );
+  expect(tester.posted).toEqual([]);
+
+  const judged = closedRuntime({ ...implementer, role: "merger" }, checkRecord({ role: "tester" }));
+  await expect(
+    executePhaseOp(judged.ops, { op: "handoff_complete", summary: "Merged.", verdict: "pass" })
+  ).rejects.toThrow(
+    new Error(
+      "LEGION-208's production check is the tester's, and this session is the merger's: only the role the check records reports on it"
+    )
+  );
+  expect(judged.posted).toEqual([]);
+});
+
 test("each wrong shape of a check report is refused before any call, nothing minted or posted", async () => {
   const check = closedRuntime(implementer, checkRecord());
   const lastLook = closedRuntime(implementer, checkRecord({ last: true }));
