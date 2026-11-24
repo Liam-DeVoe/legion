@@ -259,6 +259,35 @@ func TestASecondFixMovesTheCopy(t *testing.T) {
 	}
 }
 
+// The adoption before a fix's task runs again for the same fix whenever that task is sent again —
+// after a refused prompt, a daemon's restart, the boot's resume, a pod release whose next pod brings
+// the fix's working copy back — and it names the head the fix started from. By then the fix's
+// working copy holds the fix's own work over that head: a commit, and an edit no jj command has
+// recorded yet. The adoption keeps the copy where it stands and adopts it there, so the fix's
+// commit is still under its working copy and both files are still in it. The control is
+// TestASecondFixMovesTheCopy: a copy that holds nothing over the head a fix names is moved there.
+func TestAnAdoptionOfTheRunningFixKeepsItsCopy(t *testing.T) {
+	r := newCopyRig(t)
+	if got := r.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: r.head}); !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the fix's adoption answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	fixed := r.commit(r.fixDir, "fix.txt", "fix: the failure")
+	r.write(r.fixDir, "wip.txt", "not committed yet\n")
+
+	got := r.adopt("again", shimwire.AdoptWorkingCopy{FixFrom: r.head})
+	if !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the fix's adoption again answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	if parent := r.commitOf(r.fixDir, "@-"); parent != fixed {
+		t.Errorf("the fix's working copy stands on %s after its adoption again, want the fix's own commit, %s", parent, fixed)
+	}
+	for name, body := range map[string]string{"fix.txt": "fix: the failure\n", "wip.txt": "not committed yet\n"} {
+		if read, err := os.ReadFile(filepath.Join(r.fixDir, name)); err != nil || string(read) != body {
+			t.Errorf("the fix's working copy holds %s as %q (%v) after its adoption again, want %q", name, read, err, body)
+		}
+	}
+}
+
 // An adoption naming the commit the task's working copy moves to starts the step on a fresh commit
 // over it, in the issue's workspace, then adopts that workspace as an adoption with no move does,
 // and answers the commit.
@@ -316,9 +345,10 @@ func TestACommitOfTheSharedCopyIsSeenInTheFixCopy(t *testing.T) {
 	}
 }
 
-// The fix takes a commit made under the issue's working copy by copying it (`jj duplicate
-// --onto`, the flag of the jj CI pins), which rewrites nothing of the issue's workspace: its
-// working copy stays fresh, and the next adoption of it, moving it to the fix's head, succeeds.
+// The fix takes a commit made under the issue's working copy by copying it under its own working
+// copy (`jj duplicate <commit> --insert-before @`, which the fix's task names), so the copy is the
+// fix copy's `@-` and nothing of the issue's workspace is rewritten: its working copy stays fresh,
+// and the next adoption of it, moving it to the fix's head, succeeds.
 func TestADuplicatedCommitLeavesTheSharedCopyFresh(t *testing.T) {
 	r := newCopyRig(t)
 	if got := r.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: r.head}); !got.OK || got.FixDir != r.fixDir {
@@ -326,8 +356,11 @@ func TestADuplicatedCommitLeavesTheSharedCopyFresh(t *testing.T) {
 	}
 	red := r.commit(r.workspace, "red_test.txt", "test: the red test")
 	fixed := r.commit(r.fixDir, "fix.txt", "fix: the failure")
-	r.jjIn(r.fixDir, "duplicate", red, "--onto", fixed)
-	copied := r.commitOf(r.fixDir, "children("+fixed+") ~ @")
+	r.jjIn(r.fixDir, "duplicate", red, "--insert-before", "@")
+	copied := r.commitOf(r.fixDir, "@-")
+	if got := r.jjIn(r.fixDir, "log", "-r", copied, "--no-graph", "-T", `description.first_line() ++ " " ++ parents.map(|p| p.commit_id()).join(",")`); got != "test: the red test "+fixed {
+		t.Fatalf("the fix copy's @- after the duplicate is %q, want the copy of the red test over the fix's commit %s", got, fixed)
+	}
 	if status, err := r.try(r.workspace, "status"); err != nil || strings.Contains(status, "stale") {
 		t.Fatalf("jj status in the issue's workspace after the copy = %v:\n%s\nwant a fresh working copy", err, status)
 	}
