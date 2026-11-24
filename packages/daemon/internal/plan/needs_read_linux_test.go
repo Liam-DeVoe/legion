@@ -3,7 +3,6 @@
 package plan
 
 import (
-	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -44,8 +43,8 @@ func threadCPU(t *testing.T) time.Duration {
 // the standard library, where no count of this package runs: a count the read kept reads the same
 // with the scan as without it. The earlier count of this read, one read of the request's context
 // for each 1,024 words, read 97 times on 100,000 words under the scan and passed. So the read is
-// held to the thread's CPU time, about 16 to 100 times the right read's cost and 5 to 10 times
-// under the scan's.
+// held to 1 s of the thread's CPU time: in this pull request's runs the right read took 10 to 80
+// ms of it on these plans, and the scan 3.9 to 15.8 s.
 func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 	// needing is a plan of a task a whose `needs` writes words, then a task of each id of ids.
 	needing := func(words []string, ids []string) []Block {
@@ -55,21 +54,13 @@ func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 		}
 		return blocks
 	}
-	// named is size ids, prefix then a number of six digits.
-	named := func(prefix string, size int) []string {
-		ids := make([]string, size)
-		for i := range ids {
-			ids[i] = fmt.Sprintf("%s%06d", prefix, i)
-		}
-		return ids
-	}
 	for _, tc := range []struct {
 		name              string
 		blocks            []Block
 		needs, unresolved []string
 	}{
-		{name: "50,000 words that name no task, each twice", blocks: needing(append(named("x", 50_000), named("x", 50_000)...), nil), unresolved: named("x", 50_000)},
-		{name: "one task needing each of 50,000 others", blocks: needing(named("t", 50_000), named("t", 50_000)), needs: named("t", 50_000)},
+		{name: "50,000 words that name no task, each twice", blocks: needing(append(numbered("x", 50_000), numbered("x", 50_000)...), nil), unresolved: numbered("x", 50_000)},
+		{name: "one task needing each of 50,000 others", blocks: needing(numbered("t", 50_000), numbered("t", 50_000)), needs: numbered("t", 50_000)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runtime.LockOSThread()
