@@ -12,9 +12,6 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * closes each overtaken node with every node under it, so the rows, the fold and the counts all
  * read one tree.
  *
- * The views that fold their own lines of overtaken nodes (Spec, Verification) hold which of
- * them the reader opened or closed by the one rule here (`OvertakenLines`, `toggledLines`).
- *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: its caller hands it `heldBy`,
  * the folded count, and a node's life is read through `issue-address.ts`'s predicates, since that
@@ -220,73 +217,4 @@ export function marksAt(
   reference: string
 ): NodeStates | undefined {
   return states.get(withoutVersion(reference));
-}
-
-/**
- * `opened`, the lines of overtaken nodes a view folds by itself, by the node each stands under,
- * with the line of every overtaken node `path` runs through opened, so the node at its end is
- * drawn as a row: a view's address that names an overtaken node or a node under one opens the
- * line that holds it (`settle-write.ts`'s `useAddressLines`). An overtaken node under another is
- * behind two lines, and both open. `opened` itself where the path runs through no overtaken node.
- */
-export function withLine(
-  opened: ReadonlySet<string> | undefined,
-  path: readonly TreeNode[] | undefined
-): ReadonlySet<string> | undefined {
-  // The line stands under the node before the first overtaken node the path runs through, which
-  // is that node's parent; the path's first node is where it starts, which no line stands above.
-  const at = path?.findIndex((node, index) => index > 0 && isOvertaken(node)) ?? -1;
-  const line = at === -1 ? undefined : path?.[at - 1];
-  if (line === undefined || path === undefined) return opened;
-  // The rest of the path from the overtaken node, which may stand above another line.
-  return withLine(new Set(opened).add(line.id), path.slice(at));
-}
-
-/** The id of each node of `root` that holds an overtaken child, in reading order. */
-export function linesIn(root: TreeNode): readonly string[] {
-  const parents: string[] = [];
-  const walk = (node: TreeNode): void => {
-    if (node.children.some(isOvertaken)) parents.push(node.id);
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
-  return parents;
-}
-
-/** The lines of overtaken nodes a view folds by itself, which the reader opened, and those they
- *  closed while the words filter held words, which stay closed while it does: each by the key
- *  the view gives it. */
-export interface OvertakenLines {
-  readonly closed: ReadonlySet<string>;
-  readonly open: ReadonlySet<string>;
-}
-
-/** No line opened or closed by the reader, which is how a view is first drawn. */
-export const NO_LINES: OvertakenLines = { closed: new Set(), open: new Set() };
-
-/** Whether the line `key` names is drawn open: where the reader opened it, and, while the words
- *  filter holds words (`words`), where they did not close it under them. */
-export function lineIsOpen(lines: OvertakenLines, words: boolean, key: string): boolean {
-  return lines.open.has(key) || (words && !lines.closed.has(key));
-}
-
-/** `held` with the line `key` opened (`open`) or closed: an opened line is open and no longer
- *  held closed; a closed one is no longer open, and, while the words filter holds words
- *  (`words`), is held closed until the reader opens it again. */
-export function toggledLines(
-  held: OvertakenLines,
-  key: string,
-  open: boolean,
-  words: boolean
-): OvertakenLines {
-  const opened = new Set(held.open);
-  const closed = new Set(held.closed);
-  if (open) {
-    opened.add(key);
-    closed.delete(key);
-  } else {
-    opened.delete(key);
-    if (words) closed.add(key);
-  }
-  return { closed, open: opened };
 }

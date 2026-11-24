@@ -168,7 +168,7 @@ export function writtenOrder(
  * so the task is not drawn twice.
  *
  * An overtaken task has no position, since a later task took its place: it is no entry, and the
- * page draws it after the steps, in the one line its issue's overtaken tasks fold to.
+ * page draws it as a row after the steps.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();

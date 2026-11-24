@@ -4,27 +4,21 @@ import {
   createElement,
   type ReactNode,
   useContext,
-  useMemo,
   useSyncExternalStore,
 } from "react";
-import { useLocation, useSearchParams } from "react-router-dom";
 
 import { writeRequest } from "../../../api/client";
 import { issueCoverageQuery, issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
-import { parseIssuePath, parseNodeReference } from "../../refs/routes";
+import { parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { writesOf } from "../../writes/write-store";
-import { issueAddress, pathToTarget } from "../issue-address";
-import type { TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
 import { dropViews } from "../tree-read/tree-read";
-import { withLine } from "./node-states";
 
 /**
- * What the page writes and reads around a node's life: the settle of a proposed node; the words
- * filter's words, by which a view opens each line of overtaken nodes that holds a match; and the
- * lines of overtaken nodes the page's address opens in a view.
+ * What the page writes around a node's life: the settle of a proposed node, and the wait of its
+ * act until the read that tells of its landing.
  */
 
 /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: a person settles the proposed node `reference`
@@ -247,46 +241,4 @@ export function useSettle(key: string, reference: string, landed: () => void) {
     request: () => settleRequest(key, reference),
     target: () => `settle:${reference}`,
   });
-}
-
-/** Whether the words filter holds words, as the page's address carries them (`?q=`): the same
- *  value `issue-address.ts`'s `issueAddress` reads into `IssueAddress.filter` from the location's
- *  search, which `slots/body.tsx` narrows the outline's view by (`presets.ts`'s `presetView`),
- *  trimmed as that view trims it. False for an address that narrows nothing. */
-export function useHoldsWords(): boolean {
-  const [search] = useSearchParams();
-  return (search.get("q") ?? "").trim() !== "";
-}
-
-/**
- * The lines of overtaken nodes the page's address opens in `root`, a view's own tree: the id of
- * each node whose line of overtaken children the path to the node the address names runs
- * through (`pathToTarget`, `withLine`), so that node is drawn as a row. The first node of the
- * path at or under an overtaken one (`closed`) is drawn in the line of the node above it, though
- * in a view's tree it need not be overtaken itself - a row drawn under the line of a parent the
- * view draws no row for - so that line opens too. The address is read as the slots read it
- * (`issueAddress`); an address that opens a view opens no document, so no spec slug is needed to
- * read it. `target` says which node the address names, so a view opens them once for each;
- * `lines` is undefined for an address that names no node and until `root` holds the one it names,
- * and empty where the path runs through no closed node.
- */
-export function useAddressLines(root: TreeNode): {
-  readonly lines: ReadonlySet<string> | undefined;
-  readonly target: string | undefined;
-} {
-  const { hash, pathname, search } = useLocation();
-  return useMemo(() => {
-    const route = parseIssuePath(pathname, search);
-    const target =
-      route === undefined ? undefined : issueAddress(route, search, hash, undefined).target;
-    const path = pathToTarget(root, target);
-    const lines = path === undefined ? undefined : new Set(withLine(new Set<string>(), path));
-    const closed = path?.findIndex((node) => node.closed === true) ?? -1;
-    const above = closed > 0 ? path?.[closed - 1] : undefined;
-    if (above !== undefined) lines?.add(above.id);
-    return {
-      lines,
-      target: target === undefined ? undefined : JSON.stringify(target),
-    };
-  }, [hash, pathname, root, search]);
 }

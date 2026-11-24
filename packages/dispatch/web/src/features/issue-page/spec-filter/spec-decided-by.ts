@@ -176,8 +176,7 @@ export interface SpecParent {
   readonly type: NodeType;
 }
 
-/** The statements under one parent, in the order the filter draws them, but for those at or
- *  under an overtaken node, which the body folds to a line after the others (`foldedLines`). */
+/** The statements under one parent, in the order the filter draws them. */
 export interface SpecGroup {
   /** The node they hang under; absent for the statements that hang under the issue itself. */
   readonly parent?: SpecParent;
@@ -197,8 +196,7 @@ export interface SpecReading {
  * The Spec filter's body, read from the tree, the decisions and the results.
  *
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
- * statements in the order the page draws them, but for those it folds to a line after the
- * others (`SpecGroup`); `root` is the whole tree, which holds the asks,
+ * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
  * `decisions` are the decisions of the Spec view read (`?view=spec`) as every reader of a
  * decision reads them (`decisionNodes`), in that answer's order. `nodeIdOf` is how this issue
@@ -242,8 +240,7 @@ export function specDecidedBy({
     parent?: SpecParent;
     runs: { decision?: SpecDecision; key?: string; statements: SpecStatement[] }[];
   }[] = [];
-  // Every row the Spec filter kept, in the order it draws them but for the statements it folds
-  // to a line: the view's nodes but its root.
+  // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter(isStatement)) {

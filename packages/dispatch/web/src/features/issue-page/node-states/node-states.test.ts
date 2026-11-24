@@ -19,7 +19,6 @@ import type {
   IssueDetails,
   IssueTreeParent,
 } from "../../../api/types";
-import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -58,7 +57,6 @@ import type { LensChip, LensFacts } from "../lenses/lens-drafts";
 import { NodeLink } from "../lenses/NodeLink";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
@@ -72,7 +70,7 @@ import {
 } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
-import { presetView } from "../presets";
+import { filterSignals, presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
@@ -98,8 +96,7 @@ import {
   statementNode,
 } from "../verification-filter/verification-fixtures";
 import { NodeMarks, NodeStatesProvider } from "./NodeMarks";
-import { linesIn, marksAt, type NodeStates, stampStates, statesByReference } from "./node-states";
-import { OvertakenLine } from "./OvertakenLine";
+import { marksAt, type NodeStates, stampStates, statesByReference } from "./node-states";
 
 /**
  * A node's life and who may read it, put on a tree built by hand: the states arrive by the read's
@@ -385,7 +382,7 @@ function rowIds(container: HTMLElement): (string | undefined)[] {
 
 // An overtaken node is a row at its place among its parent's other children, at their level, and
 // carries the word Overtaken and its shape; drawn whole, here by the cycle key's last state, its
-// child is a row under it, one level down, as under any row. No line of overtaken nodes is drawn.
+// child is a row under it, one level down, as under any row.
 test("an overtaken node is a row at its place with its mark and its child row under it", async () => {
   readWide();
   const user = userEvent.setup();
@@ -405,14 +402,12 @@ test("an overtaken node is a row at its place with its mark and its child row un
       "data-glyph",
       GLYPH_TOKENS.marks.overtaken
     );
-    expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
 
     await user.keyboard("z");
     await user.keyboard("z");
     await waitFor(() => expect(rowOf(view.container, "comment-8")).not.toBeNull());
     expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-8", "comment-3"]);
     expect(levelOf("comment-8")).toBe(levelOf("spec#b-r8") + 1);
-    expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -526,35 +521,6 @@ function focusedRow(container: HTMLElement): string | undefined {
   )?.dataset.nodeId;
 }
 
-/** The one line of overtaken nodes the tree draws. */
-function theLine(container: HTMLElement): HTMLElement {
-  const line = container.querySelector<HTMLElement>("[data-overtaken-line]");
-  if (line === null) throw new Error("the tree draws no line of overtaken nodes");
-  return line;
-}
-
-// The line hands its own element to the tree as its focus lands (`onStop`), so a press that
-// focused it is checked against the line itself once it ends, whatever holds the focus when the
-// tree reads it.
-test("the overtaken line hands itself to the tree as it takes the focus", () => {
-  const stops: HTMLElement[] = [];
-  const view = render(
-    createElement(OvertakenLine, {
-      onStop: (line: HTMLElement) => stops.push(line),
-      row: { held: 1, level: 1, of: node(KEY, "issue"), open: false, trail: [] },
-      tabStop: true,
-    })
-  );
-  try {
-    const line = theLine(view.container);
-    act(() => line.focus());
-    expect(stops).toHaveLength(1);
-    expect(stops[0], "the line handed the tree no element of its own").toBe(line);
-  } finally {
-    view.unmount();
-  }
-});
-
 // `j` and `k` step onto an overtaken row and off it as they do any row: down from the row above
 // it, on to the row after it, and back up, the row the reader is on holding the tree's tab stop.
 test("`j` and `k` reach and leave an overtaken row as any row", async () => {
@@ -620,7 +586,6 @@ test("an address to an overtaken node focuses its row", async () => {
       await waitFor(() => expect(focusedRow(view.container), id).toBe(id));
       const ids = rowIds(view.container);
       expect(ids.indexOf(id), `${id} after ${above}`).toBe(ids.indexOf(above) + 1);
-      expect(view.container.querySelector("[data-overtaken-line]")).toBeNull();
     } finally {
       view.unmount();
     }
@@ -727,12 +692,14 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
  *  slot draws it (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
  *  where a case types any, with the view under no query as `whole`, which is that view itself
  *  where no query is typed, on the page's `address`, which carries the words as the page's own
- *  does (`?q=`). */
+ *  does (`?q=`); with `addressed`, the nodes the address names and what the body tells the slot
+ *  of them, as the slot hands them on where it may tell (`slots/view-verification.tsx`). */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
   query = "",
-  address = query === "" ? "/" : `/?q=${encodeURIComponent(query)}`
+  address = query === "" ? "/" : `/?q=${encodeURIComponent(query)}`,
+  addressed?: { readonly named: ReadonlySet<string>; readonly tell: (drawn: boolean) => void }
 ) {
   const preset = presetView(root, "verification", query, new Set());
   const client = new QueryClient({
@@ -749,6 +716,7 @@ function drawVerification(
           NoTooltips,
           null,
           createElement(VerificationFilterBody, {
+            ...(addressed === undefined ? {} : { addressed }),
             checks,
             context: preset.context,
             reads: { state: "answered" },
@@ -760,6 +728,15 @@ function drawVerification(
         )
       )
     )
+  );
+}
+
+/** The id of each row the Verification view's tree draws, in the order drawn, as each row's
+ *  element carries it (`data-verification-row`): the issue's, each statement's, and each check's
+ *  under a statement as the statement's id and the check's. */
+function verificationRows(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll("[data-verification-row]")].map((row) =>
+    row.getAttribute("data-verification-row")
   );
 }
 
@@ -825,13 +802,12 @@ test("the Verification view marks a proposed check and leaves it out of its summ
   }
 });
 
-// Under Verification a statement's overtaken check is no row until the reader opens the one
-// line it folds to, the last row of the statement's group of checks, and an overtaken statement
-// folds to one line after every other row. Each line is a row the tree's keys walk, in the order
-// it is drawn, and the tree's one tab stop once the walk is on it. A press, Enter and the arrows
-// open and close it in place: the check is then a row under it marked Overtaken, which the walk
-// reaches after the line. No count of the summary reads the check or the statement.
-test("the Verification view folds an overtaken check into one line that a press opens", async () => {
+// Under Verification an overtaken check is a row under the statement it serves, after the check
+// before it, carrying Overtaken and its shape beside how it stands, with its result, as any check
+// is; an overtaken statement is a row at its place, with its check under it. The tree's keys walk
+// them as they walk any row. No count of the summary reads either: not the covered count, not the
+// "of M" it is out of, and not the legend's counts of how the statements and the checks stand.
+test("under Verification an overtaken check is a row under its statement, marked, with its result", async () => {
   const user = userEvent.setup();
   const passed = checkThat("c-one", true);
   const replaced = checkThat("c-two", false);
@@ -843,106 +819,7 @@ test("the Verification view folds an overtaken check into one line that a press 
   const second = statementNode("r2", "A later statement took this one's place.", [
     checkNode(underReplaced),
   ]);
-  const replacedId = checkNode(replaced).id;
-  const view = drawVerification(
-    stamped(node(KEY, "issue", [first, second]), {
-      [replacedId]: { life: "overtaken" },
-      [second.id]: { life: "overtaken" },
-    }),
-    [passed, replaced, underReplaced]
-  );
-  try {
-    expect(rowOf(view.container, replacedId)).toBeNull();
-    expect(rowOf(view.container, second.id)).toBeNull();
-    const [line, issueLine] = [
-      ...view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]"),
-    ];
-    if (line === undefined || issueLine === undefined) throw new Error("two lines are drawn");
-    expect(line).toHaveAttribute("role", "treeitem");
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(line.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
-    expect(rowOf(view.container, first.id)?.querySelector('[role="group"]')?.lastElementChild).toBe(
-      line
-    );
-    expect(issueLine.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
-    expect(textOf(view.container, "[data-verification-covered]")).toBe(
-      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
-    );
-    expect(rowOf(view.container, first.id)).toHaveAttribute("data-statement-state", "met");
-    expect(textOf(view.container, '[data-check-legend-state="failed"]')).toBe(
-      `0${NODE_STATE_WORDS.check.failed}`
-    );
-    // One tab stop in the tree, the issue's row, before the walk.
-    const stops = () => view.container.querySelectorAll('[role="tree"] [tabindex="0"]');
-    expect(line).toHaveAttribute("tabindex", "-1");
-
-    // The walk passes through each line, which takes the tab stop as a row does.
-    act(() => rowOf(view.container, first.id)?.focus());
-    await user.keyboard("j");
-    expect(document.activeElement).toBe(rowOf(view.container, checkNode(passed).id));
-    await user.keyboard("j");
-    expect(document.activeElement).toBe(line);
-    expect(line).toHaveAttribute("tabindex", "0");
-    expect(
-      [...stops()].filter((stop) => stop.matches("[data-node-row], [data-overtaken-line]"))
-    ).toEqual([line]);
-    await user.keyboard("j");
-    expect(document.activeElement).toBe(issueLine);
-    await user.keyboard("k");
-    expect(document.activeElement).toBe(line);
-
-    // Enter opens the line in place, and the walk goes on into the check it holds.
-    await user.keyboard("{Enter}");
-    expect(line).toHaveAttribute("aria-expanded", "true");
-    const opened = rowOf(view.container, replacedId);
-    expect(opened !== null && line.contains(opened)).toBe(true);
-    expect(opened?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
-      ROW_MARK_WORDS.overtaken
-    );
-    await user.keyboard("j");
-    expect(document.activeElement).toBe(opened);
-    await user.keyboard("k");
-    expect(document.activeElement).toBe(line);
-
-    // The left arrow closes the open line, and on the closed line goes to its statement.
-    await user.keyboard("{ArrowLeft}");
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, replacedId)).toBeNull();
-    await user.keyboard("{ArrowLeft}");
-    expect(document.activeElement).toBe(rowOf(view.container, first.id));
-
-    // The issue's line, after every other row, opens by a press, and End and Home reach it and
-    // leave it.
-    await user.keyboard("{End}");
-    expect(document.activeElement).toBe(issueLine);
-    await user.click(issueLine);
-    expect(issueLine).toHaveAttribute("aria-expanded", "true");
-    expect(
-      rowOf(view.container, second.id)?.querySelector('[data-node-mark="overtaken"]')
-    ).not.toBeNull();
-    await user.keyboard("{Home}");
-    expect(document.activeElement).toBe(view.container.querySelector("[data-verification-issue]"));
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Verification a press that closes a line takes the rows it holds off the tree, so
-// where one of them held the tree's one tab stop, the line takes it: a statement's line, whose
-// check would hand it back to the issue's row, and the issue's line, whose statements would keep
-// it on a row no longer drawn.
-test("a press that closes a Verification line over the tab stop hands the stop to the line", async () => {
-  const user = userEvent.setup();
-  const passed = checkThat("c-one", true);
-  const replaced = checkThat("c-two", false);
-  const underReplaced = checkThat("c-three", true);
-  const first = statementNode("r1", "The page draws the checks.", [
-    checkNode(passed),
-    checkNode(replaced),
-  ]);
-  const second = statementNode("r2", "A later statement took this one's place.", [
-    checkNode(underReplaced),
-  ]);
+  const passedId = checkNode(passed).id;
   const replacedId = checkNode(replaced).id;
   const underId = checkNode(underReplaced).id;
   const view = drawVerification(
@@ -953,82 +830,80 @@ test("a press that closes a Verification line over the tab stop hands the stop t
     [passed, replaced, underReplaced]
   );
   try {
-    const [line, issueLine] = [
-      ...view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]"),
-    ];
-    if (line === undefined || issueLine === undefined) throw new Error("two lines are drawn");
-    const issueRow = view.container.querySelector("[data-verification-issue]");
-    const rowStops = () =>
-      view.container.querySelectorAll('[role="tree"] [data-node-row][tabindex="0"]');
+    expect(verificationRows(view.container)).toEqual([
+      KEY,
+      first.id,
+      `${first.id} ${passedId}`,
+      `${first.id} ${replacedId}`,
+      second.id,
+      `${second.id} ${underId}`,
+    ]);
+    const check = rowOf(view.container, replacedId);
+    expect(check !== null && rowOf(view.container, first.id)?.contains(check) === true).toBe(true);
+    expect(marksIn(check)).toEqual(["overtaken"]);
+    expect(check?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
+      ROW_MARK_WORDS.overtaken
+    );
+    expect(check?.querySelector('[data-node-state="failed"]')).not.toBeNull();
+    expect(check?.querySelector("[data-verification-result]")).not.toBeNull();
+    const statementRow = view.container.querySelector(`[data-verification-row="${second.id}"]`);
+    expect(statementRow?.querySelector('[data-node-mark="overtaken"]')).not.toBeNull();
 
-    // A statement's line: the stop on the check it holds, then a press closes it.
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(textOf(view.container, "[data-verification-covered]")).toBe(
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
+    );
+    expect(rowOf(view.container, first.id)).toHaveAttribute("data-statement-state", "met");
+    expect(textOf(view.container, '[data-check-legend-state="failed"]')).toBe(
+      `0${NODE_STATE_WORDS.check.failed}`
+    );
+    expect(textOf(view.container, '[data-check-legend-state="passed"]')).toBe(
+      `1${NODE_STATE_WORDS.check.passed}`
+    );
+
     act(() => rowOf(view.container, first.id)?.focus());
-    await user.keyboard("jjj");
-    expect(document.activeElement).toBe(rowOf(view.container, replacedId));
-    expect(rowOf(view.container, replacedId)).toHaveAttribute("tabindex", "0");
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, replacedId)).toBeNull();
-    expect(line).toHaveAttribute("tabindex", "0");
-    expect(issueRow).toHaveAttribute("tabindex", "-1");
-    expect(rowStops()).toHaveLength(0);
-
-    // The issue's line: the stop on a check of the statement it holds, then a press closes it.
-    await user.click(issueLine);
-    expect(issueLine).toHaveAttribute("aria-expanded", "true");
-    await user.keyboard("{End}");
-    expect(document.activeElement).toBe(rowOf(view.container, underId));
-    expect(rowOf(view.container, underId)).toHaveAttribute("tabindex", "0");
-    await user.click(issueLine);
-    expect(issueLine).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, second.id)).toBeNull();
-    expect(issueLine).toHaveAttribute("tabindex", "0");
-    expect(line).toHaveAttribute("tabindex", "-1");
-    expect(rowStops()).toHaveLength(0);
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(rowOf(view.container, passedId));
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(check);
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(statementRow);
+    await user.keyboard("k");
+    expect(document.activeElement).toBe(check);
   } finally {
     view.unmount();
   }
 });
 
-// Under Verification the words filter draws a match that is an overtaken check under its
-// open line, and a line the reader closes under the words stays closed.
-test("the Verification view draws an overtaken check the words match under an open line", async () => {
-  const user = userEvent.setup();
+// Under Verification the words filter matches an overtaken check's words and draws it as it draws
+// every match: a row under the statement it serves, marked Overtaken, with its result.
+test("the Verification view's words filter draws an overtaken check it matches as a row, marked", () => {
   const passed = checkThat("c-one", true);
   const replaced = { ...checkThat("c-two", false), text: "The zebrafinch words are drawn." };
   const replacedId = checkNode(replaced).id;
+  const first = statementNode("r1", "The page draws the checks.", [
+    checkNode(passed),
+    checkNode(replaced),
+  ]);
   const view = drawVerification(
-    stamped(
-      node(KEY, "issue", [
-        statementNode("r1", "The page draws the checks.", [checkNode(passed), checkNode(replaced)]),
-      ]),
-      { [replacedId]: { life: "overtaken" } }
-    ),
+    stamped(node(KEY, "issue", [first]), { [replacedId]: { life: "overtaken" } }),
     [passed, replaced],
     "zebrafinch"
   );
   try {
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(verificationRows(view.container)).toEqual([KEY, first.id, `${first.id} ${replacedId}`]);
     const match = rowOf(view.container, replacedId);
-    expect(match !== null && line.contains(match)).toBe(true);
-    expect(rowOf(view.container, checkNode(passed).id)).toBeNull();
-
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, replacedId)).toBeNull();
+    expect(marksIn(match)).toEqual(["overtaken"]);
+    expect(match?.querySelector("[data-verification-result]")).not.toBeNull();
   } finally {
     view.unmount();
   }
 });
 
-// Under Verification a words match on a result of an overtaken check is drawn under the check's
-// open line, with the check: the view lifts the result under its statement, with the check as
-// its parent line, and the body draws the check that holds it under the statement's line. With
-// the check live the result is drawn with it, and no line is drawn.
-test("the Verification view draws a result of an overtaken check the words match under an open line", () => {
+// Under Verification a words match on a result of an overtaken check is drawn with its check, a
+// row under the statement it serves marked Overtaken: the view lifts the result under its
+// statement, with the check as its parent line, and the body draws it in the check that holds
+// it, as it does for a live check, which carries no mark.
+test("the Verification view draws a result of an overtaken check the words match with its check", () => {
   const passed = checkThat("c-one", true);
   const seen: CheckBlock = {
     ...checkThat("c-two", false),
@@ -1043,41 +918,42 @@ test("the Verification view draws a result of an overtaken check the words match
     ],
   };
   const seenId = checkNode(seen).id;
-  const issue = node(KEY, "issue", [
-    statementNode("r1", "The page draws the checks.", [checkNode(passed), checkNode(seen)]),
+  const first = statementNode("r1", "The page draws the checks.", [
+    checkNode(passed),
+    checkNode(seen),
   ]);
+  const issue = node(KEY, "issue", [first]);
   const overtaken = drawVerification(
     stamped(issue, { [seenId]: { life: "overtaken" } }),
     [passed, seen],
     "zebrafinch"
   );
   try {
-    expect(overtaken.container.textContent).toContain("zebrafinch");
-    const line = theLine(overtaken.container);
-    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(verificationRows(overtaken.container)).toEqual([KEY, first.id, `${first.id} ${seenId}`]);
     const check = rowOf(overtaken.container, seenId);
-    expect(check !== null && line.contains(check)).toBe(true);
     expect(check?.textContent).toContain("zebrafinch seen");
+    expect(marksIn(check)).toEqual(["overtaken"]);
   } finally {
     overtaken.unmount();
   }
 
   const live = drawVerification(issue, [passed, seen], "zebrafinch");
   try {
-    expect(live.container.textContent).toContain("zebrafinch seen");
-    expect(live.container.querySelector("[data-overtaken-line]")).toBeNull();
+    const check = rowOf(live.container, seenId);
+    expect(check?.textContent).toContain("zebrafinch seen");
+    expect(marksIn(check)).toEqual([]);
   } finally {
     live.unmount();
   }
 });
 
 // Under Verification a words match on a result of an overtaken check that serves no statement is
-// drawn with that check under the issue's line, as the check is with no words, and the words draw
-// that line open: the view lifts the result to its top, with the check as its parent line, and the
-// body draws the check that holds it in its place. Where the result the words kept is not the
-// check's latest, the check draws it under its latest, so the result is on screen. With the check
-// live the result is drawn with it too, as a row of the table's own, and no line is drawn.
-test("the Verification view draws a result of an overtaken check that serves no statement under the issue's line", () => {
+// drawn with that check, a row of the table's own marked Overtaken, as the check is with no words:
+// the view lifts the result to its top, with the check as its parent line, and the body draws the
+// check that holds it in its place. Where the result the words kept is not the check's latest,
+// the check draws it under its latest, so the result is on screen. With the check live the result
+// is drawn with it too, and the check carries no mark.
+test("the Verification view draws a result of an overtaken check that serves no statement with its check", () => {
   const passed = checkThat("c-one", true);
   // The check, with one failed result for each of `observed`, each recorded after the one before.
   const seenWith = (observed: readonly string[]): CheckBlock => ({
@@ -1106,11 +982,11 @@ test("the Verification view draws a result of an overtaken check that serves no 
     "zebrafinch"
   );
   try {
-    const line = theLine(overtaken.container);
-    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(verificationRows(overtaken.container)).toEqual([KEY, seenId]);
     const check = rowOf(overtaken.container, seenId);
-    expect(check !== null && line.contains(check)).toBe(true);
+    expect(check).toHaveAttribute("data-verification-loose", "");
     expect(check?.textContent).toContain("zebrafinch seen");
+    expect(marksIn(check)).toEqual(["overtaken"]);
     expect(overtaken.container.querySelector("[data-verification-other]")).toBeNull();
   } finally {
     overtaken.unmount();
@@ -1124,8 +1000,8 @@ test("the Verification view draws a result of an overtaken check that serves no 
   );
   try {
     const check = rowOf(kept.container, seenId);
-    expect(check !== null && theLine(kept.container).contains(check)).toBe(true);
     expect(check?.textContent).toContain("zebrafinch seen");
+    expect(marksIn(check)).toEqual(["overtaken"]);
   } finally {
     kept.unmount();
   }
@@ -1135,92 +1011,53 @@ test("the Verification view draws a result of an overtaken check that serves no 
     expect(live.container.querySelector("[data-verification-other]")).toBeNull();
     const check = rowOf(live.container, seenId);
     expect(check?.textContent).toContain("zebrafinch seen");
-    expect(live.container.querySelector("[data-overtaken-line]")).toBeNull();
+    expect(marksIn(check)).toEqual([]);
   } finally {
     live.unmount();
   }
 });
 
-/** An issue of one statement whose second check a later one took the place of, and the checks
- *  the results read answers for it: the live one, then the overtaken one. */
+/** An issue of one statement whose second check a later one took the place of, the checks the
+ *  results read answers for it - the live one, then the overtaken one - and the ids of the
+ *  statement and of its two checks. */
 function statementWithOvertakenCheck() {
   const passed = checkThat("c-one", true);
   const replaced = checkThat("c-two", false);
   const replacedId = checkNode(replaced).id;
-  const root = stamped(
-    node(KEY, "issue", [
-      statementNode("r1", "The page draws the checks.", [checkNode(passed), checkNode(replaced)]),
-    ]),
-    { [replacedId]: { life: "overtaken" } }
-  );
-  return { checks: [passed, replaced], replacedId, root };
+  const served = statementNode("r1", "The page draws the checks.", [
+    checkNode(passed),
+    checkNode(replaced),
+  ]);
+  const root = stamped(node(KEY, "issue", [served]), { [replacedId]: { life: "overtaken" } });
+  return {
+    checks: [passed, replaced],
+    passedId: checkNode(passed).id,
+    replacedId,
+    root,
+    statementId: served.id,
+  };
 }
 
-// Words of spaces alone narrow nothing: the view trims them, and so does what the body reads the
-// address's words by, so under `?q=%20` the line of overtaken checks is drawn closed, as it is
-// with no words.
-test("the Verification view reads words of spaces as no words and draws its line closed", () => {
-  const { checks, replacedId, root } = statementWithOvertakenCheck();
-  const view = drawVerification(root, checks, " ");
+// An address that names an overtaken check draws its row under the statement it serves, at its
+// place after the check before it, marked Overtaken, as an address naming any check draws its
+// row; and the body tells the page it draws the node the address names, so the page keeps the
+// view drawn.
+test("the Verification view draws the row of an overtaken check an address names", () => {
+  const { checks, passedId, replacedId, root, statementId } = statementWithOvertakenCheck();
+  const told: boolean[] = [];
+  const view = drawVerification(root, checks, "", `/issues/${KEY}/verification#b-c-two`, {
+    named: new Set([replacedId]),
+    tell: (drawn) => told.push(drawn),
+  });
   try {
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, replacedId)).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-// An address that names an overtaken check opens the line that holds it, so the check is drawn
-// as a row under its open line, as the address drew it before the check folded; the reader's
-// press closes that line again, and it stays closed.
-test("the Verification view opens the line of an overtaken check an address names", async () => {
-  const user = userEvent.setup();
-  const { checks, replacedId, root } = statementWithOvertakenCheck();
-  const view = drawVerification(root, checks, "", `/issues/${KEY}/verification#b-c-two`);
-  try {
-    const line = theLine(view.container);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const addressed = rowOf(view.container, replacedId);
-    expect(addressed !== null && line.contains(addressed)).toBe(true);
-
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, replacedId)).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-// A press focuses a Verification line as it goes down, and the check the reader left shutting
-// the facts its focus drew open then would shrink it under the pointer: the line, after it, would
-// move up, and the press could end off the line and open nothing. The check shuts them once the
-// press is over.
-test("a press on a Verification line keeps the facts of the check the reader left until it ends", async () => {
-  const user = userEvent.setup();
-  const { checks, root } = statementWithOvertakenCheck();
-  const view = drawVerification(root, checks);
-  try {
-    const left = view.container.querySelector<HTMLElement>("[data-verification-check]");
-    if (left === null) throw new Error("the view draws no check");
-    const line = theLine(view.container);
-    act(() => left.focus());
-    expect(left, "the focus did not open the check's facts").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-
-    await user.pointer({ keys: "[MouseLeft>]", target: line });
-    expect(document.activeElement, "the press did not focus the line").toBe(line);
-    expect(left, "the held press shut the facts of the check left").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    expect(left.querySelector("[data-node-body]")).not.toBeNull();
-
-    await user.pointer({ keys: "[/MouseLeft]", target: line });
-    await waitFor(() => expect(left).toHaveAttribute("aria-expanded", "false"));
-    expect(left.querySelector("[data-node-body]")).toBeNull();
-    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
+    expect(verificationRows(view.container)).toEqual([
+      KEY,
+      statementId,
+      `${statementId} ${passedId}`,
+      `${statementId} ${replacedId}`,
+    ]);
+    expect(marksIn(rowOf(view.container, replacedId))).toEqual(["overtaken"]);
+    expect(told.at(-1)).toBe(true);
   } finally {
     view.unmount();
   }
@@ -1284,20 +1121,15 @@ function resultsDrawn(container: HTMLElement, id: string): (string | null)[] {
 }
 
 // With no words typed, a check draws its latest result alone while its line of earlier results
-// is shut, where the view's lines fold an overtaken check and where a chip narrows it alike: the
-// body reads its rows from the view as the lines and the chip leave it, and that reading keeps
-// no result of a check, as the view with no words keeps none.
-test("the Verification view with no words draws no earlier result where its lines or a chip narrow it", async () => {
+// is shut, where a chip narrows the view too: the body reads its rows from the view as the chip
+// leaves it, and that reading keeps no result of a check, as the view with no words keeps none.
+test("the Verification view with no words draws no earlier result where a chip narrows it", async () => {
   const user = userEvent.setup();
   const twice = passedWith("c-one", ["older pass", "newer pass"]);
-  const replaced = checkThat("c-two", false);
-  const root = stamped(
-    node(KEY, "issue", [
-      statementNode("r1", "The page draws the checks.", [checkNode(twice), checkNode(replaced)]),
-    ]),
-    { [checkNode(replaced).id]: { life: "overtaken" } }
-  );
-  const view = drawVerification(root, [twice, replaced]);
+  const root = node(KEY, "issue", [
+    statementNode("r1", "The page draws the checks.", [checkNode(twice)]),
+  ]);
+  const view = drawVerification(root, [twice]);
   try {
     expect(resultsDrawn(view.container, checkNode(twice).id)).toEqual(["newer pass"]);
     const met = view.container.querySelector<HTMLElement>('[data-verification-chip="met"]');
@@ -1332,8 +1164,9 @@ test("the Verification view's chip says no statement stands in its state where i
 });
 
 // Words that keep one earlier result of an overtaken check that serves no statement draw that
-// check under the issue's line with its latest result and the one the words kept, and leave its
-// other earlier results folded behind their line, as every check the words keep a result of does.
+// check, a row of the table's own marked Overtaken, with its latest result and the one the words
+// kept, and leave its other earlier results folded behind their line, as every check the words
+// keep a result of does.
 test("the Verification view draws only the results the words keep of an overtaken check that serves no statement", () => {
   const passed = checkThat("c-one", true);
   const seen = passedWith("c-two", ["zebrafinch seen", "nothing seen", "nothing seen again"]);
@@ -1347,8 +1180,7 @@ test("the Verification view draws only the results the words keep of an overtake
   );
   const view = drawVerification(root, [passed, seen], "zebrafinch");
   try {
-    const check = rowOf(view.container, seenId);
-    expect(check !== null && theLine(view.container).contains(check)).toBe(true);
+    expect(marksIn(rowOf(view.container, seenId))).toEqual(["overtaken"]);
     expect(resultsDrawn(view.container, seenId)).toEqual(["nothing seen again", "zebrafinch seen"]);
   } finally {
     view.unmount();
@@ -1591,267 +1423,89 @@ test("a Contents entry's failing mark leaves out a proposed statement whose chec
   ]);
 });
 
-/** An issue of two statements, the second overtaken, whose one group under the issue draws the
- *  first statement and then the line the second folds to. */
-function statementAndLine(): TreeNode {
-  return stamped(node(KEY, "issue", [statement("r1"), statement("r2")]), {
-    "spec#b-r2": { life: "overtaken" },
-  });
-}
-
-// Under Spec the line a group's overtaken statements fold to takes the focus as a
-// statement does, and with it the tree's one tab stop: the statement the reader left takes no
-// Tab of its own while the line holds it, so Shift+Tab from the line leaves the tree.
-test("the Spec view's overtaken line is its tab stop once the reader is on it", async () => {
-  const user = userEvent.setup();
-  const view = drawSpec(statementAndLine());
+// Under Spec an overtaken statement is a row in its group at its place, between the statements
+// beside it, carrying Overtaken and its shape, and no gap: no mark of how it stands, "No check"
+// included, though no check a count reads serves it. The Spec control counts it as it counts
+// every statement, and the failing flag does not count the failed check under it.
+test("under Spec an overtaken statement is a row in its group, marked, with no gap", () => {
+  const unserved = { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check" as const] };
+  const root = stamped(
+    node(KEY, "issue", [
+      statement("r1", unserved),
+      statement("r2", {
+        ...unserved,
+        children: [node("verification-md#b-c2", "check", [], { state: "failed" })],
+      }),
+      statement("r3", unserved),
+    ]),
+    { "spec#b-r2": { life: "overtaken" } }
+  );
+  const view = drawSpec(root);
   try {
-    const first = rowOf(view.container, "spec#b-r1");
-    expect(first).toHaveAttribute("tabindex", "0");
-    expect(rowOf(view.container, "spec#b-r2")).toBeNull();
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("tabindex", "-1");
-
-    act(() => first?.focus());
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    await waitFor(() => expect(line).toHaveAttribute("tabindex", "0"));
-    expect(first).toHaveAttribute("tabindex", "-1");
-    expect(view.container.querySelector('[data-node-row][tabindex="0"]')).toBeNull();
-
-    await user.tab({ shift: true });
-    const tree = view.container.querySelector("[data-spec-tree]");
-    expect(tree?.contains(document.activeElement)).toBe(false);
-  } finally {
-    view.unmount();
-  }
-});
-
-// A press focuses the Spec view's line as it goes down, and the statement the reader left letting
-// go of its focus then - its words cut again, its "more" back - would shrink it under the pointer:
-// the line, after it, would move up, and the press could end off the line and open nothing. The
-// statement is let go once the press is over, as a pressed statement takes the focus then
-// (`focusItem`), and the line holds the stop from then on.
-test("a press on the Spec view's overtaken line lets go of the statement the reader left once it ends", async () => {
-  const user = userEvent.setup();
-  const view = drawSpec(statementAndLine());
-  try {
-    const first = rowOf(view.container, "spec#b-r1");
-    if (first === null) throw new Error("the view draws no statement");
-    const line = theLine(view.container);
-    act(() => first.focus());
-    await waitFor(() => expect(first.className).toContain(pageFocusedRow));
-
-    await user.pointer({ keys: "[MouseLeft>]", target: line });
-    expect(document.activeElement, "the press did not focus the line").toBe(line);
-    expect(first.className, "the held press let go of the statement").toContain(pageFocusedRow);
-    expect(line, "the held press gave the line the stop").toHaveAttribute("tabindex", "-1");
-
-    await user.pointer({ keys: "[/MouseLeft]", target: line });
-    await waitFor(() => expect(first.className).not.toContain(pageFocusedRow));
-    expect(line).toHaveAttribute("tabindex", "0");
-    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
-  } finally {
-    view.unmount();
-  }
-});
-
-// A key pressed on the Spec view's line that answers in words - `q` where no question
-// is open, since the line stands for no node - is drawn at the line, and the next move lets it
-// go. The Spec view read is held on the issue's node, as the page holds it, with the two
-// statements, the second overtaken: `q` says it goes nowhere only once every read the view draws
-// from holds an answer.
-test("a key's report on the Spec view's overtaken line is drawn at the line", async () => {
-  const user = userEvent.setup();
-  const spec = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { role: "query" }),
-    readBlock("r2", "requirement", "spec", 1, { role: "query", state: "overtaken" }),
-  ]);
-  const view = drawSpec({ ...statementAndLine(), views: { spec } });
-  try {
-    const first = rowOf(view.container, "spec#b-r1");
-    const line = theLine(view.container);
-    act(() => first?.focus());
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-
-    await user.keyboard("q");
-    await waitFor(() =>
-      expect(line.querySelector("[data-row-report]")?.textContent).toBe(
-        KEY_REPORTS.no_next_question
-      )
+    expect(rowIds(view.container)).toEqual(["spec#b-r1", "spec#b-r2", "spec#b-r3"]);
+    expect(view.container.querySelectorAll("[data-spec-group]")).toHaveLength(1);
+    const overtaken = rowOf(view.container, "spec#b-r2");
+    expect(marksIn(overtaken)).toEqual(["overtaken"]);
+    expect(overtaken?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
+      ROW_MARK_WORDS.overtaken
     );
-    expect(view.container.querySelectorAll("[data-row-report]")).toHaveLength(1);
-
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(first));
-    expect(view.container.querySelector("[data-row-report]")).toBeNull();
+    expect(
+      overtaken?.querySelector(`[data-glyph="${GLYPH_TOKENS.marks.overtaken}"]`)
+    ).not.toBeNull();
+    expect(overtaken).not.toHaveAttribute("data-spec-mark");
+    expect(overtaken?.querySelector(`[data-glyph="${GLYPH_TOKENS.no_check}"]`)).toBeNull();
+    expect(overtaken?.querySelector("[data-gap]")).toBeNull();
+    expect(rowOf(view.container, "spec#b-r1")).toHaveAttribute("data-spec-mark", "no_check");
   } finally {
     view.unmount();
   }
+  expect(filterSignals(root, "").spec).toEqual({ count: 3 });
+  expect(filterSignals(root, "").verification.flag).toBeUndefined();
 });
 
-/** The lines of overtaken statements the Spec view draws, in the order drawn. */
-function linesOf(container: HTMLElement): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>("[data-overtaken-line]")];
-}
-
-// Two groups of statements can hang under one parent - the issue's statements before a
-// question's and after it - and a line is drawn only after the group whose statements it folds,
-// keyed by that group, so one press opens that line alone, and the keys walk the rows as drawn.
-test("the Spec view draws a line only after the group whose statements it folds", async () => {
-  const user = userEvent.setup();
-  const one = drawSpec(
-    stamped(
-      node(KEY, "issue", [
-        statement("r1"),
-        statement("r2"),
-        node("ask-1", "ask", [statement("r3")]),
-        statement("r4"),
-      ]),
-      { "spec#b-r2": { life: "overtaken" } }
-    )
-  );
-  try {
-    const lines = linesOf(one.container);
-    expect(lines.map((line) => line.textContent)).toEqual([`1 ${CONTROL_LABELS.overtaken_count}`]);
-    const [line] = lines;
-    const groups = [...one.container.querySelectorAll("[data-spec-group]")];
-    expect(groups[0]?.contains(line ?? null)).toBe(true);
-
-    // The keys walk the rows in the order they are drawn, the line among them, and stop at the
-    // last row.
-    const last = rowOf(one.container, "spec#b-r4");
-    act(() => last?.focus());
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(last));
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(rowOf(one.container, "spec#b-r3")));
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(rowOf(one.container, "spec#b-r1")));
-  } finally {
-    one.unmount();
-  }
-
-  const two = drawSpec(
-    stamped(
-      node(KEY, "issue", [
-        statement("r1"),
-        statement("r2"),
-        node("ask-1", "ask", [statement("r3")]),
-        statement("r4"),
-        statement("r5"),
-      ]),
-      { "spec#b-r2": { life: "overtaken" }, "spec#b-r5": { life: "overtaken" } }
-    )
-  );
-  try {
-    const [first, second] = linesOf(two.container);
-    if (first === undefined || second === undefined) throw new Error("two lines are drawn");
-    await user.click(first);
-    await waitFor(() => expect(first).toHaveAttribute("aria-expanded", "true"));
-    expect(second).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(two.container, "spec#b-r2")).not.toBeNull();
-    expect(rowOf(two.container, "spec#b-r5")).toBeNull();
-  } finally {
-    two.unmount();
-  }
-});
-
-// Under Spec a line counts the overtaken nodes its statements fold with, each once: the topmost
-// one each statement stands at or under (`closedBy`), as the Verification view's line counts its
-// rows. An overtaken statement that holds an overtaken one, which holds a live one, is one node of
-// the count, and an overtaken statement beside it is another; opened, the line draws all four
-// after the live statement beside them, in the order the spec holds them.
-test("the Spec view's line counts each overtaken node its statements stand under once", async () => {
-  const user = userEvent.setup();
+// Under Spec the words filter matches an overtaken statement's words and draws it as it draws
+// every match: a row in its group at its place, after the live match, marked Overtaken.
+test("the Spec view's words filter draws an overtaken statement it matches as a row, marked", async () => {
   const view = drawSpec(
     stamped(
       node(KEY, "issue", [
-        statement("r1", { children: [statement("r2", { children: [statement("r3")] })] }),
-        statement("r4"),
-        statement("r5"),
-      ]),
-      {
-        "spec#b-r1": { life: "overtaken" },
-        "spec#b-r2": { life: "overtaken" },
-        "spec#b-r5": { life: "overtaken" },
-      }
-    )
-  );
-  try {
-    const lines = linesOf(view.container);
-    expect(lines.map((line) => line.textContent)).toEqual([`2 ${CONTROL_LABELS.overtaken_count}`]);
-    const [line] = lines;
-    if (line === undefined) throw new Error("the view draws no line");
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
-      (row) => row.dataset.nodeId
-    );
-    expect(drawn).toEqual(["spec#b-r4", "spec#b-r1", "spec#b-r2", "spec#b-r3", "spec#b-r5"]);
-  } finally {
-    view.unmount();
-  }
-});
-
-// An address that names an overtaken statement under Spec opens the line that holds it and
-// puts the focus on it, and so does a request from the Contents list or a chip.
-test("the Spec view opens the line of an overtaken statement an address or a request names", async () => {
-  const addressed = drawSpec(statementAndLine(), { reveal: "spec#b-r2" });
-  try {
-    await waitFor(() =>
-      expect(theLine(addressed.container)).toHaveAttribute("aria-expanded", "true")
-    );
-    await waitFor(() =>
-      expect(document.activeElement).toBe(rowOf(addressed.container, "spec#b-r2"))
-    );
-  } finally {
-    addressed.unmount();
-  }
-
-  const requested = drawSpec(statementAndLine(), {
-    request: { focusBranch: false, id: "spec#b-r2", seq: 1 },
-  });
-  try {
-    await waitFor(() =>
-      expect(theLine(requested.container)).toHaveAttribute("aria-expanded", "true")
-    );
-    await waitFor(() =>
-      expect(document.activeElement).toBe(rowOf(requested.container, "spec#b-r2"))
-    );
-  } finally {
-    requested.unmount();
-  }
-});
-
-// Under Spec the words filter draws a match that is an overtaken statement under its open
-// line, and a line the reader closes under the words stays closed.
-test("the Spec view draws an overtaken statement the words match under an open line", async () => {
-  const user = userEvent.setup();
-  const view = drawSpec(
-    stamped(
-      node(KEY, "issue", [
-        statement("r1"),
-        statement("r2", { text: "**R2.** The zebrafinch words are drawn." }),
+        statement("r1", { text: "**R1.** The zebrafinch is drawn first." }),
+        statement("r2", { text: "**R2.** The zebrafinch is drawn second." }),
+        statement("r3"),
       ]),
       { "spec#b-r2": { life: "overtaken" } }
     ),
     { query: "zebrafinch" }
   );
   try {
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("aria-expanded", "true");
-    expect(rowOf(view.container, "spec#b-r2")).not.toBeNull();
-    expect(rowOf(view.container, "spec#b-r1")).toBeNull();
-
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, "spec#b-r2")).toBeNull();
+    await waitFor(() => expect(rowIds(view.container)).toEqual(["spec#b-r1", "spec#b-r2"]));
+    expect(view.container.querySelectorAll("[data-spec-group]")).toHaveLength(1);
+    expect(marksIn(rowOf(view.container, "spec#b-r2"))).toEqual(["overtaken"]);
   } finally {
     view.unmount();
+  }
+});
+
+// An address that names an overtaken statement under Spec focuses its row, at its place between
+// the statements beside it, and so does a request from the Contents list or a chip.
+test("an address or a request naming an overtaken statement under Spec focuses its row", async () => {
+  const places = [
+    { reveal: "spec#b-r2" },
+    { request: { focusBranch: false, id: "spec#b-r2", seq: 1 } },
+  ] as const;
+  for (const place of places) {
+    const view = drawSpec(
+      stamped(node(KEY, "issue", [statement("r1"), statement("r2"), statement("r3")]), {
+        "spec#b-r2": { life: "overtaken" },
+      }),
+      place
+    );
+    try {
+      await waitFor(() => expect(document.activeElement).toBe(rowOf(view.container, "spec#b-r2")));
+      expect(rowIds(view.container)).toEqual(["spec#b-r1", "spec#b-r2", "spec#b-r3"]);
+    } finally {
+      view.unmount();
+    }
   }
 });
 
@@ -1864,35 +1518,10 @@ function cellBeside(container: HTMLElement, id: string): HTMLElement {
   return cell;
 }
 
-// Under Spec a group's line of overtaken statements is a stop of the keys from a decision cell
-// as it is from a statement: `j` from the cell beside the group's last run goes to the group's
-// line, and, once the line is open, `k` from the cell beside the first run drawn under it goes
-// back to the line.
-test("the keys from a Spec decision cell stop on the overtaken line", async () => {
-  const user = userEvent.setup();
-  const view = drawSpec(statementAndLine());
-  try {
-    const line = theLine(view.container);
-    const besideLive = cellBeside(view.container, "spec#b-r1");
-    act(() => besideLive.focus());
-    await user.keyboard("j");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const besideFolded = cellBeside(view.container, "spec#b-r2");
-    act(() => besideFolded.focus());
-    await user.keyboard("k");
-    await waitFor(() => expect(document.activeElement).toBe(line));
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec a decision at or under an overtaken node shaped nothing that still stands: the run
-// of the statement it shaped is drawn as a run no decision shaped, with no decision in its cell.
-// With the decision live the cell draws it.
-test("the Spec view draws no overtaken decision beside the statement it shaped", () => {
+// Under Spec a decision a later one overtook still heads the run of the statement it shaped: its
+// cell draws it, carrying Overtaken in its compact form after how it stands, and so does the line
+// under the statement that names it. With the decision live neither carries a mark.
+test("a Spec decision cell naming an overtaken decision draws it marked", () => {
   const D1 = "decisions-md#b-d1";
   const rootWith = (states: Readonly<Record<string, NodeStates>>): TreeNode => ({
     ...stamped(specIssueTree([statement("r1"), specDecisionNode("d1")]), states),
@@ -1906,312 +1535,28 @@ test("the Spec view draws no overtaken decision beside the statement it shaped",
   const overtaken = drawSpec(rootWith({ [D1]: { life: "overtaken" } }));
   try {
     const cell = cellBeside(overtaken.container, "spec#b-r1");
-    expect(cell).not.toHaveAttribute("data-decision-id");
-    expect(cell.querySelector("[data-spec-said]")).toBeNull();
+    expect(cell).toHaveAttribute("data-decision-id", D1);
+    expect(marksIn(cell)).toEqual(["overtaken"]);
+    expect(cell.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
+      ROW_MARK_WORDS.overtaken
+    );
+    expect(
+      marksIn(rowOf(overtaken.container, "spec#b-r1")?.querySelector("[data-spec-because]"))
+    ).toEqual(["overtaken"]);
   } finally {
     overtaken.unmount();
   }
 
   const live = drawSpec(rootWith({}));
   try {
-    expect(cellBeside(live.container, "spec#b-r1")).toHaveAttribute("data-decision-id", D1);
+    const cell = cellBeside(live.container, "spec#b-r1");
+    expect(cell).toHaveAttribute("data-decision-id", D1);
+    expect(marksIn(cell)).toEqual([]);
+    expect(
+      marksIn(rowOf(live.container, "spec#b-r1")?.querySelector("[data-spec-because]"))
+    ).toEqual([]);
   } finally {
     live.unmount();
-  }
-});
-
-// Under Spec, while the asks read is out, a person's decision that heads a statement's run waits
-// on it, and keeps its place where the statement's group also holds an overtaken decision: the
-// cell beside the statement draws no decision, and no other decision that informed the statement
-// moves up in its place. The overtaken decision draws no cell either.
-test("a Spec run headed by a person's decision that waits on the asks read keeps its head beside an overtaken decision", () => {
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([
-        statement("r1"),
-        statement("r2"),
-        specDecisionNode("d1"),
-        specDecisionNode("d2"),
-        specDecisionNode("d3"),
-      ]),
-      { "decisions-md#b-d3": { life: "overtaken" } }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query" }),
-        answerNode("spec#b-r2", "requirement", { role: "query" }),
-        specDecision("d1", {
-          decision: { kind: "person", links: [specShaped(specStatementRef("r1"))] },
-        }),
-        specDecision("d2", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
-        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r2"))] } }),
-      ]),
-    },
-  };
-  const view = drawSpec(root, { asksOut: true });
-  try {
-    expect(cellBeside(view.container, "spec#b-r1")).not.toHaveAttribute("data-decision-id");
-    expect(cellBeside(view.container, "spec#b-r2")).not.toHaveAttribute("data-decision-id");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec a decision at or under an overtaken node is left out before any run is headed, so
-// the run of a statement whose ties are an overtaken decision, then a person's decision that waits
-// on the asks read, then a live decision, is the person's: while the asks read is out its cell
-// draws no decision, and the live decision does not move up to head it.
-test("a Spec run waits on a person's decision that stands after an overtaken one", () => {
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([
-        statement("r1"),
-        specDecisionNode("d1"),
-        specDecisionNode("d2"),
-        specDecisionNode("d3"),
-      ]),
-      { "decisions-md#b-d1": { life: "overtaken" } }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query" }),
-        specDecision("d1", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
-        specDecision("d2", {
-          decision: { kind: "person", links: [specShaped(specStatementRef("r1"))] },
-        }),
-        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
-      ]),
-    },
-  };
-  const view = drawSpec(root, { asksOut: true });
-  try {
-    expect(cellBeside(view.container, "spec#b-r1")).not.toHaveAttribute("data-decision-id");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec a person's decision whose own node the tree does not hold is drawn by the question
-// they answered, and stands where that question stands: with the question overtaken it heads no
-// run, and the live decision that shaped the statement after it heads the statement's run.
-test("a Spec run is not headed by a person's decision drawn by an overtaken question", () => {
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([
-        statement("r1"),
-        answeredAsk("ask-1", { at: "2026-11-14T09:00:00Z", text: "Draw it." }),
-        specDecisionNode("d2"),
-      ]),
-      { "ask-1": { life: "overtaken" } }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query" }),
-        specDecision("d1", {
-          decision: {
-            asks: ["ask-1"],
-            kind: "person",
-            links: [specShaped(specStatementRef("r1"))],
-          },
-        }),
-        specDecision("d2", { decision: { links: [specShaped(specStatementRef("r1"))] } }),
-      ]),
-    },
-  };
-  const view = drawSpec(root);
-  try {
-    expect(cellBeside(view.container, "spec#b-r1")).toHaveAttribute(
-      "data-decision-id",
-      "decisions-md#b-d2"
-    );
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec an opened line draws the statements it holds run by run as their decisions shaped
-// them, a run that waits on the asks read included: a folded statement whose run waits on a
-// person's decision keeps a run of its own, which draws no decision while that read is out, though
-// a live decision informed it too and another statement of the line was shaped by an overtaken
-// decision.
-test("an opened Spec line keeps a run that waits on the asks read", async () => {
-  const user = userEvent.setup();
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([
-        statement("r1"),
-        statement("r2"),
-        statement("r3"),
-        statement("r4"),
-        specDecisionNode("d1"),
-        specDecisionNode("d2"),
-        specDecisionNode("d3"),
-      ]),
-      {
-        "decisions-md#b-d1": { life: "overtaken" },
-        "spec#b-r2": { life: "overtaken" },
-        "spec#b-r3": { life: "overtaken" },
-        "spec#b-r4": { life: "overtaken" },
-      }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query" }),
-        // The view read's own state, which the view's rows carry.
-        ...["r2", "r3", "r4"].map((block) =>
-          answerNode(`spec#b-${block}`, "requirement", { role: "query", state: "overtaken" })
-        ),
-        specDecision("d1", { decision: { links: [specShaped(specStatementRef("r4"))] } }),
-        specDecision("d2", {
-          decision: { kind: "person", links: [specShaped(specStatementRef("r2"))] },
-        }),
-        specDecision("d3", { decision: { links: [specShaped(specStatementRef("r2"))] } }),
-      ]),
-    },
-  };
-  const view = drawSpec(root, { asksOut: true });
-  try {
-    const line = theLine(view.container);
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const waits = cellBeside(view.container, "spec#b-r2");
-    expect(waits).not.toHaveAttribute("data-decision-id");
-    expect(waits).toHaveAttribute("data-spec-statements", "spec#b-r2");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec an overtaken question that heads a run shaped nothing that still stands, so the
-// statements under it that no other decision shaped are headed by none. Opened while the asks
-// read is out, the line draws two such statements side by side as one run beside one cell, as
-// it does once that read is in: neither waits on a person's decision.
-test("an opened Spec line draws two statements under an overtaken question as one run while the asks read is out", async () => {
-  const user = userEvent.setup();
-  const root = stamped(
-    specIssueTree([
-      answeredAsk(
-        "ask-1",
-        { at: "2026-11-14T09:00:00Z", text: "Draw it." },
-        { children: [statement("r1"), statement("r2")] }
-      ),
-    ]),
-    { "ask-1": { life: "overtaken" } }
-  );
-  const view = drawSpec(root, { asksOut: true });
-  try {
-    const line = theLine(view.container);
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    expect(cellBeside(view.container, "spec#b-r1")).toHaveAttribute(
-      "data-spec-statements",
-      "spec#b-r1 spec#b-r2"
-    );
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec an opened line runs its statements again by the key `specDecidedBy` split their runs
-// by (`SpecRun.key`). Two overtaken statements one person's decision shaped, with a live statement
-// between them, are two runs of that decision in their group; opened while the asks read is out,
-// when that decision waits on it, the line draws them side by side as one run beside one cell.
-test("an opened Spec line draws two runs of a decision that waits on the asks read as one run", async () => {
-  const user = userEvent.setup();
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([statement("r1"), statement("r2"), statement("r3"), specDecisionNode("d1")]),
-      { "spec#b-r1": { life: "overtaken" }, "spec#b-r3": { life: "overtaken" } }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query", state: "overtaken" }),
-        answerNode("spec#b-r2", "requirement", { role: "query" }),
-        answerNode("spec#b-r3", "requirement", { role: "query", state: "overtaken" }),
-        specDecision("d1", {
-          decision: {
-            kind: "person",
-            links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
-          },
-        }),
-      ]),
-    },
-  };
-  const view = drawSpec(root, { asksOut: true });
-  try {
-    const line = theLine(view.container);
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const waits = cellBeside(view.container, "spec#b-r1");
-    expect(waits).not.toHaveAttribute("data-decision-id");
-    expect(waits).toHaveAttribute("data-spec-statements", "spec#b-r1 spec#b-r3");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec a closed statement folds out of the runs before they are built: two statements one
-// decision shaped, with an overtaken statement between them, are one run beside one cell of that
-// decision, as they are with no statement between them.
-test("a Spec run of one decision is one run across an overtaken statement", () => {
-  const D1 = "decisions-md#b-d1";
-  const root: TreeNode = {
-    ...stamped(
-      specIssueTree([statement("r1"), statement("r2"), statement("r3"), specDecisionNode("d1")]),
-      { "spec#b-r2": { life: "overtaken" } }
-    ),
-    views: {
-      spec: specViewAnswer([
-        answerNode("spec#b-r1", "requirement", { role: "query" }),
-        answerNode("spec#b-r2", "requirement", { role: "query", state: "overtaken" }),
-        answerNode("spec#b-r3", "requirement", { role: "query" }),
-        specDecision("d1", {
-          decision: {
-            links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
-          },
-        }),
-      ]),
-    },
-  };
-  const view = drawSpec(root);
-  try {
-    const cells = view.container.querySelectorAll(`[data-spec-cell][data-decision-id="${D1}"]`);
-    expect(cells).toHaveLength(1);
-    expect(cells[0]).toHaveAttribute("data-spec-statements", "spec#b-r1 spec#b-r3");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Under Spec a line the words drew open closes with no press once the reader clears the words.
-// The statement under it that held the tree's one tab stop is then no row, so the stop goes to
-// the line that now folds it, and not to the first statement drawn.
-test("a Spec line the words drew open takes the tab stop of its statement when the words go", async () => {
-  const view = drawSpec(
-    stamped(
-      node(KEY, "issue", [
-        statement("r1"),
-        statement("r2", { text: "**R2.** The zebrafinch words are drawn." }),
-      ]),
-      { "spec#b-r2": { life: "overtaken" } }
-    ),
-    { query: "zebrafinch" }
-  );
-  try {
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
-    act(() => rowOf(view.container, "spec#b-r2")?.focus());
-    await waitFor(() =>
-      expect(rowOf(view.container, "spec#b-r2")).toHaveAttribute("tabindex", "0")
-    );
-
-    view.go("/");
-    await waitFor(() => expect(rowOf(view.container, "spec#b-r1")).not.toBeNull());
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, "spec#b-r2")).toBeNull();
-    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("tabindex", "0"));
-    expect(rowOf(view.container, "spec#b-r1")).toHaveAttribute("tabindex", "-1");
-  } finally {
-    view.unmount();
   }
 });
 
@@ -2782,8 +2127,8 @@ test("a parent line in a view takes its parent's state from the tree when the vi
 
 // A statement the Verification view's answer holds live, which the tree read with no
 // view answered overtaken, is live in the view: its row carries no mark and is not closed, and
-// neither is the check under it, so the view folds neither into a line nor leaves either out
-// of a count. Only a node the view's answer does not hold takes the outline's marks.
+// neither is the check under it, so the view leaves neither out of a count. Only a node the
+// view's answer does not hold takes the outline's marks.
 test("a node the view holds live stays live whatever the outline says", () => {
   const outline = outlineOf([
     readBlock("r1", "requirement", "spec", 0, { state: "overtaken" }),
@@ -2807,18 +2152,15 @@ test("a node the view holds live stays live whatever the outline says", () => {
     expect(readNodeOf(view, readId), readId).toBeDefined();
     expect(markKeys(readNodeOf(view, readId)), readId).toEqual([]);
   }
-  expect(linesIn(view)).toEqual([]);
 });
 
 // A statement whose parent in the tree read is an overtaken question, which the Spec view draws
 // no row for, stands under that question in a view's held read as it does in the outline: it is
-// closed in the Spec and the Verification views alike, draws no gap, "No check" included, and
-// under Spec folds to its group's line, which opens on it. Under Verification it folds as an
-// overtaken statement does, to the issue's line, which counts the question once and holds it
-// once opened, by a press or by an address that names it. With nothing overtaken it is a row
-// with the mark its check gives it, as the statement beside it is.
-test("a statement under an overtaken question a view draws no row for draws no No check", async () => {
-  const user = userEvent.setup();
+// closed in the Spec and the Verification views alike, and draws no gap, "No check" included. It
+// is a row at its place in each view all the same, and under Spec its group's heading, the
+// question, carries Overtaken. With nothing overtaken it is a row with the mark its check gives
+// it, as the statement beside it is.
+test("a statement under an overtaken question a view draws no row for draws no No check", () => {
   const R3 = "spec#b-r3";
   const rootWith = (asked: Partial<TreeAnswerNode>): TreeNode => {
     const outline = outlineOf([
@@ -2849,12 +2191,11 @@ test("a statement under an overtaken question a view draws no row for draws no N
   try {
     expect(detail.container.querySelector('[data-spec-mark="no_check"]')).toBeNull();
     expect(rowOf(detail.container, "spec#b-r1")).toHaveAttribute("data-spec-mark", "unknown");
-    expect(rowOf(detail.container, R3)).toBeNull();
-    const line = theLine(detail.container);
-    await user.click(line);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
     expect(rowOf(detail.container, R3)).not.toBeNull();
     expect(rowOf(detail.container, R3)).not.toHaveAttribute("data-spec-mark");
+    expect(marksIn(detail.container.querySelector("[data-spec-group-marks]"))).toEqual([
+      "overtaken",
+    ]);
   } finally {
     detail.unmount();
   }
@@ -2863,27 +2204,11 @@ test("a statement under an overtaken question a view draws no row for draws no N
   const verification = drawVerification(overtaken, []);
   try {
     expect(rowOf(verification.container, "spec#b-r1")).not.toBeNull();
-    expect(rowOf(verification.container, R3)).toBeNull();
-    const line = theLine(verification.container);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(line.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "true");
     const folded = rowOf(verification.container, R3);
-    expect(folded !== null && line.contains(folded)).toBe(true);
     expect(folded).toHaveAttribute("data-statement-state", "unknown");
     expect(folded?.querySelector("[data-gap]")).toBeNull();
   } finally {
     verification.unmount();
-  }
-  const addressed = drawVerification(overtaken, [], "", `/issues/${KEY}/verification#b-r3`);
-  try {
-    const line = theLine(addressed.container);
-    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
-    const named = rowOf(addressed.container, R3);
-    expect(named !== null && line.contains(named)).toBe(true);
-  } finally {
-    addressed.unmount();
   }
 
   const live = rootWith({});
@@ -2891,7 +2216,7 @@ test("a statement under an overtaken question a view draws no row for draws no N
   try {
     expect(rowOf(control.container, "spec#b-r1")).toHaveAttribute("data-spec-mark", "unknown");
     expect(rowOf(control.container, R3)).toHaveAttribute("data-spec-mark", "unknown");
-    expect(control.container.querySelector("[data-overtaken-line]")).toBeNull();
+    expect(control.container.querySelector("[data-spec-group-marks]")).toBeNull();
   } finally {
     control.unmount();
   }
@@ -2901,7 +2226,7 @@ test("a statement under an overtaken question a view draws no row for draws no N
 // Under Spec the words filter lifts a match under the line of a parent the view's answer holds,
 // where the outline holds that parent under an overtaken question the view draws nothing of. The
 // match stands under that parent all the same: it is closed, as it is with no words and in the
-// outline, so it draws no "No check" and folds to its group's line, which the words draw open.
+// outline, so it draws no "No check", and the words draw it as a row as they draw every match.
 test("a words match lifted under a parent the outline holds under an overtaken node is closed", async () => {
   const R3 = "spec#b-r3";
   const outline = outlineOf([
@@ -2934,61 +2259,11 @@ test("a words match lifted under a parent the outline holds under an overtaken n
   const view = drawSpec(root, { query: "zebra" });
   try {
     await waitFor(() => expect(rowOf(view.container, R3)).not.toBeNull());
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
     expect(rowOf(view.container, R3)).not.toHaveAttribute("data-spec-mark");
     expect(view.container.querySelector('[data-spec-mark="no_check"]')).toBeNull();
   } finally {
     view.unmount();
   }
-});
-
-// Under Verification the issue's line counts each overtaken node its rows fold with once: the
-// topmost one each stands at or under, as the tree holds it. Two statements under two live
-// questions of one overtaken comment fold with that comment alone, though each carries its own
-// question as its parent line, so the line says "1 overtaken".
-test("the Verification issue's line counts the overtaken node its statements stand under once", () => {
-  const outline = outlineOf([
-    readBlock("r1", "requirement", "spec", 0),
-    readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
-    readNode("com-1", "comment", { state: "overtaken" }),
-    readNode("ask-1", "ask", { parent: "com-1" }),
-    readNode("ask-2", "ask", { parent: "com-1" }),
-    readBlock("r3", "requirement", "spec", 1, { parent: "ask-1" }),
-    readBlock("c3", "check", "verification-md", 1, { parent: "r3" }),
-    readBlock("r4", "requirement", "spec", 2, { parent: "ask-2" }),
-    readBlock("c4", "check", "verification-md", 2, { parent: "r4" }),
-  ]);
-  const verification = readAnswer([
-    readBlock("r1", "requirement", "spec", 0, { role: "context" }),
-    readBlock("c1", "check", "verification-md", 0, { parent: "r1", role: "query" }),
-    readBlock("r3", "requirement", "spec", 1, { parent: askLine("ask-1"), role: "context" }),
-    readBlock("c3", "check", "verification-md", 1, { parent: "r3", role: "query" }),
-    readBlock("r4", "requirement", "spec", 2, { parent: askLine("ask-2"), role: "context" }),
-    readBlock("c4", "check", "verification-md", 2, { parent: "r4", role: "query" }),
-  ]);
-  const root = { ...outline, views: { verification } };
-  const drawn = drawVerification(root, []);
-  try {
-    expect(linesOf(drawn.container).map((line) => line.textContent)).toEqual([
-      `1 ${CONTROL_LABELS.overtaken_count}`,
-    ]);
-  } finally {
-    drawn.unmount();
-  }
-
-  // Each statement folds with the comment, which the tree read gives as the topmost overtaken
-  // node it stands under, in the outline and in the view alike.
-  const comment = readNodeOf(outline, "com-1")?.id;
-  expect(comment).toBeDefined();
-  expect(readNodeOf(outline, blockReadId("spec", "r3"))?.closedBy).toBe(comment);
-  const view = presetView(root, "verification", "").root;
-  expect(
-    ["r3", "r4"].map((id) => readNodeOf(view, blockReadId("spec", id))?.parentLine?.id)
-  ).toEqual(["ask-1", "ask-2"]);
-  expect(["r3", "r4"].map((id) => readNodeOf(view, blockReadId("spec", id))?.closedBy)).toEqual([
-    comment,
-    comment,
-  ]);
 });
 
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */
@@ -3322,19 +2597,12 @@ function drawPlan(root: TreeNode, place: PlanPlace = {}) {
   return { ...view, again: (next: PlanPlace) => view.rerender(planBody(root, client, next)) };
 }
 
-/** Each row the view draws, by its node's id, and each line of overtaken tasks, as `line`, in
- *  the order drawn. */
-function placesDrawn(container: HTMLElement): string[] {
-  return [...container.querySelectorAll<HTMLElement>("[data-node-row], [data-overtaken-line]")].map(
-    (place) => place.dataset.nodeId ?? "line"
-  );
-}
-
-// In the Plan view an overtaken task has no position: the plan's order leaves it
-// out, so no step stands at its place. The steps draw it after every step, as the one line its
-// issue's overtaken tasks fold to, which a press opens: the task is then a row under it, marked
-// Overtaken.
-test("the Plan view gives an overtaken step no position and folds it after the steps", async () => {
+// In the Plan view an overtaken task has no position: the plan's order leaves it out, so no step
+// stands at its place and the chart draws it no bar. It is a row after every step all the same,
+// carrying Overtaken and its shape: in the chart a row of its own after the bars, at their level,
+// which the chart's keys walk to after the last bar and End reaches, and which takes the one tab
+// stop once the reader is on it; under Steps the outline's row after the steps.
+test("under Plan an overtaken task is a row after the steps with no position, marked", async () => {
   readWide();
   const root = planWithOvertaken();
   expect(
@@ -3343,93 +2611,51 @@ test("the Plan view gives an overtaken step no position and folds it after the s
   const user = userEvent.setup();
   const view = drawPlan(root);
   try {
-    await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
-    expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
-    expect(view.container.querySelectorAll("[data-overtaken-line]")).toHaveLength(1);
-    expect(placesDrawn(view.container)).toEqual([T1, T3, "line"]);
-    expect(theLine(view.container).textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
-
-    await user.click(theLine(view.container));
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
-    expect(placesDrawn(view.container)).toEqual([T1, T3, "line", T2]);
-    expect(
-      rowOf(view.container, T2)?.querySelector('[data-node-mark="overtaken"]')?.textContent
-    ).toContain(ROW_MARK_WORDS.overtaken);
-  } finally {
-    view.unmount();
-  }
-});
-
-// The Plan chart draws an overtaken task as no bar, since it has no position: one line
-// after every bar says how many there are, a treeitem with `aria-expanded` that the chart's keys
-// walk to after the last bar, and the chart's one tab stop once the walk is on it. Enter or a
-// press opens it: the task is then a row after it, marked Overtaken, which the walk and End reach
-// next. A press closes it again.
-test("the Plan chart folds an overtaken task into one line after the bars", async () => {
-  readWide();
-  const user = userEvent.setup();
-  const view = drawPlan(planWithOvertaken());
-  try {
     expect(
       [...view.container.querySelectorAll("[data-plan-bar-row]")].map((bar) =>
         bar.getAttribute("data-node-id")
       )
     ).toEqual([T1, T3]);
     expect(view.container.querySelector(`[data-plan-bar="${T2}"]`)).toBeNull();
-    expect(placesDrawn(view.container)).toEqual([T1, T3, "line"]);
-    const line = theLine(view.container);
-    expect(line).toHaveAttribute("role", "treeitem");
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(line.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
+    expect(rowIds(view.container)).toEqual([T1, T3, T2]);
+    const replaced = rowOf(view.container, T2);
+    expect(replaced).toHaveAttribute("role", "treeitem");
+    expect(replaced).toHaveAttribute("aria-level", "1");
+    expect(replaced?.querySelector("[data-plan-bar]")).toBeNull();
+    expect(marksIn(replaced)).toEqual(["overtaken"]);
+    expect(replaced?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
+      ROW_MARK_WORDS.overtaken
+    );
     const stops = (): (Element | null)[] => [
       ...view.container.querySelectorAll('[role="tree"] [tabindex="0"]'),
     ];
     expect(stops()).toEqual([rowOf(view.container, T1)]);
 
-    // The walk goes from the last bar to the line, which takes the one tab stop.
     act(() => rowOf(view.container, T1)?.focus());
     await user.keyboard("j");
     expect(document.activeElement).toBe(rowOf(view.container, T3));
     await user.keyboard("j");
-    expect(document.activeElement).toBe(line);
-    expect(stops()).toEqual([line]);
-
-    // Enter opens it in place, and the walk goes on into the task it holds.
-    await user.keyboard("{Enter}");
-    expect(line).toHaveAttribute("aria-expanded", "true");
-    expect(placesDrawn(view.container)).toEqual([T1, T3, "line", T2]);
-    const opened = rowOf(view.container, T2);
-    expect(opened?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
-      ROW_MARK_WORDS.overtaken
-    );
-    expect(opened?.querySelector("[data-plan-bar]")).toBeNull();
-    await user.keyboard("j");
-    expect(document.activeElement).toBe(opened);
-    expect(stops()).toEqual([opened]);
+    expect(document.activeElement).toBe(replaced);
+    expect(stops()).toEqual([replaced]);
     await user.keyboard("k");
-    expect(document.activeElement).toBe(line);
+    expect(document.activeElement).toBe(rowOf(view.container, T3));
     await user.keyboard("{End}");
-    expect(document.activeElement).toBe(opened);
+    expect(document.activeElement).toBe(replaced);
 
-    // A press closes it, and the line keeps the one tab stop; a press opens it again.
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, T2)).toBeNull();
-    expect(stops()).toEqual([line]);
-    await user.click(line);
-    expect(line).toHaveAttribute("aria-expanded", "true");
-    expect(rowOf(view.container, T2)).not.toBeNull();
+    await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
+    expect(rowIds(view.container)).toEqual([T1, T3, T2]);
+    expect(marksIn(rowOf(view.container, T2))).toEqual(["overtaken"]);
   } finally {
     view.unmount();
   }
 });
 
-// An address naming an overtaken task opens the line that holds it and puts the focus on the
-// task's row there, in the chart and, where the address moves while the reader reads the steps,
-// in the steps, though the outline holds the task under a statement the view draws as no row.
-// Under the words filter the line that holds a match is drawn open, in both.
-test("the Plan view opens the line of an overtaken task an address or the words name", async () => {
+// An address naming an overtaken task focuses its row after the bars, at their level, as an
+// address naming any task focuses its row: in the chart, and, where the address moves while the
+// reader reads the steps, in the steps, though the outline holds the task under a statement the
+// view draws as no row.
+test("an address naming an overtaken task focuses its row under Plan", async () => {
   readWide();
   const user = userEvent.setup();
   const root = planWithOvertaken();
@@ -3441,7 +2667,9 @@ test("the Plan view opens the line of an overtaken task an address or the words 
   const chart = drawPlan(root, { reveal: addressed });
   try {
     await waitFor(() => expect(document.activeElement).toBe(rowOf(chart.container, T2)));
-    expect(theLine(chart.container)).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(chart.container, T2)).toHaveAttribute("aria-level", "1");
+    expect(rowOf(chart.container, T2)).toHaveAttribute("tabindex", "0");
+    expect(rowIds(chart.container)).toEqual([T1, T3, T2]);
   } finally {
     chart.unmount();
   }
@@ -3449,64 +2677,44 @@ test("the Plan view opens the line of an overtaken task an address or the words 
   const steps = drawPlan(root);
   try {
     await user.click(steps.getByRole("button", { name: PLAN_WORDS.steps }));
-    expect(rowOf(steps.container, T2)).toBeNull();
     steps.again({ reveal: addressed });
     await waitFor(() => expect(document.activeElement).toBe(rowOf(steps.container, T2)));
-    expect(theLine(steps.container)).toHaveAttribute("aria-expanded", "true");
+    expect(rowIds(steps.container)).toEqual([T1, T3, T2]);
   } finally {
     steps.unmount();
   }
+});
 
-  // The words match task 2 alone, so the view holds it alone, under the whole plan's order.
+// The words filter matches an overtaken task's words and draws it as it draws every match: the
+// view holds task 2 alone, under the whole plan's order, and the chart draws it as its one row, at
+// a bar's level, holding the one tab stop, and the steps as theirs, each marked Overtaken.
+test("the Plan view's words filter draws an overtaken task it matches as a row, marked", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const root = planWithOvertaken();
+  const replaced = pathTo(root, T2)?.at(-1);
+  if (replaced === undefined) throw new Error("the plan holds task 2");
   const words = drawPlan(node(KEY, "issue", [replaced]), {
     plan: root.children,
     search: "?q=t2",
   });
   try {
-    expect(theLine(words.container)).toHaveAttribute("aria-expanded", "true");
-    expect(rowOf(words.container, T2)).not.toBeNull();
-    expect(theLine(words.container)).toHaveAttribute("tabindex", "0");
+    expect(rowIds(words.container)).toEqual([T2]);
+    expect(rowOf(words.container, T2)).toHaveAttribute("aria-level", "1");
+    expect(rowOf(words.container, T2)).toHaveAttribute("tabindex", "0");
+    expect(marksIn(rowOf(words.container, T2))).toEqual(["overtaken"]);
     await user.click(words.getByRole("button", { name: PLAN_WORDS.steps }));
-    expect(theLine(words.container)).toHaveAttribute("aria-expanded", "true");
-    expect(rowOf(words.container, T2)).not.toBeNull();
+    expect(rowIds(words.container)).toEqual([T2]);
+    expect(marksIn(rowOf(words.container, T2))).toEqual(["overtaken"]);
   } finally {
     words.unmount();
   }
 });
 
-// Under the Plan chart a line the words drew open closes with no press once the reader clears
-// the words. The task's row under it that held the chart's one tab stop is then no row, so the
-// stop goes to the line that now folds it, as the outline's and the Spec view's do, and not to
-// the first bar.
-test("a Plan line the words drew open takes the tab stop of its task when the words go", async () => {
-  readWide();
-  let moveTo: (to: string) => void = () => {};
-  const view = drawPlan(planWithOvertaken(), {
-    search: "?q=t2",
-    take: (navigate) => {
-      moveTo = navigate;
-    },
-  });
-  try {
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
-    act(() => rowOf(view.container, T2)?.focus());
-    await waitFor(() => expect(rowOf(view.container, T2)).toHaveAttribute("tabindex", "0"));
-
-    act(() => moveTo("/"));
-    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false"));
-    expect(rowOf(view.container, T2)).toBeNull();
-    expect(theLine(view.container)).toHaveAttribute("tabindex", "0");
-    expect(rowOf(view.container, T1)).toHaveAttribute("tabindex", "-1");
-  } finally {
-    view.unmount();
-  }
-});
-
 // Under Steps, an address naming a live task that the outline holds under an overtaken statement
-// lands on the task's row and opens no line: the steps hold every task under their own root, so
-// the overtaken statement in the outline's chain is no node of theirs, and the line of overtaken
-// tasks stays closed until the reader opens it.
-test("under Steps an address to a live task under an overtaken statement opens no line", async () => {
+// focuses the task's row, as an address naming any task does: the steps hold every task under
+// their own root, and the overtaken statement in the outline's chain is no row of theirs.
+test("under Steps an address to a live task under an overtaken statement focuses its row", async () => {
   readWide();
   const user = userEvent.setup();
   const root = planWithOvertaken();
@@ -3520,8 +2728,7 @@ test("under Steps an address to a live task under an overtaken statement opens n
     await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
     view.again({ reveal });
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view.container, T3)));
-    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
-    expect(rowOf(view.container, T2)).toBeNull();
+    expect(rowIds(view.container)).toEqual([T1, T3, T2]);
   } finally {
     view.unmount();
   }

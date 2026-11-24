@@ -518,13 +518,10 @@ export const NODE_ROW_LAYOUT = {
  * between mousedown and mouseup, and the reader's Keep was never sent. The reader pressed what
  * they could see, so there is nothing to bring on screen.
  *
- * Answers the row's own `onPointerDown`, which marks a press. Every node row of the outline and
- * of the Plan, Spec and Decisions views places itself by this one hook, and so does the Plan
- * chart's line of overtaken tasks; the Verification view places its rows by its own focus
- * (`focusOn`), and a line of overtaken nodes `OvertakenLine` draws has no placing of its own.
- * `below` is how far below what stays a row that lay under it is placed, `BELOW_WHAT_STAYS`
- * unless a view places its rows by a step of its own, as a view whose sticky heads stand taller
- * than the outline's does.
+ * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
+ * filter's body places itself by this one hook. `below` is how far below what stays a row that
+ * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
+ * as a view whose sticky heads stand taller than the outline's does.
  *
  * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
  * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
