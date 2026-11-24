@@ -2113,7 +2113,9 @@ test("a body drawn with chips draws an issue's chip at its first link, and a lat
 
 // A chip is a box that never breaks (`ItemChip`), and a line may end after a box, so the full stop
 // after a chip went on alone to the next line in the side panel. The link and the punctuation
-// written right after it share one span that does not break, with nothing between them.
+// written right after it share one span that does not break, with nothing between them. The
+// punctuation stands one pixel nearer the chip than its glyph does (`-ml-px`): a full stop's own
+// side bearing read as a gap after the chip's rule (review R4).
 test("a body drawn with chips keeps the punctuation after a chip against it, on its line", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
     documents: [],
@@ -2137,6 +2139,10 @@ test("a body drawn with chips keeps the punctuation after a chip against it, on 
     expect(line.className).toBe("whitespace-nowrap");
     expect(line.textContent).toBe("DEMO-7DoneMap the lunar craters.");
     expect(line.firstElementChild).toBe(chip.closest("a"));
+    const mark = line.querySelector("[data-chip-mark]");
+    expect(mark?.textContent).toBe(".");
+    expect(mark?.className).toBe("-ml-px");
+    expect(mark?.previousElementSibling).toBe(chip.closest("a"));
     // The words after the full stop stay outside it, and so does the later plain link.
     expect(view.container.textContent).toBe(
       "It needs a map, DEMO-7DoneMap the lunar craters. Then DEMO-7 again."

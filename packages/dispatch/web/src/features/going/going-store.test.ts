@@ -16,10 +16,12 @@ import {
   openConversation,
   openRun,
   queuedReady,
+  rereadRun,
   resetGoingStore,
   setDraft,
   setLevel,
   setPlace,
+  setUndone,
   startRun,
   stopRun,
   titleWords,
@@ -45,10 +47,13 @@ function record(id: string, conversation: string, words: string): GoingRun {
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state: "queued",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words,
   };
@@ -607,5 +612,49 @@ test("a run's stream read again from its first frame keeps the time each block w
     start.mockRestore();
     stream.mockRestore();
     realClock();
+  }
+});
+
+// What Undo did and can still do of a run is Dispatch's record of it, which moves as the rows of
+// the run's plan run and as an Undo lands (class search, entries 36 and 55). The page reads the
+// record again at each of those, so two reads can be out at once: the record held is the one the
+// newest read answered, whichever of them answers last.
+test("a run's record read again is the newest read's, though an older read answers after it", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "raise CORE-1"));
+  const older = Promise.withResolvers<GoingRun>();
+  const newer = Promise.withResolvers<GoingRun>();
+  const read = spyOn(api, "goingRun")
+    .mockReturnValueOnce(older.promise)
+    .mockReturnValueOnce(newer.promise);
+  const ran: GoingRun = {
+    ...record("r-1", "c-1", "raise CORE-1"),
+    state: "done",
+    undoable: true,
+    undoable_count: 1,
+  };
+  const undone: GoingRun = {
+    ...ran,
+    undoable: false,
+    undoable_count: 0,
+    undone_at: "2026-11-18T11:35:00Z",
+    undone_count: 1,
+  };
+  try {
+    await startRun("raise CORE-1", CONTEXT, "alice");
+    // The plan's rows ran, and then an Undo of the run answered: one read for each.
+    rereadRun("r-1");
+    setUndone("r-1", []);
+    expect(read.mock.calls).toEqual([["r-1"], ["r-1"]]);
+    newer.resolve(undone);
+    await waitFor(() => expect(goingState().runs.get("r-1")?.record).toEqual(undone));
+    older.resolve(ran);
+    await settle();
+    expect(goingState().runs.get("r-1")?.record).toEqual(undone);
+    // A run the page does not hold has no record here to read again.
+    rereadRun("r-9");
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    read.mockRestore();
+    runs.restore();
   }
 });

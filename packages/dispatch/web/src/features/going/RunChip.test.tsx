@@ -46,10 +46,13 @@ function record(id: string, conversation: string, words: string): GoingRun {
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state: "queued",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words,
   };
@@ -198,7 +201,7 @@ test("the chip names the follow-up started here, though this page's clock is beh
   }
 });
 
-test("the chip is a pill of its own, apart from the page: a background, a border and a small shadow, as tall as its words", async () => {
+test("the chip is a pill of its own, apart from the page: a background, a border and a small shadow, 24 px tall", async () => {
   const runs = answerRuns(record("r-1", "c-1", "count the moons"));
   try {
     renderChip();
@@ -208,13 +211,13 @@ test("the chip is a pill of its own, apart from the page: a background, a border
       expect(chip).toHaveClass(name);
     }
     expect(chip).toHaveClass("border", "rounded-full", "shadow-md");
-    // The shell floats the chip over the 24 px band at the top of the page (`app.tsx`), in a row
-    // of no height. The chip keeps the height of its words, 14 px lines and no pad, 8 px below
-    // the screen's top (review n6), rather than stretching, and takes no 44 px floor
-    // (`data-run-chip`), so it stays inside that band.
-    expect(chip).toHaveClass("self-start", "mt-2", "leading-[14px]");
+    // The shell floats the chip over the top of the page (`app.tsx`), in a row of no height. The
+    // chip is 24 px tall (review R4): its button, which is the whole pill with its rule
+    // (`-m-px`), holds that height, and takes no 44 px floor (`data-run-chip`). It keeps room
+    // above it (review n6), 4 px and 8 px from the `md` width, rather than stretching.
+    expect(chip).toHaveClass("self-start", "mt-1", "md:mt-2", "leading-4");
     expect(chip).toHaveAttribute("data-run-chip");
-    expect(screen.getByTestId("going-chip-open")).toHaveClass("py-0");
+    expect(screen.getByTestId("going-chip-open")).toHaveClass("min-h-6", "-m-px");
   } finally {
     runs.restore();
   }

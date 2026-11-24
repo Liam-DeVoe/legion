@@ -421,13 +421,14 @@ html:has([data-issue-page]) {
     min-height: 24px;
   }
 
-  /* The command bar's run chip floats over the 24 px band at the top of the page (`RunChip.tsx`,
-     `app.tsx`), where it covers no part of the page, so it is 16 px tall and takes no floor:
-     nothing else in that band is a target, so a 24 px circle on it meets no other target (WCAG
-     2.2's 2.5.8). With the floor it grew to 46 px and reached over the page's title. */
+  /* The command bar's run chip floats over the top of the page (`RunChip.tsx`, `app.tsx`), from
+     the 24 px band above the page's first row, so it is 24 px tall, WCAG 2.2's target size
+     (2.5.8), rather than the floor above: with that floor it grew to 46 px and reached over the
+     page's title. These rules are in no cascade layer, so the chip's own height utility does not
+     hold at this width, and the height is said here. */
   [data-run-chip] button {
     min-width: 0;
-    min-height: 0;
+    min-height: 24px;
   }
 
   /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's

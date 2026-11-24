@@ -11,7 +11,7 @@ import {
 import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from "../../api/queries";
 import type { GoingPlanAnswer } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { claimPlanRead, draftOf, newestRun, useGoingValue } from "./going-store";
+import { claimPlanRead, draftOf, newestRun, rereadRun, useGoingValue } from "./going-store";
 import { approvable, approvalOf } from "./plan-rows";
 
 /** The target every write about the plan of `run` goes under - an answer to it, and its run's
@@ -81,7 +81,9 @@ export interface PlanAnswering {
  * person's three answers to it: approve, with the ticks and edits the store holds for it, reject,
  * and revise in words. Each answer is the person's write, under the plan's own target, so two
  * surfaces that answer one plan go one at a time. A surface that mounts reads the plan again;
- * each new reading frame reads it again once, however many surfaces draw it (`claimPlanRead`).
+ * each new reading frame reads it again once, however many surfaces draw it (`claimPlanRead`),
+ * and with it the run's record, which says what Undo can take back of the rows that ran
+ * (`rereadRun`).
  */
 export function usePlan(run: string | undefined, planReads: number): PlanAnswering {
   const queryClient = useQueryClient();
@@ -96,8 +98,17 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
   useEffect(() => {
     const mounting = !mounted.current;
     mounted.current = true;
-    if (run !== undefined && planReads > 1 && (claimPlanRead(run, planReads) || mounting)) {
+    if (run === undefined || planReads <= 1) {
+      return;
+    }
+    const claimed = claimPlanRead(run, planReads);
+    if (claimed || mounting) {
       void queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
+    }
+    // A reading frame past the plan's first comes once rows of the plan may have run, which moves
+    // what Undo can take back of the run: its record is read again with its plan, once a frame.
+    if (claimed) {
+      rereadRun(run);
     }
   }, [planReads]);
   // The refusal names the plan it answered, so the hook, which stays mounted as the open run

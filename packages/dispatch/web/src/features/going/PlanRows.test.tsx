@@ -87,18 +87,22 @@ const created: GoingRun = {
   level: "standard",
   line: null,
   mode: "ask",
+  standing_count: 0,
   state: "queued",
   stop_reason: null,
   undoable: false,
+  undoable_count: 0,
   undone_at: null,
+  undone_count: 0,
   used: { calls: 0, tokens: 0, working_ms: 0 },
   words: "tidy DEMO-10",
 };
 
 /** Starts the conversation's run, whose stream carries its plan frame and then stays open while
- *  the plan waits, and shows the conversation over the page. The plan is read as `plan`. */
-async function openPlan(plan: GoingPlanAnswer): Promise<() => void> {
-  const start = spyOn(api, "createGoingRun").mockResolvedValue(created);
+ *  the plan waits, and shows the conversation over the page. The plan is read as `plan`, and the
+ *  run's record is `started`, which says what Undo can take back of it. */
+async function openPlan(plan: GoingPlanAnswer, started: GoingRun = created): Promise<() => void> {
+  const start = spyOn(api, "createGoingRun").mockResolvedValue(started);
   const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
     onFrame("plan", { plan: 1, state: "waiting" });
     return Promise.withResolvers<void>().promise;
@@ -164,6 +168,11 @@ function shownText(element: HTMLElement): string {
 // delivers it to: by default an issue that routes its messages nowhere and that nobody claims.
 let summaries: { mockRestore: () => void } | undefined;
 let issues: { mockRestore: () => void } | undefined;
+// A message on an issue also reads the sessions that follow the issue: by default none. And a
+// run's record is read again at each frame after which rows of its plan may have run
+// (`rereadRun`): unless a row answers that read itself, Dispatch answers the record the page holds.
+let followers: { mockRestore: () => void } | undefined;
+let rereads: { mockRestore: () => void } | undefined;
 beforeEach(() => {
   summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
     documents: [],
@@ -178,6 +187,12 @@ beforeEach(() => {
     key,
     route: null,
   }));
+  followers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  rereads = spyOn(api, "goingRun").mockImplementation(async (id) => {
+    const held = goingState().runs.get(id)?.record;
+    if (held === undefined) throw new Error(`the page holds no run ${id}`);
+    return held;
+  });
 });
 
 afterEach(() => {
@@ -185,6 +200,8 @@ afterEach(() => {
   resetGoingStore();
   summaries?.mockRestore();
   issues?.mockRestore();
+  followers?.mockRestore();
+  rereads?.mockRestore();
 });
 
 test("a change row names its item and each field in the page's words, the values as the page shows them", async () => {
@@ -563,20 +580,49 @@ test("a new issue row shows New, its title, its fields on one line and its spec 
   }
 });
 
-// A message on an issue's conversation names whom Dispatch delivers it to (review m5): the session
-// or role the issue sends its messages to and the session that holds its claim, read from the
-// issue (`eventDestinations`, outbox/publisher.go); with neither, it says no agent takes them.
+// A message on an issue's conversation names whom Dispatch delivers it to, in the form a message
+// to a session and a broadcast have (review m5): the session or the role the issue sends its
+// messages to, the session that holds its claim and the sessions that follow it, read from the
+// issue and its subscribers (`eventDestinations`, outbox/publisher.go) - one by its name, more by
+// their count with the sessions under it. Where the page cannot read who follows the issue, or
+// knows nobody the message reaches, the row says whom Dispatch tells of it in words.
 test("message rows say whom they reach and how, show the whole text, and say they cannot be undone", async () => {
-  const read = spyOn(api, "getIssue").mockImplementation(async (key: string) =>
-    key === "DEMO-2"
-      ? {
-          ...issueFixture,
-          claim: { actor: { id: "s-9", kind: "session" }, at: new Date().toISOString() },
-          key,
-          route: "role:planner",
-        }
-      : { ...issueFixture, claim: null, key, route: null }
-  );
+  const read = spyOn(api, "getIssue").mockImplementation(async (key: string) => {
+    const unrouted = { ...issueFixture, claim: null, key, route: null, route_holder: null };
+    if (key === "DEMO-2") {
+      return {
+        ...unrouted,
+        claim: { actor: { id: "s-9", kind: "session" }, at: new Date().toISOString() },
+        route: "role:planner",
+      };
+    }
+    return key === "DEMO-3" || key === "DEMO-4" ? { ...unrouted, route: "session:s-1" } : unrouted;
+  });
+  const followed = spyOn(api, "getIssueSubscribers").mockImplementation(async (key: string) => {
+    if (key === "DEMO-4") {
+      throw new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "the listener did not answer" });
+    }
+    // The session DEMO-3 routes to follows it too, and is one session of the three.
+    return key === "DEMO-3"
+      ? ["s-1", "s-2", "s-3"].map((session) => ({
+          last_seen: 0,
+          live: true,
+          removable: true,
+          session_id: session,
+          title: session,
+          topics: [],
+        }))
+      : [];
+  });
+  const onIssue = (number: number, issue: string, body: string) =>
+    row(number, {
+      arguments: { body, issue },
+      class: "message",
+      issue,
+      item: issue,
+      tool: "dispatch_message",
+      waits: ["message"],
+    });
   const restore = await openPlan(
     planOf([
       row(0, {
@@ -600,33 +646,21 @@ test("message rows say whom they reach and how, show the whole text, and say the
         tool: "dispatch_broadcast",
         waits: ["broadcast"],
       }),
-      row(2, {
-        arguments: { body: "Please review the split.", issue: "DEMO-1" },
-        class: "message",
-        issue: "DEMO-1",
-        item: "DEMO-1",
-        tool: "dispatch_message",
-        waits: ["message"],
-      }),
-      row(3, {
-        arguments: { body: "The split is yours.", issue: "DEMO-2" },
-        class: "message",
-        issue: "DEMO-2",
-        item: "DEMO-2",
-        tool: "dispatch_message",
-        waits: ["message"],
-      }),
+      onIssue(2, "DEMO-1", "Please review the split."),
+      onIssue(3, "DEMO-2", "The split is yours."),
+      onIssue(4, "DEMO-3", "The split is done."),
+      onIssue(5, "DEMO-4", "The split waits."),
     ])
   );
   try {
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
-    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 4 messages");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 6 messages");
     const toSession = drawnRow(0);
     // The issue a message is on is that issue's chip, as an answer names it.
     const toSessionLine = within(toSession).getByTestId("going-plan-message");
-    const onIssue = within(toSessionLine).getByTestId("item-chip");
-    await waitFor(() => expect(onIssue).toHaveTextContent("DEMO-15In progressThe issue DEMO-15"));
+    const chip = within(toSessionLine).getByTestId("item-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("DEMO-15In progressThe issue DEMO-15"));
     expect(toSessionLine).toHaveTextContent(
       /^Message to .+ on DEMO-15In progressThe issue DEMO-15 · as a BTW$/u
     );
@@ -640,19 +674,38 @@ test("message rows say whom they reach and how, show the whole text, and say the
     expect(
       within(within(broadcast).getByTestId("going-plan-sessions")).getAllByRole("listitem")
     ).toHaveLength(4);
-    // No route and no claim: only the agents that follow the issue are told of it, and the row says so.
+    // No route, no claim and nobody who follows it: the row says whom Dispatch tells, in words,
+    // and names no delivery, as a message on an issue has none.
+    await waitFor(() => expect(followed).toHaveBeenCalledWith("DEMO-1"));
     await waitFor(() =>
       expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
-        /^Message on DEMO-1.* · to the agents that follow it$/u
+        /^Message to the agents that follow DEMO-1In progressThe issue DEMO-1$/u
       )
     );
+    expect(within(drawnRow(2)).queryByTestId("going-plan-sessions")).toBeNull();
     // The role it routes to, and the session that holds its claim.
     await waitFor(() =>
       expect(within(drawnRow(3)).getByTestId("going-plan-message")).toHaveTextContent(
         /^Message to the planner and .+ on DEMO-2/u
       )
     );
-    for (const number of [0, 1, 2, 3]) {
+    // Three sessions in all - the one it routes to among those that follow it - by their count,
+    // with the sessions under it, as a broadcast names them.
+    await waitFor(() =>
+      expect(within(drawnRow(4)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to 3 sessions on DEMO-3/u
+      )
+    );
+    expect(
+      within(within(drawnRow(4)).getByTestId("going-plan-sessions")).getAllByRole("listitem")
+    ).toHaveLength(3);
+    // Who follows DEMO-4 cannot be read: the session it routes to, then the rest in words.
+    await waitFor(() =>
+      expect(within(drawnRow(5)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to .+ and the agents that follow DEMO-4/u
+      )
+    );
+    for (const number of [0, 1, 2, 3, 4, 5]) {
       expect(within(drawnRow(number)).getByTestId("going-plan-final")).toHaveTextContent(
         "Cannot be undone once sent"
       );
@@ -662,6 +715,7 @@ test("message rows say whom they reach and how, show the whole text, and say the
   } finally {
     restore();
     read.mockRestore();
+    followed.mockRestore();
   }
 });
 
@@ -1146,8 +1200,10 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     ],
     { state: "done" }
   );
-  const restore = await openPlan(ran);
-  const reread = spyOn(api, "goingRun").mockResolvedValue(created);
+  // Dispatch's record of the run: two changes Undo can take back, the message none.
+  const counted = { ...created, undoable: true, undoable_count: 2 };
+  const restore = await openPlan(ran, counted);
+  const reread = spyOn(api, "goingRun").mockResolvedValue(counted);
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
   >("POST", "/api/v1/going/runs/*/undo");
@@ -1195,6 +1251,7 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     await screen.findByTestId("going-plan-card-rows");
     expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 3 changes");
     expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent("Sent");
+    expect(screen.getByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
     await user.click(screen.getByTestId("going-undo-button"));
     await waitFor(() => expect(undo).toHaveBeenCalledWith("run-1", undefined, keyedAttempt));
     await waitFor(() =>
@@ -1227,6 +1284,48 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
   }
 });
 
+/** A project's default repository set, which ran: a setting, which Undo leaves as it is. */
+const repositorySet = row(1, {
+  arguments: { project: "DEMO", repo: "acme/infra" },
+  class: "setting",
+  item: "DEMO",
+  result: { code: "", delivery: null, message: "", status: 200 },
+  state: "done",
+  tool: "dispatch_set_default_repository",
+});
+
+// What the card's Undo says its press takes back is Dispatch's count of it (class search, entry
+// 55), never the plan's rows that ran: a setting stays as it is, so a plan that updated an issue
+// and set a default repository offered "Undo 2 changes" for a press that takes back one.
+test("the card's Undo counts the changes Dispatch says it can take back, not the rows that ran", async () => {
+  const restore = await openPlan(
+    planOf([{ ...labelsAndPriority, state: "done" }, repositorySet], { state: "done" }),
+    { ...created, undoable: true, undoable_count: 1 }
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 2 changes");
+    expect(screen.getByTestId("going-undo-button")).toHaveTextContent(/^Undo 1 change$/u);
+  } finally {
+    restore();
+  }
+});
+
+// A plan whose one row that ran is such a setting offered "Undo 1 change", though Dispatch's
+// record says nothing of it is left to take back, and its press read "Undone · nothing to revert".
+test("a plan whose changes Undo leaves as they are offers no Undo", async () => {
+  const restore = await openPlan(planOf([repositorySet], { state: "done" }));
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 1 change");
+    expect(screen.queryByTestId("going-undo-button")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
 /** A start of run `id`, a conversation of its own, of `words`. */
 function startedAs(id: string, words: string): GoingRun {
   return { ...created, conversation: id, id, words };
@@ -1242,11 +1341,15 @@ const raiseDemo11 = row(0, {
 });
 
 /** Answers the starts of `run-1` and then `run-2`, each its own conversation, whose streams carry
- *  a plan frame and stay open, and each run's plan as `plans` says. */
-function answerTwoRuns(plans: (run: string) => GoingPlanAnswer): () => void {
+ *  a plan frame and stay open, and each run's plan as `plans` says. `counts` is what each run's
+ *  record says Undo can take back of it. */
+function answerTwoRuns(
+  plans: (run: string) => GoingPlanAnswer,
+  counts: Partial<GoingRun> = {}
+): () => void {
   const start = spyOn(api, "createGoingRun")
-    .mockResolvedValueOnce(created)
-    .mockResolvedValueOnce(startedAs("run-2", "raise DEMO-11"));
+    .mockResolvedValueOnce({ ...created, ...counts })
+    .mockResolvedValueOnce({ ...startedAs("run-2", "raise DEMO-11"), ...counts });
   const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
     onFrame("plan", { plan: 1, state: "waiting" });
     return Promise.withResolvers<void>().promise;
@@ -1322,8 +1425,13 @@ test("a card's Undo out when another run opens keeps its answer and its refusal 
   const user = userEvent.setup();
   const ran = (run: string) =>
     planOf([{ ...labelsAndPriority, state: "done" }], { run, state: "done" });
-  const restore = answerTwoRuns(ran);
-  const reread = spyOn(api, "goingRun").mockImplementation(async (id) => ({ ...created, id }));
+  const counts = { undoable: true, undoable_count: 1 };
+  const restore = answerTwoRuns(ran, counts);
+  const reread = spyOn(api, "goingRun").mockImplementation(async (id) => ({
+    ...created,
+    ...counts,
+    id,
+  }));
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
   >("POST", "/api/v1/going/runs/*/undo");

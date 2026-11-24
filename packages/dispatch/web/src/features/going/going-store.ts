@@ -610,19 +610,38 @@ export function continueRun(
   return startRun("Continue", context, login, { continues: id, level: level ?? run.record.level });
 }
 
+/** The newest read of each run's record that `rereadRun` sent, by run. */
+const recordReads = new Map<string, number>();
+
+/**
+ * Reads `run`'s record again (`GET /api/v1/going/runs/{id}`) where the page holds the run: what
+ * Undo did and can still do of it - when an undo landed (`undone_at`), and how many of its changes
+ * Undo can take back or leaves standing (`undoable_count`, `standing_count`) - is Dispatch's to
+ * say, from what committed, and it moves as the rows of the run's plan run and as an Undo lands.
+ * The record held is the one the newest read answered: an older read answered later is dropped.
+ * A record that cannot be read leaves the one held, as a reload that could not read it would.
+ */
+export function rereadRun(run: string): void {
+  if (!state.runs.has(run)) {
+    return;
+  }
+  const read = (recordReads.get(run) ?? 0) + 1;
+  recordReads.set(run, read);
+  api.goingRun(run).then(
+    (record) => {
+      if (recordReads.get(run) === read) {
+        withRun(run, (entry) => ({ ...entry, record }));
+      }
+    },
+    () => undefined
+  );
+}
+
 /** Holds what the Undo of `run` answered (`GoingState.undone`), and reads the run's record again
- *  where the page holds the run: whether an undo of it landed (`undone_at`) and whether a change
- *  of it is still left to take back (`undoable`) are Dispatch's to say, from what committed, and
- *  the answer's lines do not say which of their requests did. A record that cannot be read leaves
- *  the one held, as a reload that could not read it would. */
+ *  (`rereadRun`): the answer's lines do not say which of their requests committed. */
 export function setUndone(run: string, lines: readonly GoingUndoLine[]): void {
   set({ ...state, undone: new Map(state.undone).set(run, lines) });
-  if (state.runs.has(run)) {
-    api.goingRun(run).then(
-      (record) => withRun(run, (entry) => ({ ...entry, record })),
-      () => undefined
-    );
-  }
+  rereadRun(run);
 }
 
 /** Opens a conversation History lists: its runs, oldest first, each read from its stream's first
@@ -732,5 +751,6 @@ export function resetGoingStore(): void {
   }
   following.clear();
   planReadsAt.clear();
+  recordReads.clear();
   set(INITIAL);
 }

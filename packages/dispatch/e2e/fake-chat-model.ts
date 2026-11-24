@@ -22,7 +22,9 @@ import { harnessPorts, stackValue } from "./harness-ports";
 // plan in Auto-review), so each call is matched to the script of its words and answered with that
 // script's next turn, then with its `afterwards` turn for every call after, and with neither a 500
 // that says so. A call of a run whose words no script names is answered as every other call is,
-// below. A turn is prose, tool calls (find_tools, call_tool, propose_plan or any other) after
+// below. A turn is prose, prose the service cut at the call's output tokens (its finish_reason
+// `length`, which stops the run at that bound of its level with the prose kept), tool calls
+// (find_tools, call_tool, propose_plan or any other) after
 // that prose, a stream with no end that writes until the caller goes away, or a status with its
 // Retry-After (a 429, which the agent waits out and asks again, the next call taking the next
 // turn). So a row scripts a run step by step, and a run continued after its plan is approved takes
@@ -90,6 +92,10 @@ export interface ChatReply {
 export interface ChatTurn {
   /** Prose, streamed first. A turn of prose and no tool call ends the run's turn. */
   readonly text?: string;
+  /** The service cut the turn's prose at the call's output tokens: its finish_reason is `length`,
+   *  not `stop`. The agent keeps the prose it wrote and stops the run at that bound of its level,
+   *  with Continue (going/agent's `finishLength`). It says nothing of a turn that calls a tool. */
+  readonly cut?: boolean;
   /** The tool calls the model makes after its prose, each its own frames. */
   readonly toolCalls?: readonly ChatToolCall[];
   /** A stream that writes prose every 50 ms and never finishes, until the caller goes away. */
@@ -499,7 +505,8 @@ function runTurn(scripted: ChatTurn): unknown[] {
     frames.push(frame({ delta: { content: piece } }));
   }
   frames.push(...toolCallFrames(calls, size, () => {}));
-  frames.push(frame({ finish_reason: calls.length > 0 ? "tool_calls" : "stop" }));
+  const finish = calls.length > 0 ? "tool_calls" : scripted.cut === true ? "length" : "stop";
+  frames.push(frame({ finish_reason: finish }));
   const written =
     (scripted.text ?? "").length + calls.reduce((sum, call) => sum + call.text.length, 0);
   const output = Math.max(1, Math.ceil(written / 4));

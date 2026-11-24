@@ -319,6 +319,60 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
   }
 });
 
+// A snippet the server cut out of a longer text ends with "…" (review R4, 13-filing-line): the
+// headline's window is 24 words, so a snippet that wide stopped mid-phrase at the row's edge with
+// nothing to say so, and a shorter one is the whole text and ends as it does. The issue's status
+// stands in a column of its own beside both of the hit's lines, so the snippet's line stops
+// before it rather than running on under it.
+test("a snippet the server cut ends with …, a whole one ends as its text does, and the status keeps a column of its own", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const cut =
+    "Draw each page and read it against the design before the next one is drawn so that no page of the set is left";
+  const whole = "Read each page against the design.";
+  const hit = (id: string, text: string): SearchResult => ({
+    artifact: { name: "plan.md", slug: "plan" },
+    href: `/issues/LEGION-2/artifact/plan?q=page&hit=${id}`,
+    id,
+    kind: "document",
+    owner: { key: "LEGION-2", kind: "issue", status: "in_progress", title: "Local testing" },
+    rank: 1,
+    snippet: text.replace("page", "<mark>page</mark>"),
+  });
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([hit("document-cut", cut), hit("document-whole", whole)])
+  );
+  const view = renderPalette();
+  try {
+    await searchFor(user, "page");
+    const [cutHit, wholeHit] = within(
+      screen.getByRole("group", { name: "Documents" })
+    ).getAllByRole("option");
+    if (cutHit === undefined || wholeHit === undefined) {
+      throw new Error("the bar lists no two document hits");
+    }
+    const drawn = (option: HTMLElement): string =>
+      within(option)
+        .getByTestId("search-hit-snippet")
+        .querySelector("[data-markdown-preview]")
+        ?.textContent?.replace(/\s+/gu, " ")
+        .trim() ?? "";
+    await waitFor(() => expect(drawn(cutHit)).toBe(`${cut}…`));
+    await waitFor(() => expect(drawn(wholeHit)).toBe(whole));
+    expect(within(cutHit).getByText("page", { selector: "mark" })).toBeTruthy();
+
+    const status = within(cutHit).getByTestId("search-hit-status");
+    const lines = within(cutHit).getByTestId("search-hit-snippet").parentElement;
+    expect(status.previousElementSibling).toBe(lines);
+    expect(lines).toHaveClass("min-w-0", "flex-1");
+    expect(status).toHaveClass("shrink-0");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("an issue hit whose snippet starts past the title's first words shows the whole title, once", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
@@ -1906,10 +1960,13 @@ function runRecord(id: string, words: string): GoingRun {
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state: "queued",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words,
   };

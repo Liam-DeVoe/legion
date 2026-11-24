@@ -515,7 +515,12 @@ export function BoxRow({
         ) : null}
       </div>
       {hint === undefined ? null : (
-        <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-box-hint">
+        // The hint stands under the box, from the box's left edge (design v3, Keys: "the hint
+        // under the box says so"; review R2), not under the mode button: it is indented by that
+        // button's width (`w-20`, `LevelControl`) and the row's gap after it (`gap-2`). The
+        // hint shows only while a plan waits, when no Stop stands in the row, so the row does
+        // not wrap and the box stands where this indent says.
+        <p className={`ps-22 text-xs ${textMutedOnSurface}`} data-testid="going-box-hint">
           {hint}
         </p>
       )}

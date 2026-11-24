@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,7 +9,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { goingConversationsQuery } from "../../api/queries";
-import type { GoingConversation, GoingRun, GoingUndoAnswer } from "../../api/types";
+import type { GoingConversation, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { ConversationView } from "./ConversationView";
 import { goingState, openConversation, resetGoingStore } from "./going-store";
 import { History } from "./History";
@@ -39,10 +39,13 @@ function run(id: string, words: string, at: number, extra: Partial<GoingRun> = {
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state: "done",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 2, tokens: 10, working_ms: 1000 },
     words,
     ...extra,
@@ -113,9 +116,20 @@ function titles(): (string | null)[] {
   return screen.queryAllByTestId("going-history-title").map((title) => title.textContent);
 }
 
+// History's Undo reads the run's plan as it is pressed, to name each line by its row
+// (`RunUndo`). By default the run has no plan the page can read, and a line is named by its tool
+// and its item.
+let plans: { mockRestore: () => void } | undefined;
+beforeEach(() => {
+  plans = spyOn(api, "goingPlan").mockRejectedValue(
+    new ApiError(404, { code: "GOING_PLAN_NOT_FOUND", error: "the run proposed no plan" })
+  );
+});
+
 afterEach(() => {
   cleanup();
   resetGoingStore();
+  plans?.mockRestore();
 });
 
 test("History groups the conversations Today, Yesterday and This week, each row its title, state and time, and Undo only where its newest run changed something", async () => {
@@ -315,6 +329,95 @@ test("Undo in History undoes that run and names a value another person changed, 
     ]);
   } finally {
     read.mockRestore();
+  }
+});
+
+// An Undo line carries its tool and its item alone (class search, entries 33 and 53), and a label
+// filled from those two dropped a setting's project and said a value its write never set: "Set
+// the default repository of to none: Sent, not undone" for a row that set acme/infra. The Undo
+// reads the run's plan, and names each line by the row it undid.
+test("Undo in History names each line by its plan row, a setting by its project and the value it set", async () => {
+  const user = userEvent.setup();
+  const read = listConversations();
+  const ran = (number: number, extra: Partial<GoingPlanRow>): GoingPlanRow => ({
+    arguments: {},
+    changed: false,
+    claim: null,
+    class: "field",
+    fields: [],
+    issue: "",
+    item: "",
+    needs: [],
+    now: null,
+    result: { code: "", delivery: null, message: "", status: 200 },
+    row: number,
+    state: "done",
+    tool: "dispatch_issue_update",
+    waits: [],
+    ...extra,
+  });
+  const plan = spyOn(api, "goingPlan").mockResolvedValue({
+    mode: "ask",
+    plan: 1,
+    rows: [
+      ran(0, {
+        arguments: { issue: "CORE-3", parent: "CORE-9" },
+        fields: ["parent"],
+        issue: "CORE-3",
+        item: "CORE-3",
+      }),
+      ran(1, {
+        arguments: { project: "CORE", repo: "acme/infra" },
+        class: "setting",
+        item: "CORE",
+        tool: "dispatch_set_default_repository",
+      }),
+      ran(2, {
+        arguments: { assignee: "bob@example.com", project: "CORE" },
+        class: "setting",
+        item: "CORE",
+        tool: "dispatch_set_default_assignee",
+      }),
+    ],
+    run: "r-4",
+    state: "done",
+    summary: "",
+    version: "v1",
+  });
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  const line = (row: number, tool: string, item: string, kind: "not_undone" | "write_back") => ({
+    fields: [],
+    item,
+    outcome: { code: "", message: "", ok: true, status: 200 },
+    plan: 1,
+    row,
+    tool,
+    undo: kind,
+  });
+  undo.mockImplementation(async () => ({
+    lines: [
+      line(2, "dispatch_set_default_assignee", "CORE", "not_undone"),
+      line(1, "dispatch_set_default_repository", "CORE", "not_undone"),
+      line(0, "dispatch_issue_update", "CORE-3", "write_back"),
+    ],
+  }));
+  try {
+    renderHistory();
+    const [first] = await screen.findAllByTestId("going-undo-button");
+    await user.click(first as HTMLElement);
+    await waitFor(() => expect(plan).toHaveBeenCalledWith("r-4"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("going-undo-line").map((drawn) => drawn.textContent)).toEqual([
+        "Set the default assignee of CORE to bob@example.com: Sent, not undone",
+        "Set the default repository of CORE to acme/infra: Sent, not undone",
+        "Update CORE-3: Reverted",
+      ])
+    );
+  } finally {
+    read.mockRestore();
+    plan.mockRestore();
   }
 });
 

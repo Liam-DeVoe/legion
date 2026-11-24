@@ -14,6 +14,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { GoingEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { TABLE_ROWS } from "./blocks/TableBlock";
 import {
   type GoingBarSpies,
   type OpenedStream,
@@ -191,6 +192,53 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
     expect(screen.queryByTestId("going-answer-item")).not.toBeInTheDocument();
     expect(screen.queryByTestId("going-answer-roster")).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
+// What the reader did with an answer's block is that answer's (class search, entry 71). A table
+// past 8 rows shows its first rows and "Show all", which opens it in place here. The next
+// answer's table is another block in the same place of the panel, and it starts at its own first
+// rows rather than opened by a press made on the table before it.
+test("Show all on an answer's table is not carried over to the next answer's table", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const table = (count: number): GoingEvent => ({
+    data: {
+      kind: "table",
+      rows: Array.from({ length: count }, (_, index) => ({ issues: index + 1, status: "todo" })),
+      spec: { columns: ["status", "issues"], params: {}, source: "run", table: "chain" },
+      title: "LEGION issues by status",
+    },
+    event: "block",
+  });
+  /** The rows the panel's table draws under its header. */
+  const rows = (): number =>
+    within(screen.getByTestId("going-block-table")).getAllByRole("row").length - 1;
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    send(streams[0], { data: { text: "The first answer" }, event: "text" }, table(10));
+    await waitFor(() => expect(rows()).toBe(TABLE_ROWS));
+    await user.click(screen.getByTestId("going-block-show-all"));
+    expect(rows()).toBe(10);
+    expect(screen.queryByTestId("going-block-show-all")).toBeNull();
+
+    // One more letter, and its answer with a table of its own.
+    await user.click(screen.getByRole("combobox", { name: "Search" }));
+    await user.keyboard("s");
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    send(streams[1], { data: { text: "The second answer" }, event: "text" }, table(12));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer")
+    );
+    expect(rows()).toBe(TABLE_ROWS);
+    expect(screen.getByTestId("going-block-show-all")).toHaveTextContent("Show all 12 ›");
   } finally {
     bar.unmount();
   }

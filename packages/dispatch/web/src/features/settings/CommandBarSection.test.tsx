@@ -1,13 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { GoingSettings } from "../../api/types";
-import { CommandBarSection } from "./CommandBarSection";
+import { CommandBarSection, SAVED_SHOWS_MS } from "./CommandBarSection";
 
 // The person's own command-bar mode, as the Settings page shows it: read from Dispatch, Ask for a
 // person who never chose one, and written back by the choice.
@@ -58,6 +59,56 @@ test("the approval mode is Ask by default, and choosing Auto-review writes it to
     const mark = screen.getByTestId("going-settings-saved-mark");
     expect(mark).toHaveTextContent("✓ Saved");
     expect(mark.parentElement).toContainElement(screen.getByText("Auto-review"));
+  } finally {
+    cleanup();
+    read.mockRestore();
+  }
+});
+
+// The choice saves in the press itself and the radio already shows it, so "Saved" stands beside
+// the mode for a moment and then goes (review: Settings): a mark that stayed would read as how
+// the page stands, not as what the press just did. The next choice says it again.
+test("Saved stands beside the mode a choice saved for a moment, then goes, and the next choice says it again", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "myGoingSettings").mockResolvedValue({ mode: "ask" });
+  const put = answerRoute<(input: GoingSettings, bounds: WriteBounds) => Promise<GoingSettings>>(
+    "PUT",
+    "/api/v1/me/going/settings"
+  );
+  const answer = Promise.withResolvers<GoingSettings>();
+  put.mockImplementationOnce(() => answer.promise);
+  put.mockImplementation(async (input) => input);
+  try {
+    renderSection();
+    const review = await screen.findByRole("radio", { name: "Auto-review" });
+    await user.click(review);
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("going-settings-saved-mark")).toBeNull();
+
+    // Dispatch answers the save on a held clock, so the moment "Saved" stands for is the row's
+    // to cross.
+    await onFakeClock(async () => {
+      await act(async () => {
+        answer.resolve({ mode: "auto_review" });
+        await settle();
+      });
+      expect(screen.getByTestId("going-settings-saved-mark")).toHaveTextContent("✓ Saved");
+      expect(screen.getByTestId("going-settings-saved")).toHaveTextContent("Saved: Auto-review.");
+      await tick(SAVED_SHOWS_MS - 200);
+      expect(screen.getByTestId("going-settings-saved-mark")).toBeInTheDocument();
+      await tick(400);
+      expect(screen.queryByTestId("going-settings-saved-mark")).toBeNull();
+      expect(screen.getByTestId("going-settings-saved").textContent).toBe("");
+    });
+    expect(review).toBeChecked();
+
+    await user.click(screen.getByRole("radio", { name: "Ask" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-settings-saved")).toHaveTextContent("Saved: Ask.")
+    );
+    expect(screen.getByTestId("going-settings-saved-mark").parentElement).toContainElement(
+      screen.getByText("Ask")
+    );
   } finally {
     cleanup();
     read.mockRestore();

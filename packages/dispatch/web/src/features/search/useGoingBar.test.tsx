@@ -7,7 +7,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { GoingConversation, GoingEvent, GoingLine, GoingRun } from "../../api/types";
-import { resetGoingStore } from "../going/going-store";
+import { goingState, resetGoingStore } from "../going/going-store";
 import { FILED_NOTICE_MS, filingParent } from "./filing";
 import {
   CONFIGURED_CAPABILITY,
@@ -303,8 +303,8 @@ test("Enter on the second row, Ask, under Do runs the words recording the line a
 // Enter on File as a new issue (R9, design v3, state 13): the words are filed at once by a
 // new-issue run, while the line's first row reads "Filing in LEGION…" with a spinner and nothing
 // else changes; once the run's end names the issue, the bar closes and the notice reads "Filed
-// LEGION-46 · Open · Undo" for 10 s; a filing that files nothing stays in the bar, in words, with
-// Try again.
+// LEGION-46: Instruments · Open · Undo" for 10 s, the issue named by its key and its title; a
+// filing that files nothing stays in the bar, in words, with Try again.
 
 const FILE_WORDS = "we need a dome for the astrolabe";
 
@@ -321,10 +321,13 @@ function newIssueRun(id: string): GoingRun {
     level: "fast",
     line: "file",
     mode: "ask",
+    standing_count: 0,
     state: "queued",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words: FILE_WORDS,
   };
@@ -389,8 +392,12 @@ test("Enter on File as a new issue files the words: the line reads Filing, then 
       ends[0]?.({ issue: "LEGION-46", offers: ["undo"], reason: "", state: "done" });
     });
     await waitFor(() => expect(closed).toBe(1));
+    // The notice names what was filed: the key at once, then the issue's title, read from the
+    // issue's summary, which the run's end does not carry (review R4).
     const notice = screen.getByTestId("going-notice");
-    expect(notice).toHaveTextContent("Filed LEGION-46 · Open · Undo");
+    await waitFor(() =>
+      expect(notice).toHaveTextContent("Filed LEGION-46: Instruments · Open · Undo")
+    );
     expect(within(notice).getByRole("link", { name: "Open" })).toHaveAttribute(
       "href",
       "/issues/LEGION-46"
@@ -400,6 +407,88 @@ test("Enter on File as a new issue files the words: the line reads Filing, then 
     await tick(FILED_NOTICE_MS);
     expect(screen.queryByTestId("going-notice")).toBeNull();
   } finally {
+    stream.mockRestore();
+    bar.unmount();
+  }
+});
+
+// The arrows the reader pressed are of the list they pressed them on (class search, entry 57;
+// INFRA-2952's class). A conversation takes that list's place, and the search New brings back is
+// a new list, where Continue takes the empty box's highlight as on any open. A filing of this
+// open that is still out is that list's head and takes no press: a highlight the old list's arrow
+// left to the head stood on it, and Enter did nothing instead of continuing.
+test("New after an arrowed Enter lets Continue take the empty box's highlight again, above a filing still out", async () => {
+  const user = userOnFakeClock();
+  const asked = new Date(Date.now() - 600_000).toISOString();
+  const earlier: GoingConversation = {
+    id: "c-earlier",
+    newest_at: asked,
+    runs: [
+      {
+        ...newIssueRun("run-earlier"),
+        conversation: "c-earlier",
+        created_at: asked,
+        finished_at: asked,
+        level: "standard",
+        line: "ask",
+        state: "done",
+        words: "who looks after the comet",
+      },
+    ],
+  };
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [earlier],
+    total: 1,
+  });
+  createGoingRun.mockResolvedValueOnce(newIssueRun("run-filing")).mockResolvedValueOnce({
+    ...newIssueRun("run-asked"),
+    level: "standard",
+    line: "ask",
+    words: "who looks after the astrolabe",
+  });
+  const { stream } = holdRunStreams();
+  const bar = renderBar();
+  try {
+    await enterOnFile(user);
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "filing"));
+
+    // Other words, an arrow to Ask under the Filing… row, which holds the head, and Enter.
+    const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await user.clear(box);
+    await user.keyboard("who looks after the astrolabe");
+    await tick(KEYSTROKE_DEBOUNCE_MS);
+    await waitFor(() =>
+      expect(lineWords("search-option-line-ask")).toHaveTextContent(
+        "Ask who looks after the astrolabe"
+      )
+    );
+    await user.keyboard("{ArrowDown}");
+    expect(box).toHaveAttribute("aria-activedescendant", "search-option-line-ask");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Search" })).toHaveAttribute(
+        "data-state",
+        "conversation"
+      )
+    );
+
+    // New, while the filing is still out: the empty box lists it first, then Continue, which
+    // takes the highlight, so Enter continues.
+    await user.click(screen.getByTestId("going-new"));
+    const again = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await waitFor(() =>
+      expect(again).toHaveAttribute("aria-activedescendant", "search-option-continue")
+    );
+    expect(again).toHaveValue("");
+    expect(lineRow()).toHaveAttribute("data-line", "filing");
+    expect(footHints()).toHaveTextContent("↵ Continue · Esc Close");
+    await user.click(again);
+    await user.keyboard("{Enter}");
+    expect(goingState().conversation).toEqual(["run-earlier"]);
+  } finally {
+    history.mockRestore();
     stream.mockRestore();
     bar.unmount();
   }

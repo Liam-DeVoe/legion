@@ -97,6 +97,7 @@ import {
   ownerWords,
   searchOperators,
   searchResultKind,
+  snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
   withoutDirectiveSyntax,
@@ -333,7 +334,9 @@ function PaletteOption({
  *  a second, grey line under it: the server's reading of it (`snippet_tree`) drawn on one line,
  *  its formatting shown rather than its syntax and the words the search matched marked, with the
  *  syntax of a Proof directive the window cut taken out of its text (`snippetWithoutDirectives`;
- *  rule 1, no marker text). A hit of a done issue reads muted. */
+ *  rule 1, no marker text). A snippet the server cut out of a longer text ends with "…"
+ *  (`snippetWasCut`), and the status keeps a column of its own at the row's end, which the
+ *  snippet's line stops before (review R4). A hit of a done issue reads muted. */
 function ResultOption({
   active,
   onSelect,
@@ -398,34 +401,42 @@ function ResultOption({
       reference={nodeRouteFromHref(result.href)}
       status={status}
     >
-      <div
-        className={`flex min-w-0 items-center gap-2 text-sm ${
-          muted ? textMutedOnSelectedCard : textSecondaryOnSurface
-        }`}
-      >
-        {kind === undefined ? null : <SearchResultIcon kind={kind} />}
-        <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
-        {named}
+      {/* The hit's lines in one column and its status in the next, so the snippet's line stops
+          where the first line does, before the status, rather than running on under it. */}
+      <div className="flex min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div
+            className={`flex min-w-0 items-center gap-2 text-sm ${
+              muted ? textMutedOnSelectedCard : textSecondaryOnSurface
+            }`}
+          >
+            {kind === undefined ? null : <SearchResultIcon kind={kind} />}
+            <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
+            {named}
+          </div>
+          {itself ? null : (
+            // Under the key, past the icon's 16 px and the 8 px gap after it.
+            <div className="mt-0.5 flex min-w-0 pl-6" data-testid="search-hit-snippet">
+              <MarkdownPreview
+                className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
+                highlightClassName={highlight}
+                lines={1}
+                markdown={withoutDirectiveSyntax(source)}
+                trail={snippetWasCut(source) ? "…" : undefined}
+                tree={snippetTree}
+              />
+            </div>
+          )}
+        </div>
         {status === undefined ? null : (
           <span
             className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+            data-testid="search-hit-status"
           >
             {statusText(status)}
           </span>
         )}
       </div>
-      {itself ? null : (
-        // Under the key, past the icon's 16 px and the 8 px gap after it.
-        <div className="mt-0.5 flex min-w-0 pl-6" data-testid="search-hit-snippet">
-          <MarkdownPreview
-            className={`min-w-0 flex-1 text-xs ${textMutedOnSelectedCard}`}
-            highlightClassName={highlight}
-            lines={1}
-            markdown={withoutDirectiveSyntax(source)}
-            tree={snippetTree}
-          />
-        </div>
-      )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );
@@ -707,8 +718,9 @@ function PaletteDialog({
     readonly id: string | null;
     readonly left: boolean;
   }>({ hits: "", id: null, left: false });
-  // Whether the reader moved the highlight with an arrow since the words last changed: until
-  // they do, a best match or Continue arriving takes the head, so Enter opens it (R2).
+  // Whether the reader moved the highlight with an arrow on the list as it stands: since the
+  // words last changed, and since a conversation last took the list's place. Until they do, a
+  // best match or Continue arriving takes the head, so Enter opens it (R2).
   const [arrowed, setArrowed] = useState(false);
   // The filters and the search syntax help, behind the Filters button at the box's right, and
   // opened by "/" in the empty box (design v3, state 1).
@@ -1084,6 +1096,14 @@ function PaletteDialog({
   // A list that answered this search and highlighted nothing - it held no row to highlight, a
   // stale empty answer among them - held no row the reader could lose, so the first row of that
   // search to arrive takes the head (INFRA-2952).
+  // A conversation takes the list's place, and the search that New brings back is a new list:
+  // the arrows the reader pressed on the old one are let go with it, as new words let them go.
+  // So Continue takes the empty box's highlight again, whichever row Enter opened the
+  // conversation from - Ask after an arrow, or Continue itself - rather than the head, which a
+  // filing still out holds and where Enter does nothing.
+  if (talking && arrowed) {
+    setArrowed(false);
+  }
   const chosen = rows.findIndex((row) => row.id === active.id);
   const held = active.id !== null || active.left;
   const reranked = listedSearch !== "" && listedSearch === active.hits && held;

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { Link } from "react-router-dom";
 
@@ -13,14 +13,16 @@ import {
   linkText,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { issueSummaryQuery } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { planTarget } from "./usePlan";
 
 /**
  * The notice at the bottom right of the page (design v3, states 11 and 13): one short line about
- * something the bar did while the person was not looking at it, such as "Filed DEMO-46 · Open ·
- * Undo", for a few seconds. One notice shows at a time; a newer one takes the place of the one on
- * the screen. It lives in the shell's status corner at the bottom right, so it outlives the bar.
+ * something the bar did while the person was not looking at it, such as "Filed DEMO-46: A weather
+ * station on the roof · Open · Undo", for a few seconds. One notice shows at a time; a newer one
+ * takes the place of the one on the screen. It lives in the shell's status corner at the bottom
+ * right, so it outlives the bar.
  */
 
 /** One action of a notice: a page it opens (`to`), or a press of its own. Either one lets the
@@ -33,6 +35,10 @@ export type NoticeAction =
 export interface NoticeInput {
   /** The line, in the person's words. */
   readonly text: string;
+  /** An issue the line names by its key, whose title the notice says after the line once
+   *  Dispatch answers the issue's summary: "Filed DEMO-46: A weather station on the roof". Until
+   *  then, and for an issue the reader cannot read, the line stands alone. */
+  readonly issue?: string;
   readonly actions?: readonly NoticeAction[];
   /** A run of the bar whose changes the notice's Undo reverses (R6,
    *  `POST /api/v1/going/runs/{id}/undo`), and what the notice says once it has. */
@@ -131,9 +137,14 @@ function NoticeUndo({
   );
 }
 
-/** One showing of a notice, with its actions, its Undo and the refusal of that Undo. */
+/** One showing of a notice, with the title of the issue it names, its actions, its Undo and the
+ *  refusal of that Undo. */
 function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
   const [refusal, setRefusal] = useState<string>();
+  const title = useQuery({
+    ...issueSummaryQuery(notice.issue),
+    enabled: notice.issue !== undefined,
+  }).data?.title;
   return (
     <div
       className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm shadow-lg ${card} ${borderDefault} ${textPrimaryOnSurface}`}
@@ -141,7 +152,10 @@ function NoticeCard({ notice }: { readonly notice: ShownNotice }): ReactNode {
       role="status"
     >
       <p>
-        <span data-testid="going-notice-text">{notice.text}</span>
+        <span data-testid="going-notice-text">
+          {notice.text}
+          {title === undefined || title === "" ? null : `: ${title}`}
+        </span>
         {(notice.actions ?? []).map((action) => (
           <Fragment key={action.label}>
             {dot}

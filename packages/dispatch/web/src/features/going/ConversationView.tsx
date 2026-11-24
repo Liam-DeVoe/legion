@@ -43,7 +43,7 @@ import {
   useGoingValue,
 } from "./going-store";
 import { PlanCard } from "./PlanRows";
-import { appliedWords, undoneWords } from "./plan-rows";
+import { appliedWords, undoneStateWords, undoRecord } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
 import { type EndWords, endWords, type RunState, runEnded } from "./run-states";
 import { foldWords, RunTimer, StepSection } from "./step-section/StepSection";
@@ -172,18 +172,6 @@ function earliest(read: number | undefined, record: GoingRun): number | undefine
   const finished = record.finished_at === null ? undefined : Date.parse(record.finished_at);
   if (read === undefined || finished === undefined) return read ?? finished;
   return Math.min(read, finished);
-}
-
-/**
- * When Dispatch says an undo of `record`'s run landed (`undone_at`, the newest undo of any one of
- * its changes), in this page's clock; undefined where none did. It is read off the run's record,
- * as History lists it or as it is read again once this page's Undo answers (`setUndone`), so the
- * page says what a reload would.
- */
-function undoneAt(record: GoingRun): number | undefined {
-  if (record.undone_at === null) return undefined;
-  const landed = Date.parse(record.undone_at);
-  return Number.isNaN(landed) ? undefined : landed;
 }
 
 /**
@@ -331,16 +319,18 @@ interface WholeBlock {
  *  no plan, and Undo of a run with no plan that changed something. Its steps' fold line, its
  *  answer and its plan's card come in that order, as the answer (state 4) then the applied plan
  *  (state 7) do. Once its plan's rows ran, its fold line says so ("applied 3 changes") in place of
- *  "proposed a plan", which is no longer the last thing it did; once they were undone, it says
- *  what the Undo left ("undid 2 changes; 1 message sent, not undone"). Once Dispatch says its
- *  changes were undone and none is left to take back, its answer, which speaks of them, turns
- *  grey and the line under it reads "Undone"; where an undo landed and a change is left, it reads
- *  "Partly undone" and Undo is still offered: the card says what was taken back. A run that
- *  stopped or failed keeps its steps folded, as an answered run does, and shows any answer it
- *  wrote above how it ended (rule 3: fold the work, never the result). The newest run's turn,
- *  while its plan waits, is where the conversation's scroll stops (`FOLLOW_ANCHOR`). `asks` is
- *  whether its answer asks the person a question and waits for their answer; `onShowAll` opens
- *  one of its tables whole over the bar or the panel. */
+ *  "proposed a plan", which is no longer the last thing it did, and an Undo since leaves that
+ *  line as it is: it is the run's work, and the card, its rows and the line under the answer say
+ *  what was undone. Once an undo of the run landed, the line under its answer says what Dispatch's
+ *  record of the run says (`undoRecord`): "Undone", with the answer, which speaks of its changes,
+ *  turned grey, only where none of them stays; else "Partly undone · 1 change stays", whether Undo
+ *  can still take that change back, which the card then offers, or tried and could not. A message
+ *  is sent, not undone, and counts as no change that stays: its row says so. A run that stopped
+ *  or failed keeps its steps folded, as an answered run does, and shows any answer it wrote above
+ *  how it ended (rule 3: fold the work, never the result). The newest run's turn, while its plan
+ *  waits, is where the conversation's scroll stops (`FOLLOW_ANCHOR`). `asks` is whether its
+ *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
+ *  tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -363,12 +353,12 @@ function RunTurn({
   const answer = run.frames.replies.at(-1);
   const waitsForSteps = thinking(run);
   const working = state === "working";
-  // Whether an undo of the run landed, and whether a change of it is still left to take back,
-  // are Dispatch's word, read off the run's record (`undone_at`, `undoable`); an answer of this
-  // page's Undo says only what became of each change, on the card.
-  const landed = undoneAt(run.record);
-  const left = run.record.undoable;
-  const undone = landed !== undefined && !left;
+  // Whether an undo of the run landed, and how many of its changes stay, are Dispatch's word,
+  // read off the run's record (`undoRecord`); an answer of this page's Undo says only what became
+  // of each change, on the card.
+  const recorded = undoRecord(run.record);
+  const landed = recorded.at !== undefined;
+  const undone = landed && recorded.stays === 0;
   // What this page's Undo of the run answered, where it was pressed here.
   const lines = useGoingValue((of) => of.undone.get(run.id));
   const pressed = lines !== undefined;
@@ -377,13 +367,7 @@ function RunTurn({
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
   const ended = endWords(state, endReason(run), run.record.level, foldWords(steps));
   const shownPlan = plan.plan;
-  let planWords: string | undefined;
-  if (shownPlan !== undefined) {
-    planWords =
-      pressed || landed !== undefined
-        ? undoneWords(shownPlan, lines, left)
-        : appliedWords(shownPlan);
-  }
+  const planWords = shownPlan === undefined ? undefined : appliedWords(shownPlan);
   return (
     <li
       className="space-y-2"
@@ -443,26 +427,19 @@ function RunTurn({
           onShowAll={() => onShowAll({ block: index, run: run.id })}
         />
       ))}
-      <PlanCard
-        answering={plan}
-        appliedAt={earliest(run.endedAt, run.record)}
-        folded={!newest}
-        undone={pressed || landed === undefined ? undefined : { at: landed, left }}
-      />
+      <PlanCard answering={plan} appliedAt={earliest(run.endedAt, run.record)} folded={!newest} />
       {state === "done" && answer !== undefined ? (
         <AnswerFoot
           answer={answer}
           onRetry={() => onRetry(run.record.words)}
           status={
-            undone
-              ? "Undone"
-              : landed !== undefined
-                ? "Partly undone"
-                : asks
-                  ? "Waits for your answer"
-                  : changedNothing(run)
-                    ? NOTHING_CHANGED
-                    : "Done"
+            landed
+              ? undoneStateWords(recorded.stays)
+              : asks
+                ? "Waits for your answer"
+                : changedNothing(run)
+                  ? NOTHING_CHANGED
+                  : "Done"
           }
         />
       ) : ended !== undefined ? (
@@ -569,8 +546,12 @@ function cutAbove(element: HTMLElement): boolean {
  * stays where they are, and `behind` turns true at the next output, for the "↓ New reply" pill;
  * `follow` takes them back and follows again. `cut` says whether anything is scrolled out of view
  * above, where the conversation fades out under its header rather than show a bubble cut in half.
+ * How far the person follows is of one conversation (`conversation`, its id, "" for none): where
+ * another opens under a view that stays, as the Inbox's Review opens one in the side panel, it
+ * starts followed, at its foot or its waiting plan's turn, with nothing to be behind on.
  */
 function useFollow(
+  conversation: string,
   output: number,
   anchor: string
 ): {
@@ -582,10 +563,16 @@ function useFollow(
 } {
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const followed = useRef(conversation);
   const [behind, setBehind] = useState(false);
   const [cut, setCut] = useState(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each new output, and a plan that comes to wait, is the reason to follow it
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new output, a plan that comes to wait, and another conversation are the reasons to follow
   useLayoutEffect(() => {
+    if (followed.current !== conversation) {
+      followed.current = conversation;
+      following.current = true;
+      setBehind(false);
+    }
     const element = scroller.current;
     if (element === null) return;
     if (following.current) {
@@ -594,7 +581,7 @@ function useFollow(
     } else {
       setBehind(true);
     }
-  }, [output, anchor]);
+  }, [conversation, output, anchor]);
   return {
     behind,
     cut,
@@ -668,6 +655,7 @@ export function ConversationView({
       : undefined;
   const waiting = answering.plan?.state === "waiting" ? answering.plan : undefined;
   const scroll = useFollow(
+    runs[0]?.record.conversation ?? "",
     runs.reduce((sum, run) => sum + run.read + 1, 0) +
       (starting === undefined ? 0 : 1) +
       (queued === undefined ? 0 : 1),
@@ -726,29 +714,35 @@ export function ConversationView({
       <div
         // What is scrolled out of view above fades out over the top 24 px rather than stop at a
         // hard line under the header, where a bubble read as cut in half (design v3, state 6).
-        className={`min-h-0 flex-1 overflow-y-auto px-3 py-3 ${scroll.cut ? "[mask-image:linear-gradient(to_bottom,transparent,#000_24px)]" : ""}`}
+        // The scroll keeps no padding of its own at its foot: a browser pins what sticks there -
+        // a waiting plan's Approve and Discard (`PlanCard`) - to the edge of the scroll's padding,
+        // so a foot padding left a strip under them where the next row showed (review R1). What
+        // it holds keeps that space instead.
+        className={`min-h-0 flex-1 overflow-y-auto px-3 pt-3 ${scroll.cut ? "[mask-image:linear-gradient(to_bottom,transparent,#000_24px)]" : ""}`}
         data-cut={scroll.cut ? "true" : undefined}
         data-testid="going-conversation-view"
         onScroll={scroll.onScroll}
         ref={scroll.scroller}
       >
-        {runs.length === 0 && starting === undefined ? null : (
-          <ol aria-label="Conversation" className="space-y-4" data-testid="going-conversation">
-            {runs.map((run, index) => (
-              <RunTurn
-                answering={index === runs.length - 1 ? answering : undefined}
-                asks={index === runs.length - 1 && asksPerson(going)}
-                key={run.id}
-                onContinue={onContinue}
-                onRetry={onRetry}
-                onShowAll={setWhole}
-                run={run}
-              />
-            ))}
-            {starting === undefined ? null : <StartingTurn starting={starting} />}
-          </ol>
-        )}
-        {queued === undefined ? null : <QueuedTurn queued={queued} />}
+        <div className="pb-3" data-testid="going-conversation-turns">
+          {runs.length === 0 && starting === undefined ? null : (
+            <ol aria-label="Conversation" className="space-y-4" data-testid="going-conversation">
+              {runs.map((run, index) => (
+                <RunTurn
+                  answering={index === runs.length - 1 ? answering : undefined}
+                  asks={index === runs.length - 1 && asksPerson(going)}
+                  key={run.id}
+                  onContinue={onContinue}
+                  onRetry={onRetry}
+                  onShowAll={setWhole}
+                  run={run}
+                />
+              ))}
+              {starting === undefined ? null : <StartingTurn starting={starting} />}
+            </ol>
+          )}
+          {queued === undefined ? null : <QueuedTurn queued={queued} />}
+        </div>
       </div>
       {scroll.behind ? (
         <button

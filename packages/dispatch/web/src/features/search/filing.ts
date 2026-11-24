@@ -21,8 +21,9 @@ import { buildIssuePath } from "../refs/routes";
  * person's words (`POST /api/v1/going/runs` with `kind` `new_issue`, recording the line `file`),
  * which files them at once and waits for nobody. While it runs, the bar's first row reads "Filing
  * in DEMO…"; once its end names the issue it filed, the bar closes and the notice reads "Filed
- * DEMO-46 · Open · Undo" for `FILED_NOTICE_MS`, its Undo the run's own (R6). A run that ends
- * without an issue, or that never starts, stays in the bar as a failure in words, with Try again.
+ * DEMO-46: ‹its title› · Open · Undo" for `FILED_NOTICE_MS`, its Undo the run's own (R6). A run
+ * that ends without an issue, or that never starts, stays in the bar as a failure in words, with
+ * Try again.
  *
  * A filing belongs to the open of the bar it was made in (`useBarOpen`): that open alone draws
  * it, and its filing closes that open alone. The filing is held outside the bar, so it goes on
@@ -255,8 +256,11 @@ export async function fileNewIssue({
     const end = frames.end;
     if (end?.state === "done" && end.issue !== "") {
       set({ filed: filing, filing: store.filing === filing ? undefined : store.filing });
+      // The notice names what was filed: the issue's key at once, and its title, which the run's
+      // model wrote and its end does not carry, once the notice has read it (review R4).
       showNotice({
         actions: [{ label: "Open", to: buildIssuePath({ key: end.issue, kind: "issue" }) }],
+        issue: end.issue,
         ms: FILED_NOTICE_MS,
         text: `Filed ${end.issue}`,
         undo: { run: run.id, undone: `Undone · ${end.issue} closed` },

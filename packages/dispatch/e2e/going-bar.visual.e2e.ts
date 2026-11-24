@@ -247,6 +247,40 @@ async function chipsRead(where: Locator, count: number): Promise<void> {
   await expect(where.getByTestId("item-chip-status")).toHaveCount(count);
 }
 
+/** Reads that the waiting plan's Approve and Discard, in `surface` (the bar, or the panel), are
+ *  pinned to the foot of the conversation's scroll (design v3, state 6; review R1): the bar that
+ *  holds them ends where the scroll ends, to the pixel, so no row shows under it. */
+async function approvePinned(surface: Locator): Promise<void> {
+  const pinned = await surface.getByTestId("going-plan-actions").boundingBox();
+  const scroll = await surface.getByTestId("going-conversation-view").boundingBox();
+  if (pinned === null || scroll === null) {
+    throw new Error("the plan's Approve bar or the conversation's scroll is not drawn");
+  }
+  expect(
+    Math.abs(pinned.y + pinned.height - (scroll.y + scroll.height)),
+    "the gap between the pinned Approve bar and the foot of the scroll"
+  ).toBeLessThanOrEqual(1);
+}
+
+/** Reads that the hint under the box of `surface` starts at the box's left edge, under the box
+ *  and not under the mode button (design v3, Keys; review R2): its words begin where its own
+ *  indent ends, which is where the box's frame begins. */
+async function hintUnderBox(surface: Locator): Promise<void> {
+  const words = await surface
+    .getByTestId("going-box-hint")
+    .evaluate(
+      (hint) =>
+        hint.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(hint).paddingLeft)
+    );
+  const box = await surface
+    .getByRole("textbox", { name: "Ask the command bar" })
+    .evaluate((input) => input.parentElement?.getBoundingClientRect().left ?? Number.NaN);
+  expect(
+    Math.abs(words - box),
+    "how far the hint's words start from the box's left edge"
+  ).toBeLessThanOrEqual(1);
+}
+
 /** Whether two boxes a locator measured share any point. A box that is not drawn is refused: the
  *  row asks about two that are. */
 function boxesMeet(
@@ -669,11 +703,14 @@ const barRows: readonly BarRow[] = [
         new RegExp(`^Suggest a change to spec on ${dome}(?!\\d)`)
       );
       // The card is taller than the view: it shows from its question down, its Approve and
-      // Discard pinned at the view's foot, and the hint under the box says Enter approves.
+      // Discard pinned at the foot of the conversation's scroll with no row under them, and the
+      // hint under the box, from the box's left edge, says Enter approves.
       await expect(newestRun(page).getByTestId("going-run-words")).toBeInViewport();
       await expect(planCard(page).getByTestId("going-plan-approve")).toBeInViewport();
       await expect(planCard(page).getByTestId("going-plan-reject")).toBeInViewport();
+      await approvePinned(bar(page));
       await expect(bar(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
+      await hintUnderBox(bar(page));
       await shoot(page, "06-plan-bar");
       await keepAtTheSide(page);
       await expect(planRows(planCard(page))).toHaveCount(5);
@@ -683,10 +720,12 @@ const barRows: readonly BarRow[] = [
           .filter({ hasNot: page.getByTestId("item-chip-status") })
       ).toHaveCount(0);
       // The panel scrolls as the bar does: the question at its top, nothing cut under its header,
-      // and Approve pinned at its foot.
+      // Approve pinned at the foot of its scroll, and the hint under its box.
       await expect(newestRun(page).getByTestId("going-run-words")).toBeInViewport();
       await expect(planCard(page).getByTestId("going-plan-approve")).toBeInViewport();
+      await approvePinned(sidePanel(page));
       await expect(sidePanel(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
+      await hintUnderBox(sidePanel(page));
       await shoot(page, "06-plan-panel");
       await planCard(page).getByTestId("going-plan-reject").click();
       await expect(planCard(page)).not.toHaveAttribute("data-state", "waiting", {
@@ -700,10 +739,12 @@ const barRows: readonly BarRow[] = [
     // State 7. Scripts a run that proposes, in a slow turn, two changes and a message on an issue,
     // then answers once they ran. The message is on the eyepiece and to no session: a message to
     // an agent that ran here would reach the workspace's live session, whose pages the pages'
-    // rows shoot. The row approves with Enter, with the clock set forward to 16:40, since the
-    // applied title says when; then it presses Undo, which takes both changes back and leaves the
-    // message sent. Each shot waits for the finder scope's chip to read its title as the change,
-    // then the Undo, left it.
+    // rows shoot. Nothing routes, claims or follows the eyepiece, so its row names whom Dispatch
+    // tells in words, in the form every message row has. The row approves with Enter, with the
+    // clock set forward to 16:40, since the applied title says when; then it presses Undo, which
+    // takes both changes back and leaves the message sent, which its row says, so the run reads
+    // undone and the line its steps fold into still says what the run did. Each shot waits for
+    // the finder scope's chip to read its title as the change, then the Undo, left it.
     fixedDay: true,
     reach: async (page, seed) => {
       const words = "raise the eyepiece and rename the finder scope";
@@ -747,7 +788,13 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page).getByTestId("going-plan-title")).toHaveText(
         /^Applied .* · 4:40\sPM$/
       );
-      await expect(planCard(page).getByTestId("going-undo-button")).toBeVisible();
+      // Undo names what Dispatch says it can take back: the two changes, never the message.
+      await expect(planCard(page).getByTestId("going-undo-button")).toHaveText("Undo 2 changes");
+      await expect(planCard(page).getByTestId("going-plan-message")).toHaveText(
+        new RegExp(`^Message to the agents that follow ${eyepiece}(?!\\d)`)
+      );
+      const fold = newestRun(page).getByTestId("going-steps-fold");
+      await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
       const finderChip = planCard(page)
         .getByTestId("going-plan-row")
         .filter({ hasText: "Align the finder scope to the mount" })
@@ -759,6 +806,11 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await expect(planCard(page).getByTestId("going-plan-title")).toHaveText(/^Undone/);
+      // The folded line is the run's work and stays as it was (review R3); the line under the
+      // answer says what Dispatch's record says of the Undo: no change of the run stays, a
+      // message sent being no change Undo takes back or leaves.
+      await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
+      await expect(newestRun(page).getByTestId("going-run-state")).toHaveText("Undone");
       await expect(finderChip).not.toContainText("to the mount");
       await shoot(page, "07-undone");
     },
@@ -806,21 +858,28 @@ const barRows: readonly BarRow[] = [
   },
   {
     // State 9. Three conversations at the Fast level, which the row chooses in the mode menu.
-    // The first is scripted to call a tool in each of Fast's six model calls, the first of them
-    // slow, so it stops at its step limit; the second reads one issue in a slow turn and then
-    // streams without end, and the row stops it with Escape; the third is answered 500 twice,
-    // the call and its one retry, so it fails. The three end in one card with one next step -
-    // Continue at the bound and after the Stop, Try again after the failure - and the steps of
-    // each run that stopped fold into one closed line, which counts what the bound's card counts
-    // (design v3, rule 3: fold the work, never the result).
+    // The first reads two issues, the first in a slow turn, and then writes what it found, which
+    // the service cuts at the call's output tokens (`cut`), so the run stops at its reply length
+    // limit with that text kept. It is the one bound that keeps what the agent found so far: a
+    // run that spends its model calls or its time ends with no reply of its own, since a reply
+    // in prose that calls no tool ends the turn done (going/agent's run.go, `saveReply`). So the
+    // bound's card stands under the findings, as the design draws it. The second reads one issue
+    // in a slow turn and then streams without end, and the row stops it with Escape; the third
+    // is answered 500 twice, the call and its one retry, so it fails. The three end in one card
+    // with one next step - Continue at the bound and after the Stop, Try again after the failure
+    // - and the steps of each run that stopped fold into one closed line, which counts what the
+    // bound's card counts (design v3, rule 3: fold the work, never the result).
     reach: async (page, seed) => {
-      const bounded = "read every telescope issue one by one";
+      const bounded = "what is the telescope work waiting on";
       const stopped = "keep reading the telescope mount";
       const failed = "what is the finder scope waiting on";
-      const { craters, dome, eyepiece, mirror, mount, shutter } = seed.bar;
-      const later = [craters, mirror, dome, shutter, eyepiece].map(read);
+      const { craters, mount } = seed.bar;
+      const found: ChatTurn = {
+        cut: true,
+        text: `One issue is ready to start, ${naming(mount)}. The next one waits on`,
+      };
       await script(seed, [
-        { turns: [slow(read(mount)), ...later], words: bounded },
+        { turns: [slow(read(mount)), read(craters), found], words: bounded },
         { turns: [slow(read(mount)), endlessStream()], words: stopped },
         { turns: [refusedWith(500), refusedWith(500)], words: failed },
       ]);
@@ -838,15 +897,24 @@ const barRows: readonly BarRow[] = [
       });
       await expect(newestRun(page).getByTestId("going-run-bound")).toBeVisible();
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
-        /^Worked for \d+ s · read 6 items$/
+        /^Worked for \d+ s · read 2 items$/
       );
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAttribute(
         "aria-expanded",
         "false"
       );
       await expect(newestRun(page).getByTestId("going-step")).toHaveCount(0);
+      // What the agent found so far stands above the card, the issue it names as its chip.
+      const findings = newestRun(page).getByTestId("going-run-answer");
+      await expect(findings).toContainText("One issue is ready to start,");
+      await expect(findings).toContainText("The next one waits on");
+      await chipsRead(findings, 1);
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
-        "Stopped at Fast's step limit · read 6 items so far"
+        "Stopped at Fast's reply length limit · read 2 items so far"
+      );
+      await expect(newestRun(page).getByTestId("going-run-continue")).toHaveText(/^Continue/);
+      await expect(newestRun(page).getByTestId("going-run-continue-deep")).toHaveText(
+        "Continue in Deep"
       );
       await shoot(page, "09-bound");
       await newConversation(page);
@@ -959,15 +1027,18 @@ const barRows: readonly BarRow[] = [
       );
       await shoot(page, "11-chip");
       // The chip sits clear of the page's title at every width (design v3, state 11): it floats
-      // in the band above the page's title, so the two never meet, from the wide layout down to
-      // a phone's.
+      // over the top of the page, 24 px tall, and ends above where the title starts, so the two
+      // never meet, from the wide layout down to a phone's.
       const shotSize = page.viewportSize();
       for (const width of [1440, 1024, 768, 390]) {
         await page.setViewportSize({ height: 900, width });
         await expect(chip).toBeVisible();
         await expect(title).toBeVisible();
+        const chipBox = await chip.boundingBox();
+        // The chip is a target a pointer and a finger can press: 24 px tall (review R4).
+        expect(chipBox?.height ?? 0, `the chip's height at ${width} px`).toBeGreaterThanOrEqual(24);
         expect(
-          boxesMeet(await chip.boundingBox(), await title.boundingBox()),
+          boxesMeet(chipBox, await title.boundingBox()),
           `the chip and the title meet at ${width} px`
         ).toBe(false);
       }
@@ -1019,8 +1090,9 @@ const barRows: readonly BarRow[] = [
     // and the new-issue run Enter on it starts: one create of an issue of OPS, which the server
     // files at once. Before Enter the row waits for the line on top to settle on File and for the
     // pause's search to answer, never for the short answer, which a filing line does not draw.
-    // The bar closes, and the notice names the issue it filed. Its words share none with another
-    // row's search, which would list the issue were that row to run after this one.
+    // The bar closes, and the notice names the issue it filed, by its key and its title. Its
+    // words share none with another row's search, which would list the issue were that row to
+    // run after this one.
     reach: async (page, seed) => {
       const words = "we need a weather station on the roof";
       const { project } = seed.bar;
@@ -1069,11 +1141,25 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).getByText("Searching…")).toHaveCount(0);
       // A filing line draws no short answer: Enter files the words, and answers nothing.
       await expect(answerPanel(page)).toHaveCount(0);
+      // The hit under the line is a document of an issue: its snippet's line stops before the
+      // issue's status at the row's end (review R4).
+      const hit = bar(page)
+        .getByRole("option")
+        .filter({ has: page.getByTestId("search-hit-snippet") })
+        .first();
+      const snippet = await hit.getByTestId("search-hit-snippet").boundingBox();
+      const status = await hit.getByTestId("search-hit-status").boundingBox();
+      if (snippet === null || status === null) {
+        throw new Error("the hit's snippet or its status is not drawn");
+      }
+      expect(snippet.x + snippet.width, "where the snippet's line ends").toBeLessThanOrEqual(
+        status.x
+      );
       await shoot(page, "13-filing-line");
       await searchBox(page).press("Enter");
       const notice = page.getByTestId("going-notice");
       await expect(notice.getByTestId("going-notice-text")).toHaveText(
-        new RegExp(`^Filed ${project}-\\d+$`),
+        new RegExp(`^Filed ${project}-\\d+: A weather station on the roof$`),
         { timeout: RUN_STEPS_MS }
       );
       await expect(bar(page)).toHaveCount(0);

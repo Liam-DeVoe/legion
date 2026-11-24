@@ -169,11 +169,13 @@ function ChipMark({ state }: { readonly state: RunState }): ReactNode {
 
 /** The chip on the screen: the conversation it names, and how many more go on. A plan that waits
  *  is named by its card's title once read. It is a pill of its own - a background, a border and a
- *  small shadow - 16 px tall, 8 px below the top of the screen: the shell floats it over the 24 px
- *  band at the top of the page (`app.tsx`), where it covers no part of the page, so it stays
- *  inside that band with room above it rather than against the screen's edge (review n6), and
- *  takes no 44 px floor (`data-run-chip`, styles.css); it keeps the height of its words rather
- *  than stretching. */
+ *  small shadow - 24 px tall, a target a pointer and a finger can press (review R4; WCAG 2.2's
+ *  2.5.8), with room above it rather than against the screen's edge (review n6): 8 px from the
+ *  `md` width up, and 4 px below it, where a page's title spans the row under it. The shell
+ *  floats it over the top of the page (`app.tsx`), from the 24 px band above the page's first
+ *  row, so it moves nothing; its foot reaches a few pixels over that row's own leading, clear of
+ *  the title's letters. The button is the whole pill, its rule included (`-m-px`), and takes no
+ *  44 px floor (`data-run-chip`, styles.css); it keeps that height rather than stretching. */
 function Chip({ going, more }: { readonly going: GoingOn; readonly more: number }): ReactNode {
   const waiting = going.state === "waiting";
   const plan = useQuery({ ...goingPlanQuery(going.run.id), enabled: waiting });
@@ -184,14 +186,14 @@ function Chip({ going, more }: { readonly going: GoingOn; readonly more: number 
     : `${card} ${borderDefault} ${textPrimaryOnSurface}`;
   return (
     <p
-      className={`mt-2 flex max-w-[min(32rem,calc(100vw-2rem))] items-center self-start rounded-full border text-xs leading-[14px] font-medium shadow-md ${look}`}
+      className={`mt-1 flex max-w-[min(32rem,calc(100vw-2rem))] items-center self-start rounded-full border text-xs leading-4 font-medium shadow-md md:mt-2 ${look}`}
       data-run-chip=""
       data-state={going.state}
       data-testid="going-chip"
       role="status"
     >
       <button
-        className="flex min-w-0 items-center gap-2 rounded-full px-3 py-0"
+        className="-m-px flex min-h-6 min-w-0 items-center gap-2 rounded-full px-3"
         data-testid="going-chip-open"
         onClick={() => openRun(going.run.id)}
         title="Open this conversation in the bar"

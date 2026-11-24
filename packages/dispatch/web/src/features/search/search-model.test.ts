@@ -10,6 +10,7 @@ import {
   kindLabel,
   optionId,
   ownerWords,
+  snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
   withoutDirectiveSyntax,
@@ -184,6 +185,21 @@ test("a snippet tree loses a cut directive's syntax across its text nodes, its m
   };
   expect(snippetWithoutDirectives(plain)).toBe(plain);
   expect(snippetWithoutDirectives(undefined)).toBeUndefined();
+});
+
+// The server's headline cuts a body longer than its window to 24 words, and hands a shorter body
+// back whole (`pmdoc.SearchSnippetWords`): a snippet as wide as the window is one it cut, and the
+// hit's row ends it with "…" (review R4). Words are the runs between whitespace, as the server
+// counts them, so a directive's cut syntax counts as it did there.
+test("a snippet as wide as the server's headline window was cut out of a longer text, and a shorter one is whole", () => {
+  const words = (count: number) =>
+    Array.from({ length: count }, (_, index) => `word${index + 1}`).join(" ");
+  expect(snippetWasCut(words(24))).toBe(true);
+  expect(snippetWasCut(`  ${words(12)}\n${words(12)}  `)).toBe(true);
+  expect(snippetWasCut(words(23))).toBe(false);
+  expect(snippetWasCut("The astrolabe measures altitude.")).toBe(false);
+  expect(snippetWasCut("")).toBe(false);
+  expect(snippetWasCut(`${words(22)}\n:::\n:::plan_task{#t1`)).toBe(true);
 });
 
 test("uses the first positive websearch term for document highlighting", () => {

@@ -71,10 +71,13 @@ test("a row names the plan as its card does and its conversation by its first qu
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state: "done",
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 1, tokens: 10, working_ms: 1000 },
     words: "what blocks the release",
   };

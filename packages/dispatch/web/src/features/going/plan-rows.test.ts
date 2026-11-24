@@ -4,11 +4,13 @@ import type { GoingPlanAnswer, GoingPlanRow, GoingUndoLine } from "../../api/typ
 import { clockWords } from "../search/blocks/block-cells";
 import type { PlanDraft } from "./going-store";
 import {
+  appliedWords,
   cardTitle,
   changeLabel,
   fieldWords,
   keptValue,
   labelMarks,
+  messageReach,
   planTitle,
   removalWords,
   reviewWords,
@@ -18,9 +20,12 @@ import {
   rowOutcome,
   rowRemoves,
   specSentences,
-  undoneChangeLabel,
+  undoButtonWords,
+  undoLineLabel,
+  undoLineRow,
+  undoneStateWords,
   undoneTitle,
-  undoneWords,
+  undoRecord,
   undoWords,
   valueWords,
   withChangesUnticked,
@@ -431,8 +436,56 @@ test("a change is named as its step is, as an order, a new issue by its title, a
       })
     )
   ).toBe("Edit the text of spec");
-  expect(undoneChangeLabel("dispatch_issue", "DEMO-9")).toBe("File DEMO-9");
-  expect(undoneChangeLabel("dispatch_message", "DEMO-1")).toBe("Send a message to DEMO-1");
+});
+
+// An Undo line carries its tool and its item alone, and a label filled from those two dropped a
+// setting's project and said a value its write never set: "Set the default repository of to
+// none" for a row that set acme/infra. The line is named by the row of the plan it undid, whose
+// arguments fill every argument the label names; without that row it is named by its item where
+// the item is all the label needs, and as a change to its item otherwise.
+test("an Undo line is named by its plan row's arguments, and without its row only where its item fills the label", () => {
+  const repository = row(0, {
+    arguments: { project: "CORE", repo: "acme/infra" },
+    class: "setting",
+    item: "CORE",
+    tool: "dispatch_set_default_repository",
+  });
+  const assignee = row(1, {
+    arguments: { assignee: "bob@example.com", project: "CORE" },
+    class: "setting",
+    item: "CORE",
+    tool: "dispatch_set_default_assignee",
+  });
+  expect(undoLineLabel({ item: "CORE", tool: "dispatch_set_default_repository" }, repository)).toBe(
+    "Set the default repository of CORE to acme/infra"
+  );
+  expect(undoLineLabel({ item: "CORE", tool: "dispatch_set_default_assignee" }, assignee)).toBe(
+    "Set the default assignee of CORE to bob@example.com"
+  );
+  // A new issue's row names it by its title, as the plan's card did.
+  expect(undoLineLabel({ item: "DEMO-9", tool: "dispatch_issue" }, newIssue(2, "North half"))).toBe(
+    "File North half"
+  );
+
+  // With no row at hand, a label the item fills reads as before.
+  expect(undoLineLabel({ item: "DEMO-9", tool: "dispatch_issue" }, undefined)).toBe("File DEMO-9");
+  expect(undoLineLabel({ item: "DEMO-1", tool: "dispatch_message" }, undefined)).toBe(
+    "Send a message to DEMO-1"
+  );
+  // One that needs an argument the line does not carry is written with no gap and no value.
+  expect(undoLineLabel({ item: "CORE", tool: "dispatch_set_default_repository" }, undefined)).toBe(
+    "A change to CORE"
+  );
+  expect(undoLineLabel({ item: "", tool: "dispatch_set_default_assignee" }, undefined)).toBe(
+    "A change"
+  );
+
+  // The row is the one of the line's own plan and number.
+  const ran: GoingPlanAnswer = { ...plan, plan: 2, rows: [repository, assignee], state: "done" };
+  expect(undoLineRow({ plan: 2, row: 1 }, ran)).toBe(assignee);
+  expect(undoLineRow({ plan: 1, row: 1 }, ran)).toBeUndefined();
+  expect(undoLineRow({ plan: 2, row: 7 }, ran)).toBeUndefined();
+  expect(undoLineRow({ plan: 2, row: 1 }, undefined)).toBeUndefined();
 });
 
 test("each kind of row is told apart", () => {
@@ -559,56 +612,102 @@ test("after Undo the title counts the changes reverted, never a message", () => 
   expect(undoneTitle([])).toBe("Undone · nothing to revert");
 });
 
-// A run whose Undo this page holds no answer of says when Dispatch's undo of it landed, wholly
-// where no change is left to take back, and in part where one is (`undoable`): `undone_at` is the
-// newest undo of any one change.
-test("a run Dispatch says was undone reads Undone at that time, or Partly undone where a change is left", () => {
+// A run whose Undo this page holds no answer of says when Dispatch's undo of it landed: wholly
+// where none of its changes stays, and in part where one does, whether Undo can still take it
+// back or leaves it standing. `undone_at` is the newest undo of any one change.
+test("a run Dispatch says was undone reads Undone at that time, or Partly undone where a change stays", () => {
   const at = Date.parse("2026-11-18T11:35:00Z");
   const ran = sentPlan("done", ["done", "done"]);
-  expect(cardTitle(ran, undefined, undefined, { at, left: false })).toBe(
-    `Undone · ${clockWords(at)}`
-  );
-  expect(cardTitle(ran, undefined, undefined, { at, left: true })).toBe(
+  expect(cardTitle(ran, undefined, undefined, { at, stays: 0 })).toBe(`Undone · ${clockWords(at)}`);
+  expect(cardTitle(ran, undefined, undefined, { at, stays: 1 })).toBe(
     `Partly undone · ${clockWords(at)}`
   );
   // What this page's Undo answered says more, and is said instead.
-  expect(cardTitle(ran, [undoLine({ row: 0 })], undefined, { at, left: true })).toBe(
+  expect(cardTitle(ran, [undoLine({ row: 0 })], undefined, { at, stays: 1 })).toBe(
     "Undone · 1 change reverted"
   );
 });
 
-// The line the steps fold into says what the run did last: once its plan's changes were undone,
-// "applied 3 changes" no longer stands, so it says what the Undo left (architect's review of
-// 07-undone), in the card's words.
-test("once its plan was undone, the fold line says what the Undo reverted and what stays", () => {
+// What Undo did and can still do is what Dispatch's record of the run counts, never a count of
+// the plan's rows (class search, entries 36, 53 and 55): a row that ran can be a setting Undo
+// leaves as it is, or a change whose undo is refused for good.
+test("what Undo took back, can still take back and leaves is read off the run's record", () => {
+  const at = "2026-11-18T11:35:00Z";
+  // Never undone: an issue updated and a default repository set. Undo takes back one.
+  expect(undoRecord({ standing_count: 1, undoable_count: 1, undone_at: null })).toEqual({
+    at: undefined,
+    stays: 2,
+    undoable: 1,
+  });
+  // Undone, with the setting left standing: one change stays, and Undo has nothing left.
+  expect(undoRecord({ standing_count: 1, undoable_count: 0, undone_at: at })).toEqual({
+    at: Date.parse(at),
+    stays: 1,
+    undoable: 0,
+  });
+  // A time that does not read is no undo.
+  expect(
+    undoRecord({ standing_count: 0, undoable_count: 0, undone_at: "soon" }).at
+  ).toBeUndefined();
+
+  expect(undoneStateWords(0)).toBe("Undone");
+  expect(undoneStateWords(1)).toBe("Partly undone · 1 change stays");
+  expect(undoneStateWords(3)).toBe("Partly undone · 3 changes stay");
+  expect(undoButtonWords(1)).toBe("Undo 1 change");
+  expect(undoButtonWords(2)).toBe("Undo 2 changes");
+});
+
+// The line the steps fold into is the run's work (review R3 of 07-undone): it says what the run
+// applied, and an Undo since changes nothing of it.
+test("the fold line says what the run's plan applied, counting every row that ran", () => {
   const ran: GoingPlanAnswer = {
     ...sentPlan("done", ["done", "done"]),
     rows: [...(sentPlan("done", ["done", "done"]).rows ?? []), { ...message(2), state: "done" }],
   };
-  const lines = [
-    undoLine({ row: 0 }),
-    undoLine({ row: 1 }),
-    undoLine({ row: 2, tool: "dispatch_message", undo: "not_undone" }),
-  ];
-  expect(undoneWords(ran, lines, false)).toBe("undid 2 changes; 1 message sent, not undone");
+  expect(appliedWords(ran)).toBe("applied 3 changes");
+  expect(appliedWords(sentPlan("done", ["done", "failed"]))).toBe("applied 1 change");
+  expect(appliedWords(sentPlan("done", ["failed"]))).toBeUndefined();
+  expect(appliedWords(sentPlan("running", ["done", "running"]))).toBeUndefined();
+});
+
+// Whom a message on an issue reaches (review m5): the session its route names or that holds the
+// role it names, the session that holds its claim and the sessions that follow it, each once;
+// the role by its name where no session is known to hold it; and the followers only where the
+// page read them.
+test("a message on an issue reaches its route, its claimant and its followers, each once", () => {
+  const at = "2026-11-18T11:35:00Z";
+  expect(messageReach(undefined, ["s-1"])).toEqual({
+    followersKnown: false,
+    role: undefined,
+    sessions: [],
+  });
   expect(
-    undoneWords(
-      ran,
-      [
-        undoLine({ row: 0 }),
-        undoLine({
-          outcome: { code: "GOING_UNDO_CHANGED", message: "kept", ok: false, status: 409 },
-          row: 1,
-        }),
-      ],
-      true
+    messageReach(
+      {
+        claim: { actor: { id: "s-2", kind: "session" }, at },
+        route: "session:s-1",
+        route_holder: "s-1",
+      },
+      ["s-2", "s-3"]
     )
-  ).toBe("undid 1 of 2 changes; 1 message sent, not undone");
-  // Without this page's answer, Dispatch's word on what is left says it.
-  const changes = sentPlan("done", ["done", "done"]);
-  expect(undoneWords(changes, undefined, false)).toBe("undid 2 changes");
-  expect(undoneWords(changes, undefined, true)).toBe("undid part of 2 changes");
-  expect(undoneWords(sentPlan("done", ["failed"]), undefined, false)).toBeUndefined();
+  ).toEqual({ followersKnown: true, role: undefined, sessions: ["s-1", "s-2", "s-3"] });
+  // A role nobody is known to hold is named; its holder, where the issue's read names one, is
+  // the session.
+  expect(messageReach({ claim: null, route: "role:planner", route_holder: null }, [])).toEqual({
+    followersKnown: true,
+    role: "planner",
+    sessions: [],
+  });
+  expect(
+    messageReach({ claim: null, route: "role:planner", route_holder: "s-9" }, undefined)
+  ).toEqual({ followersKnown: false, role: undefined, sessions: ["s-9"] });
+  // A person's claim is no session.
+  expect(
+    messageReach(
+      { claim: { actor: { id: "bob", kind: "user" }, at }, route: null, route_holder: null },
+      []
+    )
+  ).toEqual({ followersKnown: true, role: undefined, sessions: [] });
 });
 
 test("a row that no longer waits says how it stands: a message's result, a failure, a row not run", () => {

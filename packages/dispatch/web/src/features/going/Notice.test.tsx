@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,8 +9,8 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, type WriteBounds } from "../../api/client";
-import type { GoingUndoAnswer } from "../../api/types";
+import { ApiError, api, type WriteBounds } from "../../api/client";
+import type { GoingUndoAnswer, IssueReferenceSummary } from "../../api/types";
 import { Notice, showNotice } from "./Notice";
 
 // The notice at the bottom right of the page (design v3, states 11 and 13): one line for a few
@@ -108,6 +108,51 @@ test("an action opens its page or runs its press, and the notice goes", async ()
     expect(screen.queryByTestId("going-notice")).toBeNull();
   } finally {
     realClock();
+  }
+});
+
+// The notice of a filing names what was filed (review R4, 13-filed): its line names the issue by
+// its key at once, and says the issue's title after it once Dispatch answers the issue's summary,
+// the read every reference to the issue shares. A notice that names no issue reads none.
+test("a notice that names an issue says the issue's title after its line once Dispatch answers it", async () => {
+  const answered = Promise.withResolvers<IssueReferenceSummary>();
+  const summary = spyOn(api, "getIssueSummary").mockReturnValue(answered.promise);
+  try {
+    renderNotice();
+    act(() =>
+      showNotice({
+        actions: [{ label: "Open", to: "/issues/CORE-46" }],
+        issue: "CORE-46",
+        ms: 10_000,
+        text: "Filed CORE-46",
+      })
+    );
+    expect(screen.getByTestId("going-notice-text").textContent).toBe("Filed CORE-46");
+    await waitFor(() => expect(summary).toHaveBeenCalledWith("CORE-46"));
+    await act(async () =>
+      answered.resolve({
+        documents: [],
+        key: "CORE-46",
+        project: "CORE",
+        status: "todo",
+        title: "A weather station on the roof",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("going-notice-text").textContent).toBe(
+        "Filed CORE-46: A weather station on the roof"
+      )
+    );
+    expect(screen.getByTestId("going-notice")).toHaveTextContent(
+      "Filed CORE-46: A weather station on the roof · Open"
+    );
+
+    summary.mockClear();
+    act(() => showNotice({ ms: 10_000, text: "Done: Count the moons" }));
+    expect(screen.getByTestId("going-notice-text").textContent).toBe("Done: Count the moons");
+    expect(summary).not.toHaveBeenCalled();
+  } finally {
+    summary.mockRestore();
   }
 });
 

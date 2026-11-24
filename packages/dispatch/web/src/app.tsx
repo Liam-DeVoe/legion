@@ -1125,12 +1125,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           tabIndex={-1}
         >
           {/* The command bar's run chip (design v3, state 11) floats over the top of the page:
-              in the band of `<main>`'s own 24 px top padding, over the middle of its column, and
-              at the top of the screen as the page scrolls. Its row is no height and is moved up
-              into that band by a transform, which moves nothing else, so the page never moves
-              when a run starts or ends, and the chip, shorter than the band, sits clear of the
-              page's title by its place alone. The issue page's frame has no such padding, so
-              there the row starts where the frame does. Only the chip takes the pointer. */}
+              from the band of `<main>`'s own 24 px top padding, over the middle of its column,
+              and at the top of the screen as the page scrolls. Its row is no height and is moved
+              up into that band by a transform, which moves nothing else, so the page never moves
+              when a run starts or ends. The chip is 24 px tall with room above it (`RunChip`),
+              so its foot reaches a few pixels over the page's first row, short of where a title
+              in that row starts. The issue page's frame has no such padding, so there the row
+              starts where the frame does. Only the chip takes the pointer. */}
           <div
             className={`pointer-events-none sticky z-30 flex h-0 items-start justify-center *:pointer-events-auto ${issueFrame ? "top-0" : "top-6 -translate-y-6"}`}
             data-testid="going-chip-row"

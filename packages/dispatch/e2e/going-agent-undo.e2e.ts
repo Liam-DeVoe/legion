@@ -173,10 +173,11 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
   await setNewIssueSettings({ label: "", session: "new-issue-owner" });
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
   const words = "we need a shutter for the dome";
+  const title = "A shutter for the dome";
   // The pause's short answer, and the run Enter on the line starts, which proposes the create.
   await scriptChat({
     default: prose("A new issue."),
-    runs: [newIssueRun(words, "A shutter for the dome")],
+    runs: [newIssueRun(words, title)],
   });
   const before = (await listIssues("CORE")).map((issue) => issue.key);
   await withAlice(browser, async (page) => {
@@ -184,16 +185,19 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
     await searchBox(page).fill(words);
     await expect(lineOnTop(page)).toContainText("File as a new issue", { timeout: RUN_STEPS_MS });
     await searchBox(page).press("Enter");
-    // Once it is filed, the bar closes and the notice names the issue with its Undo (design v3,
-    // state 13), for 10 s.
+    // Once it is filed, the bar closes and the notice names the issue, by its key and its
+    // title, with its Undo (design v3, state 13), for 10 s.
     const notice = page.getByTestId("going-notice");
-    await expect(notice.getByTestId("going-notice-text")).toHaveText(/^Filed CORE-\d+$/, {
-      timeout: RUN_STEPS_MS,
-    });
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(
+      new RegExp(`^Filed CORE-\\d+: ${title}$`),
+      { timeout: RUN_STEPS_MS }
+    );
     await expect(bar(page)).toHaveCount(0);
     const made = (await listIssues("CORE")).find((issue) => !before.includes(issue.key));
     expect(made?.route).toContain("new-issue-owner");
-    await expect(notice.getByTestId("going-notice-text")).toHaveText(`Filed ${made?.key}`);
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(
+      `Filed ${made?.key}: ${title}`
+    );
     await notice.getByTestId("going-notice-undo").click();
     await expect(notice.getByTestId("going-notice-text")).toHaveText(
       `Undone · ${made?.key} closed`,

@@ -1,10 +1,18 @@
 import { type DispatchToolLabel, dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 
-import type { GoingPlanAnswer, GoingPlanRow, GoingPlanTick, GoingUndoLine } from "../../api/types";
+import type {
+  GoingPlanAnswer,
+  GoingPlanRow,
+  GoingPlanTick,
+  GoingRun,
+  GoingUndoLine,
+  IssueDetails,
+} from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 import { PROPERTY_LABELS } from "../issue-page/page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
 import { laneLabel } from "../project/board-model";
+import { sessionOfAddress } from "../refs/routes";
 import { clockWords } from "../search/blocks/block-cells";
 import { objectOf, textOf } from "./fields";
 import type { PlanDraft } from "./going-store";
@@ -464,6 +472,45 @@ export function broadcastSessions(row: GoingPlanRow): readonly string[] {
     : [];
 }
 
+/** Whom a message on an issue's conversation reaches, as far as the page knows: the sessions,
+ *  each once - the one the issue's route names or that holds the role it names, the one that
+ *  holds its claim, then those that follow the issue; the role its route names where the page
+ *  knows no session that holds it; and whether the sessions that follow the issue are among
+ *  them, which they are only where the page read them. */
+export interface MessageReach {
+  readonly sessions: readonly string[];
+  readonly role: string | undefined;
+  readonly followersKnown: boolean;
+}
+
+/**
+ * Whom a message on `issue`'s conversation reaches, as Dispatch delivers one (`eventDestinations`,
+ * `outbox/publisher.go`): the session or the role the issue sends its messages to (its route),
+ * the session that holds its claim, and the sessions that follow the issue (`followers`, by
+ * session, undefined where the page could not read them). Until the issue itself is read, the
+ * page knows none of them.
+ */
+export function messageReach(
+  issue: Pick<IssueDetails, "claim" | "route" | "route_holder"> | undefined,
+  followers: readonly string[] | undefined
+): MessageReach {
+  if (issue === undefined) return { followersKnown: false, role: undefined, sessions: [] };
+  const route = issue.route ?? "";
+  // The session a route reaches: the one it names, or the one that holds the role it names.
+  const routed = sessionOfAddress(route) ?? (issue.route_holder || undefined);
+  const holder = issue.claim?.actor;
+  const sessions = new Set<string>();
+  if (routed !== undefined) sessions.add(routed);
+  if (holder?.kind === "session") sessions.add(holder.id);
+  for (const follower of followers ?? []) sessions.add(follower);
+  return {
+    followersKnown: followers !== undefined,
+    role:
+      routed === undefined && route.startsWith("role:") ? route.slice("role:".length) : undefined,
+    sessions: [...sessions],
+  };
+}
+
 /** The words a row posts or sends, which the row shows whole: a message's, a comment's, a
  *  question's; "" for a row that posts none. */
 export function rowText(row: GoingPlanRow): string {
@@ -518,6 +565,18 @@ function filledLabel(
     .trim();
 }
 
+/** The words a change of `tool` with `args` is named by before its arguments fill them: the
+ *  plan's own (`ownLabel`), else its tool's label as an order, its base verb in the place of the
+ *  present form's first word ("Update {issue}"); undefined for a tool that has no label. */
+function changeForm(tool: string, args: Arguments): string | undefined {
+  const own = ownLabel(tool, args);
+  if (own !== undefined) return own;
+  const label = TOOL_LABELS.get(tool);
+  if (label === undefined) return undefined;
+  const first = label.present.split(" ", 1)[0] ?? "";
+  return `${capitalized(label.verb)}${label.present.slice(first.length)}`;
+}
+
 /** What a change of `tool` with `args` does, in the words the bar names its step with, as an
  *  order: "Update CORE-3", "Send a message to CORE-1", "File The second half". */
 export function changeLabel(
@@ -525,16 +584,8 @@ export function changeLabel(
   args: Arguments,
   newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
 ): string {
-  const own = ownLabel(tool, args);
-  if (own !== undefined) return filledLabel(own, args, newIssues);
-  const label = TOOL_LABELS.get(tool);
-  if (label === undefined) return "Make a change";
-  const first = label.present.split(" ", 1)[0] ?? "";
-  return filledLabel(
-    `${capitalized(label.verb)}${label.present.slice(first.length)}`,
-    args,
-    newIssues
-  );
+  const form = changeForm(tool, args);
+  return form === undefined ? "Make a change" : filledLabel(form, args, newIssues);
 }
 
 /** The name of a document a row changes, as its arguments give it: a reference, a document's
@@ -574,13 +625,48 @@ const ITEM_ARGUMENTS = [
   "thread",
 ] as const;
 
-/** A change an Undo line names, by its tool and the item it changed, in the words its plan row
- *  named it with: "Update CORE-3", "Send a message to CORE-1", "File CORE-9". */
-export function undoneChangeLabel(tool: string, item: string): string {
-  return changeLabel(
-    tool,
-    item === "" ? {} : Object.fromEntries(ITEM_ARGUMENTS.map((argument) => [argument, item]))
-  );
+/** Whether `args` hold every argument `form` needs: each one it names with no words for its
+ *  absence has a value a label prints. */
+function fillsLabel(form: string, args: Arguments): boolean {
+  for (const [, name = "", absent] of form.matchAll(LABEL_PLACEHOLDER)) {
+    const value = args[name];
+    const printed = (typeof value === "string" && value !== "") || typeof value === "number";
+    if (absent === undefined && !printed) return false;
+  }
+  return true;
+}
+
+/**
+ * A change an Undo line names, in the words its plan row named it with. `row` is the row of the
+ * run's plan the line undid, where the page holds it: its arguments fill every argument the
+ * label names, as the plan's card filled them (`rowLabel`) - "Update CORE-3", "Set the default
+ * repository of CORE to acme/infra". A line whose row the page does not hold - the plan is not
+ * read, or the row is of an earlier plan of the run - carries its tool and its item alone. The
+ * tool's label is then filled with the item, in the argument that names an item, where that is
+ * every argument the label needs: "Send a message to CORE-1", "File CORE-9". A label that needs
+ * another ("Set the default assignee of {project} to {assignee}") would read with a gap, or with
+ * the words for a value the change never left out, so such a line reads "A change to CORE".
+ */
+export function undoLineLabel(
+  line: Pick<GoingUndoLine, "tool" | "item">,
+  row: GoingPlanRow | undefined
+): string {
+  if (row !== undefined) return rowLabel(row);
+  const { item, tool } = line;
+  const args: Arguments =
+    item === "" ? {} : Object.fromEntries(ITEM_ARGUMENTS.map((argument) => [argument, item]));
+  const form = changeForm(tool, args);
+  if (form === undefined || fillsLabel(form, args)) return changeLabel(tool, args);
+  return item === "" ? "A change" : `A change to ${item}`;
+}
+
+/** The row of `plan` an Undo line undid: the row of its number, where `plan` is the plan the line
+ *  names; undefined where the page holds no such row. */
+export function undoLineRow(
+  line: Pick<GoingUndoLine, "plan" | "row">,
+  plan: GoingPlanAnswer | undefined
+): GoingPlanRow | undefined {
+  return plan?.plan === line.plan ? plan.rows?.find((row) => row.row === line.row) : undefined;
 }
 
 /** The verb a change of an issue's fields is said with in the card's title: a close (status
@@ -722,25 +808,69 @@ export function undoneTitle(lines: readonly GoingUndoLine[]): string {
 }
 
 /**
+ * What Dispatch's record of a run says of its Undo (`GoingRun`), which is all the page says of
+ * it where it holds no answer of a press: when an undo of the run landed, in this page's clock
+ * (`undone_at`, the newest undo of any one of its changes; undefined where none did), how many
+ * of its changes Undo can still take back (`undoable_count`), and how many stay as the run left
+ * them - those, and the ones an Undo tried and could not take back, a change its undo is refused
+ * for or a value another writer left (`standing_count`). A message, and any change Dispatch
+ * does not undo, is sent, not undone, and counts in neither. No count of a plan's rows says any
+ * of it: a row that ran can be a setting Undo leaves as it is.
+ */
+export interface RunUndoRecord {
+  readonly at: number | undefined;
+  readonly undoable: number;
+  readonly stays: number;
+}
+
+/** What `record` says of its run's Undo (`RunUndoRecord`). */
+export function undoRecord(
+  record: Pick<GoingRun, "standing_count" | "undoable_count" | "undone_at">
+): RunUndoRecord {
+  const landed = record.undone_at === null ? Number.NaN : Date.parse(record.undone_at);
+  return {
+    at: Number.isNaN(landed) ? undefined : landed,
+    stays: record.undoable_count + record.standing_count,
+    undoable: record.undoable_count,
+  };
+}
+
+/** How a run an undo landed on reads under its answer, by how many of its changes stay
+ *  (`RunUndoRecord.stays`): "Undone" only where none does, else "Partly undone · 1 change stays",
+ *  in the word a kept value's row uses ("Title stays Bob's dome"). */
+export function undoneStateWords(stays: number): string {
+  return stays === 0
+    ? "Undone"
+    : `Partly undone · ${counted(stays, "change stays", "changes stay")}`;
+}
+
+/** What the card's Undo says its press takes back, "Undo 2 changes": the changes Dispatch's
+ *  record says Undo can still take back (`RunUndoRecord.undoable`), so a message, which stays
+ *  sent (R6), and a setting Undo leaves as it is count in none. */
+export function undoButtonWords(undoable: number): string {
+  return `Undo ${counted(undoable, "change", "changes")}`;
+}
+
+/**
  * The plan card's title as the plan stands (design v2, states 6 and 7): while it waits, the
  * sentence its rows make (`planTitle`); while its rows run, "Applying 1 of 3…", counting the row
  * that runs now among the rows sent to run; once they ran, "Applied 3 changes · 16:42", the time
  * the last row ran (`appliedAt`) where the page knows it, and how many of them ran where some did
  * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; for
  * a run whose Undo this page holds no answer of, as Dispatch says (`landed`): "Undone · 11:35 AM",
- * when an undo of it landed, where no change of it is left to take back, and "Partly undone ·
- * 11:35 AM" where one is; and "Discarded" once the person discarded it.
+ * when an undo of it landed, where no change of it stays, and "Partly undone · 11:35 AM" where
+ * one does; and "Discarded" once the person discarded it.
  */
 export function cardTitle(
   plan: GoingPlanAnswer,
   undone: readonly GoingUndoLine[] | undefined,
   appliedAt: number | undefined,
-  landed?: { readonly at: number; readonly left: boolean }
+  landed?: { readonly at: number; readonly stays: number }
 ): string {
   const rows = plan.rows ?? [];
   if (undone !== undefined) return undoneTitle(undone);
   if (landed !== undefined) {
-    return `${landed.left ? "Partly undone" : "Undone"} · ${clockWords(landed.at)}`;
+    return `${landed.stays > 0 ? "Partly undone" : "Undone"} · ${clockWords(landed.at)}`;
   }
   const sent = rows.filter((row) => SENT_STATES[row.state] === true);
   switch (plan.state) {
@@ -770,57 +900,14 @@ export function cardTitle(
  * What a run did with its plan once the plan's rows ran, for the line its steps fold into (design
  * v3, state 7): "applied 3 changes", counting the rows that ran as the card's title does, since
  * that is the last thing the run did; undefined while the plan waits or runs, once it was
- * discarded, and where no row ran, where "proposed a plan" stays what the run did.
+ * discarded, and where no row ran, where "proposed a plan" stays what the run did. The line is
+ * the run's work, so an Undo since leaves it as it is: the card, its rows and the line under the
+ * answer say what was undone.
  */
 export function appliedWords(plan: GoingPlanAnswer): string | undefined {
   if (plan.state !== "done") return undefined;
   const done = (plan.rows ?? []).filter((row) => row.state === "done").length;
   return done === 0 ? undefined : `applied ${counted(done, "change", "changes")}`;
-}
-
-/**
- * What a run's Undo left of its plan, for the line its steps fold into once its changes were
- * undone (design v3, state 7), in place of "applied 3 changes", which is no longer what stands:
- * the changes it reverted, then what stays, in the card's words - "undid 2 changes; 1 message
- * sent, not undone", or "undid 1 of 2 changes" where another writer's value stayed or a revert
- * was refused. `lines` is what this page's Undo answered; without them, for a run Dispatch says
- * was undone before this page pressed its Undo, `left` says whether a change is still left to
- * take back ("undid part of 2 changes"). Undefined where no row of the plan ran.
- */
-export function undoneWords(
-  plan: GoingPlanAnswer,
-  lines: readonly GoingUndoLine[] | undefined,
-  left: boolean
-): string | undefined {
-  const ran = (plan.rows ?? []).filter((row) => row.state === "done");
-  const messages = ran.filter((row) => rowKind(row) === "message").length;
-  const changes = ran.length - messages;
-  let undid = "";
-  if (lines !== undefined) {
-    const reversible = lines.filter((line) => line.undo !== "not_undone");
-    const reverted = reversible.filter((line) => line.outcome.ok).length;
-    if (reversible.length > 0) {
-      undid =
-        reverted === reversible.length
-          ? `undid ${counted(reverted, "change", "changes")}`
-          : `undid ${reverted} of ${counted(reversible.length, "change", "changes")}`;
-    }
-  } else if (changes > 0) {
-    undid = `undid ${left ? "part of " : ""}${counted(changes, "change", "changes")}`;
-  }
-  const sent = messages === 0 ? "" : `${counted(messages, "message", "messages")} sent, not undone`;
-  const words = [undid, sent].filter((part) => part !== "").join("; ");
-  return words === "" ? undefined : words;
-}
-
-/**
- * How many changes of a plan Undo can take back: its rows that ran, but a message, which stays
- * sent (R6). The card's Undo says so ("Undo 2 changes"), so a lone "Undo" under a sent message
- * never reads as if it took the message back, and a plan of messages alone offers no Undo.
- */
-export function undoableCount(plan: GoingPlanAnswer): number {
-  return (plan.rows ?? []).filter((row) => row.state === "done" && rowKind(row) !== "message")
-    .length;
 }
 
 /** How a row stands in its card (design v2, state 7): waiting for the person, sent and waiting

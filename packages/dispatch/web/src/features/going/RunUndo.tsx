@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { apiErrorMessage, goingRunUndoRequest } from "../../api/client";
@@ -17,7 +17,8 @@ import {
   fieldWords,
   keptValue,
   type UndoField,
-  undoneChangeLabel,
+  undoLineLabel,
+  undoLineRow,
   undoWords,
   valueWords,
 } from "./plan-rows";
@@ -124,13 +125,24 @@ export function UndoResult({ line }: { readonly line: GoingUndoLine }): ReactNod
 }
 
 /**
- * Undo of a run that made no plan - a new issue filed from the line File as a new issue - on its
- * result: one button, then a line for each change it undid, the change named as its plan row
- * would name it ("File CORE-9: Reverted"). A run with a plan has its Undo on its plan card.
+ * Undo of a run on its result, where no plan card of it is on the screen - History's row, and a
+ * run that drew no card, such as a new issue filed from the line File as a new issue: one button,
+ * then a line for each change it undid or left, the change named as its plan row named it
+ * ("File The second half: Reverted", "Set the default repository of CORE to acme/infra: Sent, not
+ * undone"). A line carries its tool and its item alone, so the run's plan is read as Undo is
+ * pressed, and each line takes its row's words from it (`undoLineLabel`); a line whose row the
+ * page cannot read is named by its tool and item. A run whose plan card is on the screen has its
+ * Undo there.
  */
 export function RunUndo({ run }: { readonly run: string }): ReactNode {
   const undoing = useRunUndo(run);
   const lines = undoing.lines;
+  const [pressed, setPressed] = useState(false);
+  const plan = useQuery({
+    ...goingPlanQuery(run),
+    enabled: pressed || lines !== undefined,
+    retry: false,
+  }).data;
   return (
     <div className="space-y-1" data-run={run} data-testid="going-undo">
       {lines === undefined ? (
@@ -138,7 +150,10 @@ export function RunUndo({ run }: { readonly run: string }): ReactNode {
           className={secondaryButtonCompact}
           data-testid="going-undo-button"
           disabled={undoing.pending}
-          onClick={undoing.undo}
+          onClick={() => {
+            setPressed(true);
+            undoing.undo();
+          }}
           type="button"
         >
           Undo
@@ -154,7 +169,7 @@ export function RunUndo({ run }: { readonly run: string }): ReactNode {
               // is its place in that answer.
               // biome-ignore lint/suspicious/noArrayIndexKey: a line's place in the answer never changes
               <li data-testid="going-undo-line" key={index}>
-                {undoneChangeLabel(line.tool, line.item)}: <UndoResult line={line} />
+                {undoLineLabel(line, undoLineRow(line, plan))}: <UndoResult line={line} />
               </li>
             ))
           )}

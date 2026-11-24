@@ -122,6 +122,28 @@ test("the hint under the box says Enter approves a plan that waits, and sends wo
   expect(boxHint({ planWaits: false, runWaits: false }, "")).toBeUndefined();
 });
 
+// The hint stands under the box, from the box's left edge (design v3, Keys: "the hint under the
+// box says so"; review R2), not under the mode button: it is indented by that button's width and
+// the row's gap after it, 5 rem and 0.5 rem, which are the two the row holds.
+test("the hint under the box starts at the box's left edge, past the mode button and the row's gap", () => {
+  render(
+    <BoxRow
+      box={
+        <BoxFrame chip="CORE-1" chipTitle="CORE-1">
+          <input aria-label="Ask the command bar" type="text" />
+        </BoxFrame>
+      }
+      hint="↵ Approve"
+      onStop={() => {}}
+    />
+  );
+  const hint = screen.getByTestId("going-box-hint");
+  expect(hint).toHaveTextContent("↵ Approve");
+  expect(screen.getByTestId("going-level-button")).toHaveClass("w-20");
+  expect(screen.getByTestId("going-level").parentElement).toHaveClass("gap-2");
+  expect(hint).toHaveClass("ps-22");
+});
+
 // A project's chip shows its key alone, as the design draws a chip, so it stays whole beside
 // Stop in the panel; a screen reader still hears "the project OPS", and the tooltip says it.
 test("a project's chip shows its key, and says the project to a screen reader and on hover", () => {

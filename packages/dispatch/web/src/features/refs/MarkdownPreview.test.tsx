@@ -181,6 +181,27 @@ test("a lead with no body shows the lead alone", async () => {
   }
 });
 
+// A trail is the app's own mark after the text, as a lead is its words before it: the "…" a
+// search hit's row ends a snippet with where the server cut it out of a longer text (review R4).
+// It is plain text at the end of the line, inside the clamp, and a preview given none ends as its
+// text does.
+test("a trail stands after the text as the app's own mark, and a preview given none has none", async () => {
+  const { preview, rerender, view } = renderPreview({
+    lines: 1,
+    markdown: "Draw **each** page and read",
+    trail: "…",
+  });
+  try {
+    await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("each"));
+    expect(preview().textContent).toBe("Draw each page and read…");
+
+    rerender({ lines: 1, markdown: "Draw **each** page and read" });
+    await waitFor(() => expect(preview().textContent).toBe("Draw each page and read"));
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a Dispatch picture shows as its thumbnail beside its caption, a link only where links stay live", async () => {
   // The dashboard is served from an origin, where a picture's same-origin bytes route resolves;
   // at happy-dom's `about:blank` every picture would fail at once (`MarkdownBody.test.tsx`).

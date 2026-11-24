@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { apiErrorMessage, goingSettingsRequest } from "../../api/client";
 import { goingSettingsQuery } from "../../api/queries";
@@ -35,6 +35,10 @@ const MODES: readonly { readonly mode: Mode; readonly label: string; readonly do
  *  (`radioRing`), filled in the page's blue once chosen. */
 const RADIO = `size-4 shrink-0 cursor-pointer appearance-none rounded-full border-2 outline-none checked:border-[5px] focus-visible:ring-2 focus-visible:ring-offset-2 ${radioRing} ${focusVisibleRing}`;
 
+/** How long "Saved" stands beside the mode a choice saved: a moment, as the choice saves in the
+ *  press itself and the radio already shows it (review: Settings). */
+export const SAVED_SHOWS_MS = 3_000;
+
 /**
  * The person's own command-bar setting: its mode, which says which changes of a run's plan wait
  * for them. It is held on Dispatch (`GET`/`PUT /api/v1/me/going/settings`), so it follows the
@@ -51,8 +55,16 @@ export function CommandBarSection(): ReactNode {
   // state, so the choice changes in the press itself; a read of the setting that was out when the
   // person pressed cannot draw the old mode over it, however that read ends.
   const [pressed, setPressed] = useState<Mode>();
-  // The mode Dispatch last answered a save of, for the notice that says it was saved.
+  // The mode Dispatch last answered a save of, for the notice that says it was saved, which
+  // stands for a moment (`SAVED_SHOWS_MS`) and then goes.
   const [saved, setSaved] = useState<Mode>();
+  useEffect(() => {
+    if (saved === undefined) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setSaved(undefined), SAVED_SHOWS_MS);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
   const key = goingSettingsQuery().queryKey;
   const save = useKeyedWrite<GoingSettings, Mode>({
     inline: true,
@@ -139,8 +151,8 @@ export function CommandBarSection(): ReactNode {
                   </label>
                   {saved === mode ? (
                     // The choice saves as it is made, with no Save button, so the mode it saved
-                    // says so beside its name (review: Settings); the status line below is the
-                    // same notice for a screen reader.
+                    // says so beside its name for a moment (review: Settings); the status line
+                    // below is the same notice for a screen reader.
                     <span
                       aria-hidden="true"
                       className={`ml-2 text-xs font-medium ${successText}`}

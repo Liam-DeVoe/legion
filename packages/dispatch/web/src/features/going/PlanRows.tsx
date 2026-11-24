@@ -11,6 +11,7 @@ import {
 } from "react";
 import { Link, useInRouterContext } from "react-router-dom";
 
+import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingUndoLine } from "../../api/types";
 import { Pill, pillShapeClassName } from "../../components/Pill";
@@ -53,7 +54,6 @@ import { issueStatuses } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { TimedWords } from "../refs/dispatch-time";
 import { ItemChip } from "../refs/ItemChip";
-import { sessionOfAddress } from "../refs/routes";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
 import {
@@ -71,6 +71,7 @@ import {
   labelMarks,
   MARK_WORDS,
   MODE_WORDS,
+  messageReach,
   needsUnticked,
   newIssueTitles,
   ROW_MARKS,
@@ -89,7 +90,8 @@ import {
   specSentences,
   tickedCount,
   toggledDraft,
-  undoableCount,
+  undoButtonWords,
+  undoRecord,
   valuesNowWords,
   valueWords,
   wasReverted,
@@ -666,46 +668,103 @@ function Quote({ text }: { readonly text: string }): ReactNode {
   );
 }
 
-/**
- * Who a message on an issue's conversation reaches, as Dispatch delivers one (`eventDestinations`,
- * `outbox/publisher.go`): the session or the role the issue sends its messages to (its route), and
- * the session that holds its claim, read from the issue as it stands - "Message to ‹session› on
- * DEMO-15". Where the issue has neither, only the sessions that follow the issue's topic are told
- * of it, and it waits on the issue for whoever opens it: "Message on DEMO-15 · to the agents that
- * follow it". Until the issue
- * is read the row names the issue alone.
- */
-function IssueMessageTo({ issue }: { readonly issue: string }): ReactNode {
-  const read = useQuery(issueQuery(issue)).data;
-  const chip = <ItemSlot item={issue} />;
-  if (read === undefined) {
-    return <>Message on {chip}</>;
-  }
-  const route = read.route ?? "";
-  const routed = sessionOfAddress(route);
-  const holder = read.claim?.actor;
-  const claimant = holder?.kind === "session" && holder.id !== routed ? holder.id : undefined;
-  const reached: ReactNode[] = [];
-  if (routed !== undefined) {
-    reached.push(
-      <AgentName key="route" kind="static" sessionId={routed} storedTitle={undefined} />
-    );
-  } else if (route.startsWith("role:")) {
-    reached.push(<Fragment key="route">the {route.slice("role:".length)}</Fragment>);
-  }
-  if (claimant !== undefined) {
-    reached.push(
-      <AgentName key="claim" kind="static" sessionId={claimant} storedTitle={undefined} />
-    );
-  }
-  if (reached.length === 0) {
-    return <>Message on {chip} · to the agents that follow it</>;
-  }
+/** The parts of a sentence joined as a list is: "a", "a and b", "a, b and c". */
+function Listed({ parts }: { readonly parts: readonly ReactNode[] }): ReactNode {
+  return parts.map((part, index) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the one sentence, which never changes for one row
+    <Fragment key={index}>
+      {index === 0 ? null : index === parts.length - 1 ? " and " : ", "}
+      {part}
+    </Fragment>
+  ));
+}
+
+/** The first line of a message row, in the one form every message row has (design v3, state 6):
+ *  whom it reaches (`to`, "Message to ‹session› on DEMO-15", "Message to 4 sessions"), then how
+ *  where the row names a delivery ("· as an aside"); and under it the sessions (`sessions`) of a
+ *  line that names them by their count. */
+function MessageTo({
+  delivery,
+  sessions,
+  to,
+}: {
+  readonly delivery: string;
+  readonly sessions: readonly string[];
+  readonly to: ReactNode;
+}): ReactNode {
   return (
     <>
-      Message to {reached[0]}
-      {reached.length > 1 ? <> and {reached[1]}</> : null} on {chip}
+      <p className={textPrimaryOnSurface} data-testid="going-plan-message">
+        {to}
+        {delivery === "" ? null : ` · ${delivery}`}
+      </p>
+      {sessions.length === 0 ? null : (
+        <ul className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-plan-sessions">
+          {sessions.map((session) => (
+            <li key={session}>
+              <AgentName kind="static" sessionId={session} storedTitle={undefined} />
+            </li>
+          ))}
+        </ul>
+      )}
     </>
+  );
+}
+
+/**
+ * Whom a message on an issue's conversation reaches (`messageReach`), read from the issue as it
+ * stands and from the sessions that follow it, in the form a message to a session and a broadcast
+ * have, while the plan waits and once it ran alike: one session by its name, "Message to
+ * ‹session› on DEMO-15"; more by their count, "Message to 3 sessions on DEMO-15", with the
+ * sessions under it; a role no session is known to hold by its name, "the planner". Where the
+ * page cannot read who follows the issue, or knows nobody the message reaches, it says whom
+ * Dispatch tells of it in words: "Message to the agents that follow DEMO-15", after whoever the
+ * issue's own read names. A message on an issue names no delivery, so the line says none.
+ */
+function IssueMessageTo({
+  delivery,
+  issue,
+}: {
+  readonly delivery: string;
+  readonly issue: string;
+}): ReactNode {
+  const read = useQuery(issueQuery(issue)).data;
+  // The sessions that follow the issue, under the key the issue's header and an ask's card read
+  // them by, so a session that stops following it leaves all three.
+  const followers = useQuery({
+    queryFn: () => api.getIssueSubscribers(issue),
+    queryKey: ["subscribers", issue],
+  }).data;
+  const reach = messageReach(
+    read,
+    followers?.map((follower) => follower.session_id)
+  );
+  const chip = <ItemSlot item={issue} />;
+  const [only] = reach.sessions;
+  const counted = reach.sessions.length > 1;
+  const named: ReactNode[] = reach.role === undefined ? [] : [`the ${reach.role}`];
+  if (counted) {
+    named.push(`${reach.sessions.length} sessions`);
+  } else if (only !== undefined) {
+    named.push(<AgentName kind="static" sessionId={only} storedTitle={undefined} />);
+  }
+  const followersInWords = !reach.followersKnown || named.length === 0;
+  return (
+    <MessageTo
+      delivery={delivery}
+      sessions={counted ? reach.sessions : []}
+      to={
+        followersInWords ? (
+          <>
+            Message to <Listed parts={[...named, <>the agents that follow {chip}</>]} />
+          </>
+        ) : (
+          <>
+            Message to <Listed parts={named} /> on {chip}
+          </>
+        )
+      }
+    />
   );
 }
 
@@ -724,44 +783,44 @@ function MessageBody({
 }): ReactNode {
   const args = argumentsOf(row);
   const delivery = deliveryWords(row);
-  const sessions = broadcastSessions(row);
   const onIssue = row.item || row.issue || textOf(args.issue);
   let to: ReactNode;
   if (row.tool === "dispatch_broadcast") {
-    to = `Message to ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`;
+    const sessions = broadcastSessions(row);
+    to = (
+      <MessageTo
+        delivery={delivery}
+        sessions={sessions}
+        to={`Message to ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`}
+      />
+    );
   } else if (row.tool === "dispatch_send_to_agent") {
     to = (
-      <>
-        Message to{" "}
-        <AgentName kind="static" sessionId={textOf(args.session)} storedTitle={undefined} />
-        {row.issue === "" ? null : (
+      <MessageTo
+        delivery={delivery}
+        sessions={[]}
+        to={
           <>
-            {" "}
-            on <ItemSlot item={row.issue} />
+            Message to{" "}
+            <AgentName kind="static" sessionId={textOf(args.session)} storedTitle={undefined} />
+            {row.issue === "" ? null : (
+              <>
+                {" "}
+                on <ItemSlot item={row.issue} />
+              </>
+            )}
           </>
-        )}
-      </>
+        }
+      />
     );
   } else if (onIssue === "") {
-    to = "Message in its conversation";
+    to = <MessageTo delivery={delivery} sessions={[]} to="Message in its conversation" />;
   } else {
-    to = <IssueMessageTo issue={onIssue} />;
+    to = <IssueMessageTo delivery={delivery} issue={onIssue} />;
   }
   return (
     <div className="space-y-1">
-      <p className={textPrimaryOnSurface} data-testid="going-plan-message">
-        {to}
-        {delivery === "" ? null : ` · ${delivery}`}
-      </p>
-      {sessions.length === 0 ? null : (
-        <ul className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-plan-sessions">
-          {sessions.map((session) => (
-            <li key={session}>
-              <AgentName kind="static" sessionId={session} storedTitle={undefined} />
-            </li>
-          ))}
-        </ul>
-      )}
+      {to}
       <Quote text={rowText(row)} />
       {waiting ? (
         <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-plan-final">
@@ -1196,29 +1255,25 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
  * Once approved (design v2, state 7), its title follows its rows, "Applying 1 of 3…" then
  * "Applied 3 changes · 16:42", the time its last row ran (`useRanAt`) or its run ended
  * (`appliedAt`), whichever this page knows first, each row ticks in place, and a
- * failed row's "Say what to do instead" puts the cursor in the box. From the first row that ran,
- * the card keeps one Undo (R6), which says what it takes back, "Undo 2 changes": a message stays
- * sent, so it counts in no Undo, and a plan of messages alone offers none. Once pressed, its title
- * reads "Undone · 3 changes reverted" and each row says what became of its change, in one line.
- * An old turn's card (`folded`, design v2, state 8) draws a plan that no longer waits as its one
- * line, "Applied 3 changes · Undo 3 changes", which opens it. A run Dispatch says was undone
- * before this page pressed its Undo (`undone`) reads "Undone · 11:35 AM" and offers no Undo once
- * nothing is left to take back; where a change is left it reads "Partly undone · 11:35 AM" and
- * offers "Undo the rest". A plan that could not be read says so, with Retry.
+ * failed row's "Say what to do instead" puts the cursor in the box. While Dispatch's record of
+ * the run says Undo can take a change of it back (`undoRecord`), the card keeps one Undo (R6),
+ * which says how many its press takes back, "Undo 2 changes", as that record counts them: a
+ * message stays sent and a setting stays set, so neither counts, and a plan of those alone offers
+ * none. Once pressed, its title reads "Undone · 3 changes reverted" and each row says what became
+ * of its change, in one line. An old turn's card (`folded`, design v2, state 8) draws a plan that
+ * no longer waits as its one line, "Applied 3 changes · Undo 3 changes", which opens it. A run
+ * Dispatch says was undone before this page pressed its Undo reads "Undone · 11:35 AM" where no
+ * change of it stays, and "Partly undone · 11:35 AM" where one does, with Undo for what it can
+ * still take back. A plan that could not be read says so, with Retry.
  */
 export function PlanCard({
   answering,
   appliedAt,
   folded = false,
-  undone,
 }: {
   readonly answering: PlanAnswering;
   readonly appliedAt?: number;
   readonly folded?: boolean;
-  /** What Dispatch says of the plan's run's Undo where this page holds no answer of a press of it:
-   *  when an undo of it landed (`undone_at`), in this page's clock, and whether a change of it is
-   *  still left to take back (`undoable`), which the card then offers to undo. */
-  readonly undone?: { readonly at: number; readonly left: boolean };
 }): ReactNode {
   const going = useGoing();
   const plan = answering.plan;
@@ -1260,7 +1315,16 @@ export function PlanCard({
     appliedAt === undefined || ranAt === undefined
       ? (appliedAt ?? ranAt)
       : Math.min(appliedAt, ranAt);
-  const title = cardTitle(plan, lines, folded ? undefined : appliedTime, undone);
+  // What Dispatch's record of the run says its Undo did and can still do: the title of a run
+  // undone where this page holds no answer of a press, and the Undo the card offers.
+  const record = going.runs.get(plan.run)?.record;
+  const recorded = record === undefined ? undefined : undoRecord(record);
+  const title = cardTitle(
+    plan,
+    lines,
+    folded ? undefined : appliedTime,
+    recorded?.at === undefined ? undefined : { at: recorded.at, stays: recorded.stays }
+  );
   // The rows the page draws are the open plan's, which an old turn's card is not.
   const onPage = folded ? new Set<number>() : new Set([...going.onPage.values()].flat());
   const rows = (plan.rows ?? []).filter((row) => !onPage.has(row.row));
@@ -1268,16 +1332,11 @@ export function PlanCard({
   const unmatched = (lines ?? []).filter(
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
-  const undoable = undoableCount(plan);
-  // A run Dispatch says was undone in part offers its Undo again for what is left, which no count
-  // of the plan's rows says.
-  const offered = lines === undefined && (undone === undefined ? undoable > 0 : undone.left);
-  const label =
-    undone !== undefined
-      ? "Undo the rest"
-      : undoable === 1
-        ? "Undo 1 change"
-        : `Undo ${undoable} changes`;
+  // Undo is offered for what the record says it can still take back, and names that count; an
+  // Undo pressed on this page has answered, and its rows say what became of each change.
+  const undoable = recorded?.undoable ?? 0;
+  const offered = lines === undefined && undoable > 0;
+  const label = undoButtonWords(undoable);
   const undo = offered ? (
     <button
       className={secondaryButtonCompact}
@@ -1392,21 +1451,23 @@ export function PlanCard({
           ))}
         </ul>
       )}
+      {waiting ? null : <PlanControls answering={answering} draft={draft} enterApproves />}
+      {undo}
+      {refusal}
       {waiting ? (
         // Approve and Discard stay at the foot of the view while the card is taller than it
         // (design v3, state 6): the card shows from its question down, and its one primary
-        // action never sits below the fold. Once the card's end is in view they stand there.
+        // action never sits below the fold. The bar is pinned to the bottom edge of the
+        // conversation's scroll, which keeps no padding of its own there (`ConversationView`), so
+        // no row shows under it; its fill and its top rule cover the rows that scroll behind it.
+        // It is the card's last part, so once the card's end is in view it stands there.
         <div
           className={`sticky bottom-0 z-10 -mx-3 -mb-3 rounded-b-lg border-t px-3 py-3 ${borderDefault} ${surfaceBg}`}
           data-testid="going-plan-actions"
         >
           <PlanControls answering={answering} draft={draft} enterApproves />
         </div>
-      ) : (
-        <PlanControls answering={answering} draft={draft} enterApproves />
-      )}
-      {undo}
-      {refusal}
+      ) : null}
     </section>
   );
 }

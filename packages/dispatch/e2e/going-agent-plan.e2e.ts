@@ -338,7 +338,11 @@ test("a plan with rows on the page and in the card shows each in its place", asy
     await expect(planRows(planOnPage(page))).toHaveCount(1);
     await expect(planOnPage(page)).toContainText("Raise the great dome");
     await expect(planRows(planCard(page))).toHaveCount(1);
-    await expect(planRows(planCard(page))).toContainText(`Message on ${split.second}`);
+    // Nothing routes, claims or follows the dome here, so the row names whom Dispatch tells of
+    // the message in words, in the form every message row has.
+    await expect(planRows(planCard(page))).toContainText(
+      `Message to the agents that follow ${split.second}`
+    );
   });
 });
 

@@ -329,6 +329,49 @@ describe("the fake chat model", () => {
     expect(received[3].context).toBeNull();
   });
 
+  // A turn of a run the service cut at the call's output tokens: its prose streams, then the
+  // call finishes `length` in place of `stop`, which is how the agent reads that its reply was
+  // cut (`going/agent`'s `finishLength`) and stops the run at its level's bound with the prose
+  // kept. A turn that calls a tool finishes `tool_calls` whether or not it is marked cut.
+  test("a turn marked cut ends its prose with the finish reason length, and a turn that is not ends stop", async () => {
+    await script({
+      default: { text: "never" },
+      runs: [
+        {
+          turns: [
+            {
+              cut: true,
+              text: "Reading it.",
+              toolCalls: [
+                {
+                  arguments: { arguments: { issue: "CORE-1" }, tool: "dispatch_read" },
+                  name: "call_tool",
+                },
+              ],
+            },
+            { cut: true, text: "CORE-1 is ready to start. The next one waits on" },
+          ],
+          words: "what is the work waiting on",
+        },
+        { turns: [{ text: "CORE-1 is open." }], words: "is CORE-1 open" },
+      ],
+    });
+    const called = await streamed(
+      await chat.call("/chat/completions", runCall("what is the work waiting on"))
+    );
+    expect(called.finish).toBe("tool_calls");
+    const cut = await streamed(
+      await chat.call("/chat/completions", runCall("what is the work waiting on", ["CORE-1: Open"]))
+    );
+    expect(cut).toMatchObject({
+      calls: [],
+      content: "CORE-1 is ready to start. The next one waits on",
+      finish: "length",
+    });
+    const whole = await streamed(await chat.call("/chat/completions", runCall("is CORE-1 open")));
+    expect(whole).toMatchObject({ calls: [], content: "CORE-1 is open.", finish: "stop" });
+  });
+
   test("a run's status turn refuses with its Retry-After, its next call takes the next turn, and an endless turn streams until its caller leaves", async () => {
     await script({
       runs: [{ turns: [{ retryAfter: "1", status: 429 }, { endless: true }], words: "never ends" }],

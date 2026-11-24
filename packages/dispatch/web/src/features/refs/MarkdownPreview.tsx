@@ -190,6 +190,7 @@ export function MarkdownPreview({
   links = "inert",
   markdown,
   source,
+  trail,
   tree,
 }: {
   className?: string;
@@ -208,6 +209,10 @@ export function MarkdownPreview({
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
+  /** The app's own mark after the text, plain and never parsed: the "…" of a search hit's snippet
+   *  that the server cut out of a longer text. Clamped with the text, so a text the clamp cuts
+   *  shows the clamp's own ellipsis alone. */
+  trail?: string;
   /** The reading Go made of this stored text, which the preview draws; absent only for a text
    *  Dispatch does not store (`MarkdownBody`). */
   tree?: DisplayTree;
@@ -231,9 +236,12 @@ export function MarkdownPreview({
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
+      if (trail !== undefined && trail !== "") {
+        element.append(document.createTextNode(trail));
+      }
       return decorated;
     },
-    [highlightClassName, lead, links]
+    [highlightClassName, lead, links, trail]
   );
   const references = useTextReferences(markdown, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(

@@ -10,7 +10,7 @@ import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
 import { issue as issueFixture } from "../margin/margin-fixture";
 import { ConversationView } from "./ConversationView";
-import { resetGoingStore, setPlace, startRun } from "./going-store";
+import { goingState, resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard } from "./PlanRows";
 import { argumentsOf } from "./plan-rows";
@@ -85,10 +85,13 @@ const created: GoingRun = {
   level: "standard",
   line: null,
   mode: "ask",
+  standing_count: 0,
   state: "queued",
   stop_reason: null,
   undoable: false,
+  undoable_count: 0,
   undone_at: null,
+  undone_count: 0,
   used: { calls: 0, tokens: 0, working_ms: 0 },
   words: "split CORE-1 in two",
 };
@@ -131,10 +134,15 @@ function drawnRows(within_: HTMLElement): (string | null)[] {
 }
 
 // Each change row's item is an issue chip, which reads its issue's summary: the one read every
-// reference to the issue shares. A message on an issue reads the issue itself, for whom Dispatch
-// delivers it to: here an issue that routes its messages nowhere and that nobody claims.
+// reference to the issue shares. A message on an issue reads the issue itself and the sessions
+// that follow it, for whom Dispatch delivers it to: here an issue that routes its messages
+// nowhere, that nobody claims and that nobody follows. A run's record is read again at each
+// frame after which rows of its plan may have run (`rereadRun`): unless a row answers that read
+// itself, Dispatch answers the record the page already holds.
 let summaries: { mockRestore: () => void } | undefined;
 let issues: { mockRestore: () => void } | undefined;
+let followers: { mockRestore: () => void } | undefined;
+let rereads: { mockRestore: () => void } | undefined;
 beforeEach(() => {
   summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
     documents: [],
@@ -149,6 +157,12 @@ beforeEach(() => {
     key,
     route: null,
   }));
+  followers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  rereads = spyOn(api, "goingRun").mockImplementation(async (id) => {
+    const held = goingState().runs.get(id)?.record;
+    if (held === undefined) throw new Error(`the page holds no run ${id}`);
+    return held;
+  });
 });
 
 afterEach(() => {
@@ -156,6 +170,8 @@ afterEach(() => {
   resetGoingStore();
   summaries?.mockRestore();
   issues?.mockRestore();
+  followers?.mockRestore();
+  rereads?.mockRestore();
 });
 
 test("a plan with rows on the page and in the card shows each in its place, once", async () => {
@@ -767,7 +783,9 @@ function Conversation(): ReactNode {
   return <ConversationView answering={useOpenPlan()} onContinue={() => {}} onRetry={() => {}} />;
 }
 
-test("a run whose plan ran offers Undo once it ends, its plan read again", async () => {
+// The card's Undo is offered once Dispatch's record of the run says Undo can take a change of it
+// back: the record is read again with the plan, at each frame after which its rows may have run.
+test("a run whose plan ran offers Undo once it ends, its plan and its record read again", async () => {
   const approved: GoingPlanAnswer = {
     ...plan,
     rows: (plan.rows ?? []).map((planned) => ({ ...planned, state: "approved" })),
@@ -783,10 +801,18 @@ test("a run whose plan ran offers Undo once it ends, its plan read again", async
     reads += 1;
     return reads === 1 ? plan : reads === 2 ? approved : ran;
   });
+  // Dispatch's record of the run once its rows ran: two changes Undo can take back.
+  const reread = spyOn(api, "goingRun").mockImplementation(async () => ({
+    ...created,
+    state: "done",
+    undoable: true,
+    undoable_count: 2,
+  }));
   try {
     renderWithQueries(<Conversation />);
     await screen.findByTestId("going-plan-card-rows");
     expect(screen.queryByTestId("going-undo-button")).toBeNull();
+    expect(reread).not.toHaveBeenCalled();
 
     // Approved in another tab: the run takes its plan up again, runs its rows and ends.
     send("plan", { plan: 1, state: "running" });
@@ -794,8 +820,10 @@ test("a run whose plan ran offers Undo once it ends, its plan read again", async
     send("tool", { note: "issue CORE-9", step: 3, tool: "dispatch_issue" });
     send("end", { offers: [], reason: "", state: "done" });
 
-    expect(await screen.findByTestId("going-undo-button")).toBeInTheDocument();
+    expect(await screen.findByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
+    expect(reread).toHaveBeenCalledWith("run-1");
   } finally {
+    reread.mockRestore();
     restore();
   }
 });

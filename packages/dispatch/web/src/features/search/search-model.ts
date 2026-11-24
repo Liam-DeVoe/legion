@@ -274,6 +274,23 @@ export function snippetWithoutDirectives(tree: DisplayTree | undefined): Display
   return changed ? (walked as DisplayTree) : tree;
 }
 
+/** How many words a hit's snippet holds where the server's headline cut its body to the
+ *  headline's window: `pmdoc.SearchSnippetWords` (`packages/envoy/internal/dispatch/pmdoc/
+ *  fragment.go`; `headlineOptions` in `api/search.go`, MaxWords=24). A body that fits the window
+ *  comes back whole and shorter. */
+const SEARCH_SNIPPET_WORDS = 24;
+
+/**
+ * Whether the server cut a hit's snippet out of a longer text, which its row then ends with "…"
+ * (review R4): the server's own rule (`pmdoc.SearchSnippetMarkdown`), that a snippet as wide as
+ * the headline's window was cut and a shorter one is the whole body. `snippet` is the snippet's
+ * text without its marks, and its words are counted as the server counts them (`countWords`):
+ * the runs between whitespace.
+ */
+export function snippetWasCut(snippet: string): boolean {
+  return snippet.split(/\s+/u).filter((word) => word !== "").length >= SEARCH_SNIPPET_WORDS;
+}
+
 /** Mirrors the server's first positive websearch token for document deep links. */
 export function firstHighlightTerm(query: string): string | undefined {
   for (const token of query.trim().split(/\s+/u)) {

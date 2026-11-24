@@ -256,7 +256,9 @@ const CLOSING_PUNCTUATION = /^[.,;:!?…)\]}"'”’]+/u;
  * Keeps the punctuation the text writes right after a chip's link on the chip's line: the link and
  * that punctuation go into one span that does not break. A chip is a box of its own
  * (`ItemChip`), and a line may end after a box where it may not end after a word, so without this
- * the full stop after a chip at the end of a line went on alone to the next one.
+ * the full stop after a chip at the end of a line went on alone to the next one. The punctuation
+ * stands against the chip, one pixel nearer than its glyph does: a full stop's own side bearing
+ * reads as nothing after a letter, and as a gap after the chip's rule (review R4).
  */
 function holdPunctuation(anchor: HTMLElement): void {
   const after = anchor.nextSibling;
@@ -270,7 +272,11 @@ function holdPunctuation(anchor: HTMLElement): void {
   line.className = "whitespace-nowrap";
   line.setAttribute("data-chip-line", "");
   anchor.before(line);
-  line.append(anchor, after);
+  const mark = document.createElement("span");
+  mark.className = "-ml-px";
+  mark.setAttribute("data-chip-mark", "");
+  mark.append(after);
+  line.append(anchor, mark);
 }
 
 /**

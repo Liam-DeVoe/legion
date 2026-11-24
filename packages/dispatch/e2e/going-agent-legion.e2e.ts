@@ -134,17 +134,20 @@ test("with a session set for new issues, Enter on File as a new issue files it a
       timeout: RUN_STEPS_MS,
     });
     await searchBox(page).press("Enter");
-    // Once it is filed, the bar closes and the notice names the issue with its Undo (design v3,
-    // state 13).
+    // Once it is filed, the bar closes and the notice names the issue, by its key and its
+    // title, with its Undo (design v3, state 13).
     const notice = page.getByTestId("going-notice");
-    await expect(notice.getByTestId("going-notice-text")).toHaveText(/^Filed CORE-\d+$/, {
-      timeout: RUN_STEPS_MS,
-    });
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(
+      new RegExp(`^Filed CORE-\\d+: ${title}$`),
+      { timeout: RUN_STEPS_MS }
+    );
     await expect(notice.getByTestId("going-notice-undo")).toBeVisible();
     await expect(bar(page)).toHaveCount(0);
     const made = (await listIssues("CORE")).find((issue) => !before.includes(issue.key));
     expect(made).toBeDefined();
-    await expect(notice.getByTestId("going-notice-text")).toHaveText(`Filed ${made?.key}`);
+    await expect(notice.getByTestId("going-notice-text")).toHaveText(
+      `Filed ${made?.key}: ${title}`
+    );
     const filed = await getIssue(made?.key ?? "");
     expect(filed.title).toBe(title);
     expect(filed.project).toBe("CORE");

@@ -47,10 +47,13 @@ function record(
     level: "standard",
     line: null,
     mode: "ask",
+    standing_count: 0,
     state,
     stop_reason: null,
     undoable: false,
+    undoable_count: 0,
     undone_at: null,
+    undone_count: 0,
     used: { calls: 1, tokens: 10, working_ms: workingMs },
     words: "where is DEMO-15",
     ...extra,
@@ -484,8 +487,66 @@ test("the conversation follows new output until the person scrolls up, and New r
   }
 });
 
+// How far the reader follows is of one conversation (class search, entry 71). The side panel keeps
+// one view while the Inbox's Review opens another conversation in it, and that conversation
+// opened at the first one's scroll offset, under "↓ New reply" for output it never had.
+test("another conversation opened under the same view starts followed at its foot, with no New reply", async () => {
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === "r-1") {
+      send = onFrame;
+    } else {
+      onFrame("reply", { labels: [], text: "Nothing blocks the release.", tools: [] });
+      onFrame("end", { offers: [], reason: "", state: "done" });
+    }
+    return new Promise<void>(() => {});
+  });
+  try {
+    openConversation({ id: "c-1", newest_at: new Date().toISOString(), runs: [record("working")] });
+    renderWithQueries(<Conversation />);
+    const view = screen.getByTestId("going-conversation-view");
+    Object.defineProperty(view, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(view, "clientHeight", { configurable: true, value: 200 });
+    act(() => send?.("call", { kind: "read", label: "Reading DEMO-15", step: 2, tool: "read" }));
+    expect(view.scrollTop).toBe(1000);
+    // The reader scrolls up, and the first conversation's next output leaves them behind.
+    view.scrollTop = 100;
+    fireEvent.scroll(view);
+    act(() =>
+      send?.("tool", {
+        items: ["DEMO-15"],
+        kind: "read",
+        label: "Read DEMO-15",
+        step: 2,
+        tool: "read",
+      })
+    );
+    expect(screen.getByTestId("going-new-reply")).toBeInTheDocument();
+
+    act(() =>
+      openConversation({
+        id: "c-2",
+        newest_at: new Date().toISOString(),
+        runs: [
+          record("done", 1000, {
+            conversation: "c-2",
+            id: "r-9",
+            words: "what blocks the release",
+          }),
+        ],
+      })
+    );
+    await waitFor(() => expect(screen.getByTestId("going-run")).toHaveAttribute("data-run", "r-9"));
+    expect(view.scrollTop).toBe(1000);
+    expect(screen.queryByTestId("going-new-reply")).toBeNull();
+  } finally {
+    stream.mockRestore();
+  }
+});
+
 // Design v2, state 8: an old turn keeps its folded line, and its applied plan folds to one line,
-// "Applied 2 changes · Undo", which opens the card.
+// "Applied 2 changes · Undo 2 changes", which opens the card. The Undo is offered, and counts,
+// as Dispatch's record of the run says.
 test("an old turn's applied plan folds to one line with Undo, which opens the card", async () => {
   const user = userEvent.setup();
   const applied: GoingPlanAnswer = {
@@ -532,7 +593,11 @@ test("an old turn's applied plan folds to one line with Undo, which opens the ca
       newest_at: new Date().toISOString(),
       runs: [
         record("done", 1000, { continues: "r-1", id: "r-2", words: "and now?" }),
-        record("done", 1000, { words: "raise DEMO-1 and DEMO-2" }),
+        record("done", 1000, {
+          undoable: true,
+          undoable_count: 2,
+          words: "raise DEMO-1 and DEMO-2",
+        }),
       ],
     });
     renderWithQueries(<Conversation />);
@@ -540,7 +605,7 @@ test("an old turn's applied plan folds to one line with Undo, which opens the ca
     const folded = await within(old as HTMLElement).findByTestId("going-plan");
     expect(folded).toHaveAttribute("data-folded", "true");
     expect(within(folded).getByTestId("going-plan-title")).toHaveTextContent("Applied 2 changes");
-    expect(within(folded).getByTestId("going-undo-button")).toHaveTextContent("Undo");
+    expect(within(folded).getByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
     expect(within(folded).queryByTestId("going-plan-row")).toBeNull();
     await user.click(within(folded).getByTestId("going-plan-title"));
     const card = within(old as HTMLElement).getByTestId("going-plan");
@@ -642,8 +707,11 @@ test("while an approved plan's rows run, the run's steps stay folded above the c
 });
 
 // Each change row of a plan names its issue as a chip, and each issue an answer names is one: a
-// chip reads its issue's summary, the one read every reference to the issue shares.
+// chip reads its issue's summary, the one read every reference to the issue shares. A run's
+// record is read again at each frame after which rows of its plan may have run (`rereadRun`);
+// unless a row answers that read itself, Dispatch answers the record the page already holds.
 let summaries: { mockRestore: () => void } | undefined;
+let rereads: { mockRestore: () => void } | undefined;
 beforeEach(() => {
   summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
     documents: [],
@@ -652,12 +720,18 @@ beforeEach(() => {
     status: "todo",
     title: `The issue ${key}`,
   }));
+  rereads = spyOn(api, "goingRun").mockImplementation(async (id) => {
+    const held = goingState().runs.get(id)?.record;
+    if (held === undefined) throw new Error(`the page holds no run ${id}`);
+    return held;
+  });
 });
 
 afterEach(() => {
   cleanup();
   resetGoingStore();
   summaries?.mockRestore();
+  rereads?.mockRestore();
 });
 
 /** The words of each step line the bar draws, without the run's timer. */
@@ -1195,7 +1269,17 @@ test("while the newest run's plan waits, the conversation follows no further tha
     const actions = await screen.findByTestId("going-plan-actions");
     expect(view.scrollTop).toBe(600);
     expect(view).not.toHaveAttribute("data-cut");
-    expect(actions.className.split(" ")).toEqual(expect.arrayContaining(["sticky", "bottom-0"]));
+    expect(actions.className.split(" ")).toEqual(
+      expect.arrayContaining(["sticky", "bottom-0", "border-t"])
+    );
+    // The scroll keeps no padding of its own at its foot, where a browser pins the bar to the
+    // padding's edge and the next row showed under it (review R1): what the scroll holds keeps
+    // that space, and the bar is its card's last part.
+    expect(view.className.split(" ")).toEqual(expect.arrayContaining(["px-3", "pt-3"]));
+    expect(view.className).not.toMatch(/(?:^|\s)(?:p|py|pb)-\d/u);
+    expect(screen.getByTestId("going-conversation-turns")).toHaveClass("pb-3");
+    expect(view.firstElementChild).toBe(screen.getByTestId("going-conversation-turns"));
+    expect(screen.getByTestId("going-plan").lastElementChild).toBe(actions);
     expect(within(actions).getByTestId("going-plan-approve")).toBeInTheDocument();
     expect(within(actions).getByTestId("going-plan-reject")).toBeInTheDocument();
   } finally {
@@ -1277,33 +1361,41 @@ const appliedFrames: readonly (readonly [string, unknown])[] = [
 
 // Design v3, state 7: an applied plan draws its steps' fold line, its answer, then its card, in
 // that order, and its fold line says what the run did last, "applied 1 change", not "proposed a
-// plan". The card's Undo says what it takes back. Once pressed, the run's record is read again,
-// and where Dispatch says its undo landed and nothing is left to take back, the answer, which
-// speaks of the changes, turns grey and the line under it reads "Undone"; the card's title says
-// what was taken back, so no second line under the answer says it again, and the fold line says
-// what the Undo did, "undid 1 change", where "applied 1 change" no longer stands.
+// plan". The card's Undo says how many changes Dispatch's record says it can take back. Once
+// pressed, the run's record is read again, and where it says an undo landed and no change stays,
+// the answer, which speaks of the changes, turns grey and the line under it reads "Undone"; the
+// card's title says what was taken back, so no second line under the answer says it again. The
+// fold line is the run's work, and says what the run applied after the Undo as before it
+// (review R3).
 test("an applied plan's run says what it applied, and after Undo greys its answer and reads Undone", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  // Dispatch's record of the run: one change Undo can take back, until the Undo lands.
+  let undone = false;
   const reread = spyOn(api, "goingRun").mockImplementation(async () =>
-    record("done", 1000, { undone_at: new Date().toISOString() })
+    undone
+      ? record("done", 1000, { undone_at: new Date().toISOString(), undone_count: 1 })
+      : record("done", 1000, { undoable: true, undoable_count: 1 })
   );
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
   >("POST", "/api/v1/going/runs/*/undo");
-  undo.mockImplementation(async () => ({
-    lines: [
-      {
-        fields: [{ field: "priority", message: "written back", ok: true }],
-        item: "DEMO-10",
-        outcome: { code: "", message: "written back", ok: true, status: 200 },
-        plan: 1,
-        row: 0,
-        tool: "dispatch_issue_update",
-        undo: "write_back",
-      },
-    ],
-  }));
+  undo.mockImplementation(async () => {
+    undone = true;
+    return {
+      lines: [
+        {
+          fields: [{ field: "priority", message: "written back", ok: true }],
+          item: "DEMO-10",
+          outcome: { code: "", message: "written back", ok: true, status: 200 },
+          plan: 1,
+          row: 0,
+          tool: "dispatch_issue_update",
+          undo: "write_back",
+        },
+      ],
+    };
+  });
   const proposed: readonly [string, unknown] = [
     "tool",
     { items: [], kind: "plan", label: "Proposed a plan", step: 3, tool: "propose_plan" },
@@ -1311,7 +1403,8 @@ test("an applied plan's run says what it applied, and after Undo greys its answe
   const [readFrame, ...rest] = appliedFrames;
   const restore = await showRun(
     "done",
-    readFrame === undefined ? rest : [readFrame, proposed, ...rest]
+    readFrame === undefined ? rest : [readFrame, proposed, ...rest],
+    { run: { undoable: true, undoable_count: 1 } }
   );
   try {
     const card = await screen.findByTestId("going-plan");
@@ -1333,7 +1426,7 @@ test("an applied plan's run says what it applied, and after Undo greys its answe
     await waitFor(() =>
       expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u)
     );
-    await waitFor(() => expect(fold).toHaveAccessibleName(/· read 1 item, undid 1 change$/u));
+    expect(fold).toHaveAccessibleName(/· read 1 item, applied 1 change$/u);
     // The answer keeps its words, in grey, and no line under it says when.
     expect(answered.textContent).toBe(appliedAnswer);
     expect(answered).toHaveAttribute("data-undone", "true");
@@ -1355,7 +1448,7 @@ test("an Undo that put nothing back leaves the run reading Done, as Dispatch's r
   const user = userEvent.setup();
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
   const reread = spyOn(api, "goingRun").mockImplementation(async () =>
-    record("done", 1000, { undoable: true })
+    record("done", 1000, { undoable: true, undoable_count: 1 })
   );
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
@@ -1403,12 +1496,15 @@ test("an Undo that put nothing back leaves the run reading Done, as Dispatch's r
 });
 
 // A run undone before this page was opened - in another tab, or before a reload - says so as
-// Dispatch keeps it (`undone_at`): its card's title reads "Undone" at that time, its answer is
-// grey under "Undone", and its card offers no Undo, which has nothing left to take back.
+// Dispatch keeps it (`undone_at`, and no change of it that stays): its card's title reads "Undone"
+// at that time, its answer is grey under "Undone", and its card offers no Undo, which has nothing
+// left to take back.
 test("a run undone before this page was opened says so on its card, as Dispatch keeps it, and offers no Undo", async () => {
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
   const undoneAt = "2026-11-18T11:35:00Z";
-  const restore = await showRun("done", appliedFrames, { run: { undone_at: undoneAt } });
+  const restore = await showRun("done", appliedFrames, {
+    run: { undone_at: undoneAt, undone_count: 1 },
+  });
   try {
     const card = await screen.findByTestId("going-plan");
     await waitFor(() =>
@@ -1426,13 +1522,14 @@ test("a run undone before this page was opened says so on its card, as Dispatch 
 });
 
 // Round 6 B: `undone_at` is when the undo of any one change landed, so a run whose record still
-// holds a change Undo can take back (`undoable`) was undone in part: it reads "Partly undone", its
-// answer keeps its colour, and its card says when and offers Undo of the rest, as Dispatch decides.
-test("a run undone in part before this page was opened says so, and its card offers Undo of the rest", async () => {
+// counts a change Undo can take back (`undoable_count`) was undone in part: it reads "Partly
+// undone" with how many changes stay, its answer keeps its colour, and its card says when and
+// offers Undo of what Dispatch says it can take back.
+test("a run undone in part before this page was opened says what stays, and its card offers Undo of what it can take back", async () => {
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
   const undoneAt = "2026-11-18T11:35:00Z";
   const restore = await showRun("done", appliedFrames, {
-    run: { undoable: true, undone_at: undoneAt },
+    run: { undoable: true, undoable_count: 1, undone_at: undoneAt, undone_count: 1 },
   });
   try {
     const card = await screen.findByTestId("going-plan");
@@ -1441,9 +1538,39 @@ test("a run undone in part before this page was opened says so, and its card off
         `Partly undone · ${clockWords(Date.parse(undoneAt))}`
       )
     );
-    expect(within(card).getByTestId("going-undo-button")).toHaveTextContent(/^Undo the rest$/u);
-    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Partly undone$/u);
+    expect(within(card).getByTestId("going-undo-button")).toHaveTextContent(/^Undo 1 change$/u);
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(
+      /^Partly undone · 1 change stays$/u
+    );
     expect(screen.getByTestId("going-run-answer")).not.toHaveAttribute("data-undone");
+  } finally {
+    read.mockRestore();
+    restore();
+  }
+});
+
+// The class search's entry 36: a run can hold a change an Undo tried and could not take back - its
+// undo is refused for good - beside one whose undo landed. Undo has nothing left to take back of
+// such a run, and the page read that as "Undone" and greyed its answer, though the change
+// stands. Dispatch's record counts it (`standing_count`), and the page says only that.
+test("a run whose undo left a change standing reads Partly undone, never Undone, and offers no Undo", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const undoneAt = "2026-11-18T11:35:00Z";
+  const restore = await showRun("done", appliedFrames, {
+    run: { standing_count: 1, undone_at: undoneAt, undone_count: 1 },
+  });
+  try {
+    const card = await screen.findByTestId("going-plan");
+    await waitFor(() =>
+      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(
+        `Partly undone · ${clockWords(Date.parse(undoneAt))}`
+      )
+    );
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(
+      /^Partly undone · 1 change stays$/u
+    );
+    expect(screen.getByTestId("going-run-answer")).not.toHaveAttribute("data-undone");
+    expect(within(card).queryByTestId("going-undo-button")).toBeNull();
   } finally {
     read.mockRestore();
     restore();

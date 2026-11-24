@@ -202,7 +202,12 @@ function AnswerBody({
             </div>
           </div>
         )}
-        {answer.block === undefined ? null : <AnswerBlock block={answer.block} />}
+        {answer.block === undefined ? null : (
+          // The block is its answer's: what the reader did with it - a table's Show all - goes
+          // with that answer, so the next run's table, whose first words and block can reach
+          // the page in one render, starts as a table of its own, at its first rows.
+          <AnswerBlock block={answer.block} key={answer.runId} />
+        )}
         {beneath.length === 0 ? null : (
           <ul
             aria-label="Sources"
