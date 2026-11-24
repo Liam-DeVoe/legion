@@ -59,6 +59,21 @@ const gptEvidence = join(dir, "gpt-evidence");
 const gptReasoningEvidence = join(dir, "gpt-reasoning-evidence");
 /** The questions file the live proof reads. */
 const liveQuestions = join(e2e, "answer-loop", "questions.json");
+/** The questions file's shape, as the tests below read it: the agents the run stops, A10's list of
+ * reasoning questions, and every question with its answer keys. */
+type QuestionsFile = {
+  agents: Record<string, { role: string; task: string; replacement_task?: string }>;
+  a10: { reasoning: string[] };
+  questions: {
+    id: string;
+    agent: string;
+    criteria: string[];
+    text: string;
+    to?: string;
+    expect_kind?: string;
+    must_contain?: string[];
+  }[];
+};
 
 beforeAll(() => {
   writeFileSync(daemonLog, bootOne + bootTwo);
@@ -536,30 +551,34 @@ describe("the daemon's log, boot by boot", () => {
 
   // A20's control: the person's second reply follows their own, in a thread whose root a person
   // wrote, so the tester's daemon takes it for no question for that reason and logs so. Only the
-  // line of that session and that whole reason counts.
-  test("no_question_lines counts a session's hand-offs taken for no question for one reason", () => {
+  // line of that session and that whole reason counts: the `answers: question` line of the same
+  // session and reason is another message's, and the first count leaves it out.
+  test("answers_lines counts a session's hand-offs taken for no question for one reason", () => {
     const thread = "daemon_log=$thread_replies_log; boot_offset=0";
+    const skipped = `answers_lines "answers: hand-off is no question; not answered"`;
     const nobody = `"a reply in a comment thread whose root and newest comment before the reply no agent wrote"`;
-    expect(read(`${thread}; no_question_lines session-tester ${nobody}`).text).toBe("1");
-    expect(read(`${thread}; no_question_lines session-tester-old ${nobody}`).text).toBe("1");
+    expect(read(`${thread}; ${skipped} session-tester "" ${nobody}`).text).toBe("1");
+    expect(read(`${thread}; ${skipped} session-tester-old "" ${nobody}`).text).toBe("1");
     expect(
       read(
-        `${thread}; no_question_lines session-tester "a root comment that does not mention the agent"`
+        `${thread}; ${skipped} session-tester "" "a root comment that does not mention the agent"`
       ).text
     ).toBe("1");
-    // Another session, a prefix of the reason, and a line of another message are not it.
-    expect(read(`${thread}; no_question_lines session-planner ${nobody}`).text).toBe("0");
-    expect(
-      read(`${thread}; no_question_lines session-tester "a reply in a comment thread"`).text
-    ).toBe("0");
+    // With no reason given, every hand-off of the session the loop took for no question counts.
+    expect(read(`${thread}; ${skipped} session-tester`).text).toBe("2");
+    // Another session and a prefix of the reason are not it.
+    expect(read(`${thread}; ${skipped} session-planner "" ${nobody}`).text).toBe("0");
+    expect(read(`${thread}; ${skipped} session-tester "" "a reply in a comment thread"`).text).toBe(
+      "0"
+    );
     // The boot after the one that logged it, and an empty log, logged none.
     expect(
       read(
-        `${thread}; boot_offset=$(stat -c %s "$daemon_log"); no_question_lines session-tester ${nobody}`
+        `${thread}; boot_offset=$(stat -c %s "$daemon_log"); ${skipped} session-tester "" ${nobody}`
       ).text
     ).toBe("0");
     expect(
-      read(`daemon_log=$empty_log; boot_offset=0; no_question_lines session-tester ${nobody}`)
+      read(`daemon_log=$empty_log; boot_offset=0; ${skipped} session-tester "" ${nobody}`)
     ).toEqual({ code: 0, text: "0" });
   });
 });
@@ -1206,7 +1225,7 @@ describe("the recording proxy's records", () => {
     `evidence=$gpt_reasoning_evidence; calls=$(answer_calls daemon-files 'A10-gpt-${n})' 'A10-gpt-${n + 1})')`;
   const carriedOf = (n: number) =>
     `"$(reasoning_carried "$(answer_calls daemon-files 'A10-gpt-${n})' 'A10-gpt-${n + 1})')")"`;
-  const reasoningQuestions: string[] = JSON.parse(readFileSync(liveQuestions, "utf8")).a10
+  const reasoningQuestions = (JSON.parse(readFileSync(liveQuestions, "utf8")) as QuestionsFile).a10
     .reasoning;
 
   test("reasoning_carried passes a recorded step that reasoned before its gh call, and no change of it", () => {
@@ -1438,10 +1457,7 @@ describe("the questions file", () => {
   // The list A10's GPT-6.1 leg asks from after its two cache questions: three questions, the
   // leg's bound, each a question of its own to the GPT-6.1 merger with keys the rig checks.
   test("the live file's a10.reasoning names three questions to the GPT-6.1 merger, each with keys", () => {
-    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as {
-      a10: { reasoning: string[] };
-      questions: { id: string; agent?: string; criteria: string[]; must_contain?: string[] }[];
-    };
+    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as QuestionsFile;
     const reasoning = file.a10.reasoning;
     expect(reasoning).toHaveLength(3);
     expect(new Set(reasoning).size).toBe(3);
@@ -1459,16 +1475,7 @@ describe("the questions file", () => {
   // fact of the task its agent was given and none of the question's own words, so an answer
   // holding them is one read from the agent's conversation.
   test("the live file asks A20's and A21's questions of agents whose tasks hold their keys", () => {
-    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as {
-      agents: Record<string, { role: string; task: string; replacement_task?: string }>;
-      questions: {
-        id: string;
-        agent?: string;
-        criteria: string[];
-        text: string;
-        must_contain?: string[];
-      }[];
-    };
+    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as QuestionsFile;
     const rows = [
       { id: "tester-thread-reply", criterion: "A20", agent: "tester", role: "tester" },
       {
@@ -1598,13 +1605,29 @@ describe("Dispatch", () => {
     expect(read(`collaborator_role_token '' session-tester`)).toEqual({ code: 0, text: "" });
   });
 
+  // Every read of a Dispatch comment is one read: GET comments/<id>, the comment with its delivery
+  // records and every reply in its thread, oldest first. The rig's dispatch_get fails on an error
+  // status and prints the error body; a read that failed prints nothing.
+  test("comment_record prints Dispatch's record of a comment, and nothing for a read that failed", () => {
+    expect(read("comment_record comment-100 | jq -r '.comment.id, (.replies | length)'").text).toBe(
+      "comment-100\n5"
+    );
+    const refused = `dispatch_get() { printf '{"error":{"code":"NOT_FOUND"}}\\n'; return 22; }`;
+    expect(read(`${refused}; comment_record comment-100`)).toEqual({ code: 0, text: "" });
+    expect(read("comment_record comment-never")).toEqual({ code: 0, text: "" });
+    expect(read("comment_record ''")).toEqual({ code: 0, text: "" });
+  });
+
   // A3 read the mention's delivery off the comment's own POST answer, which Dispatch gives before
   // it settles the mention, so the delivery read pending in proof run 43996451813. The read is of
   // the comment as Dispatch holds it now.
   test("comment_delivered_to and one_delivery_in read Dispatch's delivery records", () => {
     expect(run("comment_delivered_to comment-77 session-tester").code).toBe(0);
-    // Not settled yet, sent to another session, or no record at all: not delivered to the tester.
+    expect(run("comment_delivered_to comment-110 session-implementer").code).toBe(0);
+    // Not settled yet, kept for a role with no session, sent to another session, or no record at
+    // all: not delivered to the session asked of.
     expect(run("comment_delivered_to comment-80 session-tester").code).toBe(1);
+    expect(run("comment_delivered_to comment-111 session-implementer").code).toBe(1);
     expect(run("comment_delivered_to comment-81 session-tester").code).toBe(1);
     expect(run("comment_delivered_to comment-77 session-planner").code).toBe(1);
     expect(run("comment_delivered_to comment-404 session-tester").code).toBe(1);
@@ -1620,8 +1643,8 @@ describe("Dispatch", () => {
     expect(
       run(`one_delivery_in '${noHolder}' failed 'no live session legion-e2eal-nobody-4242'`).code
     ).toBe(1);
-    // A role message the listener keeps for the role's next holder stays pending, the answer a
-    // mention of a role nobody holds now gets, the base commit's included: it is no failure.
+    // A delivery still pending, and one Dispatch keeps for a role's first holder (queued, no
+    // session), are no failure.
     expect(run(`one_delivery_in '[{"state":"pending","error":null}]' failed`).code).toBe(1);
     expect(run(`one_delivery_in '[{"state":"queued","error":null}]' queued`).code).toBe(0);
     expect(run(`one_delivery_in '[{"state":"sent"}]' failed`).code).toBe(1);
@@ -1645,6 +1668,57 @@ describe("Dispatch", () => {
     expect(read("comment_deliveries comment-404")).toEqual({ code: 0, text: "[]" });
     expect(read("comment_deliveries comment-never")).toEqual({ code: 0, text: "[]" });
     expect(read("comment_deliveries ''")).toEqual({ code: 0, text: "[]" });
+  });
+
+  // A3's note and A21 read a comment's delivery records whole: the target each was for, its state,
+  // the session it pinned and its error.
+  test("comment_delivery_records reads a comment's delivery records whole", () => {
+    expect(read("comment_delivery_records comment-110").text).toBe(
+      `[{"target":"role:ALX-11-implementer","state":"sent","session_id":"session-implementer","error":null}]`
+    );
+    expect(read("comment_delivery_records comment-111").text).toBe(
+      `[{"target":"role:ALX-11-reviewer","state":"queued","session_id":null,"error":null}]`
+    );
+    // A record that pins no session yet names none.
+    expect(read("comment_delivery_records comment-91").text).toBe(
+      `[{"target":"role:legion-e2eal-nobody-4242-tester","state":"pending","session_id":null,"error":null}]`
+    );
+    // Dispatch's error body, a read that failed, a comment it answers nothing for, and no comment
+    // id at all: no records.
+    const refused = `dispatch_get() { printf '{"error":{"code":"NOT_FOUND"}}\\n'; return 22; }`;
+    expect(read("comment_delivery_records comment-404")).toEqual({ code: 0, text: "[]" });
+    expect(read(`${refused}; comment_delivery_records comment-110`)).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(read("comment_delivery_records comment-never")).toEqual({ code: 0, text: "[]" });
+    expect(read("comment_delivery_records ''")).toEqual({ code: 0, text: "[]" });
+  });
+
+  // A21 judges the records it read: its mention's one delivery `sent` to the implementer's
+  // session, and its control's one delivery `queued` naming no session, which is how Dispatch
+  // keeps a mention of a role the registry holds no entry for, for the role's first holder.
+  test("one_delivery_for reads one delivery in a state, naming a session or none", () => {
+    const records = (id: string) => `"$(comment_delivery_records ${id})"`;
+    expect(run(`one_delivery_for ${records("comment-110")} sent session-implementer`).code).toBe(0);
+    expect(run(`one_delivery_for ${records("comment-111")} queued ''`).code).toBe(0);
+    expect(run(`one_delivery_for '[{"state":"queued"}]' queued ''`).code).toBe(0);
+    // Another session, a session where none was wanted, none where one was, and another state.
+    expect(run(`one_delivery_for ${records("comment-110")} sent session-tester`).code).toBe(1);
+    expect(run(`one_delivery_for ${records("comment-110")} sent ''`).code).toBe(1);
+    expect(run(`one_delivery_for ${records("comment-111")} queued session-implementer`).code).toBe(
+      1
+    );
+    expect(run(`one_delivery_for ${records("comment-110")} queued session-implementer`).code).toBe(
+      1
+    );
+    expect(run(`one_delivery_for ${records("comment-91")} queued ''`).code).toBe(1);
+    const twice = `'[{"state":"sent","session_id":"s"},{"state":"sent","session_id":"s"}]'`;
+    expect(run(`one_delivery_for ${twice} sent s`).code).toBe(1);
+    // No records, a list that is none, and no list at all.
+    expect(run(`one_delivery_for '[]' queued ''`).code).toBe(1);
+    expect(run(`one_delivery_for '{"state":"queued"}' queued ''`).code).toBe(1);
+    expect(run(`one_delivery_for '' queued ''`).code).toBe(1);
   });
 
   // A20 replies under the loop's own answer in A3's thread and reads the second answer there off
@@ -1946,6 +2020,9 @@ describe("the daemon's own record and state", () => {
     const started = `{"claims":[{"tree":"ALX-1","state":"suspended"},{"tree":"ALX-1","state":"idle"}]}`;
     expect(run(`tree_claims_parked '${parked}' ALX-1`).code).toBe(0);
     expect(run(`tree_claims_parked '${started}' ALX-1`).code).toBe(1);
+    // A failed claim is no parked one: A1's tree reads suspended or retired alone.
+    const failed = `{"claims":[{"tree":"ALX-1","state":"suspended"},{"tree":"ALX-1","state":"failed"}]}`;
+    expect(run(`tree_claims_parked '${failed}' ALX-1`).code).toBe(1);
     // A listing that holds no claim of the tree examined nothing of it: jq's `all` over no claims
     // is true, which is what the read's first clause is there to catch.
     expect(run(`tree_claims_parked '{"claims":[]}' ALX-1`).code).toBe(1);
@@ -1955,24 +2032,56 @@ describe("the daemon's own record and state", () => {
     expect(run(`tree_claims_parked '' ALX-1`).code).toBe(1);
   });
 
-  // A21's issue holds a failed implementer and a suspended architect, and a role mention of the
-  // implementer must start neither: every claim of the issue stands suspended, failed or retired.
-  test("issue_claims_stopped holds only while the issue has a claim and none of them runs", () => {
-    const stopped = `{"claims":[{"issue":"ALX-11","state":"failed"},{"issue":"ALX-11","state":"suspended"},{"issue":"ALX-12","state":"idle"}]}`;
-    expect(run(`issue_claims_stopped '${stopped}' ALX-11`).code).toBe(0);
+  // A21's tree holds a failed implementer and a suspended architect, and a role mention of the
+  // implementer must start neither: every claim of the tree stands suspended, failed or retired.
+  test("tree_claims_in holds only while the tree has a claim and each stands in a state given", () => {
+    const states = "suspended failed retired";
+    const stopped = `{"claims":[{"tree":"ALX-11","state":"failed"},{"tree":"ALX-11","state":"suspended"},{"tree":"ALX-12","state":"idle"}]}`;
+    expect(run(`tree_claims_in '${stopped}' ALX-11 ${states}`).code).toBe(0);
     expect(
-      run(`issue_claims_stopped '{"claims":[{"issue":"ALX-11","state":"retired"}]}' ALX-11`).code
+      run(`tree_claims_in '{"claims":[{"tree":"ALX-11","state":"retired"}]}' ALX-11 ${states}`).code
     ).toBe(0);
     for (const state of ["queued", "launching", "ready", "working", "idle"]) {
-      const started = `{"claims":[{"issue":"ALX-11","state":"failed"},{"issue":"ALX-11","state":"${state}"}]}`;
-      expect(run(`issue_claims_stopped '${started}' ALX-11`).code).toBe(1);
+      const started = `{"claims":[{"tree":"ALX-11","state":"failed"},{"tree":"ALX-11","state":"${state}"}]}`;
+      expect(run(`tree_claims_in '${started}' ALX-11 ${states}`).code).toBe(1);
     }
-    // A listing that holds no claim of the issue examined nothing of it, as in tree_claims_parked.
-    expect(run(`issue_claims_stopped '{"claims":[]}' ALX-11`).code).toBe(1);
+    // A claim in a state not given, and no state given at all.
+    expect(run(`tree_claims_in '${stopped}' ALX-11 suspended retired`).code).toBe(1);
+    expect(run(`tree_claims_in '${stopped}' ALX-11`).code).toBe(1);
+    // A listing that holds no claim of the tree examined nothing of it: jq's `all` over no claims
+    // is true, which is what the read's first clause is there to catch.
+    expect(run(`tree_claims_in '{"claims":[]}' ALX-11 ${states}`).code).toBe(1);
     expect(
-      run(`issue_claims_stopped '{"claims":[{"issue":"ALX-12","state":"failed"}]}' ALX-11`).code
+      run(`tree_claims_in '{"claims":[{"tree":"ALX-12","state":"failed"}]}' ALX-11 ${states}`).code
     ).toBe(1);
-    expect(run(`issue_claims_stopped '' ALX-11`).code).toBe(1);
+    expect(run(`tree_claims_in '' ALX-11 ${states}`).code).toBe(1);
+  });
+
+  // A21 judges the claims listing it read once: the implementer's claim stands failed, and the
+  // role and state of each claim of the issue is what its note and its FAIL print.
+  const a21Claims = `'{"claims":[{"token":"ALX-11-architect","tree":"ALX-11","issue":"ALX-11","role":"architect","state":"suspended"},{"token":"ALX-11-implementer","tree":"ALX-11","issue":"ALX-11","role":"implementer","state":"failed"},{"token":"ALX-12-tester","tree":"ALX-12","issue":"ALX-12","role":"tester","state":"idle"}]}'`;
+
+  test("listed_claim_is reads one claim's state off the listing", () => {
+    expect(run(`listed_claim_is ${a21Claims} ALX-11-implementer failed`).code).toBe(0);
+    // Another state, another claim's, and a claim the listing does not hold.
+    expect(run(`listed_claim_is ${a21Claims} ALX-11-implementer suspended`).code).toBe(1);
+    expect(run(`listed_claim_is ${a21Claims} ALX-11-architect failed`).code).toBe(1);
+    expect(run(`listed_claim_is ${a21Claims} ALX-11-reviewer failed`).code).toBe(1);
+    // No claims, a listing that is none, and no listing at all.
+    expect(run(`listed_claim_is '{"claims":[]}' ALX-11-implementer failed`).code).toBe(1);
+    expect(run(`listed_claim_is '{}' ALX-11-implementer failed`).code).toBe(1);
+    expect(run(`listed_claim_is '' ALX-11-implementer failed`).code).toBe(1);
+  });
+
+  test("issue_claim_roles prints the role and state of each claim of the issue", () => {
+    expect(read(`issue_claim_roles ${a21Claims} ALX-11`).text).toBe(
+      `[{"role":"architect","state":"suspended"},{"role":"implementer","state":"failed"}]`
+    );
+    expect(read(`issue_claim_roles ${a21Claims} ALX-13`)).toEqual({ code: 0, text: "[]" });
+    // A listing that is none, and no listing at all: no claims, one line.
+    expect(read(`issue_claim_roles '{}' ALX-11`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`issue_claim_roles 'not a listing' ALX-11`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`issue_claim_roles '' ALX-11`)).toEqual({ code: 0, text: "[]" });
   });
 });
 

@@ -1800,16 +1800,22 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   the tester's claim stays suspended and the daemon's tmux server holds no more panes.
   Control: a second reply the person posts at once, under their own, follows a person's comment in a thread whose root a person wrote, so it is no agent's to answer:
   the tester's daemon logs it `answers: hand-off is no question; not answered` with `because` `a reply in a comment thread whose root and newest comment before the reply no agent wrote`, and the thread holds the tester's two replies and no third.
+  The two waits share one 300 s deadline, taken when both replies are posted: the control's wait has what is left of it once the answer's wait ends.
   No later check posts a reply in that thread, or in another the tester wrote in, which the loop would answer as well.
 
 - A21 (last of each pass): a tree of its own, with its architect (no task) and an Oh My Pi implementer whose conversation holds the answer to a question, both suspended, the implementer until its session has left the listener's registry.
+  An implementer that is not suspended ends the row there: its architect is suspended and its FAIL recorded, with nothing seeded.
   **Departure:** with the daemon stopped the run writes the issue into the daemon's record in `implementing`, its tree's lifecycle open under the workflow as A6's is, and writes the implementer's claim `failed` as the supervisor fails a claim whose deaths ran out (cause `died` with its sentence and time, no locator, `suspended_by` empty), since no `legion claims` command fails a claim.
   The daemon boots on that record and relaunches nothing of it: a failed claim waits for an operator, and an operator's suspension holds against the boot's resume.
   The question is asked only once `legion state` keeps the tree live in `implementing`, the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token as not `released`:
   the case of a role with no live holder whose issue has not left the workflow.
   Then a person's comment on the issue mentions `role:<token>`, as A3's does;
-  its one delivery must be `sent` to the implementer's session, that session's reply to the comment must hold the question's keys, every claim of the issue must still stand `failed` or `suspended`, and no pane may start.
-  The control is what a resolution that names a role's newest entry only once that entry's issue has left the workflow does with this same mention: it settles the delivery `failed` with `no holder for role <token>`, pins no session and answers nothing, and the row's FAIL reads out the delivery's state and error.
+  its one delivery must be `sent` to the implementer's session, that session's reply to the comment must hold the question's keys, every claim of the issue must still stand `failed` or `suspended`, the implementer's `failed`, and no pane may start.
+  A resolution that names a role's newest entry only once that entry's issue has left the workflow settles this mention `failed` with `no holder for role <token>`, pins no session and answers nothing, and the row's FAIL reads out the delivery's state and error.
+  Control: once the implementer's answer is waited for, the person comments on the same issue with a picker mention of the issue's `reviewer` role, which no session of the run ever took, so the registry holds no entry for it.
+  Under the run's answering project Dispatch keeps that mention for the role's first holder:
+  its one delivery must settle `queued` naming no session (read again for up to 60 s) and the implementer's session must write no reply to it, and the row's FAIL reads out the control's deliveries beside the mention's.
+  The verdict judges the deliveries and the claims listing the row read and printed.
 
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it;
   the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;

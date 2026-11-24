@@ -45,19 +45,14 @@ boot_log() { tail -c "+$((boot_offset + 1))" "$daemon_log" | jq -c -R 'fromjson?
 # five restarts, whose own boot holds no answer at all).
 run_log() { jq -c -R 'fromjson? // empty' "$daemon_log"; }
 
-# answers_lines MSG [SESSION [STATE]]: how many lines of this boot's daemon log carry MSG, for
-# SESSION and in STATE when given.
+# answers_lines MSG [SESSION [STATE [BECAUSE]]]: how many lines of this boot's daemon log carry MSG,
+# for SESSION, in STATE and for the reason BECAUSE, whole, when each is given. A20's control reads
+# the hand-offs of the tester's session the loop took for no question (`answers: hand-off is no
+# question; not answered`) for the reason it gives a reply in a comment thread that follows no
+# agent's comment.
 answers_lines() {
-  boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" \
-    '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st))] | length'
-}
-# no_question_lines SESSION BECAUSE: how many of this boot's hand-offs for SESSION the loop took for
-# no question for the reason BECAUSE, whole: its `answers: hand-off is no question; not answered`
-# lines naming SESSION with that `because`. A20's control reads the reason the loop gives a reply in
-# a comment thread that follows no agent's comment.
-no_question_lines() {
-  boot_log | jq -s --arg s "$1" --arg b "$2" \
-    '[.[] | select(.msg == "answers: hand-off is no question; not answered" and .session == $s and .because == $b)] | length'
+  boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" --arg b "${4:-}" \
+    '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st) and ($b == "" or .because == $b))] | length'
 }
 # question_lines QUESTION: how many lines of this boot's daemon log name QUESTION, whatever the
 # `answers:` message. Zero says the boot was handed nothing of it at all.
@@ -824,23 +819,43 @@ collaborator_role_token() {
     '[.agents[]? | select(.session_id == $s and .legion.role == "tester" and .legion.replaced_by == null) | .legion.role_token] | first // empty' \
     <<<"${1:-null}" 2>/dev/null || true
 }
-# comment_delivered_to COMMENT SESSION: Dispatch's record of COMMENT as it holds it now (GET
-# comments/<id>, as comment_deliveries reads it) holds one delivery, sent to SESSION. The comment's
-# own POST answer is no such record: Dispatch settles a mention after it answers, so that answer
-# carries the delivery pending (A3 waits for this read, as it waits for its control's refusal).
-comment_delivered_to() {
+# comment_record COMMENT prints Dispatch's record of COMMENT as it holds it now (GET comments/<id>:
+# the comment with its delivery records, and every reply in its thread, oldest first), and nothing
+# for a read that failed. Every read of a comment below reads it here. The comment's own POST answer
+# is no such record: Dispatch settles a mention after it answers, so that answer carries the
+# delivery pending, and it can carry it pending while its sender waits out a listener take-over.
+comment_record() {
   local body
-  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
-  jq -e --arg s "$2" '(.comment.deliveries? // null) | type == "array" and length == 1 and .[0].state == "sent" and .[0].session_id == $s' \
-    <<<"${body:-null}" >/dev/null 2>&1
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || return 0
+  printf '%s\n' "$body"
 }
-# comment_deliveries COMMENT prints COMMENT's delivery records as Dispatch holds them now
-# (GET comments/<id>), each as {state, error}, and `[]` for a comment it answers no record of. A
-# mention's delivery is read again rather than off the comment's own answer, which can carry it
-# pending while its sender waits out a listener take-over.
+# comment_delivery_records COMMENT prints COMMENT's delivery records (comment_record), each as
+# {target, state, session_id, error}, and `[]` for a comment Dispatch answers no record of and for
+# a read that failed: what A3's note and A21 print and judge.
+comment_delivery_records() {
+  local body
+  body=$(comment_record "$1")
+  jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]' <<<"${body:-null}" 2>/dev/null || printf '[]\n'
+}
+# one_delivery_for DELIVERIES STATE SESSION: the delivery records (comment_delivery_records) are
+# one, in STATE, and name SESSION, or no session at all for an empty SESSION. A21 reads its
+# mention's delivery `sent` to the failed implementer's session, and its control's `queued` naming
+# none: Dispatch keeps a mention of a role the registry holds no entry for, for the role's first
+# holder, under a project whose daemon answers.
+one_delivery_for() {
+  jq -e --arg state "$2" --arg s "${3:-}" \
+    'type == "array" and length == 1 and .[0].state == $state and (.[0].session_id // "") == $s' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# comment_delivered_to COMMENT SESSION: Dispatch's record of COMMENT as it holds it now holds one
+# delivery, sent to SESSION (A3 waits for this read, as it waits for its control's refusal, and A21
+# for its mention's).
+comment_delivered_to() { one_delivery_for "$(comment_delivery_records "$1")" sent "$2"; }
+# comment_deliveries COMMENT prints COMMENT's delivery records (comment_record), each as
+# {state, error}, and `[]` for a comment Dispatch answers no record of.
 comment_deliveries() {
   local body
-  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  body=$(comment_record "$1")
   jq -c '[.comment.deliveries[]? | {state, error}]' <<<"${body:-null}" 2>/dev/null || printf '[]\n'
 }
 # one_delivery_in DELIVERIES STATE [ERROR]: the delivery records are one, in STATE, and, with ERROR
@@ -854,13 +869,13 @@ one_delivery_in() {
     <<<"${1:-null}" >/dev/null 2>&1
 }
 # thread_replies_by HEAD SESSION prints SESSION's replies in the thread of comment HEAD as Dispatch
-# holds it now (GET comments/<head>, which lists every reply under the head, oldest first), each as
+# holds it now (comment_record, which lists every reply under the head, oldest first), each as
 # {id, answers, body}: `answers` is the comment a reply was written under, which Dispatch keeps
 # beside the thread's head (`reply_to`, the head of every reply in a thread). It prints `[]` for
-# none, for Dispatch's error body, and for no comment id at all (A20).
+# none, for Dispatch's error body, for a read that failed and for no comment id at all (A20).
 thread_replies_by() {
   local body
-  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  body=$(comment_record "$1")
   jq -c --arg s "$2" '[.replies[]? | select(.author.id == $s) | {id, answers, body}]' <<<"${body:-null}" 2>/dev/null ||
     printf '[]\n'
 }
@@ -1024,24 +1039,33 @@ passed_to_controller() {
 controller_questions() {
   legion_cmd state --json | jq --arg r "$1" '[.questionsForController[]? | select(.reason == $r)] | length'
 }
-# tree_claims_parked CLAIMS TREE: the listing `legion claims list --json` printed holds at least
-# one claim of TREE, and every claim of TREE in it stands suspended or retired, so nothing of the
-# tree started (A1). The claim it must hold is what makes the rest mean anything: jq's `all` over
-# no claims is true, so a listing of nothing, or of other trees alone, would pass having examined
-# no claim of TREE. A listing that is no listing says nothing of the kind.
-tree_claims_parked() {
-  jq -e --arg t "$2" 'type == "object"
+# tree_claims_in CLAIMS TREE STATE...: the listing `legion claims list --json` printed holds at least
+# one claim of TREE, and every claim of TREE in it stands in one of STATE..., so nothing of the tree
+# started. The claim it must hold is what makes the rest mean anything: jq's `all` over no claims
+# is true, so a listing of nothing, or of other trees alone, would pass having examined no claim of
+# TREE. A listing that is no listing says nothing of the kind. A21 reads its tree's claims
+# suspended, failed or retired: its implementer's claim is failed and its architect's suspended.
+tree_claims_in() {
+  local claims=$1 tree=$2
+  shift 2
+  jq -e --arg t "$tree" 'type == "object"
     and any(.claims[]?; .tree == $t)
-    and all(.claims[]? | select(.tree == $t); .state | IN("suspended", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
+    and all(.claims[]? | select(.tree == $t); .state | IN($ARGS.positional[]))' --args "$@" <<<"${claims:-null}" >/dev/null 2>&1
 }
-# issue_claims_stopped CLAIMS ISSUE: the listing `legion claims list --json` printed holds at least
-# one claim of ISSUE, and every claim of ISSUE in it stands suspended, failed or retired, so nothing
-# of the issue started (A21, whose implementer's claim is failed and whose architect's suspended).
-# The claim it must hold is what makes the rest mean anything, as in tree_claims_parked.
-issue_claims_stopped() {
-  jq -e --arg i "$2" 'type == "object"
-    and any(.claims[]?; .issue == $i)
-    and all(.claims[]? | select(.issue == $i); .state | IN("suspended", "failed", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
+# tree_claims_parked CLAIMS TREE: every claim of TREE stands suspended or retired (tree_claims_in),
+# so nothing of the tree started (A1).
+tree_claims_parked() { tree_claims_in "$1" "$2" suspended retired; }
+# listed_claim_is CLAIMS TOKEN STATE: the listing `legion claims list --json` printed holds the
+# claim TOKEN, standing in STATE (A21: its implementer's claim, failed).
+listed_claim_is() {
+  jq -e --arg t "$2" --arg st "$3" 'any(.claims[]?; .token == $t and .state == $st)' <<<"${1:-null}" >/dev/null 2>&1
+}
+# issue_claim_roles CLAIMS ISSUE prints, as one JSON array, the role and state of each claim of
+# ISSUE in that listing, `[]` for none and for a listing that is none (A21's note and its FAIL).
+issue_claim_roles() {
+  local roles
+  roles=$(jq -c --arg i "$2" '[.claims[]? | select(.issue == $i) | {role, state}]' <<<"${1:-null}" 2>/dev/null) || roles=
+  printf '%s\n' "${roles:-[]}"
 }
 
 # ---- A13: branch against base ------------------------------------------------------------------------

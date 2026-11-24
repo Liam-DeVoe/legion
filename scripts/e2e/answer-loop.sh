@@ -1939,7 +1939,7 @@ check_a3() {
     note "answered after $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   fi
   soft_wait 60 "comment $id's mention to be delivered to tester $session" comment_delivered_to "$id" "$session" || true
-  note "comment $id's deliveries as Dispatch holds them now: $(dispatch_get "comments/$id" 2>/dev/null | jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]' || true)"
+  note "comment $id's deliveries as Dispatch holds them now: $(comment_delivery_records "$id")"
   control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg t "session:$nobody" \
     '{body: "control: a session nobody registered", mentions: [{target: $t}]}')" | jq -r '.id // empty') || control_id=
   soft_wait 60 "the control's mention of session $nobody to be refused" a3_control_refused "$control_id" "$nobody" || true
@@ -2025,15 +2025,16 @@ a3_conversation_page() {
 # question leaves the reply unanswered, and the row fails on it. Control: a second reply the person
 # posts at once under their own follows a person's comment, in a thread whose root a person wrote,
 # so it is no agent's to answer: the tester's daemon takes it for no question for that reason
-# (no_question_lines) and no reply of the tester's is written under it, so the thread holds the
-# tester's two replies and no third. Nothing of the tester starts: its claim stays suspended and
-# the daemon's tmux server holds no more panes (pane_count), as A1 reads its tree. No later check
-# posts a reply in this thread, or in another thread the tester wrote in, which the loop would
-# now answer as well.
+# (answers_lines, read by its `because`) and no reply of the tester's is written under it, so the
+# thread holds the tester's two replies and no third. The two waits share one 300 s deadline,
+# taken when both replies are posted: the control's wait has what is left of it once the answer's
+# wait ends. Nothing of the tester starts: its claim stays suspended and the daemon's tmux server
+# holds no more panes (pane_count), as A1 reads its tree. No later check posts a reply in this
+# thread, or in another thread the tester wrote in, which the loop would now answer as well.
 check_a20() {
   criterion A20 "a person's reply that mentions nobody, under the loop's own answer in a closed issue's thread, is answered there by the stopped tester, nothing of it starting; a reply that follows the person's own is no agent's to answer" infra448 || return 0
   local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} token=${agent[$store:tester.token]}
-  local head=${agent[$store:a3.comment]:-} replies first reply_id control_id skipped_before skipped answer='' missing='' held=0 state panes_before panes_after before
+  local head=${agent[$store:a3.comment]:-} replies thread first reply_id control_id skipped_before skipped answer='' missing='' held=0 state panes_before panes_after before deadline
   local nobody='a reply in a comment thread whose root and newest comment before the reply no agent wrote'
   if [ -z "$head" ]; then
     record_result A20 FAIL "A3 posted no comment on $issue whose thread this row replies in"
@@ -2045,7 +2046,8 @@ check_a20() {
     record_result A20 FAIL "the thread of A3's comment $head holds no reply of tester $session to reply under: $replies"
     return 0
   fi
-  skipped_before=$(no_question_lines "$session" "$nobody")
+  a20_skipped() { answers_lines "answers: hand-off is no question; not answered" "$session" "" "$nobody"; }
+  skipped_before=$(a20_skipped)
   panes_before=$(pane_count)
   before=$(date +%s)
   reply_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg to "$first" \
@@ -2058,27 +2060,29 @@ check_a20() {
   control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg to "$reply_id" \
     --arg body "And how many runs did that rerun pass? (control: a reply under the person's own reply, run $run_tag)" '{body: $body, reply_to: $to}')" |
     jq -r '.id // empty') || control_id=
+  deadline=$((SECONDS + 300))
   note "the person's reply $reply_id under tester $session's answer $first in the thread of A3's comment $head, mentioning nobody; the control $control_id under that reply"
   a20_answered() { reply_answering "$(thread_replies_by "$head" "$session")" "$reply_id" >/dev/null; }
-  soft_wait 300 "tester $session's answer under reply $reply_id in the thread of $head" a20_answered || true
-  a20_control_skipped() { more_than "$skipped_before" no_question_lines "$session" "$nobody"; }
-  [ -z "$control_id" ] || soft_wait 300 "the tester's daemon to take the control $control_id for no question" a20_control_skipped || true
+  soft_wait $((deadline - SECONDS)) "tester $session's answer under reply $reply_id in the thread of $head" a20_answered || true
+  a20_control_skipped() { more_than "$skipped_before" a20_skipped; }
+  [ -z "$control_id" ] || soft_wait $((deadline - SECONDS)) "the tester's daemon to take the control $control_id for no question" a20_control_skipped || true
   replies=$(thread_replies_by "$head" "$session")
+  thread=$(jq -c 'map({id, answers})' <<<"$replies") || thread=$replies
   answer=$(reply_answering "$replies" "$reply_id") || answer=
-  skipped=$(no_question_lines "$session" "$nobody")
+  skipped=$(($(a20_skipped) - skipped_before))
   state=$(claim_json "$token" | jq -r .state) || state=unread
   panes_after=$(pane_count)
   if [ -n "$answer" ]; then
     note "answered within $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$answer" | tr '\n' ' ')"
     missing=$(answer_holds tester-thread-reply "$answer") && held=1
   fi
-  note "tester $session's replies in the thread of $head: $(jq -c 'map({id, answers})' <<<"$replies"); the tester's daemon took $((skipped - skipped_before)) hand-off(s) for no question as \"$nobody\"; the tester's claim $state; panes $panes_before → $panes_after"
+  note "tester $session's replies in the thread of $head: $thread; the tester's daemon took $skipped hand-off(s) for no question as \"$nobody\"; the tester's claim $state; panes $panes_before → $panes_after"
   if [ "$held" = 1 ] && [ "$(reply_count "$replies")" = 2 ] && [ -n "$control_id" ] &&
-    ! reply_answering "$replies" "$control_id" >/dev/null && [ "$skipped" -gt "$skipped_before" ] &&
+    ! reply_answering "$replies" "$control_id" >/dev/null && [ "$skipped" -gt 0 ] &&
     [ "$state" = suspended ] && [ "$panes_after" -le "$panes_before" ]; then
     record_result A20 PASS "tester $session answered the person's reply $reply_id, which mentions nobody, under its own answer in the thread of A3's comment $head, with the question's keys; the control under the person's own reply was taken for no question (\"$nobody\") and answered by nobody; the tester's claim stayed suspended and no pane started"
   else
-    record_result A20 FAIL "tester $session's replies in the thread of $head: $(reply_count "$replies") ($(jq -c 'map({id, answers})' <<<"$replies")), its answer under the person's reply $reply_id $(if [ -z "$answer" ]; then printf 'none within 300 s'; elif [ "$held" = 1 ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the control ${control_id:-(not taken by Dispatch)}: taken for no question $((skipped - skipped_before)) time(s), a reply of the tester's under it $(reply_answering "$replies" "${control_id:-}" >/dev/null && printf yes || printf no); the tester's claim $state; panes $panes_before → $panes_after"
+    record_result A20 FAIL "tester $session's replies in the thread of $head: $(reply_count "$replies") ($thread), its answer under the person's reply $reply_id $(if [ -z "$answer" ]; then printf 'none within 300 s'; elif [ "$held" = 1 ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the control ${control_id:-(not taken by Dispatch)}: taken for no question $skipped time(s), a reply of the tester's under it $(reply_answering "$replies" "${control_id:-}" >/dev/null && printf yes || printf no); the tester's claim $state; panes $panes_before → $panes_after"
   fi
 }
 
@@ -3307,40 +3311,55 @@ check_a19() {
 # a tree's lifecycle only for its root's architect) and an Oh My Pi implementer whose task is the
 # answer to question failed-implementer-role. Both are suspended, the implementer until its
 # session has left the listener's registry (suspend_agent), since the listener hands off no
-# message for a session it still holds. Then, with the daemon stopped, the issue is written into
-# the daemon's record in implementing with its tree's lifecycle open under the workflow, as A6
-# writes its running tree (record_tree_issue, open_tree_lifecycle), and the implementer's claim is
-# written failed as the supervisor fails a claim whose deaths ran out (supervise's fail: the state,
-# the cause `died` with its sentence and its time, no locator, nothing that suspended it), since no
-# `legion claims` command fails a claim. The daemon boots on that record: nothing relaunches a
-# failed claim, and an operator's suspension holds against the boot's resume of a phase's owner.
-# The mention is asked only once the daemon's own state keeps the tree live in implementing, the
-# claim still stands failed, and the listener's registry entry for the implementer's session, the
-# role's one and so its newest, reads under the role's token as not released
-# (registry_entry_not_released): the daemon's state is what makes this an issue that has not left
-# the workflow, and that entry what makes it a role with no live holder whose newest entry the
-# listener hands to its daemon. Then the proof person comments on the issue with a picker mention of
-# the role (`role:<token>`), as A3 does. PASS when the mention's one delivery is `sent` to the
-# implementer's session, that session's reply to the comment holds the question's keys, every
-# claim of the issue still stands failed or suspended (issue_claims_stopped) and no pane started.
-# The control is what a resolution that names a role's newest entry only once that entry's issue
-# has left the workflow does with this same mention: it settles the delivery `failed` with `no
-# holder for role <token>`, pins no session, and nobody answers, which is what this row's FAIL then
-# reads out (the delivery's state and error).
+# message for a session it still holds; an implementer that is not suspended ends the row there,
+# its architect suspended and its FAIL recorded, with nothing seeded. Then, with the daemon
+# stopped, the issue is written into the daemon's record in implementing with its tree's lifecycle
+# open under the workflow, as A6 writes its running tree (record_tree_issue, open_tree_lifecycle),
+# and the implementer's claim is written failed as the supervisor fails a claim whose deaths ran
+# out (supervise's fail: the state, the cause `died` with its sentence and its time, no locator,
+# nothing that suspended it), since no `legion claims` command fails a claim. The daemon boots on
+# that record: nothing relaunches a failed claim, and an operator's suspension holds against the
+# boot's resume of a phase's owner. The mention is asked only once the daemon's own state keeps the
+# tree live in implementing, the claim still stands failed, and the listener's registry entry for
+# the implementer's session, the role's one and so its newest, reads under the role's token as not
+# released (registry_entry_not_released): the daemon's state is what makes this an issue that has
+# not left the workflow, and that entry what makes it a role with no live holder whose newest entry
+# the listener hands to its daemon. Then the proof person comments on the issue with a picker
+# mention of the role (`role:<token>`), as A3 does. A resolution that names a role's newest entry
+# only once that entry's issue has left the workflow settles this mention's delivery `failed` with
+# `no holder for role <token>`, pins no session, and nobody answers, which is what this row's FAIL
+# then reads out (the delivery's state and error). Control: once the implementer's answer is waited
+# for, the proof person comments on the same issue with a picker mention of the issue's reviewer
+# role (claim_token), which no session of the run ever took, so the registry holds no entry for it.
+# Under the run's answering project Dispatch keeps that mention for the role's first holder: its
+# one delivery settles `queued` naming no session, read again for up to 60 s until it does, and no
+# session replies to it. PASS when the mention's one delivery is `sent` to the implementer's
+# session, that session's reply to the comment holds the question's keys, the control's one
+# delivery is `queued` naming no session and the implementer's session wrote no reply to it, every
+# claim of the issue still stands failed or suspended (tree_claims_in: every claim of the row is
+# spawned on the issue's own tree), the implementer's claim stands failed, and no pane started. The
+# verdict judges the deliveries and the claims listing the row read and printed, and the FAIL
+# prints the control's deliveries beside the mention's.
 check_a21() {
   criterion A21 "a picker mention of a failed implementer's role, on an issue still in implementing, is answered in the issue's thread from its conversation, nothing of the issue starting" infra448 || return 0
-  local issue token architect session title comment id reply='' deliveries claims missing='' held=0 panes_before panes_after before why=''
+  local issue token architect reviewer session title comment id reply='' deliveries control_id control control_replied=no claims roles missing='' held=0 panes_before panes_after before why=''
   title="Answer loop proof: an issue in implementing whose implementer failed ($store)"
   issue=$(new_rig_issue "$title")
   token=$(claim_token "$issue" implementer)
   architect=$(claim_token "$issue" architect)
+  reviewer=$(claim_token "$issue" reviewer)
   provision_workspace "$issue"
   claims_cmd spawn --json --tree "$issue" --issue "$issue" --role architect --prompt-file "$(write_prompt architect "$issue")" >/dev/null
   spawn_agent failed_implementer implementer "$issue" "$issue" "$(jq -r .agents.failed_implementer.task "$questions_file")"
   await_turn failed_implementer
   session=${agent[$store:failed_implementer.session]}
-  suspend_agent failed_implementer ||
+  if ! suspend_agent failed_implementer; then
     why="the implementer $token was not suspended, or its session $session stayed in the listener's registry"
+    claims_cmd suspend --claim "$architect" >/dev/null || true
+    note "the mention is not asked: $why"
+    record_result A21 FAIL "$why"
+    return 0
+  fi
   claims_cmd suspend --claim "$architect" >/dev/null || true
   # The daemon stops next, and a suspension it had not finished would leave the claim mid-way for
   # the next boot to take up.
@@ -3353,7 +3372,7 @@ check_a21() {
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   a21_entry() { envoy "$(listener_url "/v1/legion/agents/sessions/$session")" 2>/dev/null || true; }
   a21_not_released() { registry_entry_not_released "$(a21_entry)" "$session" "$token"; }
-  if [ -z "$why" ] && ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing" tree_is_live "$issue" implementing; then
+  if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing" tree_is_live "$issue" implementing; then
     why="the seeded tree $issue was not live in implementing in the daemon's own state ($(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}' || true))"
   fi
   if [ -z "$why" ] && ! claim_is "$token" '.state == "failed"'; then
@@ -3367,7 +3386,7 @@ check_a21() {
     record_result A21 FAIL "$why"
     return 0
   fi
-  note "the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, released, live}' || true); the claims of $issue: $(claims_cmd list --json | jq -c --arg i "$issue" '[.claims[] | select(.issue == $i) | {role, state}]' || true)"
+  note "the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, released, live}' || true); the claims of $issue: $(issue_claim_roles "$(claims_cmd list --json)" "$issue")"
   panes_before=$(pane_count)
   before=$(date +%s)
   comment=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@implementer $(question_text failed-implementer-role) (question failed-implementer-role of run $run_tag)" \
@@ -3379,16 +3398,26 @@ check_a21() {
     note "answered after $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
     missing=$(answer_holds failed-implementer-role "$reply") && held=1
   fi
+  control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@reviewer $(question_text failed-implementer-role) (control: a role of this issue no session of the run took, run $run_tag)" \
+    --arg t "role:$reviewer" '{body: $body, mentions: [{target: $t}]}')" | jq -r '.id // empty') || control_id=
+  note "the control: the person's comment ${control_id:-(not taken)} on $issue mentions role:$reviewer, which no session of the run took"
   [ -z "$id" ] || soft_wait 60 "comment $id's mention to be delivered to implementer $session" comment_delivered_to "$id" "$session" || true
-  deliveries=$(dispatch_get "comments/$id" 2>/dev/null | jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]') || deliveries='[]'
+  a21_control_kept() { one_delivery_for "$(comment_delivery_records "$control_id")" queued ''; }
+  [ -z "$control_id" ] || soft_wait 60 "the control's mention of role:$reviewer to settle queued, naming no session" a21_control_kept || true
+  deliveries=$(comment_delivery_records "$id")
+  control=$(comment_delivery_records "$control_id")
+  if comment_reply_by "$issue" "$control_id" "$session" >/dev/null; then control_replied=yes; fi
   claims=$(claims_cmd list --json) || claims='{}'
+  roles=$(issue_claim_roles "$claims" "$issue")
   panes_after=$(pane_count)
-  note "comment ${id:-(none)}'s deliveries as Dispatch holds them now: $deliveries; the claims of $issue: $(jq -c --arg i "$issue" '[.claims[]? | select(.issue == $i) | {role, state}]' <<<"$claims" || true); panes $panes_before → $panes_after"
-  if [ "$held" = 1 ] && comment_delivered_to "$id" "$session" && issue_claims_stopped "$claims" "$issue" &&
-    claim_is "$token" '.state == "failed"' && [ "$panes_after" -le "$panes_before" ]; then
-    record_result A21 PASS "the role mention of the failed implementer on $issue, still in implementing, was sent to its session $session, which answered in the thread from its conversation with the question's keys; every claim of $issue stayed failed or suspended and no pane started"
+  note "comment ${id:-(none)}'s deliveries as Dispatch holds them now: $deliveries; the control ${control_id:-(none)}'s: $control, a reply of $session to it $control_replied; the claims of $issue: $roles; panes $panes_before → $panes_after"
+  if [ "$held" = 1 ] && one_delivery_for "$deliveries" sent "$session" &&
+    one_delivery_for "$control" queued '' && [ "$control_replied" = no ] &&
+    tree_claims_in "$claims" "$issue" suspended failed retired && listed_claim_is "$claims" "$token" failed &&
+    [ "$panes_after" -le "$panes_before" ]; then
+    record_result A21 PASS "the role mention of the failed implementer on $issue, still in implementing, was sent to its session $session, which answered in the thread from its conversation with the question's keys; the control's mention of role:$reviewer, a role of $issue no session took, settled queued naming no session, kept for the role's first holder, and $session wrote no reply to it; every claim of $issue stayed failed or suspended and no pane started"
   else
-    record_result A21 FAIL "the role mention ${id:-(not taken by Dispatch)} of role:$token: deliveries $deliveries (want one sent to $session); the implementer's reply to it $(if [ -z "$reply" ]; then printf 'none within 240 s'; elif [ "$held" = 1 ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the claims of $issue $(jq -c --arg i "$issue" '[.claims[]? | select(.issue == $i) | {role, state}]' <<<"$claims" || true); panes $panes_before → $panes_after"
+    record_result A21 FAIL "the role mention ${id:-(not taken by Dispatch)} of role:$token: deliveries $deliveries (want one sent to $session); the implementer's reply to it $(if [ -z "$reply" ]; then printf 'none within 240 s'; elif [ "$held" = 1 ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the control ${control_id:-(not taken by Dispatch)} of role:$reviewer: deliveries $control (want one queued naming no session), a reply of $session to it $control_replied; the claims of $issue $roles; panes $panes_before → $panes_after"
   fi
 }
 
@@ -3484,7 +3513,7 @@ for store in $stores; do
   wanted A18 && check_a18
   wanted A19 && check_a19
   # A21 last: it seeds a tree of its own in implementing and fails its implementer, with a daemon
-  # restart between, so no check before it runs on what it leaves.
+  # restart between, so no other check of the pass runs after it on the record it leaves.
   wanted A21 && check_a21
   stop_daemon
   pass

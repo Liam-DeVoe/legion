@@ -205,6 +205,38 @@
       }
     ]
   },
+  "comments/comment-110": {
+    "comment": {
+      "id": "comment-110",
+      "body": "@implementer where does the retry backoff start? (question failed-implementer-role of run 4242)",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-11-implementer",
+          "state": "sent",
+          "error": null,
+          "session_id": "session-implementer"
+        }
+      ]
+    },
+    "replies": []
+  },
+  "comments/comment-111": {
+    "comment": {
+      "id": "comment-111",
+      "body": "@reviewer where does the retry backoff start? (control: a role of this issue no session of the run took, run 4242)",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-11-reviewer",
+          "state": "queued",
+          "error": null,
+          "session_id": null
+        }
+      ]
+    },
+    "replies": []
+  },
   "comments/comment-404": { "error": { "code": "NOT_FOUND", "message": "comment not found" } },
   "issues/ALX-3/collaborators": {
     "legion_registry": "available",
