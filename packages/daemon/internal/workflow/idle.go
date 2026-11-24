@@ -708,9 +708,9 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which at
+// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleAt, which at
 // step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
 // serving the current generation: the one shape of claim a phase reminder is armed in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole}) == c.Role && c.ServingGeneration == view.Generation
+	return OpenRoleAt(view.Phase, view.StepRole) == c.Role && c.ServingGeneration == view.Generation
 }

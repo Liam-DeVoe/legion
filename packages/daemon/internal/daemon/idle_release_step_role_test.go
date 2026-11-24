@@ -16,10 +16,10 @@ import (
 // the worker of the issue's open phase where that worker is live, and a decline tells that worker
 // (checkRole, which idleReleaseRows and leftPodCloseRows both read). At step that worker is the
 // role of the running step (record.Issue.RoleAt), which the phase alone does not name:
-// workflow.OpenPhaseRole answers none for step. So an issue at step whose checker runs it has its
-// workspace read through the checker, and the checker is the role told that the release waits for
-// its push, not the first live role. The control is an issue at implementing, whose implementer
-// the phase names.
+// phase.RoleFor answers none for step. So an issue at step whose checker runs it has its workspace
+// read through the checker, and the checker is the role told that the release waits for its push,
+// not the first live role. The control is an issue at implementing, whose implementer the phase
+// names.
 func TestAnIdleReleaseAtAStepReadsThroughTheRoleOfTheStep(t *testing.T) {
 	t.Parallel()
 	const checker = claim.Role("checker")

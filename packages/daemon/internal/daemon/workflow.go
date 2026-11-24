@@ -1233,12 +1233,12 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, c supervise.Claim, d s
 }
 
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
-// phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
-// raised — deaths, a roles container's restart, a pod an update round replaced
-// (dispatch://INFRA-5297/spec R3). An issue in a phase the architect works (admitted, accepting)
-// has no phase worker, so the order falls back to claim.Roles there, and so does an issue the
-// daemon does not record, which has no phase: the answer is "" for both, as it is for a phase no
-// role works.
+// phase (workflow.OpenRoleOf, which at step is the role of the running step, read with the issue),
+// which the pod start gate puts first among the starts no request raised — deaths, a roles
+// container's restart, a pod an update round replaced (dispatch://INFRA-5297/spec R3). An issue in
+// a phase the architect works (admitted, accepting) has no phase worker, so the order falls back
+// to claim.Roles there, and so does an issue the daemon does not record, which has no phase: the
+// answer is "" for both, as it is for a phase no role works.
 func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role, error) {
 	issue, err := w.recordedIssue(ctx, key)
 	if err != nil {
@@ -1247,7 +1247,7 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 	if issue == nil {
 		return "", nil
 	}
-	return workflow.OpenPhaseRole(issue.Phase), nil
+	return workflow.OpenRoleOf(*issue), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a

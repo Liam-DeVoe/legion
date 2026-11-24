@@ -687,12 +687,12 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 }
 
 // checkRole is the role a workspace check of view's pod reads through, and the one its decline
-// tells: the worker of the issue's open phase where it is live (workflow.OpenRoleOf, which for step
+// tells: the worker of the issue's open phase where it is live (workflow.OpenRoleAt, which for step
 // is the role of the running step, view.StepRole), since that is the role whose work the phase is,
 // and otherwise the first of live. Every role of the issue shares the one workspace, so any of them
 // reads the same answer.
 func checkRole(view pods.IdleView, live []claim.Role) claim.Role {
-	if open := workflow.OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole}); slices.Contains(live, open) {
+	if open := workflow.OpenRoleAt(view.Phase, view.StepRole); slices.Contains(live, open) {
 		return open
 	}
 	return live[0]

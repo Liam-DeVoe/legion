@@ -755,14 +755,15 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, r
 // (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
-// where the deployment releases no pod), and which role works an issue's open phase
-// (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
-// required of every cancel, since whether the project is paused is read inside the cancel's own
-// transaction; a cancel made while the project runs reads nothing else of it.
+// where the deployment releases no pod), and which role works an issue's open phase, from its
+// phase and the role of its running step (workflow.OpenRoleAt), which the store does not restate
+// (nil arms no backstop). At is required of every cancel, since whether the project is paused is
+// read inside the cancel's own transaction; a cancel made while the project runs reads nothing
+// else of it.
 type ReleaseCancelPause struct {
-	At            time.Time
-	Backstop      time.Duration
-	OpenPhaseRole func(phase.Phase) claim.Role
+	At         time.Time
+	Backstop   time.Duration
+	OpenRoleAt func(p phase.Phase, stepRole claim.Role) claim.Role
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -789,10 +790,11 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
-// backstop, which the record arms only where the stop owes no launch. A wake taken since is left
-// open: it is the launch the role is owed, and its start row runs at the resume. The caller holds
-// the issue's lock and held's row for share.
+// unpushed work; and, for the worker of the issue's open phase serving the issue's generation (at
+// step the role of the running step, issueStanding.stepRole), its backstop, which the record arms
+// only where the stop owes no launch. A wake taken since is left open: it is the launch the role
+// is owed, and its start row runs at the resume. The caller holds the issue's lock and held's row
+// for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
@@ -803,8 +805,8 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if paused.Backstop > 0 && paused.OpenPhaseRole != nil &&
-			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
+		if paused.Backstop > 0 && paused.OpenRoleAt != nil &&
+			r.role == paused.OpenRoleAt(standing.phase, standing.stepRole) && r.serving == standing.generation {
 			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
@@ -815,12 +817,13 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 }
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
-// the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
-// and whether the issue and its tree root are both still the workflow's to run
-// (pods.InWorkflowNotLingering).
+// the generation the resume names, the phase and the role of its running step, whose worker a
+// paused cancel arms a backstop for, and whether the issue and its tree root are both still the
+// workflow's to run (pods.InWorkflowNotLingering).
 type issueStanding struct {
 	generation uint64
 	phase      phase.Phase
+	stepRole   claim.Role
 	live       bool
 }
 
@@ -828,12 +831,12 @@ type issueStanding struct {
 // longer holds is not live.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
 	var generation int64
-	var issuePhase, status, rootPhase, rootStatus string
+	var issuePhase, stepRole, status, rootPhase, rootStatus string
 	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
+	err := tx.QueryRow(ctx, `select i.generation, i.phase, `+issueStepRoleColumn+`, i.status, i.linger_until is not null,
 		root.phase, root.status, root.linger_until is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+		&generation, &issuePhase, &stepRole, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
@@ -844,7 +847,7 @@ func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow 
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
 		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), stepRole: claim.Role(stepRole), live: live}, nil
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the role
@@ -903,6 +906,14 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 	return err
 }
 
+// issueStepRoleColumn is the role of the step the task of issue i's generation stands at, "" where
+// its plan rows hold none or the task stands at no step: the subquery record.issueColumns ends
+// with, written here a second time over the alias i, since store and record import neither each
+// other. The idle view and a release's cancel read it, so each names the worker of a step's open
+// phase as the issue's own record does (record.Issue.StepRole).
+const issueStepRoleColumn = `coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
+			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')`
+
 // readIdleView is issue's pod as the idle rules read it (pods.IdleView), through tx; project is
 // the project token, as the claims hold it.
 //
@@ -918,10 +929,7 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
 //
-// The view's StepRole is the subquery record.issueColumns ends with, written here a second time
-// over the alias i, since store and record import neither each other: the role of the step the
-// task of the issue's generation stands at, "" where its plan rows hold none or the task stands
-// at no step.
+// The view's StepRole is issueStepRoleColumn.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
@@ -929,8 +937,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
-		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
-			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
+		`+issueStepRoleColumn+`
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,

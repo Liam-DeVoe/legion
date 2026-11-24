@@ -582,16 +582,16 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenPhaseRole, OpenRoleOf of an issue that names no running
-// role, is the worker of the open phase. It is the role a release arms a backstop for and whose
-// live claim has a phase reminder armed in it. OpenRoleOf, which reads the running step's role at
-// step, is the one a CI settlement wakes. Both answer none for a phase the architect works and none
-// for a phase no role works. Admitted and accepting are the two the architect works
-// (phase.RoleFor).
+// R5: an architect gets no backstop. OpenRoleAt, OpenRoleOf of an issue at a phase whose running
+// step's role is the one given, is the worker of the open phase. It is the role a release arms a
+// backstop for and whose live claim has a phase reminder armed in it. It answers none for a phase
+// the architect works and none for a phase no role works, and at step the role of the running
+// step. Admitted and accepting are the two the architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		p    phase.Phase
+		step claim.Role
 		want claim.Role
 	}{
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
@@ -600,10 +600,11 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},
+		{name: "step is its running step's role", p: phase.Step, step: "checker", want: "checker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenPhaseRole(tc.p); got != tc.want {
-				t.Fatalf("OpenPhaseRole(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRoleAt(tc.p, tc.step); got != tc.want {
+				t.Fatalf("OpenRoleAt(%s, %q) = %q, want %q", tc.p, tc.step, got, tc.want)
 			}
 		})
 	}

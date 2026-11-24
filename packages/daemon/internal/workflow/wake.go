@@ -482,27 +482,31 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It reads the phase alone, so it answers none for step, whose role the
-// issue's plan names: it is OpenRoleOf of an issue that names no running role, and a reader that
-// holds the issue reads OpenRoleOf. It answers which role a release arms a backstop for — an
-// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — and which live claim of a pod has a phase
-// reminder armed in it.
-func OpenPhaseRole(p phase.Phase) claim.Role {
-	return OpenRoleOf(record.Issue{Phase: p})
+// OpenRoleAt is OpenRoleOf of an issue at phase p whose running step's role is stepRole: the reader
+// that holds the two and not the whole issue (pods.IdleView, a release's cancel in the store) names
+// the worker of the open phase through it. There is no reading of the phase alone: at step the
+// worker is the role the issue's plan names, so a reader that names it from the phase names none
+// there, and a role of the deployment would get no backstop, no workspace check and no place first
+// at the pod start gate. It answers which role a release, a pause's stop and a release's cancel
+// while paused arm a backstop for — an architect gets none, because nothing of its own is due and a
+// sub-architect woken for nothing would hold a pod open for the backstop period — and which live
+// claim of a pod has a phase reminder armed in it.
+func OpenRoleAt(p phase.Phase, stepRole claim.Role) claim.Role {
+	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole})
 }
 
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
 // the issue at its phase (record.Issue.RoleAt), which for step is the role of its running step,
-// read with the issue, and none for the architect's phases, as OpenPhaseRole. It is the one
+// read with the issue, and none for the architect's phases (admitted and accepting), which are the
+// architect's own turn rather than a worker's, and for a phase no role works. It is the one
 // statement of "the worker of the open phase" each path that brings a worker back to its work
 // reads: which ready claim is sent its phase's task (readyWorkerTask), which suspended claim the
 // boot resumes (suspendedPhaseOwners), which claim the silence repair prompts
-// (phaseWorkerRecord) and which role a CI settlement wakes (wakeOnSettlement). A held issue
-// stands in held, which no role works, so none of those paths gives its worker anything until a
-// release of the hold gives the phase back.
+// (phaseWorkerRecord), which role a CI settlement wakes (wakeOnSettlement), which role a pause's
+// stop arms a backstop for (internal/daemon's projectPause.stopTx) and which start the pod start
+// gate puts first (internal/daemon's workflowRuntime.phaseRole). A held issue stands in held,
+// which no role works, so none of those paths gives its worker anything until a release of the
+// hold gives the phase back.
 func OpenRoleOf(issue record.Issue) claim.Role {
 	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
 		return role
