@@ -97,6 +97,8 @@ func fixBesideStepsStore(t *testing.T) *Store {
 	exec("record the review's start", `insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
 		values ('LEGION-208', 'default', 'step', 4, 1, 'legion-LEGION-208-reviewer', now(), 'open', $1::jsonb)`,
 		fixBesideStepsRowsBefore[0].payload)
+	exec("record a released workspace's bundle", `insert into workspace_bundles (issue, bundle, size_bytes, at, head, release_id, source_pod_uid)
+		values ('LEGION-208', 'PACK'::bytea, 4, now(), $1, 3, 'pod-released')`, fixBesideStepsCommit)
 	queue := func(row fixBesideStepsRow) {
 		t.Helper()
 		exec("queue a "+row.kind+" row of "+row.issue, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
@@ -122,6 +124,7 @@ func fixBesideStepsStore(t *testing.T) *Store {
 		{"the CI failures", `select count(*)::text from ci_failures`, "0"},
 		{"the review's start", `select row(start_commit, end_commit, fix_check)::text from step_starts where issue = 'LEGION-208'`, `("","","")`},
 		{"the reviewer's delivery", `select row(fix, fix_from, move_to)::text from pending_task_deliveries`, `(0,"","")`},
+		{"the saved bundle's fix copy", `select fix_head from workspace_bundles`, ""},
 	} {
 		if got := rowsAsText(t, store, read.query); !reflect.DeepEqual(got, []string{read.want}) {
 			t.Fatalf("%s after the migration = %v, want %s", read.what, got, read.want)
@@ -147,6 +150,7 @@ func fixBesideStepsStore(t *testing.T) *Store {
 		record = record || jsonb_build_object('startCommit', $1::text, 'fixCheck', 'ci/test') where issue = 'LEGION-208'`, fixBesideStepsCommit)
 	exec("hold for the fix and for the checks", `update issues set hold_reason = case key when 'LEGION-209' then 'fix' else 'ci' end
 		where key in ('LEGION-209', 'LEGION-210')`)
+	exec("record the fix's working copy in the saved bundle", `update workspace_bundles set fix_head = $1`, fixBesideStepsFixed)
 	return store
 }
 
@@ -182,16 +186,17 @@ func queuedRows(t *testing.T, store *Store) []fixBesideStepsRow {
 // The migration fixBesideStepsVersion adds what a fix beside the other steps of a task is recorded
 // in: plan_tasks.fixes_ci, the tables task_fixes and ci_failures, the commits and the check of each
 // step's start (step_starts), the fix and the copies of a pending delivery
-// (pending_task_deliveries), and the outbox kind fix_job_read. Over a store the release before
-// migrated, it leaves each row it finds as it stands: the task reads fixes_ci false, the tables
-// are empty, and every queued row is the row the release before queued.
+// (pending_task_deliveries), the fix's working copy of a saved bundle (workspace_bundles), and the
+// outbox kind fix_job_read. Over a store the release before migrated, it leaves each row it finds
+// as it stands: the task reads fixes_ci false, the tables are empty, the saved bundle names no
+// fix's working copy, and every queued row is the row the release before queued.
 //
 // The way back, the last paragraph of the migration's header (migrations.WayBack), run once for
 // each project that shares the database, leaves only rows the release before reads: the frozen
 // decoders of that release (testdata.DecodeBeforeFix) take each queued row left and the record of
 // the review's start, the hold of each new reason is a plain hold, no pending delivery names a
-// fix, and the schema is the release before's, its kind check among it. The roll-forward's Migrate
-// then applies the migration again.
+// fix, the saved bundle is kept for the release before to restore, and the schema is the release
+// before's, its kind check among it. The roll-forward's Migrate then applies the migration again.
 //
 // The control is a kept subtest: the same way back without its delete of the ci-failed notices
 // leaves notices the frozen notice decoder refuses, so the decoders can see the rows the way back
@@ -223,12 +228,14 @@ func TestMigrationFixBesideStepsKeepsEachRowAndItsWayBack(t *testing.T) {
 			want        []string
 		}{
 			{"the pending deliveries", `select claim_token from pending_task_deliveries`, []string{"legion-LEGION-208-reviewer"}},
+			{"the saved bundles", `select issue from workspace_bundles`, []string{"LEGION-208"}},
 			{"the holds", `select row(key, held_from, hold_reason)::text from issues where phase = 'held' order by key`,
 				[]string{"(LEGION-209,reviewing,)", "(LEGION-210,retro,)", "(LEGION-211,testing,escalated)"}},
 			{"the columns of this release", `select count(*)::text from information_schema.columns
 				where table_schema = current_schema() and (table_name, column_name) in (('plan_tasks', 'fixes_ci'),
 				('step_starts', 'start_commit'), ('step_starts', 'end_commit'), ('step_starts', 'fix_check'),
-				('pending_task_deliveries', 'fix'), ('pending_task_deliveries', 'fix_from'), ('pending_task_deliveries', 'move_to'))`,
+				('pending_task_deliveries', 'fix'), ('pending_task_deliveries', 'fix_from'), ('pending_task_deliveries', 'move_to'),
+				('workspace_bundles', 'fix_head'))`,
 				[]string{"0"}},
 			{"the tables of this release", `select count(*)::text from information_schema.tables
 				where table_schema = current_schema() and table_name in ('task_fixes', 'ci_failures')`, []string{"0"}},

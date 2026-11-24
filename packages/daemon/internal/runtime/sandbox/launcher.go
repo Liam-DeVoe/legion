@@ -819,7 +819,7 @@ func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherV
 // (internal/launcher's bundleRestore.receive).
 func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherBundle, error) {
 	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, shimwire.WorkspaceBundle{
-		Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: b.Bookmarks, At: b.At,
+		Bundle: b.Bundle, Head: b.Head, FixHead: b.FixHead, Tips: b.Tips, Bookmarks: b.Bookmarks, At: b.At,
 	})
 }
 

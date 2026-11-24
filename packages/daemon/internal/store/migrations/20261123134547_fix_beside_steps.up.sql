@@ -1,7 +1,8 @@
 -- 20261123134547_fix_beside_steps.up.sql — what a fix beside the other steps of a task is recorded
 -- in: whether a task's run takes a fix, each fix of a task, each failure of a CI check at a head,
 -- the commits and the check of each step's start, the fix and the working copies of a pending
--- delivery, and the outbox kind that reads a fix's failed job.
+-- delivery, the fix's working copy of a released workspace's saved work, and the outbox kind that
+-- reads a fix's failed job.
 --
 -- plan_tasks.fixes_ci says the task's run takes a fix when a check that a CI job runs fails at the
 -- task's head (record.PlanTask.FixesCI). Every task the upgrade finds belongs to a run that started
@@ -19,6 +20,11 @@
 -- a delivery's task is of, 0 for none, fix_from the head the fix's working copy is made at, and
 -- move_to the head the task's working copy moves to before the task. Each default is what every
 -- row the upgrade finds reads: no commit, no check, no fix.
+--
+-- workspace_bundles.fix_head is the commit the fix's working copy beside the workspace stood on
+-- when a release saved the workspace's work (runtime.WorkspaceBundle.FixHead), '' where none was
+-- there, which every saved bundle the upgrade finds reads. The pod that replaces the released one
+-- makes the fix's working copy again at that commit.
 --
 -- The kind fix_job_read reads a fix's failed job from Dispatch before the fix starts
 -- (record.FixJobRead). The check is one list, so it is rewritten whole naming every kind, as
@@ -50,7 +56,8 @@
 -- nothing. An issue held for its fix or for its checks is a plain hold after the block, which a
 -- retry of the release before releases. Each deleted notice is one its architect is never told,
 -- and each deleted start a fix that does not run; the failed check stands on the pull request,
--- where the release before reads it.
+-- where the release before reads it. A saved bundle keeps its work when the block drops fix_head:
+-- the release before restores it without the fix's working copy, whose commits it still carries.
 --
 -- begin;
 -- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'ci-failed' and split_part(issue, '-', 1) = '<PROJECT>';
@@ -61,6 +68,7 @@
 -- update step_starts set record = record - 'startCommit' - 'endCommit' - 'fixCheck' where record ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
 -- delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
 -- alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix;
+-- alter table workspace_bundles drop column if exists fix_head;
 -- update issues set hold_reason = null where hold_reason in ('fix', 'ci') and split_part(key, '-', 1) = '<PROJECT>';
 -- alter table step_starts drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
 -- drop table if exists ci_failures;
@@ -99,6 +107,7 @@ alter table step_starts add column start_commit text not null default '',
   add column end_commit text not null default '', add column fix_check text not null default '';
 alter table pending_task_deliveries add column fix int not null default 0,
   add column fix_from text not null default '', add column move_to text not null default '';
+alter table workspace_bundles add column fix_head text not null default '';
 
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
