@@ -118,13 +118,16 @@ func (l *WaitingLine) queued(key string) Queued {
 	}
 }
 
-// Place is the issue's place in the line, from 1, and nil for an issue the line does not name.
-// Each call answers a pointer of its own, which a caller may keep.
+// Place is the issue's place in the daemon's line, from 1, by the line's one rule (Admission.Place),
+// which one issue's read answers by too: every key the line names counts, the keys the daemon
+// reports nothing of included, so a card, its stored row and that read put one issue in one place.
+// It is nil for an issue the line does not name, and for one the daemon reports nothing of, which
+// carries no card. Each call answers a pointer of its own, which a caller may keep.
 func (l *WaitingLine) Place(key string) *int {
-	place, named := l.places[key]
-	if !named {
+	if _, named := l.places[key]; !named {
 		return nil
 	}
+	place, _, _ := l.input.Admission.Place(key)
 	return &place
 }
 
