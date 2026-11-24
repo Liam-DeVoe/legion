@@ -107,9 +107,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // intake.PlanGiven, whose rules of a later version are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
-// Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
-// version the store holds is answered as taken, the same as its first registration, and one that
-// the issue's first step passed over since applies when it is given again, whoever gives it.
+// No id decides whether a registration is one already taken (intake.ApplyFact applies every
+// PlanGiven): the workflow decides it against the store, and answers a give of the version that
+// runs, or that the issue's first step will run, as taken, with the plan given, as its first
+// registration was answered. Only an architect of the issue's tree gives a plan (planOwner, and
+// the workflow's judgement of the owner under the fact lock).
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

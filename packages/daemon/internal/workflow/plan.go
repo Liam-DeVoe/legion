@@ -46,26 +46,56 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	return node
 }
 
-// passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
-// step reads its plan, so the walk never takes one, and answers the versions it
-// passed over. An earlier owner's plan is the version in force of a generation whose giver is no
-// architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree,
-// the rule the routes hold every architect's call to): the owner of an issue changes where an
-// orphan is admitted again as a root of its own and where an adoption moves a member to another
-// tree, and the plan the earlier owner gave is not the new owner's to run. The rows go in this
-// transaction, so the next first step finds none. An issue with no plan rows, or only its
-// owners', is read and nothing is written.
+// passOverEarlierOwners deletes each plan of issue that only earlier owners gave, before its first
+// step reads its plan, so the walk never takes one, and answers the versions it passed over
+// (earlierOwnersPlans, passOver). The rows go in this transaction, so the next first step finds
+// none. An issue with no plan rows, or only its owners', is read and nothing is written.
 func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.PlanVersion, error) {
-	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
+	earlier, err := e.earlierOwnersPlans(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
+	return earlier, e.passOver(ctx, tx, issue.Key, earlier, "")
+}
+
+// earlierOwnersPlans is each plan of issue that only earlier owners gave, at each generation of at
+// (every generation for none): the version in force of a generation of which no giver is an
+// architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.GivenByOwner, the
+// rule the routes hold every architect's call to). The owner of an issue changes where an orphan is
+// admitted again as a root of its own and where an adoption moves a member to another tree, and a
+// plan that only earlier owners gave is not the new owner's to run. It is the one rule of a plan
+// passed over: the first step reads every generation (passOverEarlierOwners), and a give of a plan
+// before that step the one generation it is given at (planGiven's versionRefusal), so the give is
+// judged against the plan that step will run.
+func (e *Engine) earlierOwnersPlans(ctx context.Context, tx pgx.Tx, issue record.Issue, at ...uint64) ([]record.PlanVersion, error) {
+	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
+	if err != nil || len(at) == 0 {
+		return earlier, err
+	}
+	var plans []record.PlanVersion
 	for _, version := range earlier {
-		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
-			return nil, err
+		if slices.Contains(at, version.Generation) {
+			plans = append(plans, version)
 		}
 	}
-	return earlier, nil
+	return plans, nil
+}
+
+// passOver deletes the plan of issue at the generation of each of versions (record.Store's
+// DeletePlan), and logs line for each, where line names one: a give of a plan passes over the plan
+// of an earlier owner with a line of its own, and the first step tells what it passed over itself
+// (tellPassedOver, tellNotTaken).
+func (e *Engine) passOver(ctx context.Context, tx pgx.Tx, issue string, versions []record.PlanVersion, line string) error {
+	for _, version := range versions {
+		if err := e.store.DeletePlan(ctx, tx, issue, version.Generation); err != nil {
+			return err
+		}
+		if line != "" {
+			e.logOnCommit(ctx, line, "issue", issue, "generation", version.Generation, "version", version.Version,
+				"document", version.ArtifactID, "givers", version.Givers())
+		}
+	}
+	return nil
 }
 
 // groupOf is the group of issue: the row of its experiment assignments that says how it is done
@@ -221,7 +251,7 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	for _, version := range earlier {
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
-			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", ran)
+			"version", version.Version, "document", version.ArtifactID, "giver", giversOf(version), "runs", ran)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
@@ -241,7 +271,7 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	for _, version := range passed {
 		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group runs the project's default steps", "issue", issue.Key,
-			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy,
+			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", giversOf(version),
 			"experiment", group.Experiment, "variant", group.Variant)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
@@ -264,9 +294,22 @@ func namedOnce(versions []record.PlanVersion) string {
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its
-// version, its document and who gave it.
+// version, its document and who gave it (giversOf).
 func describeVersion(version record.PlanVersion) string {
-	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
+	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, giversOf(version))
+}
+
+// giversOf names every giver of version (record.PlanVersion.Givers), the last to give it first:
+// one by its claim, two joined by "and", more by commas and a last "and".
+func giversOf(version record.PlanVersion) string {
+	givers := make([]string, 0, len(version.Givers()))
+	for _, giver := range version.Givers() {
+		givers = append(givers, string(giver))
+	}
+	if len(givers) < 2 {
+		return strings.Join(givers, "")
+	}
+	return strings.Join(givers[:len(givers)-1], ", ") + " and " + givers[len(givers)-1]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
