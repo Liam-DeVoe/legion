@@ -174,17 +174,17 @@ const FrameHeldSQL = `exists (
 		  and t.kind = '` + AttributeFrame + `' and t.to_kind = '` + KindValue + `' and t.asserted
 		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
 
-// TerminalFrameNames are the two frame names that end a run's stream (going.Event.Terminal), the
-// pair the going_events_terminal index holds as literals: the stream (api/going.go) and the graph
-// read of a run's own address (refs' interactionFrames) read the run's ending by them
-// (RunEndingSQL).
-var TerminalFrameNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
+// terminalFrameNames are the two frame names that end a run's stream (going.Event.Terminal), the
+// pair the going_events_terminal index holds as literals: every read of a run's ending names them
+// as TerminalFrameNamesSQL writes them (RunEndingSQL).
+var terminalFrameNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
 
-// TerminalFrameNamesSQL is TerminalFrameNames as the SQL list the going_events_terminal index's
+// TerminalFrameNamesSQL is terminalFrameNames as the SQL list the going_events_terminal index's
 // predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
 // proves that partial index answers, where a bound array leaves a prepared statement's generic
-// plan nothing to prove it by.
-var TerminalFrameNamesSQL = store.QuoteLiterals(TerminalFrameNames)
+// plan nothing to prove it by. The stream (api/going.go) and the graph read of a run's own address
+// (refs' interactionFrames) read the run's ending by it.
+var TerminalFrameNamesSQL = store.QuoteLiterals(terminalFrameNames)
 
 // RunEndingSQL is the sequence of the one terminal frame the run whose uuid is the SQL expression
 // run has stored, null while it has stored none: one probe of going_events_terminal, which holds

@@ -199,8 +199,8 @@ func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, 
 // terminal frame, and the transaction's now(), which the frame's going_events row takes as its
 // created_at. The sequence and the ending are one index probe each, never a read of every frame the
 // run holds: its newest sequence, read backward on the (request_id, sequence) key, and its one
-// terminal frame on going_events_terminal, which the literal names
-// (graphstore.TerminalFrameNamesSQL) let the planner use (TestTheNextFrameReadsTwoIndexProbes).
+// terminal frame on going_events_terminal (graphstore.RunEndingSQL), whose literal names let the
+// planner use it (TestTheNextFrameReadsTwoIndexProbes).
 // It takes the run's going_requests row `for key share`, the lock the frame's own row's foreign
 // key would take, so a delete of the run's row an hour on by a process of the release before,
 // which takes no node lock, waits for the frame rather than failing its insert; the sweep's own
@@ -214,8 +214,7 @@ var goingNextFrame = `
 	from going_requests r
 	cross join lateral (
 		select ` + graphstore.RunNextSequenceSQL("r.id") + ` as sequence,
-		       exists (select 1 from going_events e
-		               where e.request_id = r.id and e.name in (` + graphstore.TerminalFrameNamesSQL + `)) as ended
+		       ` + graphstore.RunEndingSQL("r.id") + ` is not null as ended
 	) next
 	where r.id = $1::uuid
 	for key share of r`
@@ -417,8 +416,8 @@ func readGoingTerminalEvent(ctx context.Context, pool *store.Pool, requestID str
 	return scanGoingEvent(pool.QueryRow(ctx, `
 		select `+goingEventColumns+`
 		from going_events
-		where request_id = $1::uuid and name = any($2::text[])
-	`, requestID, graphstore.TerminalFrameNames))
+		where request_id = $1::uuid and name in (`+graphstore.TerminalFrameNamesSQL+`)
+	`, requestID))
 }
 
 // goingEventsAfter is every frame of one run past a sequence, in stream order: $1 the run, $2
@@ -581,15 +580,15 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 	return event, nil
 }
 
-// goingOverdueRuns is the sweep's read of the runs it ends, $1 the terminal frame names: every run
-// whose ends_at has passed with no terminal frame stored, oldest deadline first. Once the sweep
+// goingOverdueRuns is the sweep's read of the runs it ends: every run whose ends_at has passed
+// with no terminal frame stored (graphstore.RunEndingSQL), oldest deadline first. Once the sweep
 // runs, going_requests holds about an hour of runs, since the sweep removes a run's rows an hour
 // after it was asked (contracts.GoingRequestTTL, goRunsPastTheHour), so the read is of that hour.
-const goingOverdueRuns = `
+var goingOverdueRuns = `
 	select r.id::text
 	from going_requests r
 	where r.ends_at <= now()
-	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+	  and ` + graphstore.RunEndingSQL("r.id") + ` is null
 	order by r.ends_at, r.id`
 
 // sweepGoingRequests is the sweep of the runs of the command bar, once a maintenance pass
@@ -625,7 +624,7 @@ func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 // (errGoingRunGone) and is passed over.
 func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
 	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, []any{graphstore.TerminalFrameNames}, func(id string) error {
+	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, nil, func(id string) error {
 		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
 			return err
 		}
