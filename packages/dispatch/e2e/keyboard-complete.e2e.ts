@@ -8978,3 +8978,241 @@ test("k-default-keys: in the Inbox drawer ? opens the help over it, with the Inb
   await expect(search, step("? in the drawer's search box is typed")).toHaveValue("?");
   await expect(help, step("? in the drawer's search box opens no help")).toHaveCount(0);
 });
+
+// The tester's red rows of round 16 (R4, R5): the menu's own key, pressed while its control has
+// the focus, opens that menu as the key does from the row or the page - on its first choice or on
+// the current value, with every choice shown and nothing typed in its box - and so `p` or `s`
+// then Enter writes nothing. At 9d3e0777 the closed list's trigger types the key into the box
+// (`MultiSelect.tsx`, `openFromKey`): `b` shows no choice, and `p` then Enter writes P0.
+
+/** `count` asks of CORE, each on an issue of its own at P2 in `todo`, waiting on alice: their ids
+ *  and their issues' keys, in the order they were made. */
+async function seedAsksAtP2(
+  count: number
+): Promise<{ asks: string[]; keyOf: Map<string, string> }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const asks: string[] = [];
+  const keyOf = new Map<string, string>();
+  for (const title of ["Ledger", "Mirror", "Lease", "Replay", "Quota"].slice(0, count)) {
+    const issue = await createIssue({ project: "CORE", title: `${title} rollout` });
+    await patchIssue(issue.key, { priority: 2, status: "todo" });
+    const ask = await createAsk(
+      issue.key,
+      { question: `Ship the ${title.toLowerCase()} rollout?` },
+      asker
+    );
+    asks.push(ask.id);
+    keyOf.set(ask.id, issue.key);
+  }
+  return { asks, keyOf };
+}
+
+/** The item `index` of `order`, which must hold it. */
+function itemAt(order: readonly string[], index: number): string {
+  const id = order[index];
+  if (id === undefined) throw new Error(`the Inbox lists no item ${index + 1}`);
+  return id;
+}
+
+const KEY_ON_ITS_CONTROL = [
+  { check: "k-snooze-menu", control: "Snooze", key: "b", where: "the reading pane" },
+  { check: "k-snooze-menu", control: "Snooze", key: "h", where: "the reading pane" },
+  { check: "k-snooze-menu", control: "Snooze", key: "b", where: "card mode" },
+  { check: "k-priority-menu", control: "priority", key: "p", where: "the reading pane" },
+  { check: "k-priority-menu", control: "priority", key: "p", where: "card mode" },
+  { check: "k-priority-menu", control: "priority", key: "p", where: "the issue page" },
+  { check: "k-priority-menu", control: "priority", key: "p", where: "the Board" },
+  { check: "k-status-menu", control: "Status", key: "s", where: "the issue page" },
+] as const;
+
+for (const { check, control, key, where } of KEY_ON_ITS_CONTROL) {
+  const first = control === "Snooze" ? "Later today" : control === "Status" ? "Todo" : "P2";
+  // SLOW(>=2s): an Inbox, an issue page or a Board drawn, and its menu opened and closed.
+  test(`${check}: in ${where}, with the focus on the ${control} control, ${key} opens its menu on ${first} with every choice shown and nothing typed, and Escape writes nothing @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) =>
+      `${check}: in ${where}, ${key} on the focused ${control}: ${text}`;
+    const seed = await seedAsksAtP2(1);
+    const askId = itemAt(seed.asks, 0);
+    const issueKey = seed.keyOf.get(askId) ?? "";
+    const snoozes = [snoozeWrites(page, askId)];
+    const writes = issueWrites(page, issueKey);
+    const menu = openList(page);
+    let trigger: Locator;
+    if (where === "the reading pane" || where === "card mode") {
+      const inbox = await openInboxAt(page, where, 1);
+      await goTo(inbox, askId);
+      const controls = controlsOf(page, inbox, askId);
+      trigger =
+        control === "Snooze"
+          ? controls.getByRole("button", { name: /^Snooze / })
+          : priorityTrigger(controls, issueKey);
+    } else if (where === "the issue page") {
+      await page.setViewportSize(WIDE);
+      await openIssue(page, issueKey, "Ledger rollout");
+      trigger =
+        control === "Status"
+          ? statusTrigger(page)
+          : priorityTrigger(page.getByTestId("issue-header"), issueKey);
+    } else {
+      await page.setViewportSize(WIDE);
+      await page.goto("/projects/CORE");
+      await page.getByRole("button", { exact: true, name: "Board" }).click();
+      trigger = priorityTrigger(
+        page.getByRole("article", { name: `${issueKey} Ledger rollout` }),
+        issueKey
+      );
+    }
+    const count =
+      control === "Snooze"
+        ? SNOOZE_CHOICES.length
+        : control === "Status"
+          ? OPEN_STATUSES.length
+          : PRIORITY_CHOICES.length;
+    await trigger.focus();
+    await expect(trigger, step("the control has the focus")).toBeFocused();
+    await page.keyboard.press(key);
+    await expect(menu, step(`${key} opens the menu`)).toBeVisible();
+    await expect(menu.getByRole("combobox"), step(`${key} types nothing in the box`)).toHaveValue(
+      ""
+    );
+    await expect(menu.getByRole("option"), step(`${key} shows every choice`)).toHaveCount(count);
+    await expectHighlight(menu, first, step(`${key} highlights ${first}`));
+    await page.keyboard.press("Escape");
+    await expect(menu, step("Escape closes the menu")).toHaveCount(0);
+    await expect(trigger, step("Escape gives the focus back to the control")).toBeFocused();
+    // A write the keys sent reaches the page's request events within this second and a half.
+    await page.waitForTimeout(1_500);
+    expect(requestsSent([...snoozes, writes]), step("nothing is written")).toBe(0);
+  });
+}
+
+for (const control of ["priority", "Status"] as const) {
+  const key = control === "priority" ? "p" : "s";
+  const held = control === "priority" ? "P2" : "Todo";
+  const check = control === "priority" ? "k-priority-menu" : "k-status-menu";
+  // SLOW(>=2s): an Inbox or an issue page drawn, and its menu opened twice.
+  test(`${check}: ${control === "priority" ? "beside the reading pane" : "on today's issue page"}, ${key} then Enter writes nothing with the focus on the ${control} control, as it writes nothing from ${control === "priority" ? "the row" : "the page"} @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) => `${check}: ${key} then Enter: ${text}`;
+    const seed = await seedAsksAtP2(1);
+    const askId = itemAt(seed.asks, 0);
+    const issueKey = seed.keyOf.get(askId) ?? "";
+    const writes = issueWrites(page, issueKey);
+    const menu = openList(page);
+    let trigger: Locator;
+    if (control === "priority") {
+      const inbox = await openInboxAt(page, "the reading pane", 1);
+      await goTo(inbox, askId);
+      trigger = priorityTrigger(paneHead(page), issueKey);
+    } else {
+      await page.setViewportSize(WIDE);
+      await openIssue(page, issueKey, "Ledger rollout");
+      trigger = statusTrigger(page);
+    }
+    await page.keyboard.press(key);
+    await expect(
+      menu,
+      step(`${key} from ${control === "priority" ? "the row" : "the page"} opens the menu`)
+    ).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(menu, step("Enter closes the menu")).toHaveCount(0);
+    await trigger.focus();
+    await page.keyboard.press(key);
+    await expect(menu, step(`${key} on the focused control opens the menu`)).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(menu, step("Enter on the focused control's menu closes it")).toHaveCount(0);
+    // A write Enter sent reaches the page's request events within this second and a half.
+    await page.waitForTimeout(1_500);
+    expect(writesSent(writes), step(`Enter on the menu's own value, ${held}, writes nothing`)).toBe(
+      0
+    );
+    await expect(trigger, step(`the ${control} still shows ${held}`)).toContainText(held);
+  });
+}
+
+// The tester's red rows of round 16 (R4): a key that names another choice control, pressed while
+// the focus is on a closed list's trigger, opens that other control's menu. At 9d3e0777 the
+// focused trigger types the key into its own list's box (`MultiSelect.tsx`, `openFromKey`).
+/** Opens `other`'s list with a click and closes it with Escape, which gives the focus back to
+ *  `other`'s trigger (D5: "a click on the trigger returns to the trigger"); then presses `key`,
+ *  which names `trigger`'s control (R4: "A key that names a choice control opens that control's
+ *  menu"): `trigger`'s list opens, and no list of `other`'s. */
+async function keyFromOtherTrigger(
+  page: Page,
+  other: Locator,
+  key: string,
+  trigger: Locator,
+  step: (text: string) => string
+): Promise<void> {
+  await other.click();
+  await expect(listOf(other), step("a click opens the other control's list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(other, step("Escape gives the focus back to the other control")).toBeFocused();
+  await page.keyboard.press(key);
+  await expect(listOf(trigger), step(`${key} opens its own control's menu`)).toBeVisible();
+  await expect(listOf(other), step(`${key} opens no list of the other control's`)).toHaveCount(0);
+  await page.keyboard.press("Escape");
+}
+
+// SLOW(>=2s): an issue page drawn, and two lists opened by a click and by a key.
+test("k-status-menu: on today's issue page s opens the status menu while the focus is on the header's priority, and p the priority menu while it is on the Status", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger rollout";
+  const issue = await createIssue({ project: "CORE", title });
+  await patchIssue(issue.key, { priority: 2, status: "todo" });
+  await page.setViewportSize(WIDE);
+  const writes = issueWrites(page, issue.key);
+  await openIssue(page, issue.key, title);
+  const status = statusTrigger(page);
+  const priority = priorityTrigger(page.getByTestId("issue-header"), issue.key);
+  const step = (text: string) => `k-status-menu: from the other control's trigger, ${text}`;
+  await keyFromOtherTrigger(page, priority, "s", status, step);
+  await keyFromOtherTrigger(page, status, "p", priority, step);
+  expect(requestsSent([writes]), step("nothing is written")).toBe(0);
+});
+
+// SLOW(>=2s): the new issue page drawn, and two lists opened by a click and by a key.
+test("k-status-menu: on the new issue page s opens the status list while the focus is on the properties row's priority, and p the priority list while it is on the status", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await patchIssue(issue.key, { priority: 2, status: "todo" });
+  await withIssuePage(page.context(), "alice");
+  await page.setViewportSize(WIDE);
+  const writes = issueWrites(page, issue.key);
+  await gotoIssue(page, `/issues/${issue.key}`);
+  const row = page.getByTestId("issue-state-actions");
+  const status = row.getByRole("button", { name: /^Status/ });
+  const priority = priorityTrigger(row, issue.key);
+  const step = (text: string) =>
+    `k-status-menu: on the new issue page, from the other control's trigger, ${text}`;
+  await keyFromOtherTrigger(page, priority, "s", status, step);
+  await keyFromOtherTrigger(page, status, "p", priority, step);
+  expect(requestsSent([writes]), step("nothing is written")).toBe(0);
+});
+
+// SLOW(>=2s): a card drawn, and two lists opened by a click and by a key.
+test("k-priority-menu: on the Inbox's cards p opens the priority menu while the focus is on the card's Snooze, and b the Snooze menu while it is on the card's priority", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await patchIssue(issue.key, { priority: 2 });
+  const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+  const watched = [snoozeWrites(page, ask.id), issueWrites(page, issue.key)];
+  const inbox = await openInboxAt(page, "card mode", 1);
+  const row = rowOf(inbox, ask.id);
+  const snooze = row.getByRole("button", { name: /^Snooze / });
+  const priority = priorityTrigger(row, issue.key);
+  const step = (text: string) =>
+    `k-priority-menu: card mode, from the other control's trigger, ${text}`;
+  await keyFromOtherTrigger(page, snooze, "p", priority, step);
+  await keyFromOtherTrigger(page, priority, "b", snooze, step);
+  expect(requestsSent(watched), step("nothing is written")).toBe(0);
+});
