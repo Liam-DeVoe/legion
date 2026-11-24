@@ -9,14 +9,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The line an agent writes to wish for a pod of its own stands in two of this daemon's parts,
-// architect-common.md for an owner and worker-common.md for the agent of a step, so it reaches each
-// role only where its composition joins one of them. The test plants a marker in both parts of the
-// snapshot a launch reads (New's state directory) and finds it in the composed prompt of each of
-// the seven roles an issue's agents start with. It reads no word of Legion's own texts: the
-// composition is checked before the planting too, and holds no marker there.
-func TestEveryRoleComposesAPartThatHoldsTheSeparatePodLine(t *testing.T) {
-	const marker = "planted-separate-pod-marker-5a1c"
+// Each of the seven roles an issue's agents start with composes a part this daemon writes for
+// every role of its kind: architect-common.md for an owner, worker-common.md for the agent of a
+// step. The test plants a marker in both parts of the snapshot a launch reads (New's state
+// directory) and finds it in the composed prompt of each role. It reads no word of Legion's own
+// texts: the composition is checked before the planting too, and holds no marker there. So it
+// shows which parts each role composes, not what they say: that the separate-pod line stands in
+// those two parts is for the runs of real agents of the `v-own-pod` check to show.
+func TestEveryRoleComposesADaemonCommonPart(t *testing.T) {
+	const marker = "planted-common-part-marker-5a1c"
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
 	if err != nil {
