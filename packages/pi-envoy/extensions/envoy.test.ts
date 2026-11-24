@@ -88,7 +88,7 @@ import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subs
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
-import { splitWordsBlocks } from "@legion/envoy-client/words-block";
+import { type SplitText, splitWordsBlocks } from "@legion/envoy-client/words-block";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
   envoyPluginInterface,
@@ -25399,7 +25399,7 @@ describe("consumer delivery", () => {
      *  and the card's blocks. */
     function cardParts(card: string): {
       readonly payload: Record<string, unknown>;
-      readonly blocks: readonly { readonly name: string; readonly text: string }[];
+      readonly blocks: SplitText["blocks"];
     } {
       const { head, blocks } = splitWordsBlocks(card);
       const fields = decode(head) as {

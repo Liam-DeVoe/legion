@@ -4,6 +4,14 @@
  */
 
 /**
+ * The characters other than a line feed and a carriage return that a reader splitting lines the
+ * Unicode way breaks a line at, and that JSON and TOON write as they are: NEXT LINE (U+0085), LINE
+ * SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029). Global: give it to `replace`, which reads
+ * every match whatever `lastIndex` holds, or to `search`.
+ */
+export const UNESCAPED_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
+
+/**
  * `text` with each run of white space, each line break among it, made one space: what a host
  * prints where another author's words sit on one of its own lines, so no line they start can stand
  * as one of the host's. JavaScript's `\s` holds the white space of Unicode and every line break of

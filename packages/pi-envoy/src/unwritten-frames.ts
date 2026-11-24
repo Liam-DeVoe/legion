@@ -20,10 +20,9 @@ import { type HeldReplayNotice, type HeldStoredCard, writtenCardIdentity } from 
  * that a card starts does not take it and a process that ends loses it. So a stored card too is
  * handed only to a settled host, and not while a card handed to start a turn has not started it
  * (`runStarted`). One sent while the host is busy is held, and handed at the first settled check
- * (`storedCheck`, which the extension runs when a stored card comes and when one is handed, after a
- * run that does not continue, after a compaction, automatic or asked for by the session, after a
- * restore that holds recorded cards again, and at each heartbeat that finds the host settled) or
- * right before a card that starts a turn. A held stored card holds back no other card. With no
+ * (`storedCheck`, which the extension runs on the chain of checks that `checkStoredCards` arms in
+ * extensions/envoy.ts, where the moments that arm it are listed) or right before a card that starts
+ * a turn. A held stored card holds back no other card. With no
  * `message_end`, a stored card is written once the session's store holds its entry
  * (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is never handed again.
  *

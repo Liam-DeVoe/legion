@@ -44,7 +44,7 @@ import { pictureAddresses } from "./dispatch-pictures";
 import { messageFor } from "./errors";
 import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
-import { oneLine } from "./line-text";
+import { oneLine, UNESCAPED_LINE_BREAKS } from "./line-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 import { type NamedWords, wordsBlocks } from "./words-block";
 
@@ -1339,7 +1339,7 @@ function daemonFields(
   );
   const every = { fields: visible, words: [] };
   if (paths === undefined) return every;
-  const keyed: (readonly [string, readonly (string | number)[]])[] = [];
+  const keyed: KeyedPath[] = [];
   for (const path of Object.keys(paths)) {
     if (!WORDS_PATH.test(path)) return every;
     keyed.push([
@@ -1460,6 +1460,9 @@ interface TakenWords {
   readonly holders: readonly Readonly<Record<string, unknown>>[];
 }
 
+/** A words path of a payload, as written and as its keys (`PATH_KEY`). */
+type KeyedPath = readonly [string, readonly (string | number)[]];
+
 /** A step of the words paths' tree (`pathTree`): the path that ends here, where one does, and the
  *  step each longer path takes next, by its key (`PATH_KEY`): a field's name, or a list's index. */
 interface PathStep {
@@ -1469,7 +1472,7 @@ interface PathStep {
 
 /** The words paths of a payload, each with its keys (`PATH_KEY`), as one tree: from its root, a
  *  path's keys lead to the step where that path ends. */
-function pathTree(keyed: readonly (readonly [string, readonly (string | number)[]])[]): PathStep {
+function pathTree(keyed: readonly KeyedPath[]): PathStep {
   const root: PathStep = { next: new Map() };
   for (const [path, keys] of keyed) {
     let step = root;
@@ -1510,17 +1513,23 @@ function withoutWords(
     if (typeof item === "string" && next?.path !== undefined) {
       taken.push({ path: next.path, name: key, text: item, holders: holders.slice() });
     } else {
-      // Defined, not assigned: an assignment of `__proto__` would set the prototype of `kept`.
-      Object.defineProperty(kept, key, {
-        value: withoutWords(item, next, holders, taken),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+      defineOwn(kept, key, withoutWords(item, next, holders, taken));
     }
   }
   holders.pop();
   return kept;
+}
+
+/** Sets `key` of `target` to `value` as an own field of it, defined and not assigned: an
+ *  assignment of `__proto__` would set the prototype of `target`. A list's items defined in their
+ *  order keep its length. */
+function defineOwn(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
 }
 
 /** A line that Go's `strings.TrimSpace` leaves empty: Unicode White_Space alone, which U+0085
@@ -1547,23 +1556,21 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
   return first.replace(/^[ \t\r]+/, "").startsWith(head);
 }
 
-/** NEXT LINE (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029): TOON writes each
- *  in a value as it is, where it escapes a new line, a carriage return and a tab, and a reader
- *  takes each for a line break. */
-const UNESCAPED_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
-
 /**
  * `card`, a card's fields, with each string value in it, at any depth, holding one space for each
- * character of `UNESCAPED_LINE_BREAKS` in it. Some of those values are another author's words that
- * stay a field: a comment's quote and its document's name, an ask's option labels and the options a
- * person chose, a payload the card shows as it came, such as an issue's new title. One that held
- * such a character would break the card's line, and its words after it would read as a field of
- * the card. A new line stays, which TOON escapes; keys stay as they are, and so do the words of a
- * block, which are no field. The objects and lists still to copy wait on a stack of the walk's own,
- * as in `parseFrameJSON`, so the walk takes time linear in the card's size at any depth, and a
- * payload too deep for the encoder fails in the encoder as before.
+ * character of `UNESCAPED_LINE_BREAKS` in it, which TOON writes in a value as it is, where it
+ * escapes a new line, a carriage return and a tab. Some of those values are another author's words
+ * that stay a field: a comment's quote and its document's name, an ask's option labels and the
+ * options a person chose, a payload the card shows as it came, such as an issue's new title. One
+ * that held such a character would break the card's line, and its words after it would read as a
+ * field of the card. A new line stays, which TOON escapes; keys stay as they are, and so do the
+ * words of a block, which are no field. A card none of whose strings holds one is itself, copied
+ * nowhere (`holdsUnescapedBreak`). The objects and lists still to read or to copy wait on a stack
+ * of the walk's own, as in `parseFrameJSON`, so each walk takes time linear in the card's size at
+ * any depth, and a payload too deep for the encoder fails in the encoder as before.
  */
 function fieldsOnTheirLines(card: object): object {
+  if (!holdsUnescapedBreak(card)) return card;
   const copy = {};
   const pending: [object, object][] = [[card, copy]];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
@@ -1577,17 +1584,25 @@ function fieldsOnTheirLines(card: object): object {
         pending.push([item, held]);
         value = held;
       }
-      // Defined, not assigned: an assignment of `__proto__` would set the prototype of `to`. A
-      // list's items are defined in their order, which keeps its length.
-      Object.defineProperty(to, key, {
-        value,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
+      defineOwn(to, key, value);
     }
   }
   return copy;
+}
+
+/** Whether a string value of `card`, at any depth, holds a character of `UNESCAPED_LINE_BREAKS`. */
+function holdsUnescapedBreak(card: object): boolean {
+  const pending: object[] = [card];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    for (const item of Object.values(next)) {
+      if (typeof item === "string") {
+        if (item.search(UNESCAPED_LINE_BREAKS) !== -1) return true;
+      } else if (isObject(item)) {
+        pending.push(item);
+      }
+    }
+  }
+  return false;
 }
 
 /**
