@@ -262,13 +262,15 @@ type sessionsLive struct {
 // scripts/e2e/approved-version-news.sh runs it with `-run '^$' -bench
 // '^BenchmarkRealSessionsTellAndAnswerANewVersion$' -benchtime=1x`, so it runs once, on a real
 // model, for a person deciding on the prompts, and no `go test` of the package runs it, since no
-// job passes -bench. Its runs share every helper of the package's live proofs, which each take a
-// *testing.T (liveProof, the daemon's, the waits of internal/testwait, which read the test's
-// deadline), and a benchmark has none: so it runs them as one test of its own through
-// testing.RunTests, the function `go test` runs a package's tests with, given a matcher that
-// takes it whatever -test.run says (the script's `^$`, which keeps every test out). A missing
-// model key fails it, as any fault of the runs does.
+// job passes -bench. A missing model key fails it, as any fault of the runs does.
 func BenchmarkRealSessionsTellAndAnswerANewVersion(b *testing.B) {
+	// Why RunTests: every run uses the helpers of the package's live proofs, and they take a
+	// *testing.T and need what only a test has: t.Run, for each run's subtest (sessionsLive.run),
+	// and t.Deadline, which internal/testwait's bounded waits read. A benchmark's *testing.B has
+	// neither. So the body runs as one test of its own through testing.RunTests, the function
+	// `go test` runs a package's tests with, given a matcher that takes it whatever -test.run says
+	// (the script's `^$`). The body keeps no Test name, so go test and the R3 search see only this
+	// benchmark, and a body that failed fails it here.
 	every := func(string, string) (bool, error) { return true, nil }
 	if !testing.RunTests(every, []testing.InternalTest{{Name: "RealSessionsTellAndAnswerANewVersion", F: realSessionsTellAndAnswerANewVersion}}) {
 		b.Fatal("part two failed; its plan, its runs and the line of each are above")

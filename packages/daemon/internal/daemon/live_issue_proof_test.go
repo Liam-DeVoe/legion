@@ -1,8 +1,8 @@
 // The harness of this package's live proofs of one issue on an open pull request, whose roles the
 // fake runtime launches and the driver plays over the daemon's worker stream and HTTP routes:
-// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
-// phase_entry_converge_live_test.go, each a test CI's daemon-live job runs by name, and
-// conflict_merger_live_test.go, built with `-tags e2e` by scripts/e2e/conflict-merger.sh. Each
+// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go,
+// phase_entry_converge_live_test.go and conflict_merger_live_test.go, each a test CI's daemon-live
+// job runs by name. Each
 // driver embeds liveIssueProof, liveProof (live_proof_test.go) grown for that one issue: the
 // issue's seed and the daemon's boot over the fake runtime; the reads of a claim's token, its
 // launch and the issue's state; each role's agent, as the registered session it is over HTTP

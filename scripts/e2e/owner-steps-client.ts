@@ -2,8 +2,8 @@
  * The plugin's own daemon client, driven against a real daemon: one call of the `legion` tool's
  * client per run, as `packages/pi-legion/src/tools.ts` and `packages/pi-shared/src/legion-phase-ops.ts`
  * make it. The Go driver `TestOwnerStepsClientLive`
- * (`packages/daemon/internal/daemon/owner_steps_client_live_test.go`, run by
- * `scripts/e2e/owner-steps-client.sh`) boots the whole daemon and runs this script once per call:
+ * (`packages/daemon/internal/daemon/owner_steps_client_live_test.go`, run by ci.yaml's daemon-live
+ * job) boots the whole daemon and runs this script once per call:
  *
  *   OWNER_STEPS_CLIENT_REQUEST='<json>' [OWNER_STEPS_CLIENT_ROOT=<checkout>] bun scripts/e2e/owner-steps-client.ts
  *
