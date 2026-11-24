@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
 // next block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
-// sources, and pins the connection string it answers with. A host with no python3 or no libpq
-// skips them, naming what it lacks. The last block runs lib/loopback-dsn.sh's helpers under
-// `set -x` over stand-ins for python3 and psql, and reads where the trace holds the DSN.
+// sources, and pins the connection string it answers with. A host with no python3 fails them,
+// naming it; a host with no libpq skips them naming it, and fails them so under GITHUB_ACTIONS.
+// The last block runs lib/loopback-dsn.sh's helpers under `set -x` over stand-ins for python3
+// and psql, and reads where the trace holds the DSN.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -61,19 +62,19 @@ function rewrite(dsn: string, database: string): { code: number; url: string; re
   };
 }
 
-const withoutPython = skipWithout("python3");
-// The helper refuses every DSN where this host has no libpq, and says so in that refusal.
-const withoutLibpq =
-  !withoutPython && guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq");
-if (withoutLibpq) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. The helper reads each DSN with libpq, and ` +
-      `ctypes.util.find_library("pq") finds none on this host; install libpq5.`
-  );
-}
-const skip = withoutPython || withoutLibpq;
+// Every row runs the helper under python3, so a host without it fails each row by name, never
+// skipping; the helper refuses every DSN where this host has no libpq, and says so in that
+// refusal, which skips the rows outside CI and fails them by name under GITHUB_ACTIONS.
+const host = hostGate({
+  never: ["python3"],
+  reason:
+    hostTool("python3") !== null &&
+    guard("postgres://127.0.0.1:5433/postgres").refusal.includes("no libpq")
+      ? 'The helper reads each DSN with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.'
+      : "",
+});
 
-describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {
+host.describe("loopback-dsn.py takes a loopback DSN", () => {
   test("the DSN a run is given prints its host", () => {
     const answer = guard(`postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable`);
     expect(answer).toEqual({ code: 0, host: "127.0.0.1", refusal: "" });
@@ -151,7 +152,7 @@ describe.skipIf(skip)("loopback-dsn.py takes a loopback DSN", () => {
   });
 });
 
-describe.skipIf(skip)("loopback-dsn.py refuses the host libpq reads", () => {
+host.describe("loopback-dsn.py refuses the host libpq reads", () => {
   // libpq ends the user name at the first `@`, and a `?` does not end it, so the host of each of
   // these two is evil.example while the authority up to the first `?` reads localhost.
   test("a `?` before the `@` does not end the user name", () => {
@@ -211,7 +212,7 @@ describe.skipIf(skip)("loopback-dsn.py refuses the host libpq reads", () => {
   });
 });
 
-describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host", () => {
+host.describe("loopback-dsn.py refuses what it cannot read as one host", () => {
   // Each DSN below carries the password in its userinfo, and each refusal is read back whole, so
   // the assertion itself says that no part of that userinfo reached the refusal.
   test("a newline hides the `host=` key from a line reader, not from libpq", () => {
@@ -301,7 +302,7 @@ describe.skipIf(skip)("loopback-dsn.py refuses what it cannot read as one host",
   });
 });
 
-describe.skipIf(skip)("lib/loopback-dsn.sh's run_database_url names the run's own database", () => {
+host.describe("lib/loopback-dsn.sh's run_database_url names the run's own database", () => {
   const database = "ppd_7_head_1_1";
   // Each row is a DSN the guard takes, the connection string the function answers with, and the
   // host the DSN names. The first two hold a `?` inside the user name, where libpq starts no
