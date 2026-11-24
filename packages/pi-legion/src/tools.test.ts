@@ -2587,18 +2587,27 @@ test("read_state's summary names two claims of one role apart on the pause's lin
     by: { kind: "operator" },
     reason: "a provider outage",
     waitsOn: [
-      { claim: "legion-acme-infra-100-tester", issue: "INFRA-100", role: "tester", askedAt: "2026-11-16T08:00:00Z" },
-      { claim: "legion-acme-infra-100-tester-2", issue: "INFRA-100", role: "tester", askedAt: "2026-11-16T08:00:00Z" },
+      {
+        claim: "legion-acme-infra-100-tester",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
+      {
+        claim: "legion-acme-infra-100-tester-2",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
     ],
     held: [],
   };
   const second = (await summaryLinesOf(recordingDaemon({ state: stepped }).daemon)).filter((line) =>
     line.startsWith("paused: ")
   );
-  expect(/; waits on 2 claims — (.+); holds no row$/.exec(second[0] ?? "")?.[1]?.split(", ")).toEqual([
-    "INFRA-100 tester (claim legion-acme-infra-100-tester)",
-    "INFRA-100 tester",
-  ]);
+  expect(
+    /; waits on 2 claims — (.+); holds no row$/.exec(second[0] ?? "")?.[1]?.split(", ")
+  ).toEqual(["INFRA-100 tester (claim legion-acme-infra-100-tester)", "INFRA-100 tester"]);
 });
 
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
