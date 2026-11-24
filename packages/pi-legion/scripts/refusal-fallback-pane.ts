@@ -95,6 +95,11 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
  */
 const HOST_RESTORE_FLOOR_MS = 300_000;
 
+/** The wait the final pane's 429 asks for (`retry-after: 60`), which the host suppresses the model
+ * for when the transport surfaces that 429 rather than retrying it. It is the wait that pane's
+ * return takes, as `HOST_RESTORE_FLOOR_MS` is the retried pane's. */
+const PROVIDER_RETRY_AFTER_MS = 60_000;
+
 /** How long the stand-in's `sleep` holds each request apart: a thirteenth of the span the pane is
  * driven for, which is about a minute at the proof's own numbers, so the model of each request
  * reads as the minute it came at. */
@@ -160,7 +165,7 @@ interface Pane {
   trouble: string | undefined;
 }
 
-/** One of the three panes: what it is called, the issue it is the architect of, and the answer its
+/** One of the four panes: what it is called, the issue it is the architect of, and the answer its
  * stand-in gives each turn. */
 interface Run {
   readonly label: string;
@@ -172,6 +177,12 @@ interface Run {
   /** True for the two panes a content filter refuses: their return waits out the cooldown. A rate
    * limit's waits on the host's own suppression instead. */
   readonly refused: boolean;
+  /** For a rate-limited pane (`refused` false): how long the host suppresses the model, which is
+   * the wait the return takes. The 429 the transport retries leaves the host no wait to read, so it
+   * suppresses for its own floor (`HOST_RESTORE_FLOOR_MS`); the 429 the transport surfaces carries
+   * the provider's wait, so the host suppresses for that. Undefined for a refused pane, whose
+   * return waits out the cooldown instead. */
+  readonly suppressionMs?: number;
 }
 
 /** What the stand-in answered one request with: the response, and the words the pane's line
@@ -265,7 +276,10 @@ function filtered(model: string, nth: number, before?: string): Answer {
   };
 }
 
-/** A turn refused by a rate limit, with the wait the provider asks for. */
+/** A turn refused by a rate limit, with the wait the provider asks for. Oh My Pi's OpenAI
+ * transport retries this by itself, honouring the wait, until its first-event budget ends: the
+ * host never sees the 429, only the stream timeout the budget leaves, which carries no wait, so the
+ * host suppresses the model for its own floor. */
 function rateLimited(): Answer {
   return {
     response: new Response(
@@ -273,6 +287,27 @@ function rateLimited(): Answer {
       { status: 429, headers: { "content-type": "application/json", "retry-after": "60" } }
     ),
     what: "429 rate limit, retry-after 60",
+  };
+}
+
+/** The same 429, with `x-should-retry: false`, the header a gateway sets to say the request must
+ * not be retried (`getShouldRetryFromHeaders`, `@oh-my-pi/pi-ai utils/retry-after.ts`). The
+ * transport takes it as terminal and surfaces the 429 to the host at once, so the host walks the
+ * chain on the first request and suppresses the model for the wait the 429 asked for. */
+function rateLimitedFinal(): Answer {
+  return {
+    response: new Response(
+      JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limit reached" } }),
+      {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "60",
+          "x-should-retry": "false",
+        },
+      }
+    ),
+    what: "429 rate limit, retry-after 60, x-should-retry false",
   };
 }
 
@@ -314,11 +349,23 @@ const runs: readonly Run[] = [
   {
     label: "rate-limited",
     key: "RLIM-1",
-    what: "a 429 with retry-after 60, which is no content filter: the return waits on the host's own suppression",
+    what: "a 429 with retry-after 60 the transport retries: the return waits on the host's floor suppression",
     refused: false,
+    suppressionMs: HOST_RESTORE_FLOOR_MS,
     answer: (pane, model, nth) =>
       model === STRONG_ID && pane.fellBackAt === undefined
         ? rateLimited()
+        : pacing(pane, model, nth),
+  },
+  {
+    label: "rate-limited-final",
+    key: "RLIF-1",
+    what: "a 429 with retry-after 60 and x-should-retry false: the host walks at once and suppresses for the wait",
+    refused: false,
+    suppressionMs: PROVIDER_RETRY_AFTER_MS,
+    answer: (pane, model, nth) =>
+      model === STRONG_ID && pane.fellBackAt === undefined
+        ? rateLimitedFinal()
         : pacing(pane, model, nth),
   },
 ];
@@ -656,21 +703,29 @@ function verdictsFor(run: Run, pane: Pane): Verdict[] {
   if (armed === undefined || fellBack === undefined) return verdicts;
   const back = pane.served.find((served) => served.at >= fellBack && served.model === STRONG_ID);
   if (!run.refused) {
-    // The host suppresses a model it rate-limited for as long as the provider asked for, and the
-    // arming is due the moment that suppression ends — a clock of the host's, and nothing like the
-    // cooldown a refusal waits out.
+    // The host suppresses the rate-limited model for a wait of its own, and the plugin returns the
+    // session at the first request after that suppression ends — a clock of the host's, and nothing
+    // like the cooldown a refusal waits out. The wait is `run.suppressionMs`: the host's own floor
+    // for the 429 the transport retried away (no wait left to read), and the provider's retry-after
+    // for the 429 it surfaced. The return comes no earlier than that wait (a plugin that did not
+    // wait for the suppression returns before it) and within RETURN_SLACK_MS of it, one request's
+    // cadence over, which is well short of the cooldown (a plugin that read the 429's fallback as a
+    // refusal's waits the whole cooldown out).
+    const wait = run.suppressionMs ?? 0;
     verdicts.push({
       name: `${run.label}-comes-back-on-the-suppression`,
       measured:
         back === undefined
           ? `the session never went back to ${STRONG_ID}`
-          : `back on ${STRONG_ID} at ${minute(back.at)}, ${Math.round((back.at - fellBack) / 1000)}s after the fallback, with the cooldown at ${Math.round(cooldownMs / 1000)}s`,
+          : `back on ${STRONG_ID} at ${minute(back.at)}, ${Math.round((back.at - fellBack) / 1000)}s after the fallback, with the host's wait ${Math.round(wait / 1000)}s and the cooldown ${Math.round(cooldownMs / 1000)}s`,
       failure:
         back === undefined
           ? `the session never went back to ${STRONG_ID}`
-          : back.at - fellBack >= cooldownMs / 2
-            ? `it went back ${Math.round((back.at - fellBack) / 1000)}s after the fallback, which is the cooldown's own clock rather than the host's suppression`
-            : "",
+          : back.at - fellBack < wait
+            ? `it went back ${Math.round((back.at - fellBack) / 1000)}s after the fallback, before the host's ${Math.round(wait / 1000)}s suppression ended`
+            : back.at - fellBack > wait + RETURN_SLACK_MS
+              ? `it went back ${Math.round((back.at - fellBack) / 1000)}s after the fallback, more than one request past the host's ${Math.round(wait / 1000)}s suppression (the cooldown is ${Math.round(cooldownMs / 1000)}s)`
+              : "",
     });
     return verdicts;
   }
