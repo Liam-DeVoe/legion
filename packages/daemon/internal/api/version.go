@@ -3581,9 +3581,10 @@ package api
 // It kept 223 at the forward merge of 2026-11-23 that brought main in at
 // 7cb1f229367c76d42b3097ad6a15bb576b178344, which carried 219, cybermonklabs/legion#4611's owner
 // plan, then the number the base carried: 223 was still above it.
-// It kept 223 at the forward merges of 2026-11-23 that brought main in at
-// e9645ebfd1c4a64be3d00086db6e2f94677e65dd and then at f77fee3c6990ad4be8d688478b937d723c50e417,
-// which carried 220, cybermonklabs/legion#4930's assignment plans: 223 was still above it.
+// It kept 223 at the forward merges of 2026-11-23 and 2026-11-24 that brought main in at
+// e9645ebfd1c4a64be3d00086db6e2f94677e65dd, at f77fee3c6990ad4be8d688478b937d723c50e417, which
+// carried 220, cybermonklabs/legion#4930's assignment plans, and at
+// b83f99e784d560ca06e9ad045f4a4960c91bcc57: 223 was still above it.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
