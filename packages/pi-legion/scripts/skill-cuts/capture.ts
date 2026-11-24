@@ -49,12 +49,30 @@
  * the arm's listing is the hint Oh My Pi would list for the arm's text: each hint is kept in the
  * runner's cache (`<cacheDir>/hints/<key of the Oh My Pi version, the name and the
  * description>.json`) with the key Oh My Pi gave it, and written into the scratch profile's
- * database before the run. A skill the cache lacks needs one run more first, in which the
- * recorder sends each hint request to `options.hints` (the real gateway, `gatewayHints`) and holds
- * the turn until every missing hint is written; Oh My Pi then stores each hint itself, and the
- * capture keeps it. Every capture of one skill text under one Oh My Pi version therefore lists the
- * same hint. A skill whose frontmatter sets `hide` or `disable-model-invocation` is installed but
- * never listed, so it gets no hint.
+ * database before the run. A skill the cache lacks needs one run more first, the hint run, in
+ * which the recorder sends each hint request to `options.hints` (the real gateway,
+ * `gatewayHints`) and holds the turn until Oh My Pi has stored the row of each missing hint in its
+ * database, which the recorder reads as it waits; the capture keeps each hint from its row. Every
+ * capture of one skill text under one Oh My Pi version therefore lists the same hint. A skill whose
+ * frontmatter sets `hide` or `disable-model-invocation` is installed but never listed, so it gets
+ * no hint. Neither is a copy whose body and frontmatter are those of a copy of its name that Oh My
+ * Pi admitted before it, the bare copy or another namespace's (a profile that installs one text
+ * twice, once as `<namespace>/<name>`): Oh My Pi drops it (`listedSkills`), so the capture owes it
+ * no hint and lists it nowhere.
+ *
+ * **The hint run's bounds.** Oh My Pi asks for at most 4 hints at a time and gives a request up
+ * after 30 s, storing no hint of it and asking no more for it in that run (skill-descriptions.ts
+ * at the pinned tag: `compressionSlots`, line 40, and `AbortSignal.timeout(30_000)` in
+ * `createSkillDescriptionCompressor`, line 120). So the turn waits as long as hint requests and
+ * answers keep coming, and ends once HINT_IDLE_MS (60 s) pass with neither: Oh My Pi then asks for
+ * no more. It is not bounded as a whole: a profile of more than 200 skills asks more than 100
+ * hints, at about 1.6 s each with 4 at a time. The run itself is, at its time limit plus 30 s for
+ * each 4 hints owed, the longest Oh My Pi's own limits let its hint requests take. A hint Oh My Pi
+ * stored no row of fails the capture, which says why from what the recorder saw: no request came,
+ * the answer had not come when the turn ended, or it came after Oh My Pi's 30 s. Oh My Pi drops an
+ * answer only in those last two ways: it writes each row as soon as it has read its answer
+ * (`compressSkill`, lines 539-551), and at exit it waits up to 4 s for requests in flight
+ * (`STORE_CLOSE_GRACE_MS`, line 38) and then drops any later answer (`isClosed`, line 543).
  *
  * **A reply Oh My Pi keeps no hint of.** Oh My Pi keeps a reply, trimmed, only when it is not
  * empty, is one line and has at most 160 characters (`validCompression`, lines 191-195). A reply
@@ -191,14 +209,16 @@ import {
   InjectionRefused,
 } from "./arms";
 import type { Case } from "./cases";
-import { json, pastLimit, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
+import { json, ompText, pastLimit, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
 import {
   buildContext,
+  type CaseContext,
   type ContextRecord,
   cacheKey,
   type InstalledSkill,
   legionRole,
   type RepoSource,
+  readFrontmatter,
 } from "./context";
 import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
@@ -212,8 +232,19 @@ const PROFILE = "capture";
 const PLACEHOLDER = "placeholder prompt";
 /** The hook file Oh My Pi loads. */
 const HOOK = path.join(import.meta.dir, "replay-hook.ts");
-/** The longest the recorder holds a run's turn while it waits for the hints it is owed. */
-const HINT_WAIT_MS = 180_000;
+/** Oh My Pi's limit on one hint request: it gives the request up after 30 s, stores no hint of it
+ *  and asks no more for it in that run (skill-descriptions.ts at the pinned tag,
+ *  `createSkillDescriptionCompressor`'s `AbortSignal.timeout(30_000)`). */
+const OMP_HINT_TIMEOUT_MS = 30_000;
+/** How many hint requests Oh My Pi has in flight at once (its `compressionSlots`). */
+const OMP_HINT_SLOTS = 4;
+/** How long the hint run's turn waits with no hint request and no hint answer: twice
+ *  OMP_HINT_TIMEOUT_MS. While Oh My Pi still owes a hint, each request it has in flight ends
+ *  within OMP_HINT_TIMEOUT_MS, answered or given up, and the slot it frees starts the next; so
+ *  this long with neither means it asks for no more. */
+const HINT_IDLE_MS = 2 * OMP_HINT_TIMEOUT_MS;
+/** How often the hint run's turn reads Oh My Pi's database for the rows it is owed. */
+const HINT_POLL_MS = 100;
 /** The longest one Oh My Pi run may take, by default. */
 const RUN_TIMEOUT_MS = 600_000;
 /** Oh My Pi's own bound on a hint it keeps (`MAX_COMPRESSED_CHARS`). */
@@ -428,8 +459,13 @@ export interface CaptureOptions {
   readonly hintDraw?: number;
   /** Oh My Pi settings files laid over the scratch profile's, as `PI_CONFIG_FILES` names them. */
   readonly configFiles?: readonly string[];
-  /** The longest one Oh My Pi run may take. */
+  /** The longest one Oh My Pi run may take. The hint run may take OMP_HINT_TIMEOUT_MS more for
+   *  each OMP_HINT_SLOTS hints it is owed (the file's header, "The hint run's bounds"). */
   readonly timeoutMs?: number;
+  /** How long the hint run's turn waits with no hint request and no hint answer, HINT_IDLE_MS by
+   *  default: a test's shorter wait. It must be more than OMP_HINT_TIMEOUT_MS, or the turn can
+   *  end while Oh My Pi still waits for an answer. */
+  readonly hintIdleMs?: number;
   /** What the body shows of the session the case stands for, in place of the capture's own
    *  values (`sessionFacts`; the file's header, "The harness strings"). */
   readonly session: SessionFacts;
@@ -701,6 +737,66 @@ function putDescriptions(database: string, rows: readonly (readonly [string, str
   } finally {
     db.close();
   }
+}
+
+/** The rows of the `skill_descriptions` table of the Oh My Pi database file `database`. */
+function descriptionRows(database: string): { key: string; description: string }[] {
+  const db = new Database(database);
+  try {
+    return db.query("SELECT key, description FROM skill_descriptions").all() as {
+      key: string;
+      description: string;
+    }[];
+  } finally {
+    db.close();
+  }
+}
+
+/** The body of a SKILL.md's text: what follows the line that closes its frontmatter block (as
+ *  `readFrontmatter` finds that block), CRLF read as LF; the whole text when it has no block. */
+function skillBody(text: string): string {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const end = normalized.startsWith("---") ? normalized.indexOf("\n---", 3) : -1;
+  if (end === -1) return normalized;
+  const next = normalized.indexOf("\n", end + 4);
+  return next === -1 ? "" : normalized.slice(next + 1);
+}
+
+/**
+ * The installed skills Oh My Pi lists, in `context.skills`' order: each that is not hidden, less
+ * each copy it drops. Oh My Pi admits the copies of `skillsDir` first, then those of each
+ * namespaced directory in the profile's order (`skills.customDirectories`), and drops a copy whose
+ * body and frontmatter are those of a copy it admitted before under the same name, which it then
+ * neither lists nor asks a hint of (extensibility/skills.ts at the pinned tag, `resolveCollision`:
+ * "Any other candidate identical to a registered copy → silently dropped"). So a profile that
+ * installs one text twice, once under `<namespace>/<name>`, lists it once, under the copy admitted
+ * first.
+ */
+function listedSkills(
+  context: Pick<CaseContext, "skills" | "namespacedDirs">
+): readonly InstalledSkill[] {
+  const rank = (skill: InstalledSkill) =>
+    context.namespacedDirs.findIndex((dir) => skill.dir.startsWith(`${dir}${path.sep}`));
+  const admitted: { name: string; body: string; frontmatter: Record<string, unknown> }[] = [];
+  const dropped = new Set<InstalledSkill>();
+  // A stable sort: the copies of `skillsDir` (rank -1) first, each namespaced directory's after.
+  for (const skill of context.skills.toSorted((a, b) => rank(a) - rank(b))) {
+    const text = ompText(readFileSync(path.join(skill.dir, "SKILL.md")));
+    const copy = {
+      name: skill.name.split("/").at(-1) ?? skill.name,
+      body: skillBody(text),
+      frontmatter: readFrontmatter(text),
+    };
+    const same = admitted.some(
+      (each) =>
+        each.name === copy.name &&
+        each.body === copy.body &&
+        Bun.deepEquals(each.frontmatter, copy.frontmatter)
+    );
+    if (same) dropped.add(skill);
+    else admitted.push(copy);
+  }
+  return context.skills.filter((skill) => !skill.hidden && !dropped.has(skill));
 }
 
 /** The files of the capture of `caseId`'s arm `arm` under `outDir`. */
@@ -1658,11 +1754,12 @@ export async function captureBody(
   // Each listed skill's line: the line its session recorded where one applies (`recordedLineOf`;
   // the file's header, "A recorded listing line"), else the hint of this capture's draw, from the
   // cache where it holds one, or the cut-down description where Oh My Pi kept no hint. A hidden
-  // skill is not listed, so Oh My Pi writes it no hint.
+  // skill is not listed, so Oh My Pi writes it no hint, and neither is a copy whose text is that
+  // of a copy of its name Oh My Pi admitted first (`listedSkills`).
   const draw = options.hintDraw ?? 1;
   const hintDir = path.join(options.cacheDir, "hints");
   const keyDir = path.join(options.cacheDir, "hint-keys");
-  const listed = context.skills.filter((skill) => !skill.hidden);
+  const listed = listedSkills(context);
   const hints = listed.map((skill): ListedHint => {
     const from = context.record.skills.find((each) => each.name === skill.name)?.from;
     const recorded = recordedLineOf(skill, from, options.recordedLines ?? []);
@@ -1718,8 +1815,13 @@ export async function captureBody(
       .map((h) => h.skill.name)
   );
   const written = new Map<string, HintReply>();
-  const allWritten = Promise.withResolvers<void>();
-  if (wanted.size === 0) allWritten.resolve();
+  // When each owed hint's request reached the recorder (performance.now()), how long its answer
+  // took from then, and when the last hint request came or answer went: the hint run's turn ends
+  // once `hintIdleMs` pass after that (HINT_IDLE_MS).
+  const asked = new Map<string, number>();
+  const answerMs = new Map<string, number>();
+  let lastHintEvent = 0;
+  const hintIdleMs = options.hintIdleMs ?? HINT_IDLE_MS;
   const hintCalls: CaptureRecord["hintCalls"][number][] = [];
   const otherRequests: CaptureRecord["otherRequests"][number][] = [];
   const turns: { readonly body: string; readonly headers: Record<string, string> }[] = [];
@@ -1729,6 +1831,74 @@ export async function captureBody(
   // the run in flight (`ompRun`) is ended.
   let hintFailure: { readonly error: unknown } | undefined;
   let ompRun: { kill(signal: "SIGKILL"): void } | undefined;
+  /** Each owed hint the recorder has answered whose row is among `rows` of Oh My Pi's database,
+   *  by skill name, with its answer: the row of the text Oh My Pi lists for that answer (`shown`:
+   *  the answer trimmed, under a hint's key, where Oh My Pi keeps it; else the cut-down
+   *  description, under the key of a reply it kept no hint of, with why it kept none), neither
+   *  seeded nor another skill's. */
+  const storedRows = (rows: readonly { key: string; description: string }[]) => {
+    const taken = new Set(seeded);
+    const found = new Map<
+      string,
+      {
+        readonly row: { key: string; description: string };
+        readonly reply: HintReply;
+        readonly reason: string | undefined;
+        readonly shown: string;
+      }
+    >();
+    for (const entry of hints) {
+      const reply = written.get(entry.skill.name);
+      if (!wanted.has(entry.skill.name) || reply === undefined) continue;
+      // A reply Oh My Pi keeps, it stores under the skill's key. Of any other it keeps no hint,
+      // and it records the reply under that key, its rule's revision and the model, with the
+      // cut-down description it lists instead. The row it wrote shows which it did.
+      const reason = unkeptReason(reply.text);
+      const shown =
+        reason === undefined ? reply.text.trim() : previewDescription(entry.skill.description);
+      const rowKey = reason === undefined ? HINT_ROW : UNKEPT_ROW;
+      const row = rows.find(
+        (r) => r.description === shown && rowKey.test(r.key) && !taken.has(r.key)
+      );
+      if (row === undefined) continue;
+      taken.add(row.key);
+      found.set(entry.skill.name, { row, reply, reason, shown });
+    }
+    return found;
+  };
+  /** Whether Oh My Pi has stored the row of every hint the hint run owes. */
+  const allStored = (): boolean => {
+    if (written.size < wanted.size) return false;
+    try {
+      return storedRows(descriptionRows(database)).size === wanted.size;
+    } catch {
+      // A read that meets Oh My Pi's write is made again at the next poll.
+      return false;
+    }
+  };
+  /** Why the hint run left the hint of `entry` unstored, from what the recorder saw. */
+  const unstored = (entry: ListedHint): string => {
+    const name = entry.skill.name;
+    const reply = written.get(name);
+    if (!asked.has(name)) {
+      return `Oh My Pi asked for no hint of skill ${name}, and the hint run's turn ended after ${hintIdleMs} ms with no hint request or answer`;
+    }
+    if (reply === undefined) {
+      return `Oh My Pi asked for the hint of skill ${name}, and its answer had not come when the hint run's turn ended, ${hintIdleMs} ms after the last hint request or answer; Oh My Pi gives a hint request up after ${OMP_HINT_TIMEOUT_MS} ms`;
+    }
+    const took = answerMs.get(name) ?? 0;
+    const wrote =
+      entry.recorded === undefined
+        ? `the model wrote ${JSON.stringify(reply.text)}`
+        : `the recorder answered with its recorded line ${JSON.stringify(reply.text)}`;
+    if (took > OMP_HINT_TIMEOUT_MS) {
+      return `Oh My Pi stored no hint of skill ${name}: ${wrote} ${took} ms after Oh My Pi asked, past the ${OMP_HINT_TIMEOUT_MS} ms Oh My Pi waits for a hint before it gives the request up and asks no more for it in that run`;
+    }
+    const reason = unkeptReason(reply.text);
+    return reason === undefined
+      ? `Oh My Pi stored no hint of skill ${name}: ${wrote}, a hint Oh My Pi keeps, ${took} ms after it asked, and its database holds no row of it`
+      : `Oh My Pi stored no record of the reply it kept no hint of for skill ${name}: ${wrote} (${reason}) ${took} ms after it asked, and its database holds no row of the cut-down description ${JSON.stringify(previewDescription(entry.skill.description))} under the skill's key and a model`;
+  };
   const route = async (request: RecordedRequest): Promise<Response | undefined> => {
     // The stand-in daemon: a made-up registration and its ready, and an empty turn outcome.
     // Every other route of every endpoint is refused.
@@ -1796,16 +1966,29 @@ export async function captureBody(
         turns.push({ body: request.body, headers: anthropicHeaders(request.headers) });
         return undefined;
       }
-      // The hint run's turn waits for the hints it is owed, then a moment for Oh My Pi to store
-      // the last one before the run ends.
-      await Promise.race([allWritten.promise, Bun.sleep(HINT_WAIT_MS)]);
-      await Bun.sleep(500);
+      // The hint run's turn is held until Oh My Pi has stored the row of each hint it is owed, and
+      // ends as soon as it has: the rows themselves, read from its database, say the hints are
+      // in. It ends sooner when a hint write fails or the run ends, and once `hintIdleMs` pass
+      // with no hint request and no answer, when Oh My Pi asks for no more (HINT_IDLE_MS): the
+      // check after the run names each hint left unstored, and why.
+      lastHintEvent = performance.now();
+      while (
+        hintRun &&
+        hintFailure === undefined &&
+        performance.now() - lastHintEvent < hintIdleMs &&
+        !allStored()
+      ) {
+        await Bun.sleep(HINT_POLL_MS);
+      }
       return undefined;
     }
     if (hintRun && skill !== undefined && wanted.has(skill)) {
       // A skill listed under its recorded line is answered with that line, and no model is asked:
       // the row Oh My Pi stores of it gives Oh My Pi's key of its text.
       const line = hints.find((entry) => entry.skill.name === skill)?.recorded;
+      const askedAt = performance.now();
+      asked.set(skill, askedAt);
+      lastHintEvent = askedAt;
       try {
         const reply: HintReply =
           line === undefined
@@ -1813,7 +1996,8 @@ export async function captureBody(
             : { text: line.text, model: body.model };
         if (line === undefined) hintCalls.push({ skill, model: reply.model, usage: reply.usage });
         written.set(skill, reply);
-        if ([...wanted].every((name) => written.has(name))) allWritten.resolve();
+        lastHintEvent = performance.now();
+        answerMs.set(skill, Math.round(lastHintEvent - askedAt));
         return sseResponse(
           messageSse({
             id: `msg_hint_${written.size}`,
@@ -1824,7 +2008,6 @@ export async function captureBody(
         );
       } catch (error) {
         hintFailure ??= { error };
-        allWritten.resolve();
         ompRun?.kill("SIGKILL");
         return new Response(`the hint could not be written: ${messageFor(error)}`, {
           status: 502,
@@ -1951,7 +2134,13 @@ export async function captureBody(
       }
     );
     ompRun = child;
-    const timeoutMs = options.timeoutMs ?? RUN_TIMEOUT_MS;
+    // The hint run may take OMP_HINT_TIMEOUT_MS more for each OMP_HINT_SLOTS hints it is owed: the
+    // longest Oh My Pi's own limits let its hint requests take, so the limit never ends a hint run
+    // that is still going. It is far above any run measured: a profile's 115 hints took 181 s on
+    // the pod (2026-11-24), where this gives 600 s + 29 x 30 s = 1470 s.
+    const timeoutMs =
+      (options.timeoutMs ?? RUN_TIMEOUT_MS) +
+      (hintRun ? Math.ceil(wanted.size / OMP_HINT_SLOTS) * OMP_HINT_TIMEOUT_MS : 0);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -1988,49 +2177,26 @@ export async function captureBody(
     let hintRunMs = 0;
     if (wanted.size > 0) {
       hintRun = true;
-      hintRunMs = await runOmp();
-      hintRun = false;
-      const db = new Database(database);
-      let rows: { key: string; description: string }[];
       try {
-        rows = db.query("SELECT key, description FROM skill_descriptions").all() as typeof rows;
+        hintRunMs = await runOmp();
       } finally {
-        db.close();
+        hintRun = false;
       }
-      const taken = new Set(seeded);
+      const stored = storedRows(descriptionRows(database));
       // Each recorded line whose key the hint run gave, under that key.
       const learned: [string, string][] = [];
+      // Each owed hint Oh My Pi stored no row of. Every hint it did store is kept first, so that
+      // a run made again asks for the others alone.
+      const unstoredHints: ListedHint[] = [];
       for (const entry of hints) {
-        if (!wanted.has(entry.skill.name)) continue;
-        const reply = written.get(entry.skill.name);
-        if (reply === undefined) {
-          throw new Error(
-            `case ${c.id} arm ${arm.name}: Oh My Pi asked for no hint of skill ${entry.skill.name} within ${HINT_WAIT_MS} ms`
-          );
-        }
         const name = entry.skill.name;
-        // A reply Oh My Pi keeps, it stores under the skill's key. Of any other it keeps no hint,
-        // and it records the reply under that key, its rule's revision and the model, with the
-        // cut-down description it lists instead. The row it wrote shows which it did.
-        const reason = unkeptReason(reply.text);
-        const shown =
-          reason === undefined ? reply.text.trim() : previewDescription(entry.skill.description);
-        const rowKey = reason === undefined ? HINT_ROW : UNKEPT_ROW;
-        const row = rows.find(
-          (r) => r.description === shown && rowKey.test(r.key) && !taken.has(r.key)
-        );
-        const wrote =
-          entry.recorded === undefined
-            ? `the model wrote ${JSON.stringify(reply.text)}`
-            : `the recorder answered with its recorded line ${JSON.stringify(reply.text)}`;
-        if (row === undefined) {
-          throw new Error(
-            reason === undefined
-              ? `case ${c.id} arm ${arm.name}: Oh My Pi stored no hint of skill ${name}: ${wrote}, a hint Oh My Pi keeps, and its database holds no row of it`
-              : `case ${c.id} arm ${arm.name}: Oh My Pi stored no record of the reply it kept no hint of for skill ${name}: ${wrote} (${reason}), and its database holds no row of the cut-down description ${JSON.stringify(shown)} under the skill's key and a model`
-          );
+        if (!wanted.has(name)) continue;
+        const found = stored.get(name);
+        if (found === undefined) {
+          unstoredHints.push(entry);
+          continue;
         }
-        taken.add(row.key);
+        const { row, reply, reason, shown } = found;
         if (entry.recorded !== undefined) {
           // Oh My Pi's key of the skill text, which the key cache keeps; the line goes under it
           // below.
@@ -2061,6 +2227,14 @@ export async function captureBody(
         writeWhole(entry.file, json(cached));
         entry.cached = cached;
         entry.written = true;
+      }
+      const [firstUnstored, ...otherUnstored] = unstoredHints;
+      if (firstUnstored !== undefined) {
+        const others =
+          otherUnstored.length === 0
+            ? ""
+            : `; and ${otherUnstored.length} more owed hints are unstored (${otherUnstored.map((entry) => entry.skill.name).join(", ")}), each hint stored being kept in the cache`;
+        throw new Error(`case ${c.id} arm ${arm.name}: ${unstored(firstUnstored)}${others}`);
       }
       // Each recorded line whose key the hint run gave goes under that key, in place of the row Oh
       // My Pi stored, so Oh My Pi lists exactly that line.
