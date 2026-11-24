@@ -2013,9 +2013,9 @@ const legionPlanReason = legionPlanReasonRules(z.string(), {
 
 /** Which field of a plan's rating came alone: `"rating"` for a rating with no reason, `"reason"`
  * for a reason with no rating, and `undefined` for both or neither. The daemon takes the two only
- * together (`PLAN_RATING_INPUT`). The request schema below refuses either lone field, and the
- * `legion` tool's `handoff_complete` refuses each by its name, both by this, so the pair rule is
- * written once. */
+ * together (`PLAN_RATING_INPUT`). The two request schemas below refuse either lone field, and the
+ * `legion` tool's `handoff_complete` and `complete_step` refuse each by its name, all by this, so
+ * the pair rule is written once. */
 export function legionPlanRatingLoneField(
   rating: number | undefined,
   reason: string | undefined
