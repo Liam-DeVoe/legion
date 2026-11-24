@@ -40,11 +40,15 @@ import {
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { ownTree, ownWords, wordsOf } from "./decision-text";
-
-/** The word that opens a paragraph a decision's words give as its doubt, which the card draws
- *  with the unsure accent. */
-const UNSURE_PREFIX = "Unsure:";
+import {
+  isUnsureBlock,
+  ownTree,
+  ownWords,
+  plainParagraph,
+  UNSURE_PREFIX,
+  unsureWords,
+  wordsOf,
+} from "./decision-text";
 
 /** A decision as the cards below draw one (`entryDecision`): its name, the block it is, the asks
  *  it answers and the spec nodes it shaped beside the entry's own words, sum and standing. */
@@ -80,23 +84,9 @@ interface DecisionBlock {
   /** Whether the block is drawn as the plain words it holds rather than as markdown: the one
    *  block of an answer that chose options and wrote nothing (`entryBlocks`). */
   readonly plain?: true;
-}
-
-/** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
- *  nothing else. In the reading of such a paragraph the word stands in a first child that is
- *  plain text, since a mark over it - strong, a code span, a link - would have written its own
- *  characters first. */
-function isUnsureBlock(node: DisplayTree): boolean {
-  if (node.type !== "paragraph" || !Array.isArray(node.content)) {
-    return false;
-  }
-  const first = (node.content as DisplayTree[])[0];
-  const marks = first?.marks;
-  return (
-    typeof first?.text === "string" &&
-    (!Array.isArray(marks) || marks.length === 0) &&
-    first.text.startsWith(UNSURE_PREFIX)
-  );
+  /** Whether the block is the doubt the decision's node holds rather than a block of its text
+   *  (`entryBlocks`): no document text holds it, so a Change never quotes it. */
+  readonly fromNode?: true;
 }
 
 /** The blocks of a decision whose answer carried no reading of its text: a pod of the build
@@ -186,9 +176,24 @@ function entryDecision(entry: DecisionEntry): DrawnDecision {
  *  (`readDecisionBlocks`). An ask answered by the options chosen alone is the one entry whose
  *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
  *  it, and it is drawn as the plain words it is, as the Answers page draws a chosen label,
- *  rather than parsed. */
+ *  rather than parsed. The doubt a decision's node holds (`unsureWords`) is drawn last, as the
+ *  `Unsure:` paragraph it was moved from drew, unless the text still holds that paragraph. */
 function entryBlocks(entry: DecisionEntry, decision: DrawnDecision): readonly DecisionBlock[] {
-  if (entry.node.kind !== "ask" || entry.answer !== null) return readDecisionBlocks(decision);
+  if (entry.node.kind !== "ask" || entry.answer !== null) {
+    const blocks = readDecisionBlocks(decision);
+    const doubt = unsureWords(entry);
+    if (doubt === undefined || blocks.some((block) => block.unsure)) return blocks;
+    return [
+      ...blocks,
+      {
+        fromNode: true,
+        references: doubt,
+        text: doubt,
+        tree: { content: [plainParagraph(doubt)], type: "doc" },
+        unsure: true,
+      },
+    ];
+  }
   if (decision.text === "") return [];
   return [
     { plain: true, references: decision.text, text: decision.text, tree: undefined, unsure: false },
@@ -458,8 +463,8 @@ function WaitingDecision({
   const [changing, setChanging] = useState(false);
   // A change anchors on the decision's first block below its heading, by the words that block
   // holds: an anchor quote names the document's own text, which is what the server matches it
-  // against (`pmdoc.FindQuote`).
-  const quote = blocks[0]?.text;
+  // against (`pmdoc.FindQuote`). The doubt the node holds is no text of the document.
+  const quote = blocks.find((block) => block.fromNode === undefined)?.text;
   const keep = useKeyedWrite({
     inline: true,
     label: () => `Keep ${decision.heading}`,

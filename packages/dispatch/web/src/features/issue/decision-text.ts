@@ -1,4 +1,4 @@
-import type { DisplayTree } from "../../api/types";
+import type { DecisionEntry, DisplayTree } from "../../api/types";
 
 /** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
  *  against, since a quote names the document's text and never its markdown. The server writes
@@ -74,4 +74,57 @@ export function decisionName(tree: DisplayTree | undefined, text: string): strin
     .map((written) => written.trim())
     .find((written) => written !== "" && !written.startsWith(":::"));
   return line === undefined ? "" : line.replace(/^#+\s*/, "");
+}
+
+/** The word that opens a paragraph a decision's words give as its doubt, which a view draws
+ *  with the unsure accent. */
+export const UNSURE_PREFIX = "Unsure:";
+
+/** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
+ *  nothing else. In the reading of such a paragraph the word stands in a first child that is
+ *  plain text, since a mark over it - strong, a code span, a link - would have written its own
+ *  characters first. */
+export function isUnsureBlock(node: DisplayTree): boolean {
+  if (node.type !== "paragraph" || !Array.isArray(node.content)) {
+    return false;
+  }
+  const first = (node.content as DisplayTree[])[0];
+  const marks = first?.marks;
+  return (
+    typeof first?.text === "string" &&
+    (!Array.isArray(marks) || marks.length === 0) &&
+    first.text.startsWith(UNSURE_PREFIX)
+  );
+}
+
+/** Whether a decision's own words hold their `Unsure:` paragraph: a top-level block of their
+ *  reading that is one, or, for an answer that carried no reading, a block of their markdown
+ *  that starts with the word. */
+export function holdsUnsureParagraph(tree: DisplayTree | undefined, text: string): boolean {
+  const content = ownTree(tree)?.content;
+  if (tree !== undefined && Array.isArray(content)) {
+    return (content as DisplayTree[]).some(isUnsureBlock);
+  }
+  return ownWords(text)
+    .split(/\n\s*\n/)
+    .some((block) => block.trim().startsWith(UNSURE_PREFIX));
+}
+
+/** The words of the `Unsure:` paragraph a decision's node holds as values: converting a
+ *  decisions document moves that paragraph into `uncertainty="high"` and the rest of it into
+ *  `uncertainty_reason`. Undefined for a decision whose uncertainty is not high. A view draws
+ *  them only where the decision's words hold no such paragraph (`holdsUnsureParagraph`), so a
+ *  doubt is never drawn twice. */
+export function unsureWords(
+  decision: Pick<DecisionEntry, "uncertainty" | "uncertainty_reason">
+): string | undefined {
+  if (decision.uncertainty !== "high") return undefined;
+  const reason = decision.uncertainty_reason?.trim() ?? "";
+  return reason === "" ? UNSURE_PREFIX : `${UNSURE_PREFIX} ${reason}`;
+}
+
+/** A paragraph of plain words as a reading holds one: the words as one text run, so nothing in
+ *  them is parsed, since a node's value is no markdown. */
+export function plainParagraph(words: string): DisplayTree {
+  return { content: [{ text: words, type: "text" }], type: "paragraph" };
 }

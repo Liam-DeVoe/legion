@@ -776,6 +776,37 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   }
 });
 
+// The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
+// `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The tab draws
+// the doubt where the paragraph drew, with the paragraph's words, and once.
+test("a converted decision draws the doubt its node holds as its Unsure: paragraph drew", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ':::decision{#only uncertainty="high" uncertainty_reason="the index may be slow."}\nKeep a log\n\nA log is enough.\n:::\n',
+      uncertainty: "high",
+      uncertainty_reason: "the index may be slow.",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    await waitFor(() =>
+      expect(
+        within(waiting)
+          .queryAllByTestId("decision-unsure")
+          .map((block) => block.textContent)
+      ).toEqual(["Unsure: the index may be slow."])
+    );
+    // Drawn as a body draws a paragraph, not as the literal text a body falls back to.
+    expect(within(waiting).getByTestId("decision-unsure").querySelector("p")?.textContent).toBe(
+      "Unsure: the index may be slow."
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the
