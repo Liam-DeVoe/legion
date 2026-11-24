@@ -4485,7 +4485,8 @@ So no label, JSON path or line number is read as a path.
 
 **The report.**
 A refusal by the private-name rules starts `LEAK CHECK: refusing <the write>: the deployment's private-name rules match it`.
-Under that line it shows one line for each finding, indented two spaces:
+Under that line it shows one line for each distinct finding among the 40 shown; a line the report already shows, such as a path rule's finding on every added line of a file, is not written again.
+Each line is indented two spaces:
 
 ```text
 <record>: <description>: matched "<match>" on line <n>: "<line>"
