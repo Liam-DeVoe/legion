@@ -9251,3 +9251,64 @@ test("a second Enter on the held Snooze selected asks leaves the focus where the
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): the Delivery page opened three times in a fixture, with its live socket held, closed and open.
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered, never as a 0 that stands for
+// "not read yet". Measured in builds Jobs infra-3135-dl-h2-pbn4c (head 683f1fdf) and
+// infra-3135-dl-m2-hdf8z (main 642bc1ed), in Chromium, Firefox and WebKit at 1440x900: with the
+// live socket held (nothing answers the timeline's subscribe) or closed by the network, the
+// head's Filter panel offers Rework and Deployed, and every verdict reads "0 PRs"
+// (DeliveryPage.tsx:415 `counts[value] ?? 0` over `data?.facet_counts`, :495, where `data` is
+// undefined until the first answer). Main drew its FacetPanel only once the timeline answered.
+// With the socket open the same fixture reads value 1, rework 1, deployed 1, waiting 1 and
+// not tracked 0, which this row reads too, so it can tell a count from a placeholder.
+test("the Delivery page's Filter panel draws no count beside a verdict before the timeline answers, nor after its socket fails @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedDeliveryFixture();
+  const main = page.getByTestId("main-content");
+  /** The accessible name of each option of one facet of the open Filter panel, read once its
+   *  list holds every verdict, so the read is of a list that is whole. */
+  const verdicts = async (facet: "Rework" | "Deployed", count: number): Promise<string[]> => {
+    const panel = await openFilterPanel(page, main);
+    await panel.getByRole("button", { name: new RegExp(`^${facet}: `) }).click();
+    const options = page.getByRole("listbox", { name: `${facet} options` }).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? element.textContent ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await closeControlPanel(main);
+    return names;
+  };
+  const wrong: string[] = [];
+  // One route for the page's live socket, whose mode each load sets: open passes it through to
+  // the server, held opens it and answers nothing, closed drops it as a network would.
+  let mode: "open" | "held" | "closed" = "open";
+  await page.routeWebSocket(/\/ws\/live$/u, (socket) => {
+    if (mode === "open") socket.connectToServer();
+    if (mode === "closed") socket.close({ code: 1011, reason: "test network drop" });
+  });
+  // The control: the page with its socket open reads the fixture's own counts.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await expect(main.getByRole("img", { name: /^Delivery timeline/ })).toBeVisible();
+  expect(await verdicts("Rework", 2)).toEqual(["value, 1 PR", "rework, 1 PR"]);
+  for (const how of ["held", "closed"] as const) {
+    mode = how;
+    await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+    for (const [facet, count] of [
+      ["Rework", 2],
+      ["Deployed", 3],
+    ] as const) {
+      const counted = (await verdicts(facet, count)).filter((name) => /\d+ PRs?$/u.test(name));
+      wrong.push(
+        ...counted.map(
+          (name) => `socket ${how}: ${facet} offers "${name}" before the timeline answered`
+        )
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
