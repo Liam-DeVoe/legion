@@ -2448,7 +2448,11 @@ console.log(JSON.stringify(args, null, 2));
         Array(quoted.length).fill(["dispatch_comment", "load-failed"])
       );
     }
-  }, 30_000);
+    // A hang guard: what can hang is a gate call. Worst measured cost: 7 606 ms in askgate.test.ts
+    // run whole at the 96 rung in the Job infra-1580-aw-j452l of the cluster's `builds` namespace,
+    // two CPUs and 8 GiB (140 busy loops, row A 39.4 s), at 2a77b2b8. Main's 30_000 is 3.9 times
+    // that, so this takes 60_000, 7.9 times it.
+  }, 60_000);
   const STILL_REFUSED: Array<[string, string, string]> = [
     [
       "a program that may write the file the write reads",
@@ -3486,7 +3490,11 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
     expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "verdict" }]);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
-  }, 30_000);
+    // A hang guard: what can hang is the dry run or the model call, stand-ins here. Worst measured
+    // cost: 6 499 ms in askgate.test.ts run whole at the 96 rung in the tester's Job
+    // infra-1580-t25-gw-7kv8p (205 busy loops, row A 34.7 s), at b5a8b94f. Main's 30_000 is 4.6
+    // times that, so this takes 60_000, 9.2 times it, below the gate's 90 s deadline.
+  }, 60_000);
   test("a dry-run cut twice runs the call unreviewed and tells the agent why and what to do", async () => {
     let clock = 1_000_000;
     const g = bind({
@@ -4079,7 +4087,12 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(run.consumed).toEqual({ ok: true });
         expect(markersIn(g.store)).toEqual([]);
       }
-    }, 30_000);
+      // A hang guard: what can hang is a gate call or the real bash the row runs. Worst measured
+      // cost: 15 599 ms in askgate.test.ts run whole at the 96 rung in the Job
+      // infra-1580-aw-j452l (140 busy loops, row A 39.4 s), at 2a77b2b8. Main's 30_000 is 1.9
+      // times that. Six times it passes this file's ceiling, so this takes the ceiling, 120_000,
+      // 7.7 times it.
+    }, 120_000);
 
     // Design 2: `scopedCommand` reads the override comment the gate itself writes, so the command
     // the agent reads back and resends is the same rebuttal, with a marker bound to its arguments.
@@ -4121,7 +4134,11 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           marker: { argv: argvDigest(argv), args: argsDigest(args) },
         });
       }
-    }, 30_000);
+      // A hang guard: what can hang is a gate call. Worst measured cost: 7 303 ms in
+      // askgate.test.ts run whole at the 96 rung in the tester's Job infra-1580-t25-gw-7kv8p (205
+      // busy loops, row A 34.7 s), at b5a8b94f. Main's 30_000 is 4.1 times that, so this takes
+      // 60_000, 8.2 times it.
+    }, 60_000);
 
     // Design 9: the review is the one await a call's own end can fall in, and a marker lives for
     // hours. A call whose own tool ended there runs nothing more, so it is owed no marker.
@@ -4152,7 +4169,11 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect((await g.bash("ends-in-review", ASK))?.block).toBeUndefined();
       expect(markersIn(g.store)).toMatchObject([{ toolCallId: "ends-in-review" }]);
       expect(g.entries[1]?.mintSkipped).toBeUndefined();
-    }, 30_000);
+      // A hang guard: what can hang is the model call the row holds until its tool ends. Worst
+      // measured cost: 6 502 ms in askgate.test.ts run whole at the 96 rung in the tester's Job
+      // infra-1580-t25-gw-7kv8p (205 busy loops, row A 34.7 s), at b5a8b94f. Main's 30_000 is 4.6
+      // times that, so this takes 60_000, 9.2 times it, below the gate's 90 s deadline.
+    }, 60_000);
 
     // Design 9 names `tool_result` beside `tool_execution_end`: a result carrying the call's own
     // id ends that call just the same, and a write made from an eval cell reports only this one.
