@@ -1461,11 +1461,15 @@ EOF
 	K6_AWS_BOTO3="$(jq -c '{boto3, botocore, chunks, decoded_length, presigned_query}' "$d/boto3.json" 2>/dev/null)"
 	K6_AWS_BOTO3_LOG="$(tail -n 3 "$d/boto3.log" 2>/dev/null | tr '\n' ' ')"
 	# The stand-in's refusals of this run's calls, and UNKNOWN when either read answered no array.
-	local refusals_after
+	# The two arrays reach jq on its standard input, never as arguments: a refusal of a call that
+	# carries a placeholder holds that whole call, body included, which a 100 kB upload takes past
+	# the limit of one argument.
+	local refusals_after this_run
 	refusals_after="$(refusals_of aws)"
 	if [ -n "$refusals_before" ] && [ -n "$refusals_after" ]; then
-		K6_AWS_STAND_REFUSED="$(jq -n --argjson b "$refusals_before" --argjson a "$refusals_after" '($a | length) - ($b | length)')"
-		K6_AWS_STAND_REFUSALS="$(jq -rn --argjson b "$refusals_before" --argjson a "$refusals_after" '$a[($b | length):] | map(split("\n")[0]) | join(" | ")')"
+		this_run="$(printf '%s\n%s\n' "$refusals_before" "$refusals_after" | jq -cs '.[1][(.[0] | length):]')"
+		K6_AWS_STAND_REFUSED="$(printf '%s' "$this_run" | jq 'length')"
+		K6_AWS_STAND_REFUSALS="$(printf '%s' "$this_run" | jq -r 'map(split("\n")[0]) | join(" | ")')"
 	else
 		K6_AWS_STAND_REFUSED=UNKNOWN
 		K6_AWS_STAND_REFUSALS="the stand-in's refusals route answered no JSON array, so whether it refused a signature is not known"
@@ -1510,9 +1514,19 @@ k6_second_aws() {
 		K6SECOND["${name}_status"]="$(grep -oE 'HTTP/1\.1" [0-9]{3}' "$d/$name.debug" | tail -n 1 | grep -oE '[0-9]{3}$')"
 		K6SECOND["${name}_said"]="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
 	done
-	K6SECOND[records]="$(curl -sS "$records_url/records/aws" | jq 'length')"
-	K6SECOND[refusals]="$(curl -sS "$records_url/refusals/aws" | jq -r 'map(split("\n")[0]) | join(" | ")')"
-	K6SECOND[refusal_count]="$(curl -sS "$records_url/refusals/aws" | jq 'length')"
+	# What the second stand-in recorded and why it refused, read with the same helpers as the
+	# stack's own stand-in, at its own records URL: a refusals route that answers no array is
+	# UNKNOWN, which fails the judge.
+	local refusals
+	K6SECOND[records]="$(AIRLOCK_RECORDS_URL="$records_url" records_count aws)"
+	refusals="$(AIRLOCK_RECORDS_URL="$records_url" refusals_of aws)"
+	if [ -n "$refusals" ]; then
+		K6SECOND[refusal_count]="$(printf '%s' "$refusals" | jq 'length')"
+		K6SECOND[refusals]="$(printf '%s' "$refusals" | jq -r 'map(split("\n")[0]) | join(" | ")')"
+	else
+		K6SECOND[refusal_count]=UNKNOWN
+		K6SECOND[refusals]="the second stand-in's refusals route answered no JSON array"
+	fi
 	kill "$pid" 2>/dev/null || true
 	wait "$pid" 2>/dev/null || true
 }

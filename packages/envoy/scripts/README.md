@@ -261,9 +261,12 @@ required inputs, fake broker rules, store names, the name and reason each nested
 broker start on its own, k6's login steps (the login, the command's exit status and
 the removal of their directory, after a TERM too), k6's az wrapper with an az shim
 first on PATH (a shim that looks az up on PATH again must reach the real az, not the
-wrapper), and `approve_record` against a `python3` stand-in of the broker's approval
+wrapper), `approve_record` against a `python3` stand-in of the broker's approval
 page: it must post back every `printed` and every `profile_digest` field of a page that
-prints two records, and the same helper without either is refused 403.
+prints two records, and the same helper without either is refused 403, and the file's
+own EXIT trap, run in a shell of its own under `set -euo pipefail` with a stand-in that
+is still running and one that has already exited: the shell must end with its own
+status, 0 or 1, must have stopped the stand-in, and must remove its work directory.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`

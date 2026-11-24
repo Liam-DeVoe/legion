@@ -612,10 +612,11 @@ func TestAMintedConnectionReadsNoOtherGrant(t *testing.T) {
 	}
 }
 
-// TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant: only a minted grant holds a dpop entry's
-// name, and the read of the session's other grants never answers one, so a stored grant's CONNECT
-// to a dpop host reads nothing more and gets main's answer, a tunnel, even while every such read
-// fails. The named revert: proxy-bound-entries-keep-dpop.
+// TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant: a dpop entry's name is left out of the read
+// of the session's other grants - no grant released since the name became dpop holds it, and a
+// grant holding an older row of it is not read for that host, as on main - so a stored grant's
+// CONNECT to a dpop host reads nothing more and gets main's answer, a tunnel, even while every such
+// read fails. The named revert: proxy-bound-entries-keep-dpop.
 func TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	r.grants.failEnrollmentReads(databaseDown)

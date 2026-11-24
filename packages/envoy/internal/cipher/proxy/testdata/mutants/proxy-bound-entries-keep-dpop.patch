@@ -1,6 +1,7 @@
 # proxy-bound-entries-keep-dpop: a dpop entry's name is asked for in the read of the session's other
-# grants, though no grant that read answers holds one, so a stored grant's call to a dpop host reads
-# the store on every CONNECT and answers 503 when that read fails, where it tunnelled.
+# grants, though no grant released since the name became dpop holds it and a grant holding an older
+# row of it is not read for that host on main, so a stored grant's call to a dpop host reads the
+# store on every CONNECT and answers 503 when that read fails, where it tunnelled.
 # must fail: TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant
 # Applied with patch -p1 from a copy.
 
