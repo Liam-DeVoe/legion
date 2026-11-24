@@ -588,14 +588,15 @@ claim the daemon holds no cause and sentence for, or with `legion claims list --
 whole record.
 
 **`refusal-unrecorded` in that column** is no failure. The claim's last launch was refused by its
-issue's pod, and the daemon's database has not taken the fact that records the refusal, so the
-issue and the controller have not been told and the claim's start is not queued. The daemon tries
-the fact again, at least once an hour, and logs each failed try at ERROR (`apply a launch its
-issue's pod refused`, or `apply the end of a start row of a claim its pod refused`).
+issue's pod, and the daemon's database has not taken a fact of that refusal: its report, before
+which the issue and the controller are not told, or the read again at the end of a start row of
+the claim. Until one is taken, the claim's start is not queued. The daemon tries the fact again,
+at least once an hour, and logs each failed try at ERROR (`apply a launch its issue's pod
+refused`, or `apply the end of a start row of a claim its pod refused`).
 `legion claims list --json` shows `unrecordedRefusal`: `since`, when the first try failed,
 `attempts`, and `error`, the last try's error. Look at the database first. The word goes once a
-try is taken, or once the claim launches on another pod. A claim that failed prints its failure's
-word instead.
+try is taken, or at the first try after the claim launches on another pod, which applies nothing.
+A claim that failed prints its failure's word instead.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
