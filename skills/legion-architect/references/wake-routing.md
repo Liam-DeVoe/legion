@@ -20,6 +20,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
 | `pr-blocked` | The review round cap is reached: decide in this turn, as `skill://legion-architect/references/capped-pull-request.md` says. |
 | `checks-red` | The daemon asked the agent of the task's last step of the type implementation before the issue's place (you, where that step is yours) to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, act as "A conflicting head" in `skill://legion-architect/references/acceptance.md` says. |
+| `merge-forward-lost` | A merge-forward ask or review did not reach another agent, whose claim failed or retired. The issue keeps its phase. Move the issue back into that role's step, or ask the operator to retry that claim, to start it again. |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort it as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts (`park_child` then `rerun_child`) or ends, and give the reason. A step's agent makes the repository change: you, where that step is yours. |
