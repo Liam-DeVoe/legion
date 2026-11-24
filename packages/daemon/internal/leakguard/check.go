@@ -289,9 +289,9 @@ func copyBase(base, fallback string) (string, error) {
 
 // privateCopy writes the four files h holds into a new directory under copyBase's answer of base
 // and fallback, and answers that directory. The directory is made 0700 (os.MkdirTemp), and each
-// file is created anew (writeCopyFile): the launcher, which the guard runs, 0500, and the three it
-// only reads 0400. A failure removes what it made as sharedRun.remove removes the copy, following
-// no link and waiting on no fifo (rolefile.RemoveTree).
+// file is created anew (programfile.Write): the launcher, which the guard runs, 0500, and the
+// three it only reads 0400. A failure removes what it made as sharedRun.remove removes the copy,
+// following no link and waiting on no fifo (rolefile.RemoveTree).
 func (h heldCheck) privateCopy(base, fallback string) (string, error) {
 	under, err := copyBase(base, fallback)
 	if err != nil {
@@ -306,22 +306,15 @@ func (h heldCheck) privateCopy(base, fallback string) (string, error) {
 		if name == checkName {
 			mode = 0o500
 		}
-		if err := writeCopyFile(filepath.Join(dir, name), h.files[name], mode); err != nil {
+		// The guard runs this copy's launcher, so programfile.Write writes each file, of mode
+		// exactly. os.O_EXCL and syscall.O_NOFOLLOW: nothing already at the path, a link included,
+		// is opened or written through.
+		if err := programfile.Write(filepath.Join(dir, name), os.O_EXCL|syscall.O_NOFOLLOW, mode, bytes.NewReader(h.files[name])); err != nil {
 			_ = rolefile.RemoveTree(dir)
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
 	}
 	return dir, nil
-}
-
-// writeCopyFile writes body to path as a new file of mode exactly, by programfile.Write: O_EXCL and
-// O_NOFOLLOW, so nothing already at path, a link included, is opened or written through, and the
-// mode set again on the open file, since the umask may have taken bits off the create's. Write
-// keeps every fork of this process out of the span the file is open for writing: a child forked
-// then would hold the write descriptor until its own exec closed it, and the kernel refuses to
-// exec a file open for writing (ETXTBSY), which the launcher is the moment this answers.
-func writeCopyFile(path string, body []byte, mode os.FileMode) error {
-	return programfile.Write(path, os.O_EXCL|syscall.O_NOFOLLOW, mode, bytes.NewReader(body))
 }
 
 // found is path, once it is absolute and an executable regular file is there: a name taken from a

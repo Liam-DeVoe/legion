@@ -834,13 +834,14 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 	}
 }
 
-// The install writes its tag into a staging directory under the scratch every role writes, while
-// the body unpacks, so a role can plant a file at the tag's path first. The tag is written as
-// every member is (writeMember): a fifo there fails the write rather than holding it until a
-// reader comes, and a symlink there fails it rather than sending the write to the link's target.
-// Through the install, a file already at the staged tag's path refuses the install rather than
-// being opened and written over: a served body that carries the tag file stands in for the file a
-// role planted, since it puts one there every time.
+// The install unpacks the body and writes its tag into a staging directory under the scratch every
+// role writes, so a role can plant a file at a member's path or the tag's first. Each is written
+// with os.O_EXCL: a file already there refuses the install rather than being opened and written
+// over, a fifo refuses it rather than holding the write until a reader comes, and a symlink
+// refuses it rather than sending the write to the link's target. A served body that carries the
+// tag file stands in for a file a role planted at the tag's path, since it puts one there every
+// time; a fifo or a symlink is planted at the tag's path and at the launcher member's once the
+// install has made its staging directory and before it writes (beforeTheFirstWrite).
 func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 	t.Run("the staged tag, through the install", func(t *testing.T) {
 		members := theCheck(answersItsHelp)
@@ -854,36 +855,72 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
 		}
 	})
+	body := served(t, wholeCheck(t, answersItsHelp))
 	for _, tc := range []struct {
 		name  string
-		plant func(t *testing.T, path string)
+		plant func(path, target string) error
 	}{
-		{"a fifo", func(t *testing.T, path string) {
-			if err := syscall.Mkfifo(path, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"a symlink", func(t *testing.T, path string) {
-			if err := os.Symlink(filepath.Join(filepath.Dir(path), "target"), path); err != nil {
-				t.Fatal(err)
-			}
-		}},
+		{"a symlink", func(path, target string) error { return os.Symlink(target, path) }},
+		{"a fifo", func(path, _ string) error { return syscall.Mkfifo(path, 0o644) }},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), tagFile)
-			tc.plant(t, path)
-			done := make(chan error, 1)
-			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
-			// A write that opened the fifo waits for a reader, and fails by name before the test
-			// binary's deadline.
-			if err := testwait.Receive(t, "writeMember over "+tc.name, done); !errors.Is(err, fs.ErrExist) {
-				t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
-			}
-			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("writeMember wrote through the symlink to its target (%v)", err)
-			}
-		})
+		for _, at := range []struct{ name, path, refusal string }{
+			{"the tag's path", tagFile, "the installed tag could not be recorded: "},
+			{"the launcher's path", checkName, "the pod's launcher could not unpack the check the daemon served: "},
+		} {
+			t.Run(tc.name+" at "+at.name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "leak-check")
+				target := filepath.Join(t.TempDir(), "target")
+				err := beforeTheFirstWrite(t, filepath.Join(filepath.Dir(dir), ".leak-check-install-*"), func(staging string) error {
+					return tc.plant(filepath.Join(staging, at.path), target)
+				}, func() error {
+					_, err := install(t, dir, theTag, body)
+					return err
+				})
+				if !errors.Is(err, fs.ErrExist) || !strings.HasPrefix(err.Error(), at.refusal) {
+					t.Fatalf("install with %s at %s = %v, want it refused as existing", tc.name, at.name, err)
+				}
+				if _, err := os.Lstat(target); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the install wrote through the symlink to its target (%v)", err)
+				}
+				if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+				}
+				if left := leftovers(t, dir); left != nil {
+					t.Errorf("the refused install left %v beside the install path", left)
+				}
+			})
+		}
 	}
+}
+
+// beforeTheFirstWrite calls write, which makes a directory pattern matches and then writes into
+// it by programfile.Write, and calls plant with that directory before the first of those writes:
+// it holds syscall.ForkLock for writing, which Write takes for reading, from before write starts
+// until the directory is there and plant has returned. It answers what write answered, within the
+// test's bound (testwait.Receive), since a write that opened a planted fifo waits for a reader.
+// Such a write still holds ForkLock for reading, so no later row can take it: the table that
+// plants a fifo plants it last.
+func beforeTheFirstWrite(t *testing.T, pattern string, plant func(dir string) error, write func() error) error {
+	t.Helper()
+	planted := make(chan error, 1)
+	syscall.ForkLock.Lock()
+	go func() {
+		defer syscall.ForkLock.Unlock()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			if made, _ := filepath.Glob(pattern); len(made) == 1 {
+				planted <- plant(made[0])
+				return
+			}
+		}
+		planted <- errors.New("nothing matched " + pattern + " within 10s")
+	}()
+	done := make(chan error, 1)
+	go func() { done <- write() }()
+	err := testwait.Receive(t, "the write beside what was planted", done)
+	if plantErr := <-planted; plantErr != nil {
+		t.Fatalf("the plant: %v", plantErr)
+	}
+	return err
 }
 
 func remove(t *testing.T, path string) {

@@ -391,8 +391,9 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 // outright. In a pod the parent is the role's private directory, a mount point nothing can rename,
 // so this row's parent is a directory of its own, swapped for a fifo once the copy has made its
 // directory and before it writes the first file: that write then fails (ENOTDIR), and the removal
-// meets the fifo. writeCopyFile holds syscall.ForkLock for reading while it writes, so the row
-// holds it for writing until the swap is made, which is only how the row times the swap.
+// meets the fifo. privateCopy writes each file by programfile.Write, which holds syscall.ForkLock
+// for reading while it writes, so the row holds it for writing until the swap is made, which is
+// only how the row times the swap.
 func TestAFailedPrivateCopyAnswersAParentSwappedForAFifo(t *testing.T) {
 	root := t.TempDir()
 	base, out := filepath.Join(root, "private"), filepath.Join(root, "out")
