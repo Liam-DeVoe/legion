@@ -7,7 +7,8 @@
 // A question is recorded once (answer_questions), by the message's identity and the agent it was
 // handed to, which are stable across retries, restarts and a newer conversation of that agent,
 // and moves received -> generating -> appended -> posted, or passed_on when the
-// controller must hear of it (PassOn), forwarded when the agent runs its conversation, or dropped.
+// controller must hear of it (PassOn), forwarded when the agent runs its conversation, woken when
+// its released agent is given it instead (Wakes), or dropped.
 // Recovery follows the state and the conversation: a question not yet appended is answered again,
 // the model handed the tool calls the earlier run made (a gh comment or review call of unknown
 // outcome looked up on GitHub first, ghtool.Lookup; a dispatch call or a web search of unknown
@@ -22,6 +23,15 @@
 // is never written: the question goes to the running agent on its role topic, held until the role
 // is held (Gate). The day's spend is kept per project and UTC day; over answers.bounds.daily_usd a
 // question gets the daemon's reply in the agent's name and is passed on.
+//
+// An agent whose claim the daemon released (an idle release of its issue pod, or a project's
+// pause: Gate.Released) is answered for as any stopped agent, and given everything else that
+// reached it through one outbox row that wakes it (Wakes): a person's decision on its ask, a
+// message that asks it nothing, a question whose reply the loop does not post (one the
+// controller would hear of, or one that asks nothing), which is then neither appended nor posted,
+// and the loop's own answer to it as an asker. The controller, the architect and the conversation
+// are told none of these. A question the loop answered wakes nothing; one that came with a
+// decision is answered, appended and posted first, and the decision's row then says where.
 //
 // While the project is paused (Config.Paused) no answer starts, one in flight stops before its
 // next model call or gh call (answer.ErrPaused), and no reply is posted or passed on: every
@@ -84,9 +94,14 @@ type Envoy interface {
 // Gate keeps the loop and a claim's start off one conversation at once (the daemon's answerGate).
 // Running is whether session's conversation is its claim's current one and the claim runs it, is
 // starting or has been started. Append runs write while the claim cannot start, unless Running:
-// then it runs nothing and answers false.
+// then it runs nothing and answers false. Released is whether session's conversation is its
+// claim's current one and the daemon released the claim (supervise.Claim.Released: an idle
+// release of its issue pod, or a project's pause), which runs nothing and is not starting: the
+// loop answers such an agent's questions as any stopped agent's, and gives it everything else it
+// does not answer through Wakes.
 type Gate interface {
 	Running(token claim.Token, session string) bool
+	Released(token claim.Token, session string) bool
 	Append(token claim.Token, session string, write func() error) (bool, error)
 }
 
@@ -155,7 +170,8 @@ type WebSearchTools interface {
 // origin the question as its hand-off carries it: its text, who asked (Asker) and where (Ref, a
 // dispatch:// reference or the Envoy envelope). It is called once the reply is posted, and again
 // only when a restart finds the question not yet marked passed on, so an implementation passes a
-// question once by its id.
+// question once by its id. A question of an agent whose claim is released is never passed on: the
+// loop posts nothing for it and gives it to the agent itself through Wakes.
 type PassOn interface {
 	PassOn(ctx context.Context, question store.AnswerQuestion, reason Reason, origin Origin) error
 }
@@ -195,9 +211,35 @@ type Decision struct {
 // Decisions passes on the decisions the hand-offs carry (plan 2.9): to the architect that owns the
 // agent's issue while it holds its role, else to the controller. Receive calls it for every
 // hand-off carrying one, a redelivery and a restart's included, so an implementation passes a
-// decision once by its ID.
+// decision once by its ID. A decision for an agent whose claim is released goes to the agent
+// itself through Wakes instead, and the architect and the controller are told nothing of it.
 type Decisions interface {
 	Decide(ctx context.Context, d Decision) error
+}
+
+// Wakes gives an agent whose claim the daemon released what reaches it that the loop does not
+// answer for it (the daemon's releasedWakes): one outbox row per message, which wakes the claim
+// and gives the message to the woken session once it holds its role, written once by the
+// message's Key however often the loop asks, so an implementation writes nothing for a key it
+// wrote before. The loop asks for a decision on the agent's ask in place of passing it to
+// Decisions, for a message that asks the agent nothing, for a question whose reply it does not
+// post in place of posting it and passing it on (PassOn), and for its own answer to the agent as
+// an asker in place of writing it into the conversation. A question that also carries a decision
+// is asked for once its answer is appended and posted, so the woken agent finds the answer in its
+// conversation.
+type Wakes interface {
+	Wake(ctx context.Context, w Wake) error
+}
+
+// Wake is one message for a released agent: Key its own id (QuestionID of the message's identity
+// and the agent's role token, which for a question is the question's id), Issue, Role and Session
+// the agent's conversation's, and Text what the woken agent is told (wakeMessage).
+type Wake struct {
+	Key     string
+	Issue   string
+	Role    claim.Role
+	Session string
+	Text    string
 }
 
 // Reason is why a question is passed on: the kind of reply the agent gave, a bound or fault the
@@ -232,6 +274,7 @@ type Config struct {
 	Conversations Conversations
 	PassOn        PassOn
 	Decisions     Decisions
+	Wakes         Wakes
 	// DispatchTools opens each answer's dispatch tool; nil is a daemon that found no dispatch
 	// command (or no bun for it), whose answers are offered gh alone.
 	DispatchTools DispatchTools
@@ -407,6 +450,17 @@ func (l *Loop) waitsForResume(q store.AnswerQuestion) {
 // the question it asks, and wakes the loop. A hand-off for a session the history does not hold,
 // and one that is no question, is logged and dropped; nil acknowledges it. An error leaves it to
 // be delivered again.
+//
+// An agent whose claim the daemon released (Gate.Released, read here) has its questions answered
+// as any stopped agent's, and is given through Wakes, once each, everything else that reached it
+// and that is the agent's own: the loop's answer to it as an asker, in place of writing it into
+// the conversation; a person's decision on its ask that asks nothing besides, in place of
+// Decisions; and a message, comment or reply that asks nothing (Verdict.ForAgent). A decision
+// that also asks is held on its question (store.AnswerQuestion.Wake) and given once the answer
+// is appended and posted, so the woken agent finds the answer in its conversation. The daemon's
+// own notices and posts, the broker's messages and anything carrying the loop's own mark are none
+// of the agent's, and reach it neither way. A claim that is not released is passed its decision
+// as before.
 func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error {
 	conv, ok, err := l.conversationFor(ctx, h)
 	if err != nil {
@@ -421,15 +475,22 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	if err != nil {
 		return err
 	}
-	if verdict.Delivery != nil {
+	released := l.cfg.Gate.Released(conv.Token, conv.Session)
+	switch {
+	case verdict.Delivery != nil && released:
+		return l.wakeAgent(ctx, conv, verdict.Delivery.Identity, wakeMessage(*verdict.Delivery), "the loop's own answer to the agent")
+	case verdict.Delivery != nil:
 		return l.deliver(ctx, h, conv, *verdict.Delivery)
-	}
-	if verdict.Decision != nil {
+	case verdict.Decision != nil && !released:
 		if err := l.cfg.Decisions.Decide(ctx, *verdict.Decision); err != nil {
 			return fmt.Errorf("pass on the decision %s of %s: %w", verdict.Decision.ID, h.Envelope.EventID, err)
 		}
 	}
 	if verdict.Question == nil {
+		if released && (verdict.Decision != nil || verdict.ForAgent) {
+			identity, text := handoffMessage(h)
+			return l.wakeAgent(ctx, conv, identity, text, verdict.Because)
+		}
 		l.cfg.Log.Info("answers: hand-off is no question; not answered", "event", h.Envelope.EventID, "issue", conv.Issue,
 			"role", conv.Role, "session", conv.Session, "because", verdict.Because)
 		return nil
@@ -439,7 +500,7 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	q, inserted, err := l.cfg.Store.ReceiveQuestion(ctx, store.AnswerQuestion{
 		ID: QuestionID(l.cfg.Project, origin.Identity, string(conv.Token)), Project: l.cfg.Project, Identity: origin.Identity,
 		Session: conv.Session, Token: conv.Token, Issue: conv.Issue, Role: conv.Role, Kind: string(origin.Kind),
-		MayAskNothing: origin.MayAskNothing, Handoff: raw, ReceivedAt: now,
+		MayAskNothing: origin.MayAskNothing, Handoff: raw, Wake: released && verdict.Decision != nil, ReceivedAt: now,
 	})
 	if err != nil {
 		return err
@@ -454,12 +515,71 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	return nil
 }
 
+// wakeAgent gives text to conv's agent, whose claim the daemon released, through Wakes, keyed by
+// the message's identity and the agent's role token (QuestionID), so the message is given once
+// however often it is handed off. because says what the message is, for the log.
+func (l *Loop) wakeAgent(ctx context.Context, conv store.AgentConversation, identity, text, because string) error {
+	key := QuestionID(l.cfg.Project, identity, string(conv.Token))
+	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: key, Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Text: text}); err != nil {
+		return fmt.Errorf("give %s to the released %s: %w", identity, conv.Session, err)
+	}
+	l.cfg.Log.Info("answers: the message goes to the released agent through its wake", "message", identity, "key", key,
+		"issue", conv.Issue, "role", conv.Role, "session", conv.Session, "because", because)
+	return nil
+}
+
+// wakeMessage is a message as its released agent is told it through Wakes: who sent it, where and
+// under which reference, then the message word for word.
+func wakeMessage(o Origin) string {
+	return fmt.Sprintf("%s sent you, in %s (%s), while you were stopped:\n%s", o.Asker, o.Where, o.Ref, o.Text)
+}
+
+// handoffMessage is a hand-off that asks nothing as its released agent is told it (wakeMessage),
+// and the message's identity, the one a question of it would have (Origin.Identity), which the
+// same message carries at every delivery attempt. A hand-off ReadOrigin reads nothing of is told
+// as its sender and where it was sent, then its words: a Dispatch event's actor, type and issue,
+// then the item's body, else the envelope's source and topic, then its payload; its identity is
+// the envelope's dedupe key.
+func handoffMessage(h intake.Handoff) (identity, text string) {
+	if origin, err := ReadOrigin(h); err == nil {
+		return origin.Identity, wakeMessage(origin)
+	}
+	env := h.Envelope
+	words := env.Payload
+	if words == "" {
+		words = env.PayloadSummary
+	}
+	sender, where := env.Source, "a message on "+env.Topic
+	if env.SourceSession != "" {
+		sender += " session " + env.SourceSession
+	}
+	if event, err := intake.DispatchOf(env); err == nil {
+		sender, where = event.Actor.Kind+":"+event.Actor.ID, "a Dispatch "+event.Type
+		if issue := eventIssue(event); issue != "" {
+			where += " on " + issue
+		}
+		if event.Payload.Body != "" {
+			words = event.Payload.Body
+		}
+	}
+	return env.DedupeKey, fmt.Sprintf("%s sent you, in %s, while you were stopped:\n%s", sender, where, words)
+}
+
+// answeredNote is the sentence a released agent is told after a message whose question the loop
+// answered (wakeMessage): where the answer was posted, so it does not answer it again.
+func answeredNote(o Origin) string {
+	return fmt.Sprintf("\n\nThe Legion daemon already answered the question in this message for you, from your conversation, which holds the answer, "+
+		"and posted that answer in your name in %s (%s): do not answer it again.", o.Where, o.Ref)
+}
+
 // deliver gives the loop's own answer, handed back because the agent it was sent to was stopped,
 // to that agent: written into its conversation as a message it received, so it holds the answer
 // when it runs again, word for word as the listener would have delivered it live. Nothing is
 // answered, billed or posted for it. The delivery's identity is the envelope's dedupe key, which
 // the append records beside the message as it records a question's id, so a hand-off delivered
-// again and one the daemon is handed after a restart write nothing more (Session.Answered).
+// again and one the daemon is handed after a restart write nothing more (Session.Answered). An
+// asker whose claim the daemon released is given the answer through Wakes instead, and its
+// conversation is not written (Receive).
 //
 // A claim that runs the conversation takes the answer live instead, as a forwarded question goes
 // to a running agent: the loop sends it to the agent's own session through the listener, for a

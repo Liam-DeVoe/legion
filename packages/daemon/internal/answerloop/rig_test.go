@@ -39,13 +39,15 @@ const (
 
 var testNow = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 
-// fakeGate is the daemon's gate as the loop sees it: a session whose claim runs it, and one whose
-// claim started (Append refused), each set by the test; started may be set while an answer is
-// generated, as a claim's start would. onAppend, when set, sees each append's outcome.
+// fakeGate is the daemon's gate as the loop sees it: a session whose claim runs it, one whose
+// claim started (Append refused), and one whose claim the daemon released, each set by the test;
+// started may be set while an answer is generated, as a claim's start would. onAppend, when set,
+// sees each append's outcome.
 type fakeGate struct {
 	mu       sync.Mutex
 	running  map[string]bool
 	started  map[string]bool
+	released map[string]bool
 	onAppend func(error)
 }
 
@@ -53,6 +55,12 @@ func (g *fakeGate) Running(_ claim.Token, session string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.running[session] || g.started[session]
+}
+
+func (g *fakeGate) Released(_ claim.Token, session string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.released[session] && !g.running[session] && !g.started[session]
 }
 
 func (g *fakeGate) Append(_ claim.Token, session string, write func() error) (bool, error) {
@@ -180,15 +188,22 @@ type passed struct {
 	ID, Reason, Asker, Ref string
 }
 
-// recorder is the loop's PassOn and Decisions. At each pass it reads the question's row and keeps
-// its pass_reason in rowReasons, by the pass's index in passed: the reason `legion state` lists
-// the question with once the pass marks it passed (questionsForController).
+// recorder is the loop's PassOn, Decisions and Wakes. At each pass it reads the question's row and
+// keeps its pass_reason in rowReasons, by the pass's index in passed: the reason `legion state`
+// lists the question with once the pass marks it passed (questionsForController). At each wake it
+// keeps the wake once by its key, as the daemon's outbox row is written once by it, and in
+// conversation the content of the agent's session file as the wake was asked for, so a test reads
+// what the conversation held then.
 type recorder struct {
 	mu         sync.Mutex
 	st         *store.Store
 	passed     []passed
 	rowReasons []string
 	decisions  []Decision
+	wakes      []Wake
+	asked      int
+	atWake     []string
+	path       string
 }
 
 func (r *recorder) PassOn(ctx context.Context, q store.AnswerQuestion, reason Reason, origin Origin) error {
@@ -207,6 +222,23 @@ func (r *recorder) Decide(_ context.Context, d Decision) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.decisions = append(r.decisions, d)
+	return nil
+}
+
+func (r *recorder) Wake(_ context.Context, w Wake) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asked++
+	for _, earlier := range r.wakes {
+		if earlier.Key == w.Key {
+			return nil
+		}
+	}
+	r.wakes = append(r.wakes, w)
+	if r.path != "" {
+		content, _ := os.ReadFile(r.path)
+		r.atWake = append(r.atWake, string(content))
+	}
 	return nil
 }
 
@@ -244,7 +276,7 @@ func newRig(t *testing.T) *rig {
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_answerloop")
 	r := &rig{
-		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}},
+		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}, released: map[string]bool{}},
 		tool: &fakeTool{found: map[int]ghtool.Found{}, err: map[int]error{}}, rec: &recorder{st: st}, dir: t.TempDir(),
 	}
 	// Every path that passes a question on writes its reason into the row first (post).
@@ -308,7 +340,7 @@ func newRig(t *testing.T) *rig {
 		Issues: issuesFunc(func(issue string) IssueFacts {
 			return IssueFacts{Recorded: true, DispatchStatus: "done", Phase: "done", PullRequest: &PullRequestFacts{Number: 7, State: "merged", Head: "abc123"}}
 		}),
-		PassOn: r.rec, Decisions: r.rec,
+		PassOn: r.rec, Decisions: r.rec, Wakes: r.rec,
 		Answer: func(_ context.Context, req answer.Request) (answer.Reply, error) {
 			r.mu.Lock()
 			r.requests = append(r.requests, req)

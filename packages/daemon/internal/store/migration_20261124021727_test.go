@@ -14,14 +14,17 @@ const answerQuestionsThreadReplyVersion = 20261124021727
 // question of a reply in a comment thread, answered in that thread: a question of that kind is
 // recorded, one of each kind before it still is, and a kind the loop does not write is still
 // refused. The negative control is the same question recorded before the migration, which the
-// check refuses.
+// check refuses. That question is written with SQL that names the columns of the schema the
+// migration finds, since the store's own insert names a column a later migration adds
+// (answer_questions.wake, 20261124114223).
 func TestMigrationAnswerQuestionsThreadReply(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, answerQuestionsThreadReplyVersion-1)
-	early := testerQuestion("q-early", "dispatch:c-early", "ses_tester", at(0))
-	early.Kind = "thread_reply"
-	if _, _, err := store.ReceiveQuestion(ctx, early); err == nil || !strings.Contains(err.Error(), "answer_questions_kind_check") {
+	if _, err := store.Pool().Exec(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
+			may_ask_nothing, handoff, state, received_at, last_seen_at, updated_at)
+		values ('q-early', 'legion', 'dispatch:c-early', 'ses_tester', $1, 'LEGION-209', 'tester', 'thread_reply', true, '{}', 'received', $2, $2, $2)`,
+		string(testerToken), at(0)); err == nil || !strings.Contains(err.Error(), "answer_questions_kind_check") {
 		t.Fatalf("a thread reply recorded before the migration: %v; want the kind check to refuse it", err)
 	}
 

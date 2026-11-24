@@ -119,6 +119,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: "user:person@example.com sent you, in a Dispatch message on LEGION-208:\nThanks, that settles it."},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -294,7 +295,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindAgentMessage}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -341,7 +342,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindMergeQueueRemoval: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:       "every row",
+		OutboxKindMergeForward: "every row",
+		// A message for a released agent wakes that agent, as a merge forward's message does, and
+		// the outbox delivers it after the resume (dispatch://INFRA-204).
+		OutboxKindAgentMessage:       "every row",
 		OutboxKindCheckWake:          "every row",
 		OutboxKindCheckLook:          "every row",
 		OutboxKindCheckBound:         "every row",
@@ -554,6 +558,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a message for a released agent of no role", payload: AgentMessage{Role: "pilot", Session: "ses_implementer", Text: "Thanks."}, reason: "names the agent's role on the issue"},
+		{name: "a message for a released agent of no session", payload: AgentMessage{Role: claim.RoleImplementer, Text: "Thanks."}, reason: "names the session it was handed off for"},
+		{name: "a message for a released agent with no text", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer"}, reason: "names the session it was handed off for"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

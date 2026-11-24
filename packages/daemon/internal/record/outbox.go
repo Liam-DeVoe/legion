@@ -78,6 +78,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindAgentMessage gives an agent of the issue whose claim the daemon released a
+	// message its answer loop does not answer for it, waking the claim for it (AgentMessage).
+	OutboxKindAgentMessage OutboxKind = "agent_message"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -95,18 +98,19 @@ const (
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
 // the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
-// the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
-// goes to any role whose process runs in the issue's pod, its architect included (update_ask).
-// It also runs the two reads of
+// the worker of the phase the issue stays in (merge_forward), an update round's ask, which
+// goes to any role whose process runs in the issue's pod, its architect included (update_ask),
+// and a message for an agent whose claim the daemon released that the answer loop does not
+// answer for it (agent_message). It also runs the two reads of
 // GitHub that come before a message: the read before a merge-queue removal's message
 // (merge_queue_read), and the second read of a head a first read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them
 // waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
 // words a hook fired on a move back, told that its pull request left the merge queue, asked to
-// merge the base forward or to hold while that merge runs, or asked to get ready for the
-// replacement of its pod must hear it while that is news, not after whatever the architect that
-// owns its issue is owed.
+// merge the base forward or to hold while that merge runs, asked to get ready for the
+// replacement of its pod, or given a message that came for it while it was released must hear it
+// while that is news, not after whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -137,7 +141,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindAgentMessage},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -188,9 +192,10 @@ type pauseHold struct {
 // pauseHolds is the one list of the rows a project's pause holds (decision 9 of
 // dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
 // or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
-// notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
-// one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
-// message, and the three rows of a production check (check_wake, check_look, check_bound). Every
+// notice (which resumes a released architect, the daemon's wakeForDelivery), the five messages to
+// one role (hook_prompt, role_message, update_ask, merge_forward, and agent_message, which wakes
+// a released agent) and the merger's merge-queue message, and the three rows of a production
+// check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
 // issue_suspend, issue_release), the writes to Dispatch, the reconcile of a tree's news of its
 // approved design (design_changes), which reads Dispatch and writes the news record and tells a
@@ -210,6 +215,7 @@ var pauseHolds = []pauseHold{
 	{kind: OutboxKindUpdateAsk},
 	{kind: OutboxKindMergeForward},
 	{kind: OutboxKindMergeQueueRemoval},
+	{kind: OutboxKindAgentMessage},
 	{kind: OutboxKindCheckWake},
 	{kind: OutboxKindCheckLook},
 	{kind: OutboxKindCheckBound},
@@ -1499,6 +1505,30 @@ type RoleMessage struct {
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 
+// AgentMessage is one message for an agent of the issue whose claim the daemon released (an idle
+// release of its issue pod, or a project's pause, which suspends a claim the same way), which the
+// answer loop does not answer for it (answerloop.Wakes, internal/daemon's releasedWakes): a
+// person's decision on its ask, a message, comment or reply that asks it nothing, a question
+// whose reply the loop does not post, and the loop's own answer to it as an asker. Role is the
+// agent's role on the row's issue, whose topic the runner publishes Text to, and Session the
+// session the message was handed off for, which the row's log lines name. Text is the whole of
+// what the agent is told: the message as it would have read it, and, when the loop already
+// answered a question in that message, the sentence that says where.
+//
+// Unlike RoleMessage it wakes a released claim, and it holds the message until a session of the
+// role takes it, as a merge-queue removal does (internal/daemon's outbox.agentMessage,
+// deliverHeld): the message is a person's or an agent's own, which nothing else repeats, and a
+// kept copy lives one hour from its publish, which a wake the pacing or a pause holds can
+// outlast. It ends undelivered once the role's claim has failed or retired, or once the issue has
+// left the workflow or its tree lingers, since no wake brings the claim back then.
+type AgentMessage struct {
+	Role    claim.Role `json:"role"`
+	Session string     `json:"session"`
+	Text    string     `json:"text"`
+}
+
+func (AgentMessage) OutboxKind() OutboxKind { return OutboxKindAgentMessage }
+
 // GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
 // project row so a person reading Dispatch sees what holds a tree's work without reading the
 // deployment's configuration. Project is the Dispatch project key, and Steps the configured list
@@ -2310,6 +2340,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindAgentMessage:
+		value := AgentMessage{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindStepRecord:
 		value := StepRecord{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2685,6 +2721,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
+		}
+	case AgentMessage:
+		if !claim.IsRole(value.Role) {
+			return fmt.Errorf("a message for a released agent names the agent's role on the issue; %q is no role", value.Role)
+		}
+		if value.Session == "" || value.Text == "" {
+			return fmt.Errorf("a message for a released agent names the session it was handed off for and carries the text the agent is told")
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

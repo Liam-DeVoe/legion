@@ -257,36 +257,53 @@ func TestARefusedStartAndAnOlderConversationLeaveTheLoopItsAppend(t *testing.T) 
 	}
 }
 
-// The loop answers for three states alone: a claim the workflow suspended (a parked child, a tree
-// whose root left the workflow during its linger), one retired, and one closed (no machine holds
-// it any more). A claim suspended by idle release is none of them: the daemon keeps its session to
-// resume on the next wake for it (INFRA-945), so the gate says it runs its conversation, and a
-// question that raced the registry's `released` is forwarded to the role topic - whose message
-// wakes the role - rather than answered in the name of a worker that is coming back.
+// The loop answers for every claim that runs nothing: one the daemon released (an idle release of
+// its issue pod, or a pause, which suspends a claim the same way), one the workflow suspended (a
+// parked child, a tree whose root left the workflow during its linger), one retired, and one
+// closed (no machine holds it any more). The gate writes into each conversation, and says only of
+// the released one that the claim is released (Released), whose agent the loop gives everything
+// it does not answer through its wake. A start of the released claim that passes its check takes
+// the conversation back: it runs again, and is released no more.
 func TestTheGateHoldsAReleasedClaimsConversationAndNoOtherStoppedOne(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		state   supervise.ClaimState
-		by      supervise.SuspendSource
-		closed  bool
-		running bool
+		name     string
+		state    supervise.ClaimState
+		by       supervise.SuspendSource
+		closed   bool
+		released bool
 	}{
-		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, running: true},
+		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true},
 		{name: "suspended by the workflow", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{name: "retired", state: supervise.StateRetired},
 		{name: "closed", state: supervise.StateRetired, closed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			view := supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: "ses_tester", State: tc.state, SuspendedBy: tc.by, Generation: 3}}
-			gate := newAnswerGate(&launchChecks{}, func(claim.Token) (supervise.ClaimView, bool) { return view, !tc.closed },
-				slog.New(slog.NewTextHandler(io.Discard, nil)))
-			if got := gate.Running(gateToken, "ses_tester"); got != tc.running {
-				t.Fatalf("Running(%s) for the claim %s %s by %q = %t, want %t", "ses_tester", gateToken, tc.state, tc.by, got, tc.running)
+			views := &claimViews{view: supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: "ses_tester", State: tc.state, SuspendedBy: tc.by, Generation: 3}}}
+			gate := newAnswerGate(&launchChecks{}, func(token claim.Token) (supervise.ClaimView, bool) {
+				view, ok := views.get(token)
+				return view, ok && !tc.closed
+			}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if gate.Running(gateToken, "ses_tester") || gate.Released(gateToken, "ses_tester") != tc.released || gate.Released(gateToken, "ses_older") {
+				t.Fatalf("for the claim %s %s by %q: Running %t, Released %t, Released of an older session %t; want it not running and released %t, and no older session released",
+					gateToken, tc.state, tc.by, gate.Running(gateToken, "ses_tester"), gate.Released(gateToken, "ses_tester"),
+					gate.Released(gateToken, "ses_older"), tc.released)
 			}
 			wrote := false
 			ran, err := gate.Append(gateToken, "ses_tester", func() error { wrote = true; return nil })
-			if err != nil || ran != !tc.running || wrote != !tc.running {
-				t.Fatalf("Append for the claim %s %s by %q = %t, %v, wrote %t; want it written %t", gateToken, tc.state, tc.by, ran, err, wrote, !tc.running)
+			if err != nil || !ran || !wrote {
+				t.Fatalf("Append for the claim %s %s by %q = %t, %v, wrote %t; want it written", gateToken, tc.state, tc.by, ran, err, wrote)
+			}
+			if !tc.released {
+				return
+			}
+			if err := gate.CheckLaunch(context.Background(), views.view.Claim); err != nil {
+				t.Fatal(err)
+			}
+			if !gate.Running(gateToken, "ses_tester") || gate.Released(gateToken, "ses_tester") {
+				t.Fatal("the released claim's start passed its check and the gate still says it is released and not running")
+			}
+			if ran, err := gate.Append(gateToken, "ses_tester", func() error { return nil }); ran || err != nil {
+				t.Fatalf("an append after the released claim's start = %t, %v; want nothing written", ran, err)
 			}
 		})
 	}

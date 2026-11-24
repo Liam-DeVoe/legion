@@ -52,6 +52,12 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // returned anything, the run's turns and that reply are the exchange it adds
 // (conversation.Append.NoAnswer), so the agent's conversation holds every call it made, a write
 // among them.
+//
+// For an agent whose claim the daemon released (wakes) a reply the loop does not post as the
+// agent's answer — one not answered, a request for work, a fault, and one that asks nothing — is
+// recorded and neither appended nor posted: the agent is given the message itself through Wakes
+// (post, woken) and answers it once woken. A reply that answers is appended and posted as for
+// any stopped agent.
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -199,6 +205,13 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			q.PassReason = string(ReasonNeedsWork)
 		}
 	}
+	if (q.PassReason != "" || q.ReplyKind == string(answer.None)) && l.wakes(q) {
+		q.Wake = true
+		if err := l.move(ctx, &q, store.QuestionAppended, store.QuestionGenerating); err != nil {
+			return err
+		}
+		return l.post(ctx, q, origin)
+	}
 	if err := l.move(ctx, &q, store.QuestionGenerating, store.QuestionGenerating); err != nil {
 		return err
 	}
@@ -286,7 +299,8 @@ func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool To
 
 // decideFault fixes the daemon's own reply in the agent's name for a question the model gave no
 // answer to, naming the bound or fault and every gh and dispatch write the question's calls ran
-// (faultText), and posts it; the question is passed on.
+// (faultText), and posts it; the question is passed on. For an agent whose claim the daemon
+// released (wakes) nothing is posted or passed on: the agent is given the message itself (post).
 func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin Origin, reason Reason) error {
 	from := q.State
 	text, err := l.faultText(ctx, q.ID, reason)
@@ -294,10 +308,19 @@ func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin O
 		return err
 	}
 	q.ReplyKind, q.ReplyText, q.PassReason = "", text, string(reason)
+	q.Wake = l.wakes(q)
 	if err := l.move(ctx, &q, store.QuestionAppended, from); err != nil {
 		return err
 	}
 	return l.post(ctx, q, origin)
+}
+
+// wakes is whether q's agent is given its message through Wakes rather than told a reply the loop
+// would not post as its answer, or passed to the controller: its claim was released when the
+// loop received q with a decision (store.AnswerQuestion.Wake), or is released now that the loop
+// decides it (Gate.Released).
+func (l *Loop) wakes(q store.AnswerQuestion) bool {
+	return q.Wake || l.cfg.Gate.Released(q.Token, q.Session)
 }
 
 // faultText is the daemon's reply for question, which got no answer for reason: faultReply over
@@ -403,6 +426,13 @@ func noAnswerNote(reason Reason, reply string) string {
 // refused for good drops the question and passes it on. While the project is paused nothing is
 // posted or passed on (answer.ErrPaused): q stays appended, and is posted after the resume.
 //
+// For an agent whose claim the daemon released, a reply the loop does not post as its answer (one
+// it would pass on, or one that asks nothing: store.AnswerQuestion.Wake) and a post refused for
+// good are neither posted nor passed on: the agent is given the message itself (woken). A
+// question that also carries the agent's decision, held for it since Receive, is posted, and
+// then the agent is given the message with the sentence that says where its answer was posted
+// (answeredNote), after the answer is in its conversation.
+//
 // The row holds the reason a question is passed on for before PassOn marks it passed: `legion
 // state` lists a passed question with its row's pass_reason (questionsForController), so a read
 // between the two, or a stop before the question is marked done, would list it with none. The
@@ -411,6 +441,9 @@ func noAnswerNote(reason Reason, reply string) string {
 func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	if l.paused() {
 		return answer.ErrPaused
+	}
+	if q.Wake && (q.PassReason != "" || q.ReplyKind == string(answer.None)) {
+		return l.woken(ctx, q, origin)
 	}
 	body := q.ReplyText + "\n\n" + AnswerMarker + q.ID + " -->"
 	var err error
@@ -429,12 +462,16 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 		err = fmt.Errorf("no route posts a %s", origin.Kind)
 	}
 	if refusedForGood(err) {
-		l.cfg.Log.Error("answers: the reply was refused; the question is passed on", "question", q.ID, "session", q.Session, "error", err)
-		if q.PassReason != string(ReasonPostRefused) {
-			q.PassReason = string(ReasonPostRefused)
+		wake := l.wakes(q)
+		l.cfg.Log.Error("answers: the reply was refused for good", "question", q.ID, "session", q.Session, "released", wake, "error", err)
+		if q.PassReason != string(ReasonPostRefused) || q.Wake != wake {
+			q.PassReason, q.Wake = string(ReasonPostRefused), wake
 			if err := l.move(ctx, &q, store.QuestionAppended, store.QuestionAppended); err != nil {
 				return err
 			}
+		}
+		if wake {
+			return l.woken(ctx, q, origin)
 		}
 		if err := l.cfg.PassOn.PassOn(ctx, q, ReasonPostRefused, origin); err != nil {
 			return err
@@ -444,6 +481,11 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 	if err != nil {
 		return fmt.Errorf("post the reply: %w", err)
 	}
+	if q.Wake {
+		if err := l.wakeFor(ctx, q, wakeMessage(origin)+answeredNote(origin)); err != nil {
+			return err
+		}
+	}
 	if q.PassReason == "" {
 		return l.move(ctx, &q, store.QuestionPosted, store.QuestionAppended)
 	}
@@ -451,6 +493,27 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 		return fmt.Errorf("pass the question on: %w", err)
 	}
 	return l.move(ctx, &q, store.QuestionPassedOn, store.QuestionAppended)
+}
+
+// woken gives q's message to its agent, whose claim the daemon released, through Wakes in place
+// of the reply the loop does not post, and ends q woken: nothing is posted, the controller is
+// told nothing, and the woken agent answers the message itself.
+func (l *Loop) woken(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
+	if err := l.wakeFor(ctx, q, wakeMessage(origin)); err != nil {
+		return err
+	}
+	return l.move(ctx, &q, store.QuestionWoken, store.QuestionAppended)
+}
+
+// wakeFor gives text to q's released agent through Wakes, keyed by q's id, so a pass the daemon
+// stopped after the row was written writes none again.
+func (l *Loop) wakeFor(ctx context.Context, q store.AnswerQuestion, text string) error {
+	if err := l.cfg.Wakes.Wake(ctx, Wake{Key: q.ID, Issue: q.Issue, Role: q.Role, Session: q.Session, Text: text}); err != nil {
+		return fmt.Errorf("give the question %s to the released %s: %w", q.ID, q.Session, err)
+	}
+	l.cfg.Log.Info("answers: the question goes to the released agent through its wake", "question", q.ID, "issue", q.Issue,
+		"role", q.Role, "session", q.Session, "reason", q.PassReason)
+	return nil
 }
 
 // postOnAsk comments on the ask's thread, unless the thread already holds the agent's comment

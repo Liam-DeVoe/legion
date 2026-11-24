@@ -67,7 +67,8 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 // (client, posting in an agent's name), its Envoy listener, supervision's answer gate, the issue
 // record, the gh tool (tools, answersTools'), the dispatch tool where boot found its command
 // (answersDispatchTools), the web_search tool where answers configures it (answersWebSearchTools),
-// the conversation store and the project's pause flag.
+// the conversation store, the outbox rows that wake a released agent (releasedWakes) and the
+// project's pause flag.
 func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision, st *store.Store, client answerloop.Dispatch, tools ghTools) answerloop.Config {
 	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
 	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
@@ -86,6 +87,7 @@ func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision,
 		Conversations:  answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
 		PassOn:         controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
 		Decisions:      routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
+		Wakes:          releasedWakes{outbox: w.outbox, now: time.Now, log: w.log},
 		AppID: func(role claim.Role) string {
 			if appauth.AppRoleFor(role) == appauth.Implement {
 				return cfg.GitHubApps.Implement.AppID

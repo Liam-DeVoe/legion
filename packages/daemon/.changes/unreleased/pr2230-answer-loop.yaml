@@ -1,7 +1,8 @@
 kind: Added
 body: |-
   The daemon can answer a question sent to a Legion agent that is not running (suspended by the
-  workflow, retired or closed) from that agent's own conversation, without starting its pod. An
+  workflow, released with its idle issue pod or by a project's pause, retired or closed) from that
+  agent's own conversation, without starting its pod. An
   operator turns it on with the `answers:` block of `legion.yaml`: the model providers, their
   prices, the bounds and the conversation store. Without that block the daemon behaves as before
   and tells the Envoy listener that it does not answer. Under `runtime: kubernetes`, a block that
@@ -23,9 +24,15 @@ body: |-
   A question the loop cannot answer, or a request for work, goes to the controller once
   (`agent-question`, and `questionsForController` in `legion state`). A person's decision on a
   stopped agent's ask goes to the running architect, else to the controller (`agent-decision`).
-  The Envoy listener hands the message of a claim the idle release suspended to the daemon as it
-  hands any stopped agent's, and the daemon decides what wakes it: the loop does not answer for
-  such a claim, and forwards its question to the role's topic, which wakes the claim.
+  The Envoy listener hands the message of a claim the daemon released (an idle release of its
+  issue pod, or a project's pause) to the daemon as it hands any stopped agent's, with no wake.
+  The loop answers such an agent's question from its conversation, and a question it answered
+  wakes nothing. Everything else it gives the agent through one outbox row (`agent_message`)
+  that wakes the claim and delivers the message once the woken session holds its role, held
+  during a pause and delivered after the resume: a person's decision on its ask, a message that
+  asks nothing, a reply of kind `none`, and every reply the controller would hear of, for which
+  the loop posts nothing, appends nothing and tells the controller nothing. A decision that also
+  asks is answered, appended and posted first, and its row then says where the answer is.
 time: 2026-11-17T05:20:13.000000000Z
 custom:
     Issue: pr2230

@@ -90,6 +90,12 @@ type Verdict struct {
 	Delivery *Origin
 	Decision *Decision
 	Because  string
+	// ForAgent is a hand-off that is no question and no decision but is the agent's own: a
+	// Dispatch message or comment, a reply among them, that asks it nothing, or a message of a
+	// source no agent answers. An agent whose claim the daemon released is given it through Wakes,
+	// as it would have read it running. The loop's own answers and publishes, the daemon's notices
+	// and posts, the broker's messages and every other Dispatch event are not, and wake nobody.
+	ForAgent bool
 }
 
 // Reader reads what Classify decides a hand-off by: an ask's author (Dispatch.Ask), and the
@@ -121,8 +127,10 @@ func QuestionID(project, identity, token string) string {
 // already got (*.answered), the daemon's own notices and posts, the broker's (source envoy), and
 // anything carrying the loop's own marker (its dedupe key, the `<!-- legion-answer:` marker, a
 // Legion footer with an `answer` key), which an agent's message carrying it is delivered into
-// that agent's conversation for instead (Delivery). The ask's author and the reply's thread are
-// read from Dispatch.
+// that agent's conversation for instead (Delivery). Of the hand-offs never answered, a Dispatch
+// message or comment and a message of a source no agent answers are the agent's own all the same
+// (Verdict.ForAgent), which an agent whose claim is released is given through Wakes. The ask's
+// author and the reply's thread are read from Dispatch.
 func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	env := h.Envelope
 	switch {
@@ -154,10 +162,13 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 		}
 		return Verdict{Question: &origin}, nil
 	default:
-		return Verdict{Because: fmt.Sprintf("a message from %q no agent answers", env.Source)}, nil
+		return Verdict{Because: fmt.Sprintf("a message from %q no agent answers", env.Source), ForAgent: true}, nil
 	}
 }
 
+// classifyDispatch is Classify of a Dispatch event. A message or a comment it takes for no
+// question and no decision is still the agent's own (Verdict.ForAgent), whatever it was not
+// answered for; the loop's own answer and the daemon's own post are not.
 func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
@@ -169,6 +180,15 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 	case strings.HasPrefix(event.Actor.ID, dispatch.DaemonSessionPrefix):
 		return Verdict{Because: "the daemon's own post"}, nil
 	}
+	verdict, err := classifyDispatchEvent(ctx, h, conv, reader, event)
+	verdict.ForAgent = err == nil && verdict.Question == nil && verdict.Decision == nil &&
+		(event.Type == "message.created" || event.Type == "comment.created")
+	return verdict, err
+}
+
+// classifyDispatchEvent is classifyDispatch of an event that is neither the loop's own answer nor
+// the daemon's own post.
+func classifyDispatchEvent(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader, event intake.DispatchEvent) (Verdict, error) {
 	ownAsk := func(askID string) (bool, error) {
 		ask, err := reader.Ask(ctx, askID)
 		if err != nil {

@@ -174,9 +174,10 @@ type heldMessage struct {
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
-// the row until a session of that role takes it: the delivery a merge-queue removal and a
-// merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
-// ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
+// the row until a session of that role takes it: the delivery a merge-queue removal, a
+// merge-forward message and a message for a released agent share (mergeQueueRemoval,
+// mergeForwardMessage, agentMessage), once each has read what ends its row on its own terms. It
+// stops nothing it reaches, as a hook prompt stops nothing. A
 // released role is woken (wakeForDelivery), and the row waits on its backoff until the woken
 // session holds the role, or, while the wake pacing holds that resume, for its turn, reading the
 // claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener answers

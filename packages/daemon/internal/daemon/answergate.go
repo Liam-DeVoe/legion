@@ -95,27 +95,40 @@ wait:
 }
 
 // Running is whether session's conversation is its claim's current one and the claim runs it, is
-// starting, or was started, or is released (answerloop.Gate).
+// starting, or was started (answerloop.Gate).
 func (g *answerGate) Running(token claim.Token, session string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.runningLocked(token, session)
 }
 
+// Released is whether session's conversation is its claim's current one and the daemon released
+// the claim (supervise.Claim.Released) and no start of it has passed its check since
+// (answerloop.Gate): the loop answers the agent's questions as any stopped agent's and gives it
+// everything else through its wake (answerloop.Wakes).
+func (g *answerGate) Released(token claim.Token, session string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.runningLocked(token, session) {
+		return false
+	}
+	view, ok := g.view(token)
+	return ok && view.Session != "" && view.Session == session && view.Released()
+}
+
 // runningLocked is Running under g.mu. A start's mark lasts until the machine shows a launch after
 // it (a later generation) that runs nothing any more: the process the start began has ended.
 //
-// A claim suspended by idle release (supervise.Claim.Released) answers true though it runs
-// nothing. The loop answers for every other claim that runs nothing: one that failed, one the
-// workflow or an operator suspended (a parked child, or a tree whose root left the workflow during
-// its linger), one retired, and one closed. A released claim is the one it does not answer for:
-// the daemon released its idle issue pod and keeps the session, its phase and its pending task,
-// and the next message for it is the wake that brings the pod back and resumes that session
-// (INFRA-945). The listener hands a released session's message off as it hands any stopped
-// agent's, so this check is what keeps the loop from answering it: answering it here would write
-// into a conversation about to run again and answer in the name of a worker that is coming back.
-// So the loop forwards it to the role topic instead, where a message nobody holds wakes the role's
-// released claim, and offers it again until the resumed worker holds the role.
+// The loop answers for every claim that runs nothing: one that failed, one the workflow or an
+// operator suspended (a parked child, or a tree whose root left the workflow during its linger),
+// one retired, one closed, and one the daemon released (supervise.Claim.Released): an idle
+// release of its issue pod, which keeps the session, its phase and its pending task for the wake
+// that brings the pod back (INFRA-945), or a project's pause, which suspends a claim the same way.
+// The listener hands a released agent's message to the daemon and raises no wake of its own when
+// it did, so the loop answers the agent's questions from its conversation and gives it everything
+// else through one outbox row that wakes it (answerloop.Wakes, the daemon's releasedWakes). The
+// gate still never lets an append write while the claim runs or is starting: a start's mark and a
+// launch that runs the conversation each answer true, and a start waits for an append to end.
 func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 	view, ok := g.view(token)
 	if !ok || view.Session == "" || view.Session != session {
@@ -127,7 +140,7 @@ func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 		}
 		st.started = false
 	}
-	return view.Released() || !view.RunsNothing()
+	return !view.RunsNothing()
 }
 
 // Append runs write once no other append on the claim writes, and while no start of the claim can

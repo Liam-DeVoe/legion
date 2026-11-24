@@ -22,7 +22,9 @@ const (
 	// with the gh calls the earlier run made.
 	QuestionGenerating QuestionState = "generating"
 	// QuestionAppended is a question whose reply is decided (ReplyText): the model's, appended to
-	// the conversation, or the daemon's own. A restart posts it and never answers again.
+	// the conversation, or the daemon's own, or, for a question of a released agent (Wake), one the
+	// loop neither appends nor posts. A restart posts it, or gives it to the released agent, and
+	// never answers again.
 	QuestionAppended QuestionState = "appended"
 	// QuestionPosted is a question whose reply was posted where it was asked.
 	QuestionPosted QuestionState = "posted"
@@ -31,6 +33,10 @@ const (
 	// QuestionForwarded is a question handed to the agent that runs its conversation, delivered once
 	// ForwardDelivered.
 	QuestionForwarded QuestionState = "forwarded"
+	// QuestionWoken is a question of an agent whose claim is released, given to that agent through
+	// the daemon's wake row (answerloop.Wakes) in place of a reply the loop does not post: nothing
+	// is posted and the controller is told nothing, and the woken agent answers it.
+	QuestionWoken QuestionState = "woken"
 	// QuestionDropped is a question the loop ended with nothing posted.
 	QuestionDropped QuestionState = "dropped"
 )
@@ -41,8 +47,15 @@ const (
 // the conversation that answers it (its session, role token, issue and role); where it came from
 // (Kind: message, mention, ask_reply, thread_reply, envoy); whether the agent may reply that it
 // asks nothing; the hand-off as received; its state; the reply decided for it (its kind, its text,
-// why it is passed on); whether a forward reached the running agent; how many hand-offs carried
-// it; and when it was first and last handed off and last changed.
+// why it is passed on); whether a forward reached the running agent; whether its agent is given
+// its message through the daemon's wake row (Wake); how many hand-offs carried it; and when it
+// was first and last handed off and last changed.
+//
+// Wake is set for a question whose claim was released when the loop received or decided it: a
+// person's decision that also asks, received for a released claim, holds the decision for the
+// wake row written once the question is posted, and a reply the loop does not post for a
+// released claim (one the controller would hear of, or one that asks nothing) is given to the
+// agent through that row in its place.
 type AnswerQuestion struct {
 	ID               string
 	Project          string
@@ -59,6 +72,7 @@ type AnswerQuestion struct {
 	ReplyText        string
 	PassReason       string
 	ForwardDelivered bool
+	Wake             bool
 	Deliveries       int
 	ReceivedAt       time.Time
 	LastSeenAt       time.Time
@@ -66,7 +80,7 @@ type AnswerQuestion struct {
 }
 
 const questionColumns = `id, project, identity, session, token, issue, role, kind, may_ask_nothing, handoff, state, reply_kind,
-	reply_text, pass_reason, forward_delivered, deliveries, received_at, last_seen_at, updated_at`
+	reply_text, pass_reason, forward_delivered, wake, deliveries, received_at, last_seen_at, updated_at`
 
 // ErrQuestionMoved is UpdateQuestion's refusal of a question no longer in a state the update moves
 // it from: another writer moved it first.
@@ -82,12 +96,12 @@ func (s *Store) ReceiveQuestion(ctx context.Context, q AnswerQuestion) (AnswerQu
 	var inserted bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
-				may_ask_nothing, handoff, state, received_at, last_seen_at, updated_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', $11, $11, $11)
+				may_ask_nothing, handoff, wake, state, received_at, last_seen_at, updated_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'received', $12, $12, $12)
 			on conflict (project, identity, token) do update set deliveries = answer_questions.deliveries + 1,
 				last_seen_at = excluded.last_seen_at
 			returning `+questionColumns+`, xmax = 0`,
-			q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.ReceivedAt)
+			q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.Wake, q.ReceivedAt)
 		if err != nil {
 			return err
 		}
@@ -143,8 +157,9 @@ func (s *Store) OpenQuestions(ctx context.Context, project string) ([]AnswerQues
 	return found, nil
 }
 
-// UpdateQuestion writes q's state, reply, pass reason and forward delivery, at q.UpdatedAt, when
-// the question is in one of the states from; otherwise it changes nothing and is ErrQuestionMoved.
+// UpdateQuestion writes q's state, reply, pass reason, forward delivery and wake, at q.UpdatedAt,
+// when the question is in one of the states from; otherwise it changes nothing and is
+// ErrQuestionMoved.
 func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...QuestionState) error {
 	states := make([]string, len(from))
 	for i, state := range from {
@@ -153,9 +168,9 @@ func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...Qu
 	var updated bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `update answer_questions set state = $2, reply_kind = $3, reply_text = $4, pass_reason = $5,
-				forward_delivered = $6, updated_at = $7
-			where id = $1 and state = any($8)`,
-			q.ID, string(q.State), q.ReplyKind, q.ReplyText, q.PassReason, q.ForwardDelivered, q.UpdatedAt, states)
+				forward_delivered = $6, wake = $7, updated_at = $8
+			where id = $1 and state = any($9)`,
+			q.ID, string(q.State), q.ReplyKind, q.ReplyText, q.PassReason, q.ForwardDelivered, q.Wake, q.UpdatedAt, states)
 		updated = tag.RowsAffected() != 0
 		return err
 	})
@@ -329,7 +344,7 @@ func scanQuestions(rows pgx.Rows, inserted *bool) ([]AnswerQuestion, error) {
 		var token, role, state string
 		var handoff []byte
 		dest := []any{&q.ID, &q.Project, &q.Identity, &q.Session, &token, &q.Issue, &role, &q.Kind, &q.MayAskNothing, &handoff,
-			&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Deliveries, &q.ReceivedAt, &q.LastSeenAt, &q.UpdatedAt}
+			&state, &q.ReplyKind, &q.ReplyText, &q.PassReason, &q.ForwardDelivered, &q.Wake, &q.Deliveries, &q.ReceivedAt, &q.LastSeenAt, &q.UpdatedAt}
 		if inserted != nil {
 			dest = append(dest, inserted)
 		}

@@ -1879,6 +1879,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A claim that runs the conversation takes it live instead, as a forwarded question does:
   the loop sends the answer to that session through the listener in its sender's own words, for a live session and nobody else (`"handoff": false`), and nothing is written into a running agent's conversation.
   A send the listener refuses is an agent that stopped again in that race, and its answer is written in after all, so no message goes round between the two.
+  An asker whose claim the daemon released is given the answer through the row that wakes it instead, and nothing is written into its conversation (below).
 
 - **Once.**
   A question's identity holds across retries and restarts:
@@ -1894,12 +1895,25 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   the question, with every tool call the loop already made for it, each named with its tool, and its result, goes to the running agent on its role topic, held and offered again until a live session holds the role, and back to the loop if the claim stops first.
   A claim's start waits at most 10 seconds for an answer being appended to its conversation.
 
-- **A released claim is the daemon's to decide.**
-  The loop answers for every stopped claim: a claim that failed, one the workflow or an operator suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
-  A claim the daemon suspended by idle release is stopped too, with its session, phase and pending task kept, and the listener hands its messages to the daemon as it hands any stopped agent's, with no wake beside them; Dispatch resolves such a session, and a role whose newest entry it is, to that session.
+- **A released claim is answered for, and woken for everything else.**
+  The loop answers for every stopped claim: a claim that failed, one the workflow or an operator suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, one closed, and one the daemon released.
+  A claim is released when the daemon suspended it with `suspended_by = 'released'`: the idle release of its issue pod, which keeps its session, phase and pending task for the wake that brings the pod back, and a project's pause, which suspends a claim the same way.
+  The listener hands a released agent's messages to the daemon as it hands any stopped agent's, with no wake beside them; Dispatch resolves such a session, and a role whose newest entry it is, to that session.
   The registry's entry says nothing of the release: the daemon decides what the message does.
-  At this release the loop treats a question for a released claim as one to a running conversation (above):
-  forwarded to the role topic, where a message nobody holds wakes the released role, and offered again until the resumed worker holds it, never answered in the name of a worker that is coming back.
+  The loop answers a released agent's question from its conversation and posts the answer, as for any stopped agent, and a question it answered wakes nothing.
+  Everything else that reached the agent and is the agent's own wakes it, through one outbox row of the kind `agent_message`, written once per message however often it is handed off:
+  a person's decision on the agent's ask, an answer or a reply that hands the ask back, in place of the architect's or the controller's `agent-decision` notice;
+  a Dispatch message or comment that asks nothing;
+  a reply of kind `none`, for which nothing is appended to the conversation;
+  every reply the controller would hear of (`not_answered`, `needs_work`, a fault, a day over `daily_usd`, a conversation the daemon cannot read, a post Dispatch or the listener refused), for which the loop posts nothing, appends nothing and tells the controller nothing, so no `agent-question` notice is queued and `questionsForController` lists nothing;
+  and the loop's own answer to the agent as an asker, in place of writing it into the conversation.
+  The daemon's own notices and posts, the Envoy broker's own messages and anything carrying the loop's own marker are none of the agent's, and wake nothing.
+  The row's message is the original message as the agent would have read it: who sent it, where and under which reference, then its words.
+  The row wakes the claim first, as the daemon's own notices do, and waits on its backoff, or for the turn of a launch the wake pacing holds, until the woken session holds its role; then it publishes the message to the role's topic once, and ends.
+  It ends undelivered once the role's claim has failed or retired, or once the issue has left the workflow or its tree lingers, since no wake brings the claim back then.
+  While the project is paused the outbox holds the row, and it delivers the message after the resume.
+  A message that is a decision and also asks is answered first: the answer is appended to the agent's conversation and posted, and only then is the row written, carrying the person's decision and one sentence that says where the answer was posted, so the woken agent finds the answer in its conversation and does not answer it again.
+  A claim that is not released is unchanged: its decision goes to its architect or to the controller, and its replies are posted and passed on as below.
 
 - **The model** is the conversation's own:
   an `anthropic/…` model run on `anthropic-messages` through Anthropic's Messages API, an `openai/…` model run on `openai-responses` through OpenAI's Responses API, a Claude Code conversation's model through Anthropic's.
@@ -1910,7 +1924,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A provider's 429, 5xx or transport error is retried once, within the answer's time; nothing else retries.
 
 - **The reply** is one JSON object the daemon checks, of four kinds:
-  `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what its tools read) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
+  `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what its tools read) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on, except for a released claim (above);
   and `none`, offered only for an Envoy message, a reply in a comment thread or a person's reply on the agent's ask, which posts nothing.
   The form's own field descriptions tell the model the two rules its schema cannot hold a reply to: a `not_answered` or `needs_work` reply names what it needs, and every kind but `none` carries text.
   The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's tool results, raw JSON among them read with each escape such as `\n` as a space.
@@ -2859,7 +2873,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Five migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps both names.
+Six migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then `20261124114223_released_agent_messages`, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2907,7 +2921,7 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Only `20261119203047_design_news` writes the list after it, and that list keeps both names and `phase_ended`.
+Two migrations write the list after it, `20261119203047_design_news` and then `20261124114223_released_agent_messages`, and each list keeps both names and `phase_ended`.
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
 
@@ -2941,7 +2955,7 @@ delete from outbox where kind = 'phase_ended';
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Four migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
+Five migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then `20261124114223_released_agent_messages`, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2999,7 +3013,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Three migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
+Four migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then `20261124114223_released_agent_messages`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -3057,7 +3071,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Two migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
+Three migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then `20261124114223_released_agent_messages`, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -3245,7 +3259,7 @@ So one project can roll back while another stays on this release, and the statem
 
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
-Its version stands above `20261119003157`, so its list is the last word of the kind check.
+Its version stands above `20261119003157`, so its list stands over every list before it; `20261124114223_released_agent_messages`, which stands above it, writes the list again with every kind of it and `agent_message`, and is the last word of the kind check.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3547,9 +3561,18 @@ The loop marked each question and each decision passed in the transaction that q
 a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 229 or later, and a deleted decision is not told again.
 
 **The four tables need no statement.**
-This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`), and adds the tool of each call to `answer_tool_calls` (`20261124072849_answer_tool_calls_tool`).
+This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`), adds the tool of each call to `answer_tool_calls` (`20261124072849_answer_tool_calls_tool`), and adds `answer_questions.wake` and the state `woken` beside the outbox kind `agent_message` (`20261124114223_released_agent_messages`).
 An earlier daemon does not refuse a database that records migrations it does not know: its migrator applies each migration it embeds that the database has not recorded and compares nothing else (`Store.Migrate` in `store/store.go`), so it boots on that database and names none of the four tables.
-Leave them and their five `schema_version` rows as they are: a roll forward finds the five versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
+Leave them and their six `schema_version` rows as they are: a roll forward finds the six versions recorded, runs none of them again, and finds the conversations, the questions, a woken question among them, and the day's spend as this release left them.
+
+**A queued `agent_message` row needs no statement.**
+The loop gives an agent whose claim the daemon released what it does not answer for it through an outbox row of the kind `agent_message`, which wakes the claim and delivers the message once the woken session holds its role ([The answer loop](#the-answer-loop)).
+The rollback leaves such rows in the outbox.
+An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`): its lanes list the issues they run from the kinds they hold (`UnfinishedLanes`, which leaves out a kind no lane holds), and each lane reads only its own kinds, so that daemon never decodes or runs such a row, and a row left in place holds back no other row.
+Nor does such a row hold an issue's pod: the earlier release's idle check counts only the kinds it names (`idleWaitingKinds` in `store/idle.go`).
+Each row waits through the rollback and runs at the roll forward: it wakes its agent then and delivers the message, or ends undelivered, with one line, where the role's claim has failed or retired or the issue has left the workflow by then.
+What the rollback costs is the time: a released agent the row was for is not woken for that message while the earlier release runs.
+The kind check keeps `agent_message` and the state check keeps `woken` after the rollback, and the rollback needs no statement for either: an earlier release never writes the kind and never writes `answer_questions`, so neither check refuses anything that release writes.
 
 **A tmux daemon on `runtime.tmux.session_store: postgres` waits until it holds no session to resume.**
 Under that store this release tells every pane `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE`, so each pane's Oh My Pi session is a row of the session table, keyed by the path its file would have had.
@@ -3561,8 +3584,8 @@ Roll such a daemon back once none of its claims records an Oh My Pi session it i
 A Claude Code transcript is a file under either store, and resumes as before.
 
 **Nothing else in the database needs a statement.**
-This release adds no other migration and no other notice kind or payload member.
-The marks the loop writes in `processed_events`, under the sources `agent-question` and `agent-decision`, sit in a table the earlier release reads by source and event id, and it reads neither source.
+This release adds no other migration and no other outbox kind, notice kind or payload member.
+The marks the loop writes in `processed_events`, under the sources `agent-question`, `agent-decision` and `agent_message`, sit in a table the earlier release reads by source and event id, and it reads none of the three sources.
 
 ### Pinning a release that drops what a running pod still uses
 
@@ -4009,8 +4032,8 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463) and this release's 20261124021727_answer_questions_thread_reply and 20261124072849_answer_tool_calls_tool are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
-That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, 20261123212127 on one that #5278's release or a later one before this one migrated, and 20261124072849 on one that this release migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463) and this release's 20261124021727_answer_questions_thread_reply, 20261124072849_answer_tool_calls_tool and 20261124114223_released_agent_messages are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, 20261123212127 on one that #5278's release or a later one before this one migrated, and 20261124114223 on one that this release migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
 `internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which is the newest migration this tree embeds.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
@@ -4104,6 +4127,7 @@ The migrations recorded above this one are these.
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261124021727_answer_questions_thread_reply writes the check of `answer_questions.kind` again with `thread_reply` added and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
 20261124072849_answer_tool_calls_tool adds `answer_tool_calls.tool` at its default, `gh`, and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
+20261124114223_released_agent_messages adds `answer_questions.wake` at its default, false, writes the checks of `answer_questions.state` and of the outbox's kinds again with `woken` and `agent_message` added, and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -8446,7 +8470,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   The exception is the daemon's own informational role message to a released role (`outbox.roleMessage`: the copy of a head's settled checks it sends to a role that settlement did not wake, a design gate's move, an approved round stuck on its merge state): the daemon does not publish it, so it raises no wake.
   A release that lands between the daemon's read of the claim and that publish is refused `holder_lapsed`, and the refusal wakes the role all the same.
   A role message that a project's pause held for a role that a pause stopped is not such an exception: the daemon publishes it after the resume, and that publish wakes the role ([Pausing a project](#pausing-a-project)).
-  While the project's daemon answers for its stopped agents ([The answer loop](#the-answer-loop)), the listener hands a message to the released session or to its role to that daemon instead, with no wake, and the daemon decides what wakes the role; what follows is what a message gets while no daemon answers for the project.
+  While the project's daemon answers for its stopped agents ([The answer loop](#the-answer-loop)), the listener hands a message to the released session or to its role to that daemon instead, with no wake, and the daemon answers the message's question from the session's conversation and wakes the role for everything else through an `agent_message` row of its outbox; what follows is what a message gets while no daemon answers for the project.
   An Envoy direct message to the session raises the wake, and the listener stores it for the stopped session, which its known-session store holds for 30 days: the answer says `state: stopped`, and the woken session reads the message.
   Until the listener's reaper frees the role claim, 5 to 10 minutes after the release, a message to the role's topic is answered `202`, kept with `kept_reason: holder_lapsed` and `holder_state: gone`; after that, it is answered `202` and kept with `kept_reason: unclaimed`.
   One sent with `keep: false` is not kept: it is answered `404` with `holder_lapsed` while the claim stands, and `404` with `unclaimed` once the reaper has freed it.

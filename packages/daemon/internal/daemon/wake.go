@@ -248,9 +248,10 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // wakeForDelivery brings a released pod back for a delivery the daemon already has for one of its
 // roles and cannot hand over any other way: a notice whose owning architect is released, a hook
 // prompt whose role is, the message that tells a released merger its pull request left the merge
-// queue (mergeQueueRemoval), and a message of a merge forward whose role is released
-// (mergeForwardMessage). Every other delivery is an outbox `start` or a task, which the supervise
-// machine already resumes a suspended claim for (deliverResuming); these four publish to a live
+// queue (mergeQueueRemoval), a message of a merge forward whose role is released
+// (mergeForwardMessage), and a message the answer loop does not answer for a released agent
+// (agentMessage). Every other delivery is an outbox `start` or a task, which the supervise
+// machine already resumes a suspended claim for (deliverResuming); these five publish to a live
 // session instead, so the row's own retry is what waits for the pod, and this is what makes the
 // pod come back for it to find.
 //
@@ -412,9 +413,10 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // workflow's wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause
 // (the listener's report of a role message the pause held, or of a message another session sent
 // the role, a CI settlement or a backstop). The resume wakes every lane at once
-// (projectPause.Resumed), so a held notice, hook prompt, merge-queue removal or merge forward's
-// message of the same role can run before that start, or after that other wake, and find the role
-// released under the held wake. Nothing is wrong there, and the line says so at Info. Any other
+// (projectPause.Resumed), so a held notice, hook prompt, merge-queue removal, merge forward's
+// message or message for a released agent of the same role can run before that start, or after
+// that other wake, and find the role released under the held wake. Nothing is wrong there, and
+// the line says so at Info. Any other
 // open resume over a released claim is one whose process never came — a resume the store refused
 // after its take committed, or a daemon that stopped between the two — and the line says so at
 // Warn, as it does when the read fails, with its error: the resume goes ahead either way.
