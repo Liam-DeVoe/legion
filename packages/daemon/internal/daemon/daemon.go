@@ -2181,7 +2181,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.bootStalePlugins()
+	s.bootStalePlugins(stalePluginBootBound)
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
 	}
@@ -2192,12 +2192,12 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // the plan of a claim's issue, and the boot's budget can be spent by now: the replay before it runs
 // on a budget of its own, since the boot's would end it (run). So it runs on the machines'
 // context, which the daemon's stop ends as it ends the boot, with a hold mark of its own. The API
-// starts only once it returns, so it is bounded as a whole (stalePluginBootBound), whatever the
-// fleet's size. A daemon that cannot relaunch onto a plugin writes its boot line for each stale
-// claim the pass read within that bound; one line names how many it did not read, and the next
-// sweep reads them.
-func (s *supervision) bootStalePlugins() {
-	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), stalePluginBootBound)
+// starts only once it returns, so it is bounded as a whole by bound (stalePluginBootBound at the
+// boot), whatever the fleet's size. A daemon that cannot relaunch onto a plugin writes its boot
+// line for each stale claim the pass read within that bound; one line names how many it did not
+// read, and the next sweep reads them.
+func (s *supervision) bootStalePlugins(bound time.Duration) {
+	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), bound)
 	defer end()
 	s.refreshStalePlugins(pass, s.claims, "boot")
 }
