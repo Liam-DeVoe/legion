@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -1195,6 +1197,8 @@ func populatedState(t *testing.T) State {
 	// read. LEGION-219's head was read again a minute before this state, and that read only
 	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
 	// tree has been still for more than a day although its read stamp is a minute old.
+	// LEGION-240 last moved when it entered step, and LEGION-241 when its checker's claim failed
+	// and the hold took it out of step; the failed claim carries no step record.
 	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
 	quietMoved := map[string]time.Time{
 		"LEGION-208": implementerStep.At,
@@ -1203,6 +1207,8 @@ func populatedState(t *testing.T) State {
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
 		"LEGION-218": waitingApprovedAt,
 		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
+		"LEGION-240": time.Date(2026, 9, 22, 8, 52, 16, 0, time.UTC),
+		"LEGION-241": time.Date(2026, 9, 22, 9, 4, 39, 0, time.UTC),
 	}
 	for key, issue := range state.Issues {
 		movedAt, measured := quietMoved[issue.Tree]
@@ -1248,8 +1254,12 @@ func TestStateGolden(t *testing.T) {
 // slotViews), in the order of their index, which the slots table keeps unique and never negative
 // (record.Store.Slots): so an issue carries a slot view exactly when `active` names it, and
 // `active` lists its issues by that index, each a different one, each slot with the moment the
-// pass took it (admit's PutSlot of the pass's now). A golden that breaks any of these rules
-// shows every reader of state.json a state the daemon never serves.
+// pass took it (admit's PutSlot of the pass's now). Each issue the state records in a tree
+// `trees` names carries that tree's quiet time, and no other issue carries one
+// (internal/projection's quietTrees): one pair for the whole tree, each pair read at the one
+// instant the state is measured at, unless its movement stands at or after that instant and it
+// reads 0 (record.QuietTrees). A golden that breaks any of these rules shows every reader of
+// state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1302,6 +1312,41 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	for key, issue := range state.Issues {
 		if issue.Slot != nil && !active[key] {
 			t.Errorf("%s carries slot %d, and `active` does not name it", key, issue.Slot.Index)
+		}
+	}
+	type quiet struct {
+		movedAt time.Time
+		hours   float64
+	}
+	treeQuiet := map[string]quiet{}
+	var readAt time.Time
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		measured := issue.TreeMovedAt != nil || issue.QuietHours != nil
+		if !trees[issue.Tree] || issue.Phase == Unrecorded {
+			if measured {
+				t.Errorf("%s carries a quiet time, and its tree %q is no live tree of a record: %v", key, issue.Tree, admission.Trees)
+			}
+			continue
+		}
+		if issue.TreeMovedAt == nil || issue.QuietHours == nil {
+			t.Errorf("%s stands in the live tree of %s, and carries no whole quiet time (treeMovedAt %v, quietHours %v)", key, issue.Tree, issue.TreeMovedAt, issue.QuietHours)
+			continue
+		}
+		pair := quiet{movedAt: *issue.TreeMovedAt, hours: *issue.QuietHours}
+		if first, seen := treeQuiet[issue.Tree]; seen && (!first.movedAt.Equal(pair.movedAt) || first.hours != pair.hours) {
+			t.Errorf("%s carries the quiet time moved %s, quiet %g hours, and another issue of the tree of %s carries moved %s, quiet %g hours",
+				key, pair.movedAt.Format(time.RFC3339), pair.hours, issue.Tree, first.movedAt.Format(time.RFC3339), first.hours)
+		}
+		treeQuiet[issue.Tree] = pair
+		if pair.hours == 0 {
+			continue
+		}
+		at := pair.movedAt.Add(time.Duration(pair.hours * float64(time.Hour))).Round(time.Millisecond)
+		if readAt.IsZero() {
+			readAt = at
+		} else if !at.Equal(readAt) {
+			t.Errorf("%s's quiet time is read at %s, and the state's other quiet times at %s", key, at, readAt)
 		}
 	}
 }
