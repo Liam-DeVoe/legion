@@ -6,8 +6,6 @@
 package proxy
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -27,8 +25,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// boundsAnswer is the shape of an intermediate a row gives the pod: a stand-in pool's answer to
-// each request (the CSR's key certified by the row's root), or a mounted intermediate.
+// boundsAnswer is the shape of the intermediate a stand-in pool answers each request with: the
+// CSR's key certified by the row's root.
 type boundsAnswer struct {
 	pathLen      int // MaxPathLen; 0 is path length 0, -1 is no constraint
 	lifetime     time.Duration
@@ -36,14 +34,16 @@ type boundsAnswer struct {
 	noConstraint bool
 }
 
-// boundsTemplate is answer's certificate, starting at notBefore. Its name constraints, unless
-// answer has none, are critical and exclude every IP address, as the pod's own CSR asks.
+// boundsTemplate is answer's certificate, starting at notBefore, with serverAuth its one extended
+// key usage. Its name constraints, unless answer has none, are critical and exclude every IP
+// address, as the pod's own CSR asks.
 func boundsTemplate(answer boundsAnswer, notBefore time.Time) *x509.Certificate {
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
 	template := &x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: "bounds intermediate"},
 		NotBefore: notBefore, NotAfter: notBefore.Add(answer.lifetime),
 		BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	if answer.pathLen == 0 {
 		template.MaxPathLenZero = true
@@ -149,64 +149,6 @@ func TestThePodRefusesAnAnswerPastThePoolsBounds(t *testing.T) {
 			failure := log.lines("proxy intermediate request failed")[0]
 			if level, why := failure["level"], strings.ToLower(fmt.Sprint(failure["error"])); level != "WARN" || !strings.Contains(why, row.why) {
 				t.Errorf("the refusal is logged %v; want WARN with a reason naming %q", failure, row.why)
-			}
-		})
-	}
-}
-
-// TestAMountedIntermediatePastTheBoundsIsRefused: the mounted form is held to the same bounds as
-// the pool's answer. A mounted intermediate (BROKER_AIRLOCK_CA_CERT_FILE with its chain to its
-// root) of path length 1, of no path length constraint, of 30 days, with a name the profiles
-// file does not bind, or with no name constraints refuses the start, naming why. Control: one of
-// 7 days, path length 0 and the hosts' names starts. Today's self-signed root is not an
-// intermediate and still starts (TestTodaysSelfSignedRootStillSigns).
-func TestAMountedIntermediatePastTheBoundsIsRefused(t *testing.T) {
-	hosts := []string{"s.airlock.test", "*.googleapis.com"}
-	policy := []string{"googleapis.com", "s.airlock.test"}
-	week := 7 * 24 * time.Hour
-	for _, row := range []struct {
-		name   string
-		answer boundsAnswer
-		starts bool
-		why    string // a word the refusal holds, lower case
-	}{
-		{"7 days, path length 0, the hosts' names (control)", boundsAnswer{pathLen: 0, lifetime: week, names: policy}, true, ""},
-		{"path length 1", boundsAnswer{pathLen: 1, lifetime: week, names: policy}, false, "path length"},
-		{"no path length constraint", boundsAnswer{pathLen: -1, lifetime: week, names: policy}, false, "path length"},
-		{"30 days", boundsAnswer{pathLen: 0, lifetime: 30 * 24 * time.Hour, names: policy}, false, "life"},
-		{"a name the profiles file does not bind", boundsAnswer{pathLen: 0, lifetime: week, names: append([]string{"evil.example"}, policy...)}, false, "name"},
-		{"no name constraints", boundsAnswer{pathLen: 0, lifetime: week, noConstraint: true}, false, "name"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			root := testRoot(t, "mounted bounds root")
-			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			if err != nil {
-				t.Fatal(err)
-			}
-			der, err := x509.CreateCertificate(rand.Reader, boundsTemplate(row.answer, time.Now().Add(-time.Hour)), root.cert, &key.PublicKey, root.key)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cert, err := x509.ParseCertificate(der)
-			if err != nil {
-				t.Fatal(err)
-			}
-			certFile, keyFile := writeChain(t, testCertificate{cert, key}, root.cert)
-			authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Hosts: hosts})
-			if row.starts {
-				if err != nil {
-					t.Fatalf("the control intermediate was refused: %v", err)
-				}
-				verifyLeaf(t, authority, "s.airlock.test", root.cert, time.Now())
-				return
-			}
-			if err == nil {
-				t.Fatalf("a mounted intermediate (%s) was taken: %s to %s, max path length %d (zero %v), names %v; want the start refused",
-					row.name, cert.NotBefore.UTC().Format(time.RFC3339), cert.NotAfter.UTC().Format(time.RFC3339),
-					cert.MaxPathLen, cert.MaxPathLenZero, cert.PermittedDNSDomains)
-			}
-			if !strings.Contains(strings.ToLower(err.Error()), row.why) {
-				t.Errorf("the refusal reads %q; want it to name %q", err, row.why)
 			}
 		})
 	}

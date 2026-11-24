@@ -129,9 +129,10 @@ func issued(t *testing.T, answer []byte) (*x509.Certificate, []*x509.Certificate
 }
 
 // TestTheCAStandIssuesUnderItsPolicy: a request for a 30-day authority of two names gets a
-// certificate for its own key of 7 days at most, an authority of path length 0, and the names
-// the policy holds rather than the ones the request asked for, signed by the stand's root,
-// which the answer's chain ends with.
+// certificate for its own key of 7 days at most, an authority of path length 0 whose one
+// extended key usage is serverAuth, and the names the policy holds rather than the ones the
+// request asked for, starting 5 minutes before its issue as a pool whose policy sets that
+// backdate issues it, signed by the stand's root, which the answer's chain ends with.
 func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	stand, service := startCAStand(t, CAOptions{Names: []string{"s.airlock.test"}, Now: func() time.Time { return now }})
@@ -153,8 +154,11 @@ func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 	if got := fmt.Sprint(cert.ExcludedIPRanges); got != "[0.0.0.0/0 ::/0]" || len(cert.PermittedIPRanges) > 0 {
 		t.Errorf("the certificate excludes %s and permits %v of IP addresses; want every address excluded and none permitted", got, cert.PermittedIPRanges)
 	}
-	if !cert.NotBefore.Equal(now) || !cert.NotAfter.Equal(now.Add(caMaxLifetime)) {
-		t.Errorf("the certificate runs %v to %v; want the stand's clock and 7 days on", cert.NotBefore, cert.NotAfter)
+	if got := fmt.Sprint(cert.ExtKeyUsage); got != "[serverAuth]" || len(cert.UnknownExtKeyUsage) > 0 {
+		t.Errorf("the certificate's extended key usage is %s (and %v); want serverAuth alone", got, cert.UnknownExtKeyUsage)
+	}
+	if start := now.Add(-caBackdate); !cert.NotBefore.Equal(start) || !cert.NotAfter.Equal(start.Add(caMaxLifetime)) {
+		t.Errorf("the certificate runs %v to %v; want 5 minutes before the stand's clock and 7 days on", cert.NotBefore, cert.NotAfter)
 	}
 	if len(chain) != 1 || !chain[0].Equal(stand.Root().Certificate()) {
 		t.Fatalf("the chain is %d certificate(s); want the stand's root alone", len(chain))
@@ -168,7 +172,8 @@ func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 }
 
 // TestTheCAStandTakesTheRequestsNamesWithNoPolicyNames: a policy that names none issues the
-// names the request asked for, and a shorter lifetime than the policy's is kept.
+// names the request asked for, and a shorter lifetime than the policy's is kept, from the
+// backdated start.
 func TestTheCAStandTakesTheRequestsNamesWithNoPolicyNames(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	_, service := startCAStand(t, CAOptions{Now: func() time.Time { return now }})
@@ -181,8 +186,8 @@ func TestTheCAStandTakesTheRequestsNamesWithNoPolicyNames(t *testing.T) {
 	if !slices.Equal(cert.PermittedDNSDomains, []string{"a.example", "b.example"}) {
 		t.Errorf("the certificate permits %v; want the request's two names", cert.PermittedDNSDomains)
 	}
-	if !cert.NotAfter.Equal(now.Add(time.Hour)) {
-		t.Errorf("the certificate ends %v; want the hour the request asked for", cert.NotAfter)
+	if !cert.NotAfter.Equal(now.Add(-caBackdate).Add(time.Hour)) {
+		t.Errorf("the certificate ends %v; want the hour the request asked for, from 5 minutes before its issue", cert.NotAfter)
 	}
 }
 

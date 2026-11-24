@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,16 +52,16 @@ func testRoot(t *testing.T, name string) testCertificate {
 	return testCertificate{cert, key}
 }
 
-// testIntermediate is an authority of path length 0 that issuer signs, for names (none is no
-// name constraint at all), from notBefore to notAfter.
+// testIntermediate is an authority of path length 0 that issuer signs, for names (none permits no
+// DNS name), from notBefore to notAfter.
 func testIntermediate(t *testing.T, issuer testCertificate, names []string, notBefore, notAfter time.Time) testCertificate {
 	t.Helper()
 	return shapedIntermediate(t, issuer, names, notBefore, notAfter, nil)
 }
 
 // shapedIntermediate is testIntermediate with shape changing its template before it is signed.
-// Its name constraints are what a pool's policy issues: the names, critical, and every IPv4 and
-// IPv6 address excluded.
+// It has the shape a pool's policy issues: serverAuth its one extended key usage, and name
+// constraints of the names, critical, with every IPv4 and IPv6 address excluded.
 func shapedIntermediate(t *testing.T, issuer testCertificate, names []string, notBefore, notAfter time.Time, shape func(*x509.Certificate)) testCertificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -75,6 +76,7 @@ func shapedIntermediate(t *testing.T, issuer testCertificate, names []string, no
 		SerialNumber: serial, Subject: pkix.Name{CommonName: "test intermediate"},
 		NotBefore: notBefore, NotAfter: notAfter,
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
+		ExtKeyUsage:         []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
 		ExcludedIPRanges: []*net.IPNet{everyIPv4(), everyIPv6()},
 	}
@@ -312,17 +314,24 @@ func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 
 // TestEachBoundNamesWhatItRefuses: the mounted form is held to the bounds the pool's answer is
 // (checkBounds), and each refusal names the bound and the value past it: an intermediate of path
-// length 1, of no path length constraint, whose key usage does not name signing certificates, of
-// 30 days, with a name no host binds, with no name constraints, that excludes no IP address,
+// length 1, of no path length constraint, whose key usage does not name signing certificates,
+// whose extended key usage is not serverAuth alone, of 30 days, with a name no host binds, with
+// no DNS name permitted, with no name-constraints extension at all, that excludes no IP address,
 // that excludes IPv4 alone or IPv6 alone, that permits an IP range, or whose name constraints are
 // not critical is refused at start, naming the bound. Control: the same intermediate inside every
-// bound starts.
+// bound starts, and a leaf it signs for a bound host verifies against the root alone.
 func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 	root := testRoot(t, "root")
 	now := time.Now()
 	hosts := []string{"s.airlock.test", "*.googleapis.com"}
 	names := []string{"googleapis.com", "s.airlock.test"}
 	week := 7 * 24 * time.Hour
+	// The row of no name-constraints extension relies on the encoder leaving the extension out
+	// when no constraint is set; this holds the fixture to that.
+	bare := shapedIntermediate(t, root, nil, now, now.Add(week), noNameConstraints).cert
+	if slices.ContainsFunc(bare.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidNameConstraints) }) {
+		t.Fatal("the fixture of no name-constraints extension still carries one")
+	}
 	for _, row := range []struct {
 		name, want string
 		names      []string
@@ -333,9 +342,14 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 		{"path length 1", "path length is 1", names, week, func(c *x509.Certificate) { c.MaxPathLenZero, c.MaxPathLen = false, 1 }},
 		{"no path length constraint", "path length is unconstrained", names, week, func(c *x509.Certificate) { c.MaxPathLenZero, c.MaxPathLen = false, -1 }},
 		{"no key usage", "key usage does not name signing certificates", names, week, func(c *x509.Certificate) { c.KeyUsage = 0 }},
+		{"no extended key usage", "extended key usage is [], not serverAuth alone", names, week, func(c *x509.Certificate) { c.ExtKeyUsage = nil }},
+		{"clientAuth beside serverAuth", "extended key usage is [serverAuth clientAuth], not serverAuth alone", names, week, func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+		}},
 		{"30 days", "its life is 720h0m0s", names, 30 * 24 * time.Hour, nil},
 		{"a name no host binds", "permit [evil.example googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},
-		{"no name constraints", "permit []", nil, week, nil},
+		{"no DNS name permitted", "permit []", nil, week, nil},
+		{"no name-constraints extension at all", "permit []", nil, week, noNameConstraints},
 		{"no IP address excluded", "excludes 0.0.0.0/0 and ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = nil }},
 		{"IPv4 excluded alone", "do not exclude ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv4()} }},
 		{"IPv6 excluded alone", "do not exclude 0.0.0.0/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv6()} }},
@@ -347,11 +361,12 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			intermediate := shapedIntermediate(t, root, row.names, now, now.Add(row.life), row.shape)
 			certFile, keyFile := writeChain(t, intermediate, root.cert)
-			_, err := NewAuthority(certFile, keyFile, AuthorityOptions{Hosts: hosts})
+			authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Hosts: hosts})
 			if row.want == "" {
 				if err != nil {
 					t.Fatalf("NewAuthority on an intermediate inside every bound: %v", err)
 				}
+				verifyLeaf(t, authority, "s.airlock.test", root.cert, time.Now())
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), row.want) {
@@ -359,6 +374,12 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// noNameConstraints takes every name constraint off a template, so the certificate carries no
+// name-constraints extension at all.
+func noNameConstraints(c *x509.Certificate) {
+	c.PermittedDNSDomains, c.PermittedDNSDomainsCritical, c.ExcludedIPRanges = nil, false, nil
 }
 
 func everyIPv4() *net.IPNet { return &net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)} }

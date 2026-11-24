@@ -1797,6 +1797,26 @@ leaves signed by its own key:
 So against OpenSSL-based clients and Bun, a leaked pod key is bounded by the intermediate's life,
 at most 7 days and 5 minutes, and not by its names.
 
+The pool and its issuance policy hold to four settings, each of which a pod checks in every answer
+or relies on:
+
+- **One certificate authority in the pool.** A pod's request names no authority, so the service
+  picks one of the pool's, and the pod refuses any answer under another root than its first
+  answer's, since every release it made names that root. With two authorities enabled, pods pin
+  different roots, and a command whose release came from one pod fails at another. To rotate, put
+  the new root into `BROKER_PROXY_RELEASE_ROOTS_FILE` and roll the pods first, then add the new
+  authority, disable the old one, and roll the pods again.
+- **`critical: true` on the policy's name constraints.** The service's `critical` field is a plain
+  boolean, so a policy that leaves it out issues constraints that are not critical, and every pod
+  refuses them (`its name constraints are not marked critical`).
+- **`serverAuth` as the policy's one extended key usage.** The pod refuses an intermediate whose
+  extended key usage is anything else (`its extended key usage is […], not serverAuth alone`).
+- **`backdateDuration: 300s`.** An intermediate the service issues starts at the second of its
+  issue unless the policy backdates it, and a command whose clock runs behind would find it not
+  yet valid. The pod covers a minute of that itself, signing with its previous intermediate until
+  a minute after the new one's start, but a backdated intermediate never needs it. The service
+  keeps the requested lifetime, so a backdated intermediate still lasts 7 days, within the bound.
+
 A pod refuses an intermediate with a DNS name more or a name less, or one without the exclusion.
 So a change that adds a bound host to the profiles file, or removes one, changes the names every
 intermediate must carry, and it follows these rules.
@@ -1838,12 +1858,18 @@ in that form, with no leading dot.
 `503 NO_INTERMEDIATE` while its proxy holds no certificate it may sign with: before the first
 answer of the pool `BROKER_PROXY_CA_POOL` names, or once its intermediate has ended with no new
 one ([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)), so a rolling update keeps
-the old pods until a new pod has its intermediate. From the signal that stops it, it answers
-`503 SHUTTING_DOWN` instead, for the whole drain, while every other route goes on being served
-exactly as before. Use it as a readiness probe and never as a liveness probe: a liveness probe
-reads a draining pod as a dead one, so the kubelet would kill the container in the middle of the
-drain and drop the requests the drain exists to finish
-([Running more than one pod](#running-more-than-one-pod)).
+the old pods until a new pod has its intermediate. That reach is the whole broker: the process
+goes on serving every other route, but Kubernetes takes a pod that fails its readiness probe out
+of every Service that selects it, and the edge's `GET /healthz` answers from the same check. So a
+pool outage longer than the 2 days a pod renews ahead, a lost `privateca` IAM grant, or a policy
+whose every answer the pods refuse takes down the whole broker once each pod's intermediate ends,
+releases of names no proxy block holds included. Alert on the `proxy intermediate request failed`
+log line, which a pod writes for each failed request from the first one, well before its
+intermediate ends. From the signal that stops it, it answers `503 SHUTTING_DOWN` instead, for the
+whole drain, while every other route goes on being served exactly as before. Use it as a
+readiness probe and never as a liveness probe: a liveness probe reads a draining pod as a dead
+one, so the kubelet would kill the container in the middle of the drain and drop the requests the
+drain exists to finish ([Running more than one pod](#running-more-than-one-pod)).
 
 The broker writes its log to stderr as one JSON object per line, in the shape Cloud Logging reads
 as a structured entry with a severity of its own. Each object carries `time` (RFC 3339 with
@@ -1883,7 +1909,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); the edge, where the deployment has one (the line below); and the metrics port. |
 | `proxy certificate authority source=pool pool=<pool> renew_before=<duration> release_roots=<n>` / `proxy certificate authority source=mounted release_roots=<n>` | At INFO, at startup, on a broker with the airlock: where the proxy's certificate authority comes from, the pool `BROKER_PROXY_CA_POOL` names or the mounted pair, how long before its intermediate's end a pod on a pool asks for the next (2 days, unless the local stack's `BROKER_PROXY_TEST_RENEWAL_MARGIN` says otherwise), and how many roots of `BROKER_PROXY_RELEASE_ROOTS_FILE` each release carries beside the chain's own. |
 | `proxy intermediate serial=<hex> names=<names> not_before=<time> not_after=<time> self_signed=<bool>` | At INFO, once for each certificate the proxy signs with: the mounted one at startup, and each intermediate a pod on a pool takes, the first and each renewal. `names` are its name constraints, the names it may sign a leaf for and the names under them, space-separated, and empty for a certificate that has none. The pool also lists each intermediate it issued, by this serial. |
-| `proxy intermediate request failed pool=<pool> error=… retry_in=<duration>` | At WARN, once for each request for an intermediate that got none: the pool did not answer or refused, or its answer is refused because it certifies another key, reaches no root, chains to another root than the pod's first intermediate, is past a bound every intermediate is held to (`its path length is …, not 0`, `its key usage does not name signing certificates`, `its life is …, past the 168h0m0s a pod asks for and 5m0s of slack`, `its name constraints permit […]; want exactly the bound hosts' names […]`, the line a roll writes when the pool's policy does not yet name a host the profiles file added, `its name constraints permit IP ranges …`, `its name constraints exclude the IP ranges …; want them to say what a pod's CSR does, that excludes 0.0.0.0/0 and ::/0`, `… do not exclude 0.0.0.0/0` or `… do not exclude ::/0`, the line of a policy without the exclusion, or `its name constraints are not marked critical`), or could sign no trusted leaf for a bound host (`it signs no leaf a command trusts for <host>`). The pod asks again after `retry_in`, which starts at 1 second and doubles to 5 minutes. A pod that has no intermediate is not ready meanwhile; one that holds one goes on signing with it until its end. Each refused answer is a certificate the pool issued, so alert on this line: a lasting mismatch asks again up to twelve times an hour for each pod. |
+| `proxy intermediate request failed pool=<pool> error=… retry_in=<duration>` | At WARN, once for each request for an intermediate that got none: the pool did not answer or refused, or its answer is refused because it certifies another key, reaches no root, chains to another root than the pod's first intermediate, is past a bound every intermediate is held to (`its path length is …, not 0`, `its key usage does not name signing certificates`, `its extended key usage is […], not serverAuth alone`, `its life is …, past the 168h0m0s a pod asks for and 5m0s of slack`, `its name constraints permit […]; want exactly the bound hosts' names […]`, the line a roll writes when the pool's policy does not yet name a host the profiles file added, `its name constraints permit IP ranges …`, `its name constraints exclude the IP ranges …; want them to say what a pod's CSR does, that excludes 0.0.0.0/0 and ::/0`, `… do not exclude 0.0.0.0/0` or `… do not exclude ::/0`, the line of a policy without the exclusion, or `its name constraints are not marked critical`), or could sign no trusted leaf for a bound host (`it signs no leaf a command trusts for <host>`). The pod asks again after `retry_in`, which starts at 1 second and doubles to 5 minutes. A pod that has no intermediate is not ready meanwhile; one that holds one goes on signing with it until its end. Each refused answer is a certificate the pool issued, so alert on this line: a lasting mismatch asks again up to twelve times an hour for each pod. |
 | `broker edge listening addr=<host:port> url=<BROKER_EDGE_URL> verification_uri=<BROKER_EDGE_MACHINE_LOGIN_URL> workspace_domains=<domains>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock, on a broker with `BROKER_EDGE_LISTEN_ADDR` set: the edge is bound at this address, takes request objects and proofs naming `url`, sends a person to `verification_uri`, and refuses a login on any of `workspace_domains` ([The edge](#the-edge-device-login-from-outside-the-private-network)). A broker with no edge writes no such line. |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |

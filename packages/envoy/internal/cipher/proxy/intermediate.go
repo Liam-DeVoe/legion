@@ -66,11 +66,12 @@ const privateCAEndpoint = "https://privateca.googleapis.com"
 const maxIntermediateAnswer = 1 << 20
 
 // The extensions a CSR asks for: an authority, of path length 0, that signs certificates, for
-// the hosts' names.
+// servers alone, for the hosts' names.
 var (
 	oidKeyUsage         = []int{2, 5, 29, 15}
 	oidBasicConstraints = []int{2, 5, 29, 19}
 	oidNameConstraints  = []int{2, 5, 29, 30}
+	oidExtKeyUsage      = []int{2, 5, 29, 37}
 )
 
 // Pool is where a pod gets its intermediate.
@@ -174,14 +175,16 @@ func requestedNames(hosts []string) []string {
 }
 
 // intermediateCSR is key's CSR asking to be an authority of path length 0 that signs
-// certificates, constrained to names and to no IP address (checkBounds says why), the constraints
-// critical. The three extensions are encoded by the standard library's own certificate encoder,
-// on a throwaway certificate of that shape, and copied into the request.
+// certificates for servers alone (serverAuth its one extended key usage), constrained to names
+// and to no IP address (checkBounds says why), the constraints critical. The four extensions are
+// encoded by the standard library's own certificate encoder, on a throwaway certificate of that
+// shape, and copied into the request.
 func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 	shape := &x509.Certificate{
 		SerialNumber: big.NewInt(1), NotBefore: time.Unix(0, 0), NotAfter: time.Unix(1, 0),
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true,
 		KeyUsage:            x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage:         []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
 		ExcludedIPRanges: everyAddress(),
 	}
@@ -195,7 +198,7 @@ func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 	}
 	var asked []pkix.Extension
 	for _, extension := range encoded.Extensions {
-		if extension.Id.Equal(oidKeyUsage) || extension.Id.Equal(oidBasicConstraints) || extension.Id.Equal(oidNameConstraints) {
+		if extension.Id.Equal(oidKeyUsage) || extension.Id.Equal(oidExtKeyUsage) || extension.Id.Equal(oidBasicConstraints) || extension.Id.Equal(oidNameConstraints) {
 			asked = append(asked, extension)
 		}
 	}

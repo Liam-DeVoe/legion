@@ -1621,32 +1621,35 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
 - **A pool of Google Certificate Authority Service** (`BROKER_PROXY_CA_POOL`). For each certificate
   request, at its start, at each renewal and at each retry, each pod makes a new ECDSA P-256 key in
   its own memory, which is never written anywhere, and sends the pool a request for it
-  (`projects.locations.caPools.certificates.create`) with its own Google
-  credential: an authority of path length 0, for 7 days, whose name constraints, marked critical,
-  permit the names of the profiles file's hosts, a `*.` pattern as its domain, and exclude every
-  IPv4 and IPv6 address (`0.0.0.0/0` and `::/0`). The pool's issuance policy fixes what the
-  answer may be, and the pod holds the answer to it too: the answer must certify the pod's key,
-  chain to a root, be an authority of path length 0
-  whose key usage signs certificates, last 7 days and 5 minutes at most, have critical name
-  constraints that permit exactly the DNS names of the bound hosts (no other name, and not no
-  constraint at all), permit no IP range and exclude all of `0.0.0.0/0` and `::/0`, sign a leaf a
-  client trusts for every bound host, and chain to the same root as the pod's first
-  answer, since every release the pod has made names that root. A name constraint applies only to
-  names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS names alone would leave the
-  key free to sign a trusted leaf for any IP address; the exclusion closes that. URI and email
-  names are left unconstrained, since no TLS client takes either as a server's identity. What the
-  constraints bound depends on the client. Go's `crypto/tls` never takes a subject's common name
-  as the server's name, so it refuses every leaf that names a host only there, and GnuTLS refused
-  every such leaf too. Clients built on OpenSSL (`openssl verify`, curl, Python's `ssl`, Node)
-  hold a multi-label common name to the DNS constraints but not a wildcard (`*.evil.example`) or
-  single-label (`localhost`) one, and Bun trusts any common name once the leaf carries a subject
-  alternative name that is not a DNS or IP name (a URI, email or registeredID name); against
-  those clients a leaked pod key is bounded by the intermediate's life, at most 7 days and 5
-  minutes, and not by its names. The pod
-  asks for the next intermediate when the one it holds has less than 2 days left, and goes on
-  asking with a backoff
-  of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.
-  It logs one line for each intermediate it takes, and one for each request that failed.
+  (`projects.locations.caPools.certificates.create`) with its own Google credential: an
+  authority of path length 0 for servers alone (`serverAuth` its one extended key usage), for 7
+  days, whose name constraints, marked critical, permit the names of the profiles file's hosts, a
+  `*.` pattern as its domain, and exclude every IPv4 and IPv6 address (`0.0.0.0/0` and `::/0`).
+  The pool's issuance policy fixes what the answer may be, and the pod holds the answer to it too:
+  the answer must certify the pod's key, chain to a root, be an authority of path length 0 whose
+  key usage signs certificates and whose one extended key usage is `serverAuth`, last 7 days and 5
+  minutes at most, have critical name constraints that permit exactly the DNS names of the bound
+  hosts (no other name, and not no constraint at all), permit no IP range and exclude all of
+  `0.0.0.0/0` and `::/0`, sign a leaf a client trusts for every bound host, and chain to the same
+  root as the pod's first answer, since every release the pod has made names that root. A name
+  constraint applies only to names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS
+  names alone would leave the key free to sign a trusted leaf for any IP address; the exclusion
+  closes that. URI and email names are left unconstrained, since no TLS client takes either as a
+  server's identity. What the constraints bound depends on the client. Go's `crypto/tls` never
+  takes a subject's common name as the server's name, so it refuses every leaf that names a host
+  only there, and GnuTLS refused every such leaf too. Clients built on OpenSSL (`openssl verify`,
+  curl, Python's `ssl`, Node) hold a multi-label common name to the DNS constraints but not a
+  wildcard (`*.evil.example`) or single-label (`localhost`) one, and Bun trusts any common name
+  once the leaf carries a subject alternative name that is not a DNS or IP name (a URI, email or
+  registeredID name); against those clients a leaked pod key is bounded by the intermediate's
+  life, at most 7 days and 5 minutes, and not by its names. The `serverAuth` usage keeps the key
+  from signing a certificate a verifier takes for e-mail or for a client. The pod asks for the next
+  intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
+  of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure. It
+  goes on signing with the intermediate it held until a minute after the new one's start, so a
+  command whose clock runs up to a minute behind the pool's never meets an intermediate that is
+  not yet valid, and the pool's backdate covers more. It logs one line for each intermediate it
+  takes, and one for each request that failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
   without that service: an intermediate and then each authority up to and including its root, or a
   self-signed root alone. The broker refuses at start a chain that reaches no root, one whose life
@@ -1659,7 +1662,10 @@ with the intermediate the pod holds. The TLS answer carries the leaf and every a
 it and the root, so a client that trusts the root alone completes the chain. A pod that holds no
 certificate it may still sign with — before the pool's first answer, or once its intermediate
 ended with no new one — answers `GET /healthz` with `503 NO_INTERMEDIATE`, so its readiness keeps
-traffic away and a rolling update keeps the old pods until a new one has its intermediate.
+traffic away and a rolling update keeps the old pods until a new one has its intermediate. That
+takes the pod out of every Service, the edge's included, so once every pod's intermediate has
+ended with none in its place, the whole broker is down
+([Health and logs](/legion/broker/operate/#health-and-logs)).
 
 Every release carries the root of the pod's own chain and each root of
 `BROKER_PROXY_RELEASE_ROOTS_FILE`, one PEM block after another in its root field. A rollout from

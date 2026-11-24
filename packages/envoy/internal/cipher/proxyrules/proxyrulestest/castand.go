@@ -2,10 +2,11 @@
 // The stand-in of Certificate Authority Service, for the one call a broker pod makes of it:
 // projects.locations.caPools.certificates.create, which signs the intermediate the pod's
 // proxy signs its leaves with. It signs with a test root of its own under a policy as a pool's
-// issuance policy is one: at most 7 days, an authority of path length 0, the policy's names in
+// issuance policy is one: at most 7 days, starting 5 minutes before its issue, an authority of
+// path length 0 for servers alone (serverAuth its one extended key usage), the policy's names in
 // place of whatever the request asked for, and every IPv4 and IPv6 address excluded, the
-// constraints critical. BROKER_PROXY_TEST_CA_URL points a broker
-// at it, and cmd/dev-proxy-stands serves it to the local stack as the `ca` stand.
+// constraints critical. BROKER_PROXY_TEST_CA_URL points a broker at it, and cmd/dev-proxy-stands
+// serves it to the local stack as the `ca` stand.
 package proxyrulestest
 
 import (
@@ -33,6 +34,11 @@ import (
 // caMaxLifetime is the longest certificate the stand issues, the 7 days of the pool's
 // maximum_lifetime: a request for longer is cut to it, as the pool cuts one.
 const caMaxLifetime = 7 * 24 * time.Hour
+
+// caBackdate is how long before its issue a certificate the stand issues starts, as a pool whose
+// issuance policy sets backdateDuration 300s issues it: the start moves back and the requested
+// lifetime is kept, so the end moves back with it.
+const caBackdate = 5 * time.Minute
 
 // caCertificatesPath is the one route of the service a broker calls:
 // POST /v1/projects/{project}/locations/{location}/caPools/{pool}/certificates.
@@ -187,21 +193,22 @@ func (c *CAStand) answerCertificate(w http.ResponseWriter, seen Request, pool st
 	})
 }
 
-// issue signs the CSR's key as an authority of path length 0 for names and for no IP address
-// (0.0.0.0/0 and ::/0 excluded, as a pool's baseline values are), from the stand's clock for
-// lifetime.
+// issue signs the CSR's key as an authority of path length 0 for servers alone (serverAuth its
+// one extended key usage), for names and for no IP address (0.0.0.0/0 and ::/0 excluded, as a
+// pool's baseline values are), from caBackdate before the stand's clock for lifetime.
 func (c *CAStand) issue(csr *x509.CertificateRequest, names []string, lifetime time.Duration) (*x509.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
 	if err != nil {
 		return nil, err
 	}
-	now := c.now()
+	start := c.now().Add(-caBackdate)
 	template := &x509.Certificate{
 		SerialNumber:                serial,
 		Subject:                     csr.Subject,
-		NotBefore:                   now,
-		NotAfter:                    now.Add(lifetime),
+		NotBefore:                   start,
+		NotAfter:                    start.Add(lifetime),
 		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:                 []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid:       true,
 		IsCA:                        true,
 		MaxPathLenZero:              true,

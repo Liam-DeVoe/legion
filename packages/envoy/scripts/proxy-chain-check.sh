@@ -3,7 +3,7 @@
 #
 # Runs the proxy chain's checks end to end on the local stack (scripts/dev-airlock.sh) and says
 # whether each passed, so the implementer and the tester run the same command and read the same
-# evidence. It copies judge-check.sh's shape: the same stack, the same helpers, the same result
+# evidence. It shares judge-check.sh's stack helpers (lib/check-stack.sh) and copies its result
 # block. Three parts:
 #
 #   k27      (the default) each broker pod signs with an intermediate from the pool, renews it
@@ -50,6 +50,11 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
+# The stack helpers this script and judge-check.sh share: await, stack_start, broker_env,
+# start_extra_broker and logged_addr.
+CHECK_NAME=proxy-chain-check
+# shellcheck source-path=SCRIPTDIR source=lib/check-stack.sh
+. "$SCRIPT_DIR/lib/check-stack.sh"
 
 usage() {
 	cat <<'EOF'
@@ -210,67 +215,20 @@ report() {
 digest() { printf '%s' "$1" | sha256sum | cut -c1-16; }
 shape() { printf 'len=%d sha256=%s' "${#1}" "$(digest "$1")"; }
 
-# --- The stack (judge-check.sh's) ------------------------------------------------------------
+# --- The stack ---------------------------------------------------------------------------------
 
-await() { # <what> <seconds> <log> <pattern> <pid>
-	local i
-	for ((i = 0; i < $2 * 2; i++)); do
-		if grep -qE "$4" "$3" 2>/dev/null; then return 0; fi
-		if ! kill -0 "$5" 2>/dev/null; then
-			echo "proxy-chain-check: $1 exited before it was ready; see $3" >&2
-			tail -n 20 "$3" >&2 || true
-			exit 1
-		fi
-		sleep 0.5
-	done
-	echo "proxy-chain-check: $1 was not ready within $2 seconds; see $3" >&2
-	exit 1
-}
-
+# start_stack runs dev-airlock.sh with one broker of its own and reads its banner
+# (lib/check-stack.sh's stack_start), then the stored value the demo profile releases.
 start_stack() {
-	echo "proxy-chain-check: starting the stack (dev-airlock.sh --one-broker)..." >&2
-	: >"$STACK_LOG"
-	bash "$SCRIPT_DIR/dev-airlock.sh" --one-broker >"$STACK_LOG" 2>&1 &
-	STACK_PID=$!
-	await "the stack" 900 "$STACK_LOG" '^dev-airlock: ready\.$' "$STACK_PID"
-	eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
-	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
-	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
-	mapfile -t BROKER_PIDS < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
-	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*log \([^ ]*\) *$/\1/p' "$STACK_LOG")
-	BROKER_BIN="$DEV_BROKER_DIR/bin/broker"
+	stack_start --one-broker
 	DEMO_VALUE="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token")) | .value' "$AIRLOCK_FAKE_SECRETS_FILE")"
 	echo "proxy-chain-check: the stack is up (broker pid ${BROKER_PIDS[0]}, work directory $AIRLOCK_DIR)" >&2
-}
-
-broker_env() { broker_env_of "${BROKER_PIDS[0]}" "$@"; }
-
-# start_extra_broker starts one more broker beside the stack's, with the environment the caller
-# adds on top, waits for its proxy port, and answers its API and proxy addresses, its pid and its
-# log in EXTRA_API_ADDR, EXTRA_PROXY_ADDR, EXTRA_PID and EXTRA_LOG. It waits for no intermediate:
-# a broker that holds none still binds and answers, which is what a readiness read is about.
-start_extra_broker() { # <name> <VAR=value>...
-	local name="$1"
-	shift
-	EXTRA_LOG="$WORK_DIR/broker-$name.log"
-	: >"$EXTRA_LOG"
-	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	(with_broker_env "$BROKER_BIN") >"$EXTRA_LOG" 2>&1 &
-	EXTRA_PID=$!
-	EXTRA_BROKER_PIDS+=("$EXTRA_PID")
-	await "the $name broker" 120 "$EXTRA_LOG" '"message":"airlock proxy listening"' "$EXTRA_PID"
-	EXTRA_API_ADDR="$(logged_addr 'broker listening' "$EXTRA_LOG")"
-	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$EXTRA_LOG")"
 }
 
 # stop_broker stops one broker this run started.
 stop_broker() { # <pid>
 	kill "$1" 2>/dev/null || true
 	wait "$1" 2>/dev/null || true
-}
-
-logged_addr() { # <message> <log>
-	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
 # front_backends points the stack's two fronts at the brokers the caller names, by writing the

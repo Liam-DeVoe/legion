@@ -227,6 +227,7 @@ func mountedIntermediate(t *testing.T, names []string) (certFile, keyFile string
 		SerialNumber: big.NewInt(4242), Subject: pkix.Name{CommonName: "mounted test intermediate"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(7*24*time.Hour - time.Hour),
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
+		ExtKeyUsage:         []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
 		ExcludedIPRanges: []*net.IPNet{{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}, {IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}},
 	}

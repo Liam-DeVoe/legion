@@ -177,8 +177,11 @@ type Deps struct {
 	// (proxy.Authority.Ready): nil while it holds a certificate whose life is not over. While it
 	// errs GET /healthz answers 503 NO_INTERMEDIATE with its reason, so a readiness probe keeps
 	// traffic away from a pod whose every bound handshake would fail, and a rolling update keeps
-	// the old pods until a new one has its intermediate. Every other route is served. Nil is a
-	// broker with no proxy, and every rig that wires none.
+	// the old pods until a new one has its intermediate. This process goes on serving every other
+	// route, but that holds only inside it: Kubernetes takes a pod that fails its readiness probe
+	// out of every Service that selects it, and the edge's GET /healthz answers from these same
+	// Deps, so an unready pod serves no route to anyone. Nil is a broker with no proxy, and every
+	// rig that wires none.
 	ProxyReady func() error
 	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
 	// RegisterEdge sets the edge's to a one-second cache over it (cachedPing).

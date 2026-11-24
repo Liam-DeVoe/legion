@@ -234,50 +234,14 @@ func TestNoLeafForAnAddressVerifiesUnderThePodsIntermediate(t *testing.T) {
 	r.run(t, IntermediateRenewBefore)
 	intermediate := r.awaitIssued(t, 1)
 
-	var body struct {
-		PEMCSR string `json:"pemCsr"`
-	}
-	if err := json.Unmarshal([]byte(r.certificateRequests()[0].Body), &body); err != nil {
-		t.Fatal(err)
-	}
-	block, _ := pem.Decode([]byte(body.PEMCSR))
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	asked := askedConstraints(t, csr)
+	asked := askedCertificate(t, r.certificateRequests()[0])
 	if got := fmt.Sprint(asked.ExcludedIPRanges); got != "[0.0.0.0/0 ::/0]" || !asked.PermittedDNSDomainsCritical {
 		t.Errorf("the CSR asks to exclude %s (critical %v); want [0.0.0.0/0 ::/0], critical", got, asked.PermittedDNSDomainsCritical)
 	}
 
-	r.authority.mu.Lock()
-	key := r.authority.signer.key
-	r.authority.mu.Unlock()
-	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
-	roots.AddCert(r.stand.Root().Certificate())
-	intermediates.AddCert(intermediate)
 	verify := func(shape func(*x509.Certificate), host string) error {
 		t.Helper()
-		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		template := &x509.Certificate{
-			SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "probe"},
-			NotBefore: r.clock.Now().Add(-time.Minute), NotAfter: r.clock.Now().Add(time.Hour),
-			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}
-		shape(template)
-		der, err := x509.CreateCertificate(rand.Reader, template, intermediate, &leafKey.PublicKey, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		leaf, err := x509.ParseCertificate(der)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: roots, Intermediates: intermediates, CurrentTime: r.clock.Now()})
-		return err
+		return r.verifyPodLeaf(t, intermediate, shape, x509.VerifyOptions{DNSName: host})
 	}
 	if err := verify(func(c *x509.Certificate) { c.DNSNames = []string{"s.airlock.test"} }, "s.airlock.test"); err != nil {
 		t.Fatalf("control: a leaf for the bound host = %v; want it trusted", err)
@@ -306,32 +270,171 @@ func TestNoLeafForAnAddressVerifiesUnderThePodsIntermediate(t *testing.T) {
 	}
 }
 
-// askedConstraints is the name constraints csr asks for, read off a throwaway certificate that
-// carries the requested extension, since the standard library reads them out of a certificate and
-// not out of a request.
-func askedConstraints(t *testing.T, csr *x509.CertificateRequest) *x509.Certificate {
-	t.Helper()
-	for _, extension := range csr.Extensions {
-		if !extension.Id.Equal(oidNameConstraints) {
-			continue
-		}
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Minute), ExtraExtensions: []pkix.Extension{extension}}
-		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cert, err := x509.ParseCertificate(der)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return cert
+// TestUnderThePodsIntermediateNoEmailOrClientCertificateVerifies: a leaked pod key signs no
+// certificate a verifier takes for e-mail or as a client's. The pod's CSR asks for serverAuth as
+// the intermediate's one extended key usage, the stand issues it as a pool's policy does, and a
+// certificate the pod's own intermediate key signs for e-mail protection or client authentication
+// fails verification against the root for that use. Control: a leaf for a bound host verifies.
+func TestUnderThePodsIntermediateNoEmailOrClientCertificateVerifies(t *testing.T) {
+	r := newPoolRig(t, []string{"s.airlock.test"}, nil)
+	r.run(t, IntermediateRenewBefore)
+	intermediate := r.awaitIssued(t, 1)
+	if got := fmt.Sprint(askedCertificate(t, r.certificateRequests()[0]).ExtKeyUsage); got != "[serverAuth]" {
+		t.Errorf("the CSR asks for the extended key usage %s; want [serverAuth]", got)
 	}
-	t.Fatal("the CSR asks for no name constraints")
-	return nil
+	if got := fmt.Sprint(intermediate.ExtKeyUsage); got != "[serverAuth]" {
+		t.Errorf("the stand issued the extended key usage %s; want [serverAuth]", got)
+	}
+	if err := r.verifyPodLeaf(t, intermediate, func(c *x509.Certificate) { c.DNSNames = []string{"s.airlock.test"} },
+		x509.VerifyOptions{DNSName: "s.airlock.test"}); err != nil {
+		t.Fatalf("control: a leaf for the bound host = %v; want it trusted", err)
+	}
+	for _, row := range []struct {
+		name  string
+		usage x509.ExtKeyUsage
+		shape func(*x509.Certificate)
+	}{
+		{"an e-mail certificate", x509.ExtKeyUsageEmailProtection, func(c *x509.Certificate) { c.EmailAddresses = []string{"ceo@example.com"} }},
+		{"a client certificate", x509.ExtKeyUsageClientAuth, func(c *x509.Certificate) { c.Subject.CommonName = "a client" }},
+	} {
+		err := r.verifyPodLeaf(t, intermediate, func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{row.usage}
+			row.shape(c)
+		}, x509.VerifyOptions{KeyUsages: []x509.ExtKeyUsage{row.usage}})
+		if err == nil || !strings.Contains(err.Error(), "incompatible key usage") {
+			t.Errorf("%s the pod's key signs = %v; want it refused, an incompatible key usage", row.name, err)
+		}
+	}
+}
+
+// TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal: a pool whose policy sets no
+// backdate issues an intermediate that starts the second it is issued, so a client whose clock
+// runs behind the pool's would find it not yet valid. The pod keeps signing with its previous
+// intermediate until a minute after the new one's start: right after the renewal, a client 30 s
+// behind verifies the leaf, signed by the first intermediate; a minute and a second on, the leaf
+// is the new intermediate's, and a client 30 s behind verifies it. Control: the leaf the new
+// intermediate would have signed at the renewal fails for that client, not yet valid.
+func TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal(t *testing.T) {
+	hosts := []string{"s.airlock.test"}
+	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
+	root := testRoot(t, "hold root")
+	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
+	log := &syncBuffer{}
+	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
+	r := &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+	r.run(t, IntermediateRenewBefore)
+	testwait.Until(t, "the first intermediate", func() (string, bool) { return log.String(), authority.Certificate() != nil })
+	first := authority.Certificate()
+	r.awaitSleeps(t, 1)
+
+	renewedAt := first.NotBefore.Add(5*24*time.Hour + time.Minute)
+	clock.set(renewedAt)
+	testwait.Until(t, "the renewal", func() (string, bool) {
+		current := authority.Certificate()
+		return log.String(), current != nil && !current.Equal(first)
+	})
+	second := authority.Certificate()
+	if !second.NotBefore.Equal(renewedAt) {
+		t.Fatalf("the new intermediate starts %v; want the second it was issued, %v, as a pool with no backdate issues it", second.NotBefore, renewedAt)
+	}
+	behind := renewedAt.Add(-30 * time.Second)
+	held := verifyLeaf(t, authority, "s.airlock.test", root.cert, behind)
+	if err := held.CheckSignatureFrom(first); err != nil {
+		t.Errorf("the leaf right after the renewal is not the previous intermediate's: %v", err)
+	}
+
+	// Control: what the pod would answer without the hold, the new intermediate's own leaf.
+	authority.mu.Lock()
+	newest := authority.signer
+	authority.mu.Unlock()
+	unheld, _, err := newest.sign("s.airlock.test", renewedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParseCertificate(unheld.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(root.cert)
+	intermediates.AddCert(second)
+	if _, err := parsed.Verify(x509.VerifyOptions{DNSName: "s.airlock.test", Roots: roots, Intermediates: intermediates, CurrentTime: behind}); err == nil || !strings.Contains(err.Error(), "not yet valid") {
+		t.Fatalf("control: the new intermediate's leaf for a client 30 s behind = %v; want it not yet valid", err)
+	}
+
+	clock.set(renewedAt.Add(newSignerHold + time.Second))
+	later := verifyLeaf(t, authority, "s.airlock.test", root.cert, clock.Now().Add(-30*time.Second))
+	if err := later.CheckSignatureFrom(second); err != nil {
+		t.Errorf("the leaf a minute and a second after the renewal is not the new intermediate's: %v", err)
+	}
+}
+
+// verifyPodLeaf signs, with the key of the pod's intermediate, as a leaked pod key could, a
+// certificate of shape under intermediate (a serverAuth leaf until shape changes it), and
+// verifies it against the stand's root alone with opts, at the rig's clock.
+func (r *poolRig) verifyPodLeaf(t *testing.T, intermediate *x509.Certificate, shape func(*x509.Certificate), opts x509.VerifyOptions) error {
+	t.Helper()
+	r.authority.mu.Lock()
+	key := r.authority.signer.key
+	r.authority.mu.Unlock()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "probe"},
+		NotBefore: r.clock.Now().Add(-time.Minute), NotAfter: r.clock.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	shape(template)
+	der, err := x509.CreateCertificate(rand.Reader, template, intermediate, &leafKey.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Roots, opts.Intermediates, opts.CurrentTime = x509.NewCertPool(), x509.NewCertPool(), r.clock.Now()
+	opts.Roots.AddCert(r.stand.Root().Certificate())
+	opts.Intermediates.AddCert(intermediate)
+	_, err = leaf.Verify(opts)
+	return err
+}
+
+// askedCertificate is the certificate request seen asks for, read off a throwaway certificate
+// that carries every extension the request asks for, since the standard library reads name
+// constraints and extended key usages out of a certificate and not out of a request.
+func askedCertificate(t *testing.T, seen proxyrulestest.Request) *x509.Certificate {
+	t.Helper()
+	var body struct {
+		PEMCSR string `json:"pemCsr"`
+	}
+	if err := json.Unmarshal([]byte(seen.Body), &body); err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode([]byte(body.PEMCSR))
+	if block == nil {
+		t.Fatal("the request carries no PEM CSR")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Minute), ExtraExtensions: csr.Extensions}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
 }
 
 // TestThePodRenewsWithTwoDaysLeft: the loop sleeps until 2 days before the intermediate's end;

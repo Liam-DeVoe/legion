@@ -825,12 +825,12 @@ answered ask on the open one, and a
 metadata server that mints the broker's identity token. The profiles file the script writes stands
 in for the deployment's own, which lives in the deployment's repository. The `ca` stand stands in
 for the pool of Certificate Authority Service a deployment names in `BROKER_PROXY_CA_POOL`: it
-answers the same request, under a policy of 7 days, path length 0 and the names
-`dev-airlock.sh` gives it from the profiles file before the brokers start, and with no
-credential sent to it. The two brokers behind one TCP front stand in for two pods behind a
-Service, so a call reaches either process. And the pod session the script enrols stands in for
-the Legion daemon's enrollment of a worker pod, which is why `agent-secrets self` answers
-`kind: pod` there.
+answers the same request, under a policy of 7 days starting 5 minutes before its issue, path
+length 0, `serverAuth` alone, and the names `dev-airlock.sh` gives it from the profiles file before
+the brokers start, and with no credential sent to it. The two brokers behind one TCP front stand
+in for two pods behind a Service, so a call reaches either process. And the pod session the
+script enrols stands in for the Legion daemon's enrollment of a worker pod, which is why
+`agent-secrets self` answers `kind: pod` there.
 The two brokers start as processes outside any cluster even when the script runs in a pod: it
 empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
 which a deployed broker in a cluster whose profiles hold a proxy block refuses to start without.

@@ -40,12 +40,22 @@ import (
 // expired fails every command's verification of every bound host until somebody restarts it. The
 // backdate covers the seconds of clock skew between the pod and the command's own box, and the
 // hour before the end covers that same skew at the other end, along with a call still running
-// on the leaf it was dialled with. A leaf never ends after the certificate that signed it.
+// on the leaf it was dialled with. A leaf never ends after the certificate that signed it, nor
+// starts its chain before that certificate does: newSignerHold covers the same skew there.
 const (
 	leafLifetime    = 25 * time.Hour
 	leafBackdate    = time.Minute
 	leafRenewBefore = time.Hour
 )
+
+// newSignerHold is how long after a new intermediate's start the pod goes on signing with the
+// one before it, while that one may still sign. A pool whose policy sets no backdate issues an
+// intermediate that starts the second it is issued, so a command whose clock runs a few seconds
+// behind the pool's would find every leaf under it not yet valid until its own clock caught up;
+// leafBackdate covers that skew for the leaf, and this covers it for the intermediate. A policy
+// that backdates (the deployment's sets backdateDuration 300s, and the ca stand does the same)
+// issues one that is already older than this, so the hold never starts.
+const newSignerHold = time.Minute
 
 // leafCacheSize is how many hosts' leaves Authority keeps. There is a cap because the hosts
 // are not the proxy's to count: an entry may bind a pattern ("*.example.com"), and a command
@@ -86,6 +96,9 @@ type Authority struct {
 
 	mu     sync.Mutex
 	signer *signer
+	// previous is the certificate signer replaced, which signs in signer's place for
+	// newSignerHold after signer's start (signerAt).
+	previous *signer
 	// root is the root of the first certificate's chain. Every later one must chain to it,
 	// since every release this process has made names it and a command trusts no other.
 	root *x509.Certificate
@@ -149,7 +162,8 @@ func NewAuthority(certFile, keyFile string, o AuthorityOptions) (*Authority, err
 	if err != nil {
 		return nil, fmt.Errorf("proxy certificate authority (%s, %s): %w", certFile, keyFile, err)
 	}
-	// LoadX509KeyPair hands back the first certificate parsed, as Leaf, and the rest as DER.
+	// LoadX509KeyPair hands back the first certificate parsed, as Leaf, beside the DER of every
+	// certificate, so only the ones after the first are parsed here.
 	certs := make([]*x509.Certificate, len(pair.Certificate))
 	certs[0] = pair.Leaf
 	for i, der := range pair.Certificate[1:] {
@@ -227,8 +241,9 @@ const intermediateLifeSlack = 5 * time.Minute
 
 // checkBounds refuses an intermediate past the bounds a pod holds every intermediate to, the
 // pool's answer and a mounted one alike, whatever the pool's issuance policy is: an authority
-// of path length 0 that may sign certificates, 7 days and intermediateLifeSlack at most, whose
-// name constraints are critical, permit exactly the DNS names hosts asks for (requestedNames),
+// of path length 0 that may sign certificates, for servers alone (serverAuth its one extended key
+// usage), 7 days and intermediateLifeSlack at most, whose name constraints are critical, permit
+// exactly the DNS names hosts asks for (requestedNames),
 // permit no IP range, and exclude every IPv4 and every IPv6 address (0.0.0.0/0 and ::/0). The
 // policy should make each of these so, but a pod's own key signs under the intermediate, so an
 // intermediate wider than these would make a leaked pod key an authority for other authorities,
@@ -249,15 +264,19 @@ const intermediateLifeSlack = 5 * time.Minute
 // is not a DNS or IP name (a URI, email or registeredID name) it trusts the common name with no
 // constraint at all, a multi-label one included. So against those clients a leaked pod key is
 // bounded by the intermediate's life, at most 7 days and intermediateLifeSlack, and not by its
-// names. The constraints are
-// critical because RFC 5280 says they MUST be, and because a verifier that does not implement them
-// ignores a non-critical extension.
+// names. The constraints are critical because RFC 5280 says they MUST be, and because a verifier
+// that does not implement them ignores a non-critical extension. Its one extended key usage is
+// serverAuth, so the key signs no certificate a verifier takes for e-mail protection, for a client
+// or for code, uses the system stores the pool's root is installed in serve too.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
 		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))
 	}
 	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
 		return errors.New("its key usage does not name signing certificates")
+	}
+	if len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth || len(cert.UnknownExtKeyUsage) > 0 {
+		return fmt.Errorf("its extended key usage is %s, not serverAuth alone, so it could sign certificates for other uses than a server's", extKeyUsages(cert))
 	}
 	if life := cert.NotAfter.Sub(cert.NotBefore); life > intermediateLifetime+intermediateLifeSlack {
 		return fmt.Errorf("its life is %s, past the %s a pod asks for and %s of slack", life, intermediateLifetime, intermediateLifeSlack)
@@ -300,6 +319,19 @@ func excludesEveryAddress(ranges []*net.IPNet) (v4, v6 bool) {
 		}
 	}
 	return v4, v6
+}
+
+// extKeyUsages is cert's extended key usages as a sentence reads them, the ones the standard
+// library does not name by their object identifiers.
+func extKeyUsages(cert *x509.Certificate) string {
+	names := make([]string, 0, len(cert.ExtKeyUsage)+len(cert.UnknownExtKeyUsage))
+	for _, usage := range cert.ExtKeyUsage {
+		names = append(names, usage.String())
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		names = append(names, oid.String())
+	}
+	return "[" + strings.Join(names, " ") + "]"
 }
 
 // everyAddress is the exclusion a pod asks for and holds every intermediate to.
@@ -386,7 +418,7 @@ func (a *Authority) take(s *signer, root *x509.Certificate) error {
 		a.root = root
 		a.released = rootsPEM(root, a.releaseRoots)
 	}
-	a.signer = s
+	a.previous, a.signer = a.signer, s
 	a.mu.Unlock()
 	a.log.Info("proxy intermediate", "serial", fmt.Sprintf("%x", s.cert.SerialNumber),
 		"names", strings.Join(s.cert.PermittedDNSDomains, " "),
@@ -449,18 +481,29 @@ func (s *signer) ended(now time.Time) error {
 	return nil
 }
 
+// signerAt is the certificate the authority signs with at now: the newest, unless it is less
+// than newSignerHold old and the one before it may still sign. a.mu is held.
+func (a *Authority) signerAt(now time.Time) *signer {
+	s := a.signer
+	if p := a.previous; p != nil && s != nil && now.Before(s.cert.NotBefore.Add(newSignerHold)) && p.ended(now) == nil {
+		return p
+	}
+	return s
+}
+
 // Ready is nil while the authority holds a certificate whose life is not over, and says why not
 // otherwise: a pod with nothing to sign with fails every bound host's handshake, so its
 // readiness answer keeps traffic away from it, and a roll keeps the old pods until a new pod
 // gets its intermediate.
 func (a *Authority) Ready() error {
+	now := a.clock.Now()
 	a.mu.Lock()
-	s := a.signer
+	s := a.signerAt(now)
 	a.mu.Unlock()
 	if s == nil {
 		return errNoIntermediate
 	}
-	return s.ended(a.clock.Now())
+	return s.ended(now)
 }
 
 // ReleaseRoots is the PEM every release hands a command to trust the proxy by: the root of the
@@ -505,14 +548,15 @@ func rootsPEM(root *x509.Certificate, extra []*x509.Certificate) string {
 // out, unless the leaf it would sign ends no later, as in the last hour of an intermediate: a
 // pod that has served one host for longer than a leaf lasts would otherwise answer every
 // handshake for that host with an expired certificate. A leaf an older certificate signed is
-// signed again under the new one, so every handshake after a renewal shows the new chain. Once
-// the certificate's own life is over there is nothing to sign with, and the handshake fails.
+// signed again under the new one, so every handshake after a renewal shows the new chain, once
+// newSignerHold has passed since the new one's start (signerAt). Once the certificate's own life
+// is over there is nothing to sign with, and the handshake fails.
 func (a *Authority) leaf(host string) (*tls.Certificate, error) {
 	// Read before the lock every bound handshake shares: the local stack's clock reads a file.
 	now := a.clock.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := a.signer
+	s := a.signerAt(now)
 	if s == nil {
 		return nil, errNoIntermediate
 	}

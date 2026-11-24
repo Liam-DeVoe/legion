@@ -219,7 +219,9 @@ so it drives days of a broker's life without a restart, and makes each call at a
 clock with `openssl s_client` under `agent-secrets`, through the grant's own proxy URL,
 verifying the chain the broker presented against the test root alone at that moment
 (`-attime`). A step that needs another broker starts one beside the stack's, with the stack
-broker's environment (`lib/exec-env.sh`), and points the two fronts at it.
+broker's environment (`lib/exec-env.sh`), and points the two fronts at it. The stack's start, its
+banner reading and the extra-broker launch are `lib/check-stack.sh`, which `judge-check.sh`
+sources too; `judge-check.test.sh` tests that file, with no stack.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/proxy-chain-check.sh [k27|k21|compat]

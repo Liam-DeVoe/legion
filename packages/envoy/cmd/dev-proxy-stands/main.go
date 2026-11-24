@@ -42,8 +42,9 @@
 //
 // The ca stand answers POST /v1/projects/{project}/locations/{location}/caPools/{pool}/certificates,
 // the request BROKER_PROXY_TEST_CA_URL points a broker pod at, with an intermediate for the
-// CSR's key signed by a test root of its own, under a policy: 7 days at most, an authority of
-// path length 0, and the policy's names, the request's own until POST <ca URL>/policy, whose
+// CSR's key signed by a test root of its own, under a policy: 7 days at most, starting 5 minutes
+// before its issue, an authority of path length 0 for servers alone (serverAuth its one extended
+// key usage), and the policy's names, the request's own until POST <ca URL>/policy, whose
 // body is {"names": [...]}, gives it names, as an apply of the pool's issuance policy does. It
 // dates each certificate by the clock --clock-offset-file moves, the file the brokers' clock
 // reads. POST <ca URL>/fail makes it fail every request 503 until POST <ca URL>/answer.

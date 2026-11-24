@@ -203,7 +203,7 @@ jobs:
       - name: Required-input test for airlock-check.sh k7 (no stack or network)
         run: bash scripts/airlock-check.test.sh
         working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+      - name: Stack and broker-start test for lib/check-stack.sh and lib/exec-env.sh, which judge-check.sh and proxy-chain-check.sh share (a stand-in broker; no stack)
         run: bash scripts/judge-check.test.sh
         working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
