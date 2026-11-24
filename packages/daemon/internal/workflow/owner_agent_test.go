@@ -13,6 +13,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// startAgentOf is the agent engine's startAgent names for the start of issue's step at at, read in
+// a transaction of its own after the boot's open of each run no start counted (applyInTx).
+func startAgentOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue record.Issue, at phase.Phase) claim.Token {
+	t.Helper()
+	var agent claim.Token
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		agent, err = engine.startAgent(ctx, tx, issue, at)
+		return err
+	})
+	return agent
+}
+
 // A step of the key owner is run, and named on its record, by the architect that owns its issue
 // when the step starts (ownerAgent), as an acceptance the owner does is (startAgent): the child's
 // own architect while its claim holds its role, or while a start of it the outbox will act on is
@@ -79,13 +92,7 @@ func TestAStepOfTheOwnerIsRunByTheArchitectThatOwnsTheIssueNow(t *testing.T) {
 			engine := stepEngine(nil)
 			seed(t, pool, phase.Reviewing, 2, tc.state, "")
 			issue := issueOf(t, pool, engine, "LEGION-209")
-			var got claim.Token
-			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				var err error
-				got, err = engine.startAgent(ctx, tx, issue, phase.Reviewing)
-				return err
-			})
-			if string(got) != tc.want {
+			if got := startAgentOf(t, pool, engine, issue, phase.Reviewing); string(got) != tc.want {
 				t.Fatalf("the agent of LEGION-209's step reviewer:owner = %q, want %q, the architect that owns the child now", got, tc.want)
 			}
 			if owner, err := record.OwnerClaim(issue); err != nil || string(owner) != own {

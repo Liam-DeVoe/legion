@@ -1,11 +1,8 @@
 package workflow
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -42,12 +39,7 @@ func TestAnAcceptanceStartNamesTheAgentThatDoesIt(t *testing.T) {
 			root := stepRoot(t, pool, phase.Accepting)
 			seedStepsAt(t, pool, root.Key, root.Generation, 2, nil, tc.words...)
 			issue := issueOf(t, pool, engine, root.Key)
-			var got claim.Token
-			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				var err error
-				got, err = engine.startAgent(ctx, tx, issue, phase.Accepting)
-				return err
-			})
+			got := startAgentOf(t, pool, engine, issue, phase.Accepting)
 			if want := tc.want(t); string(got) != want {
 				t.Fatalf("the agent of %s's acceptance = %q, want %q", root.Key, got, want)
 			}
