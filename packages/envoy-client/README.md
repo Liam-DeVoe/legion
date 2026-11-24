@@ -1208,21 +1208,22 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, the code lapses no later
-than its first poll at the broker's interval (naming both), or the broker answers a poll with
-any other 4xx, with another OAuth error or without one (a proxy's page, a bare challenge), naming
-its status. The status decides first (`oauth-refusal.ts` in
+the broker refuses the login, the person denies it, its code expires, the broker answers a code
+that would lapse before its first poll (refused before the code is printed, naming the broker's
+interval and its codes' lifetime, or the hour this machine polls a code at most), or the broker
+answers a poll with any other 4xx, with another OAuth error or without one (a proxy's page, a bare
+challenge), naming its status. The status decides first (`oauth-refusal.ts` in
 `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429 and a 5xx are polled
-again, whatever OAuth error they name, and only in another 4xx does a deciding error count:
-`access_denied`, which the broker answers 403, is the denial, `expired_token` and `invalid_grant`
-the expiry, and `authorization_pending` and `slow_down` poll again. It polls at the broker's
-interval, 1 s at least, and 5 s where it names none; each `slow_down` adds 5 s, at whatever
-status it comes, and so does each poll the broker did not answer or answered 408, 429 or 5xx,
-once for a poll that is both, as RFC 8628 has it. Such an answer's `Retry-After`, in seconds or
-as a date, is waited before the next poll where it asks longer, though never past the code's
-lifetime, which no wait passes and which is kept on the monotonic clock, so a step of the system
-clock does not move it; a code that lapses after such polls says how many came in a row before
-it. It then writes no file. It
+again, whatever OAuth error they name, and only in another
+4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
+`expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
+again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not answer
+or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an answer's
+`Retry-After`, in seconds or as a date, is waited before the next poll where it asks longer,
+though never past the code's lifetime, which no wait passes and which is kept on the monotonic
+clock, so a step of the system clock does not move it; a code that lapses after such polls says
+how many came in a row before it. It then writes no file. It
 exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
 the broker holds live, and says to revoke it in Machine logins on the page the code was typed
 into. Where it wrote a copy of the login whole,
