@@ -52,8 +52,8 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: dispatch-browser.yaml's `lane`, which ci.yaml builds from the event and the pull
-#      request's labels, chooses which projects the browser suite runs, never whether it runs,
+#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
+#      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
@@ -69,9 +69,10 @@
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), a
-#      RULES source file that is gone, a why citing a step the job no longer has, or a why of a
-#      RULES row that cites a line of the row's own file as the one a call is on (`<file>:<line>
-#      calls <name>`) where that line does not call <name>, naming the line the call is on. A
+#      RULES source file that is gone, a why citing a step the job no longer has, or a why that
+#      cites through ci_filter_coverage.calls() a line as the one a call is on, where that file is
+#      not in the repository or that line does not call the name, naming the line the call is on:
+#      the check reads the file, the line and the name calls() records, never the why's words. A
 #      gate's step is looked for in the file that gate names - ci.yaml, or the workflow it calls
 #      that holds that job's steps - and a why's in the file its citation names, so a step that
 #      moved between the two fails here until the table says where it went,
@@ -139,15 +140,19 @@
 #      out and so reads no file by design; an EXCLUDED filter is exempt from the second, since
 #      this check computes no read set for one (worker_image, whose coverage
 #      .github/scripts/check-image-trigger-paths.sh proves instead); a pattern whose every file
-#      another rule of this check holds that filter to is exempt from the second, since refusing
-#      it would refuse the rule that put it there - rule 8 keeps a PUSH_WORKFLOWS workflow's
-#      on.push.paths equal to its filter and a workflow that does not name itself never runs on a
-#      change to itself, so the docs filter holds .github/workflows/docs-pages.yaml to keep
+#      the filter selects (net of the filter's own `!` patterns, since a file they leave out
+#      starts no run) another rule of this check holds that filter to is exempt from the second,
+#      since refusing it would refuse the rule that put it there - rule 8 keeps a PUSH_WORKFLOWS
+#      workflow's on.push.paths equal to its filter and a workflow that does not name itself
+#      never runs on a change to itself, so the docs filter holds .github/workflows/docs-pages.yaml to keep
 #      main's docs build running when its own workflow changes, and rule 15 holds the filter of
 #      the job that runs a package's untagged tests to every file the tag step reads and every
 #      file of the tag step filter's listed block, so envoy_go_race holds
 #      .github/scripts/go-tagged-tests.sh, which
-#      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
+#      listener-server-change's soak takes its -run from and no step of envoy-go-race reads, and
+#      envoy_infra_build names the Dispatch server's package directories, whose sources the
+#      natslive step of envoy-infra-go compiles and whose test files its generated block leaves
+#      out; a
 #      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
 #      second for the same reason, since that check holds the filter to the file, which a tsc
 #      program of the job compiles or a bundle it runs loads, and this check, with no Bun,
@@ -296,7 +301,7 @@
 #      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run
 #      that script's compile line once and exactly, or that run a `go test` with -race of their
 #      own: such a fill reaches its race step's packages and flags through the script that step
-#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-go), and a fill that calls
+#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-build), and a fill that calls
 #      it otherwise or copies its build compiles objects the step does not link, with nothing
 #      failing. It fails naming the job and the line.
 #  17. a gate's filter whose generated block is not exactly the `!` patterns that keep it off

@@ -16,10 +16,8 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
-  `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as the end of the process group a probe attempt started, rather than at a time a loaded machine can reach before that run has started.
-  Every such clock uses it, because it ends as the real one does: once its `pass` runs, its `Err` is `context.DeadlineExceeded` and `context.Cause` reads the cause it was given, for it and for each context derived from it; its cancel and its parent's end end it as they end a real one, and it reads its parent's end at once.
-  Its `Deadline` is its parent's until it passes and the moment it passed from then on, so code that reads the time against `Deadline` sees it past, as against a real deadline; this is the one place it differs from a real deadline on purpose, whose `Deadline` never changes.
-  A clock built on `context.WithCancelCause` keeps the cause and gives `Err` `context.Canceled`, which no real limit gives, so code that tells one end from another by `Err` passes a test it should fail.
+  `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as the end of the process group a probe attempt started, rather than at a time a loaded machine can reach before that run has started. Every such clock uses it, because it ends as the real one does, by `Err`, `context.Cause` and its parent's end, and only its `Deadline` differs, on purpose; its doc comment (`internal/testwait/deadline.go`) says how, and why a clock built on `context.WithCancelCause`, whose `Err` is `context.Canceled`, passes a test it should fail.
+  With a child left in a probe's process group, a budget far away is no kill and a budget that passes while the probe runs stops the whole group, each held by a row of `bootgate_test.go`; a budget that passes between the leader's reap and `Wait`'s read of its context reports a kill, as `procgroup.Configure`'s doc says, and no test asserts either answer there.
   In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
@@ -480,9 +478,10 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
-`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
-detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
+under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
+packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
+`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
@@ -526,7 +525,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is one of the ten slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -611,126 +610,35 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 ## A test reads a lock wait from pg_locks
 
-A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
-through `packages/envoy/lockwaittest`: `lockwaittest.Waiting` is the condition, on a row of
-`pg_stat_activity`, that `pg_locks` holds an ungranted request of its pid, and
-`lockwaittest.WaitingOn("advisory")` is the same for one kind of lock. `pg_blocking_pids` reads the
-same queue. A test never reads `pg_stat_activity`'s `wait_event_type` or `wait_event` for it. A
-waiting backend's request stays queued in `pg_locks` until the lock is granted or the wait is
-cancelled. Its wait event reads `Lock` only while the backend sleeps on its latch. Each time the
-backend is woken, by its deadlock check at `deadlock_timeout` or by a signal, the wait event reads
-nothing until it sleeps again.
-
-What was measured: a probe sampled one waiting backend's wait event and its `pg_locks` request
-together, beside the whole of `internal/daemon` under `-race`, with `deadlock_timeout` at its
-default of 1 s. In 2 of 10 waits it read no wait event at 1.007, 1.009 and 1.011 s into the wait,
-with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once
-and counted 0 of the daemon's backends waiting while its one connection waited (CI run
-45206462019); how far into its wait that read fell was not measured.
-
-Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
-Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
-that writes `lockwaittest`'s predicate out: the subquery
-`pid in (select pid from pg_locks where not granted)`, with or without one
-`and locktype = '…'` before its `)`, or that select as the whole of a literal. It fails on one
-that compares a wait event with a lock by its exact value: `wait_event_type = 'Lock'`, the
-reverse `'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like 'Lock'`,
-`wait_event` with a lock type such as `'advisory'`, and each of those with the column qualified
-(`a.wait_event_type`), in a `coalesce` or cast (`::text`). It fails too on a root that holds no
-`go.mod`, and on a module in which it read no Go file. It does not see:
-
-- the predicate written another way: its conditions in the other order
-  (`where locktype = 'advisory' and not granted`), with a table alias
-  (`select l.pid from pg_locks l where not l.granted`), or as the start of a longer statement;
-- a wait event matched by a pattern rather than its exact value, such as `like 'Lock%'`;
-- a comparison made in Go, of a `wait_event_type` the test scanned;
-- a statement built from pieces: a value passed as a bind parameter (`wait_event_type = $1`), a
-  column and a value in two literals joined by `+`, or a format verb;
-- another operator, such as `= any(…)`, or a literal in a `testdata` directory;
-- a test that decides on one sample of a wait event other than a lock's, such as an idle
-  holder's `Client/ClientRead`, which a signal blanks the same way. Such a test reads the
-  sample again, within a bound, until it holds.
-
-A read of one lock from `pg_locks`, by relation or by advisory key, a read of one backend's
-request by its pid, and a read of the waiters behind one backend (`pg_blocking_pids`) do not write
-the predicate out, and the check leaves them alone.
+A Go test that waits for a backend to queue on a lock reads it through `lockwaittest.Waiting` or
+`WaitingOn` (`packages/envoy/lockwaittest`) or `pg_blocking_pids`, never from `wait_event_type` or
+`wait_event`, which read nothing each time the waiter is woken; a test reads one sample of any wait
+event again, within a bound, until it holds. Envoy's `internal/textcheck` holds the three modules
+to this; `lockwaittest`'s package documentation gives why, what was measured, and every form.
 
 ## A file a test runs
 
 A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
-can see the run fail with `ETXTBSY` ("text file busy"). While a file is open for writing, a fork
-of the test process copies the write descriptor into the child, which holds it until its own exec
-closes it, and the kernel refuses to exec a file any process holds open for writing. A test
-running beside it (`t.Parallel`) forks each time it starts a command, so once `internal/daemon`'s
-tests ran beside each other a gate test failed so under load
-(`TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses`, one run in 660).
-The code a deployment runs meets the same fault: the daemon starts git, gh and tmux from many
-goroutines, and the program files it writes (the one-shot git credential helper, the launcher
-scripts of `workerbin`, the leak check a pod's launcher installs and runs) were refused so beside
-eight forking goroutines, 13 to 28 runs in 300 to 450.
-`programfile.Write` (`packages/envoy/programfile`, which every module reaches) is the one writer
-of such a file: it holds `syscall.ForkLock` for reading from the open to the close, which every
-fork of a Go process takes for writing, so no fork falls inside the write.
-`testexec.WriteFile` is `os.WriteFile`'s shape for a test, and writes with `programfile.Write`.
-A test of a place that writes such a file starts `testexec.ForkBeside` and runs the file as soon
-as it is written, many times; it fails on a run refused with `ETXTBSY`. gVisor runs a file some
-process holds open for writing, so there such a test passed with the fault present (every one of
-them, under gVisor in a build pod, 2026-11-23). `ForkBeside` first runs a program it holds open
-for writing itself. A kernel that runs it skips the test, saying so, except under
-`GITHUB_ACTIONS`, where it fails, since CI's runners refuse such a run; any other answer (a
-`TMPDIR` mounted `noexec`, no `/bin/sh`) fails the test, naming the answer.
+can see the run fail with `ETXTBSY`: a fork of the test process holds the write descriptor until
+its exec. The code a deployment runs meets the same fault, since the daemon starts git, gh and
+tmux from many goroutines. `programfile.Write` (`packages/envoy/programfile`) is the one writer of
+such a file: it holds `syscall.ForkLock` for reading from the open to the close, so no fork falls
+inside the write, and it sets the mode exactly. `testexec.WriteFile` is its `os.WriteFile` shape
+for a test. Every file that is no test file writes such a file with it, a package whose tests call
+`Parallel` in its test files, a test-support package (a name that begins or ends with `test`) in
+every file, and any test that starts a command from another goroutine wherever it writes one; in a
+package whose tests run one at a time only the running test can fork, so `os.WriteFile` is safe in
+its tests. Each module's `internal/textcheck` holds those files to this with `testexec.Unguarded`,
+which leaves out `programfile.Write` alone, reads a mode masked to hold no execute bit
+(`perm&^0o111`) as none, and fails on a directory with no `go.mod` or no test file. Its doc comment
+lists the forms it names and misses, and `testexec`'s package documentation the failure that was
+measured: a write in a missed form needs `programfile.Write`, or `testexec.WriteFile` in a test,
+by hand; a file a command such as `cp` writes needs nothing.
 
-Three kinds of file write such a file with `programfile.Write`, or with `testexec.WriteFile` in a
-test: every file that is no test file (the code a deployment runs, and a test-support package, a
-package whose name begins or ends with `test`, since tests of any package call it), the test files
-of a package whose tests call `Parallel`, and the test files of a test-support package. A test
-that starts a command from another goroutine while it writes such a file writes it with
-`testexec.WriteFile` wherever it is. A package whose tests run one at a time can still write such
-a file with `os.WriteFile` in its tests. Its test binary runs one test at a time, and a fork in
-another process copies none of its descriptors, so only a goroutine of the running test can fork
-while the file is open.
-
-Each module's `internal/textcheck` holds those three kinds of file to the rule with
-`testexec.Unguarded`, and fails on each place it names, as file and line. It names:
-
-- an `os.WriteFile` or `os.OpenFile` whose mode has an execute bit, or a mode it cannot read as
-  holding none: one that is neither a constant nor masked by one, so a writer of data whose
-  callers choose its mode masks it where it opens or chmods the file (`perm&^0o111`);
-- an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
-  function gives an execute bit, or a mode it cannot read as holding none, with a `Chmod`:
-  `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
-  the function moved it to after the open, or the `Chmod` method of an expression that holds the
-  file, or `os.Chmod` of that one's `Name()`. The open holds its file, and so does a call that
-  wraps it at any depth, as `must(wrap(os.CreateTemp(dir, "")))`. So does a variable or field an
-  assignment of the function gives one of those, or a variable or field that held the file at
-  that point (`g := f`), and each field a keyed composite literal sets to one, nested too
-  (`h := &holder{f: f}` gives `h.f` the file). `(*h).f` is read as `h.f`;
-- a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
-- a dot import of `os`.
-
-It leaves out `programfile.Write` itself: the function `Write` of
-`github.com/sjawhar/envoy/programfile`, and nothing else, so another function of that package, or
-a package of that name elsewhere, is read. It reads each file's syntax alone, with no types, so it
-does not see:
-
-- a `Chmod` in another function than the open, or of the same path spelled another way, such as
-  a variable that holds the open's `filepath.Join` or its file's `Name()`;
-- a file handed to a name other than one an assignment of the open's own function gives it, from
-  the open, from a call that wraps it, or from a variable or field that holds it, directly or
-  through a keyed composite literal: a parameter of another function, a channel, a positional
-  composite literal, a slice that `append` adds it to, the address of a variable that holds it,
-  or a copy of a struct value that holds it in a field;
-- a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
-  and returns the file, which its caller then gives an execute bit;
-- a file written by another function of `os` (`os.CopyFS`) or by another package's function
-  (`syscall.Open`, `unix.Openat`, a helper of another package);
-- a test file of a package whose tests run one at a time and that is not a test-support package.
-
-A write in one of those forms needs `programfile.Write`, or `testexec.WriteFile` in a test, by
-hand. A file that a command such as `cp` writes needs nothing: it is open in the command's
-process, not in the writer's, so no fork of the writer copies its descriptor. The check also
-fails when the directory it reads holds no `go.mod`, or when it read no test file there, so a
-check pointed at the wrong directory cannot pass while it reads nothing.
+A test of a place that writes such a file starts `testexec.ForkBeside` and runs the file as soon as
+it is written, many times; it fails on a run refused with `ETXTBSY`. A kernel that runs a busy
+program, as gVisor does, skips such a test, except under `GITHUB_ACTIONS`, where it fails; any
+other answer (a `TMPDIR` mounted `noexec`, no `/bin/sh`) fails it, naming the answer.
 
 ## A Go test that opens a NATS client
 
@@ -750,6 +658,23 @@ that left it, because nothing in this process can close another client's connect
 The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
+
+## A test that deletes a KV watcher's consumer
+
+A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
+nats.go puts a new consumer in its place once the lost one's idle heartbeats have been missing for a whole check: 5 s heartbeats, checked every 10 s, so nominally 5 to 20 s after the delete (nats.go v1.55.0 `js.go`, `orderedHeartbeatsInterval`, `hbcThresh`, `activityCheck`, `resetOrderedConsumer`); those are timers, so a loaded machine moves them later, never earlier.
+A check that reads "the consumer is gone" some time after the delete therefore passes on a quick machine and fails on a loaded one: `TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain` once required the WARN a watcher's end writes for a consumer it finds gone, and failed when the listener's shutdown took 18 s to reach that end, which then deleted nats.go's replacement with nothing to warn of.
+While the replacement's create is in flight, after the server made it and before the client read the answer, nats.go has not yet named it to the subscription, so a stop in that moment deletes nothing (`js.go` `deleteConsumer`); nats.go deletes the new consumer once the answer comes and it finds the subscription closed (`resetOrderedConsumer`), but in a goroutine nothing waits for, so a connection closed first leaves it for the server to remove once its interest is gone.
+A replacement the server lists may still be in that moment in the client.
+
+So such a test holds the state it means to test, rather than racing nats.go to it.
+To test code that meets the consumer gone, delete it with `testnats.HoldConsumerLost` (`packages/envoy/internal/testnats/ordered_loss.go`): it sends the client, until the test ends, the idle heartbeat the server would, carrying the consumer's own sequences, so nats.go reads the subscription as alive and replaces nothing, however long the code under test takes; the client must have taken every message the consumer delivered, since a heartbeat naming one it has not taken reads as a gap (`js.go` `checkForSequenceMismatch`), and the bucket must take no write meanwhile.
+`TestADrainEndsTheKVWatchersBeforeTheConnection` and the `consumers already gone` row of `TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain` do; with a plain delete and a 25 s stall before the end, the first failed 2 of 2, and with the hold it passed 2 of 2.
+The heartbeats are the test's own timers, so a stall of a process past a whole check can still let nats.go replace the consumer. `ConsumerHold.Replaced` says whether it did, from the server's record of the creates (it follows `$JS.API.CONSUMER.CREATE.<stream>.>` from before the delete, so a stall loses none), and a test requires the loss's own outcome only where it did not, and only for that consumer. A create counts only where it is the lost consumer's own replacement: nats.go makes that one from the lost one's configuration, by start sequence at the sequence after the last it was delivered, with the same filter, so another consumer made on the stream by start sequence does not count.
+To test code that meets nats.go's replacement, wait until the server lists it (it starts at the lost one's next sequence, `DeliverByStartSequencePolicy`; `awaitReplacedConsumer` in `packages/envoy/cmd/listener/drain_watchers_test.go`), and do not require the bucket empty afterwards, since the replacement may have been in flight.
+Either way, read what the code says it did (`kvwatch.Watcher.End` logs `<name> watcher ended` once every stop it made has returned, whatever it found).
+A NATS that falls silent for a few seconds loses the client's connection, and the code then meets none of the consumers the test arranged: a drain finds the connection reconnecting, or a reconnect makes every watcher again first. Read which from a record independent of the code under test: the bus's `envoy nats disconnected` and `envoy nats reconnected` lines, in order (`mainConnection` in the same file). Still lost at the drain (a disconnect with its error after the last reconnect), require only what the code says of a lost connection. A disconnect with no error is a close, which leaves a lost connection lost: nats.go reports one whenever the connection has a socket, and a reconnect to a frozen server has one, since the kernel still accepts the dial. Made again before the drain, require what any run requires, the end of each watcher and the buckets empty, and drop only the outcomes of the arrangement the reconnect replaced: a test that reads any earlier disconnect as "lost" lets a real leak after a reconnect pass.
+A count of what is left reads a listing that reports its own failure (jetstream's `ListConsumers` or `ConsumerNames` and their `Err`), never nats.go's older listing, whose channel closes on a failed request as on an empty stream.
 
 ## A test that reads `GET /api/v1/references?since=` reads again
 
