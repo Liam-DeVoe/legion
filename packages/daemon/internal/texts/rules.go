@@ -44,17 +44,20 @@ const (
 // own backward move out of accepting. A move into accepting is Med whoever finished, since no
 // worker runs there and the architect's acceptance is the next act (an owner's plan can put
 // acceptance:owner right after the implementer or the tester, and a merger's move back goes
-// there). A planner's phase and a reviewer's approval are Med, and so is a reviewer's phase that
-// names no phase it moved to, as a row of an older daemon does.
+// there). So is a row that names no phase it moved to, whoever finished: this release names one in
+// every row it writes (workflow's NoticeFor), and a row an earlier release queued names none, so
+// it may stand for a move into accepting. The design gate's opening stays Low with or without one,
+// since it moves the issue out of admitted to its task's first step, which no plan makes the
+// owner's acceptance. A planner's phase and a reviewer's approval are Med.
 func phaseFinishedUrgency(reader claim.Role, v Variant) Urgency {
 	if reader != claim.RoleArchitect {
 		return Med
 	}
 	switch {
-	case v.To == phase.Accepting:
-		return Med
 	case v.Phase == phase.Admitted:
 		return Low
+	case v.To == "", v.To == phase.Accepting:
+		return Med
 	case v.Role == claim.RoleImplementer, v.Role == claim.RoleTester, v.Role == claim.RoleMerger:
 		return Low
 	case v.Role == claim.RoleReviewer && v.To == phase.Implementing:

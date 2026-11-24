@@ -143,8 +143,8 @@ body: |-
   text gave: each answer, reading a first version whole, and the command that prints a version.
   A notice is published with its kind's urgency, and a `low` text wakes no released pod. A
   `phase-finished` notice of a move into `accepting` is `med` for the architect whoever finished,
-  since no worker runs there, while the other moves of an implementer, a tester or a merger stay
-  `low`. Of the
+  since no worker runs there, and so is a row an earlier release queued, which names no `to` and
+  may be such a move; the other moves of an implementer, a tester or a merger stay `low`. Of the
   role messages to a role whose pod is released, only
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
   the role. A text that a project's pause held, a `low` one too, launches its reader at the resume,

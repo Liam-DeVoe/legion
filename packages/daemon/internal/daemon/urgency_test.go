@@ -457,8 +457,8 @@ func designLow() []urgencyCase {
 	cases := []urgencyCase{
 		// phase-finished to the architect: from an implementer, a tester, a reviewer's request for
 		// changes and a merger, for the design gate's opening, and for the architect's own backward
-		// move out of accepting; a planner's phase, a reviewer's approval and every move into
-		// accepting, whoever finished, are med.
+		// move out of accepting; a planner's phase, a reviewer's approval, every move into accepting
+		// and every row that names no to (an earlier release's), whoever finished, are med.
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleImplementer, Phase: phase.Implementing, To: phase.Testing}, texts.Low},
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleTester, Phase: phase.Testing, To: phase.Reviewing}, texts.Low},
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleTester, Phase: phase.Testing, To: phase.Implementing}, texts.Low},
@@ -471,6 +471,10 @@ func designLow() []urgencyCase {
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RolePlanner, Phase: phase.Planning, To: phase.Implementing}, texts.Med},
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleReviewer, Phase: phase.Reviewing, To: phase.Merging}, texts.Med},
 		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleReviewer, Phase: phase.Reviewing}, texts.Med},
+		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleImplementer, Phase: phase.Implementing}, texts.Med},
+		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleTester, Phase: phase.Testing}, texts.Med},
+		{texts.PhaseFinished, arch, texts.Variant{Role: claim.RoleMerger, Phase: phase.Merging}, texts.Med},
+		{texts.PhaseFinished, arch, texts.Variant{Phase: phase.Admitted}, texts.Low},
 		// held that records the architect's own escalation; every other hold, and every hold to the
 		// controller, is med.
 		{texts.Held, arch, texts.Variant{Hold: texts.HoldEscalation}, texts.Low},

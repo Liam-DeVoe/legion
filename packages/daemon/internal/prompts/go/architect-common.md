@@ -32,7 +32,7 @@ Every notice about an issue you own arrives on your own role topic, the one the 
 
 A notice or message that the daemon sends you at urgency `low` is one you can act on at your next turn. It wakes no released pod and starts no turn. While your pod is released, the daemon holds such a notice and sends it once your session is next ready, and a later notice is not held back behind it. You read it at your next turn, whatever starts that turn. These kinds are `low` for you:
 
-- A `phase-finished` from an implementer, a tester or a merger, apart from one whose `to` is `accepting`: no worker runs there, so the notice of a move into `accepting` is `med`, whoever finished.
+- A `phase-finished` from an implementer, a tester or a merger, apart from one whose `to` is `accepting` and one that names no `to`: no worker runs in `accepting`, so the notice of a move into `accepting` is `med`, whoever finished, and so is a notice an earlier release queued, which names no `to` and may be such a move.
 - A `phase-finished` from a reviewer that requested changes.
 - A `phase-finished` for the design gate's opening, or for your own move back out of `accepting`.
 - A `held` that records your own escalation (`hold: escalation`).
