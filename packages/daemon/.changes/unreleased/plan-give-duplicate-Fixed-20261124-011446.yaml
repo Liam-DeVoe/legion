@@ -22,8 +22,10 @@ body: |-
 
   The store gains `issue_plans.earlier_givers`. An earlier release reads only the giver that
   gave a version last, so after a rollback its first step sets a version aside when that giver no
-  longer owns the issue, though an earlier giver still does. No statement is needed for the
-  rollback.
+  longer owns the issue, though an earlier giver still does. A rollback onto a release that has
+  the plan tables needs no statement. A rollback past the plan tables first runs the way back in
+  the header of `20261124033010_plan_earlier_givers.up.sql`, as `docs/kubernetes.md` says under
+  "Rolling back the release whose owner's plan picks the steps".
 time: 2026-11-24T01:14:46Z
 custom:
     Issue: plan-give-duplicate
