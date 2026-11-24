@@ -728,6 +728,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+	"GET /api/v1/projects/{key}/results":                                 "a CI job's result of a check of the project's spec files, at the commit the read names",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
