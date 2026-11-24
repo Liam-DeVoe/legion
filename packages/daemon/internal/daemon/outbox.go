@@ -2122,7 +2122,8 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 			return false, err
 		}
 	}
-	step, acts := record.OwnersPlaceActsAs(payload.Phase, payload.Role, steps)
+	_ = steps                                                                // control a: the retro's plan rows are not read
+	step, acts := record.OwnersPlaceActsAs(payload.Phase, payload.Role, nil) // control a
 	if !acts {
 		step = claim.RoleArchitect
 	}
