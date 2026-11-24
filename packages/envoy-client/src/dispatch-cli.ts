@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
+import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import {
@@ -61,6 +62,9 @@ export interface DispatchCliIo {
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
   readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
+  /** Waits between two polls of `dispatch login --device`'s code; a timer by default, a seam for
+   *  a test that answers the poll at once. */
+  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -245,6 +249,15 @@ export async function runDispatchCli(
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
+  }
+  // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
+  // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  if (argv[0] === "login") {
+    return await loginCommand(argv.slice(1), env, {
+      print,
+      fetchImpl: io.fetchImpl,
+      sleep: io.sleep,
+    });
   }
   // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
   // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
@@ -610,7 +623,9 @@ export async function runDispatchCli(
     text = messageFor(error);
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
-    // was only a step of its command (a picture, a closing reason) into a failure of its own.
+    // was only a step of its command (a picture, a closing reason) into a failure of its own. A
+    // call that writes nothing whose answer Dispatch kept no copy of (`DispatchAnswerNotKeptError`)
+    // made nothing, so it is no landing: it exits 1 below, its line saying to run it again.
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;

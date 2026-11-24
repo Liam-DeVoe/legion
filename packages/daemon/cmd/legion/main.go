@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -30,10 +31,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 const (
@@ -188,8 +191,8 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
+	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
+	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
 	// other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
@@ -221,9 +224,11 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then one line per project, in key order, naming its `production_check` and what the word
+// Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge. After them, one line per configured repository rename
+// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
+// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -244,8 +249,8 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache every mapped
-// repository gets, as the file settles it;
+// plain line names the derived bound and why; then one names the repository cache each repository
+// a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
@@ -278,6 +283,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
+		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -301,7 +307,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
-		fmt.Fprintf(stdout, "repository cache: a %s volume per mapped repository, fetched from GitHub every %d minutes, kept %d hours after its repository leaves the mapping; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
+		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
 			reservedUnder(cache.Resources.MemoryRequest, cache.Resources.Memory), cache.Resources.EphemeralStorageRequest, cache.Resources.EphemeralStorage)
 		fmt.Fprintln(stdout, pluginsLine(cfg))
@@ -330,6 +336,15 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
+// the project runs by default (config.Project.RunsByDefault, today's line up to the owner's
+// acceptance for a project that names none), as the file would write the list (plan.Words), and
+// what they decide.
+func defaultStepsLine(key string, project config.Project) string {
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
+		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
@@ -392,6 +407,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
@@ -445,13 +461,11 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
-// theirs on the operator's terminal without it.
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
@@ -547,7 +561,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag, the intake's open give-ups (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -617,10 +631,16 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
 	}
+	for _, line := range repositoryLines(state.Repositories.Live) {
+		fmt.Fprintln(stdout, line)
+	}
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
+		fmt.Fprintln(stdout, line)
+	}
+	for _, line := range intakeGiveUpLines(state.IntakeGiveUps) {
 		fmt.Fprintln(stdout, line)
 	}
 	// In a pane, the issue record is what a relaunched worker re-reads.
@@ -1164,17 +1184,19 @@ type claimCall struct {
 	step  api.StepView
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
+// the start of and no end of, by issue and then role: a working claim whose openCallWord is
+// non-empty. openCallsSummary names each of these rows with that word. That is the shape a stalled
+// turn leaves behind: the daemon reads the same record to decide a turn has stopped moving, and
+// this is where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. A controller's claim is in none
+// of these — internal/projection puts it on no issue — and is read with `legion claims list`
+// instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
+		if view.State != string(supervise.StateWorking) || openCallWord(view.Step) == "" {
 			return
 		}
 		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
@@ -1398,11 +1420,43 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	return api.SuspendersOfOperatorClaims(list.Claims)
 }
 
-// webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App
-// is not known to be installed on (api.RepositoriesView.WithoutWebhookApp): GitHub sends Legion no
-// event of such a repository. One line per repository with why, in the state's order; with none
-// the one line says so.
+// repositoryLines are the lines an operator reads for the repositories the live records name
+// (api.RepositoriesView.Live) that GitHub's last read did not name or a role App is not installed
+// on: one line per such repository, in the state's order, with why — its readError, the Apps
+// GitHub answered are not installed on it (api.LiveRepositoryView.NotInstalled), or both — and
+// the name it is served under where that is the other name of its configured pair. A repository
+// with neither, one GitHub has not yet answered among them, has no line.
+func repositoryLines(live []api.LiveRepositoryView) []string {
+	var lines []string
+	for _, repo := range live {
+		var why []string
+		for _, reason := range []string{repo.ReadError, repo.NotInstalled()} {
+			if reason != "" {
+				why = append(why, reason)
+			}
+		}
+		if len(why) == 0 {
+			continue
+		}
+		name := repo.Repo
+		if repo.ServedAs != "" {
+			name += " (served as " + repo.ServedAs + ")"
+		}
+		lines = append(lines, "repository "+name+": "+strings.Join(why, "; "))
+	}
+	return lines
+}
+
+// webhookAppLines are the lines an operator reads for the repositories the live records name that
+// Dispatch's GitHub App is not known to be installed on (api.RepositoriesView.WithoutWebhookApp,
+// which a daemon of contract 152 writes too): GitHub sends Legion no event of such a repository.
+// One line per repository with why, in the state's order. Only a list that is present and empty
+// gives the one line that says none is missing; a daemon that wrote no list (gaps nil) says
+// nothing of the webhook App, so the CLI prints no line for it.
 func webhookAppLines(gaps []api.WebhookAppGapView) []string {
+	if gaps == nil {
+		return nil
+	}
 	if len(gaps) == 0 {
 		return []string{"webhook App missing: none"}
 	}
@@ -1454,6 +1508,61 @@ func consumerLines(consumers []api.ConsumerLagView, startedAt, now time.Time) []
 		lines[i] = line
 	}
 	return lines
+}
+
+// plainStateGiveUps is how many of the open give-ups the state lists `legion state` prints a line
+// for: the newest, which say what is failing now, while the counts above them say how many there
+// are and `legion state --json` lists every one the state carries. Ten lines fit beside the rest
+// of the plain output on one screen, and a burst of one cause reads the same in ten as in fifty.
+const plainStateGiveUps = 10
+
+// intakeGiveUpLines are the lines an operator reads for the intake's open give-ups
+// (api.IntakeGiveUpsView): one per consumer with any, `intake give-ups <consumer>: <n> open,
+// newest seq <seq>`, the newest sequence being what `legion intake replay` and `legion intake
+// discard` take as --through-seq to reach all of them; then the newest at most plainStateGiveUps,
+// `intake give-up <id> <consumer> <subject> seq <n> gave up <time> after <d> deliveries
+// (<reason>): <first line of the error>`, each id what --give-up takes. The subject and the error
+// are terminalText: the publisher wrote the subject, and the error can quote it. With none open
+// the one line says so.
+func intakeGiveUpLines(giveUps api.IntakeGiveUpsView) []string {
+	if len(giveUps.Consumers) == 0 {
+		return []string{"intake give-ups: none"}
+	}
+	listed := giveUps.Newest[:min(len(giveUps.Newest), plainStateGiveUps)]
+	lines := make([]string, 0, len(giveUps.Consumers)+len(listed))
+	for _, consumer := range giveUps.Consumers {
+		lines = append(lines, fmt.Sprintf("intake give-ups %s: %d open, newest seq %d", consumer.Name, consumer.Open, consumer.NewestSeq))
+	}
+	for _, giveUp := range listed {
+		firstLine, _, _ := strings.Cut(giveUp.LastError, "\n")
+		lines = append(lines, fmt.Sprintf("intake give-up %d %s %s seq %d gave up %s after %d deliveries (%s): %s",
+			giveUp.ID, giveUp.Consumer, terminalText(giveUp.Subject), giveUp.StreamSeq, giveUp.GaveUpAt.UTC().Format(time.RFC3339),
+			giveUp.Deliveries, giveUp.Reason, terminalText(firstLine)))
+	}
+	return lines
+}
+
+// terminalText is text another party wrote, as a line of the operator's terminal shows it: each
+// character that does not print is written as its Go escape (`\x1b`, `\a`, `\u202e`), so an ESC
+// or a BEL in it cannot clear the screen, set the window title or reorder the line. Text that
+// prints is left as it is, so the line keeps the form the guides show. The state's text holds no
+// NUL and no byte that is not UTF-8 (storetext.Text), but it can still hold these characters.
+func terminalText(text string) string {
+	first := strings.IndexFunc(text, func(r rune) bool { return !unicode.IsPrint(r) })
+	if first < 0 {
+		return text
+	}
+	var shown strings.Builder
+	shown.WriteString(text[:first])
+	for _, r := range text[first:] {
+		if unicode.IsPrint(r) {
+			shown.WriteRune(r)
+			continue
+		}
+		quoted := strconv.QuoteRune(r)
+		shown.WriteString(quoted[1 : len(quoted)-1])
+	}
+	return shown.String()
 }
 
 // stateAddress is where a daemon answers: the configured bind and port, with --port overriding

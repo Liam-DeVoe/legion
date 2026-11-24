@@ -13,10 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -25,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -104,10 +107,10 @@ type State struct {
 	// — each open deployment row with the legion.yaml line that records a decision. Never null; a
 	// gap is reported here, never refused (contract 16).
 	Capabilities []CapabilityState `json:"capabilities"`
-	// Repositories is the project's repository mapping as the daemon serves it: the owners its
-	// roles' credentials span, each repository it serves with its cache, each mapped repository it
-	// leaves out with why (a GitHub App not installed on it), and the caches of repositories the
-	// mapping no longer names. Never null: a daemon with no workflow serves none.
+	// Repositories is the repositories the project's live records name, each with what GitHub and
+	// Dispatch answered of it and its cache, the ones of them Dispatch's webhook App is not known to
+	// be installed on, and the caches of repositories no live record names (RepositoriesView). Never
+	// null: a daemon with no workflow reports none.
 	Repositories RepositoriesView `json:"repositories"`
 	// Settings is the daemon's resolved legion.yaml with every credential, credential source and
 	// credential file path left out, keyed as the file is (SettingsOf). Required, never null
@@ -128,6 +131,13 @@ type State struct {
 	// locator up with its process and lowers it by nothing, however old the plugin it last
 	// recorded (contract 193).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
+	// IntakeGiveUps is the intake's open give-ups: the messages it gave up on that no replay or
+	// discard has closed, counted per consumer with the newest stream sequence among each
+	// consumer's (the `throughSeq` a bulk replay or discard of them all names), and the newest of
+	// them listed (IntakeGiveUpsView). Always written, its lists empty rather than null; a daemon
+	// with no workflow has none, and a body served a caller below intakeGiveUpsContract carries no
+	// such key (shaping.go's withoutIntakeGiveUps, contract 228).
+	IntakeGiveUps IntakeGiveUpsView `json:"intakeGiveUps"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
@@ -141,6 +151,9 @@ type State struct {
 	// leaves it off that one body. The two flags compose on one body: a caller below
 	// wakesWaitingContract is below this contract too, and is served neither key.
 	claimsToRefreshHidden bool
+	// intakeGiveUpsHidden is the same for IntakeGiveUps, set on the copy the route serves a caller
+	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
+	intakeGiveUpsHidden bool
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -184,79 +197,147 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 	return views
 }
 
-// RepositoriesView is every repository the daemon works in, as it serves them: the repositories
-// the project's Dispatch mapping names and the repositories the project's own records name, each
-// with the installation of each role App on it (INFRA-2543 R6). The mapping decides the
-// project's default repository and the repositories the daemon prepares before an issue names
-// one, and no longer decides where the project may work: the App installation does, so a
-// repository a record names is served exactly as a mapped one and no repository is left out for
-// want of a mapping.
-//
-// Owners is every mapped repository's owner account, which is an account both role Apps are
-// installed on, since the mapping serves a repository only once they are. It is not the reach
-// a pane's addressing names: that is the owners of the pane's own role's App, which the daemon
-// reads from what the last gh bundle of that App found (daemon.RepositoriesClause), and this
-// block reports no App's installations. Owners, Mapped, Refused, WithoutWebhookApp and Caches
-// are sorted, and never null. Caches are the repository caches of repositories the daemon no
-// longer serves, each kept until its RetainedUntil (contract 32). WithoutWebhookApp is each
-// served repository Dispatch's GitHub App is not known to be installed on, with why
-// (contract 43).
-type RepositoriesView struct {
-	Owners            []string                `json:"owners"`
-	Mapped            []MappedRepositoryView  `json:"mapped"`
-	Refused           []RefusedRepositoryView `json:"refused"`
-	WithoutWebhookApp []WebhookAppGapView     `json:"withoutWebhookApp"`
-	Caches            []CacheView             `json:"caches"`
+// IntakeGiveUpsView is the intake's open give-ups as the state shows them (record.IntakeGiveUps):
+// Consumers, each consumer with an open give-up, by name, with how many it has and the newest
+// stream sequence among them; and Newest, the newest open give-ups, latest given up first, as many
+// as the projection lists (projection's stateNewestGiveUps), so a reader of the state finds the id
+// of a record to replay or discard and the consumer and sequence of a bulk one.
+type IntakeGiveUpsView struct {
+	Consumers []IntakeGiveUpCountView `json:"consumers"`
+	Newest    []IntakeGiveUpView      `json:"newest"`
 }
 
-// MappedRepositoryView is a repository the daemon serves, as GitHub names it, whether the
-// project's Dispatch mapping names it or one of the project's own issue records does: whether
-// it is the project's default in Dispatch, which the mapping still decides and a record never
-// does; each role App's installation on it (Apps); and, under the Kubernetes runtime, its
-// repository cache once the runtime has made one (absent before, and under tmux).
-type MappedRepositoryView struct {
-	Repo    string               `json:"repo"`
-	Default bool                 `json:"default"`
-	Apps    AppInstallationsView `json:"apps"`
-	Cache   *CacheView           `json:"cache,omitempty"`
-	// appsHidden is set on the copy the state route serves a caller below the contract that
-	// added Apps (api's withoutRepositoryApps, below shaping.go's repositoryAppsContract): the
-	// strict reader at 46 and 48 knows no `apps` and refuses the whole body for it, so
-	// MarshalJSON leaves the key off that one entry rather than writing both Apps false.
-	appsHidden bool
+// IntakeGiveUpCountView is one consumer's open give-ups: how many, and the newest stream sequence
+// among them, which a bulk replay or discard of all of them names as its `throughSeq`.
+type IntakeGiveUpCountView struct {
+	Name      string `json:"name"`
+	Open      int    `json:"open"`
+	NewestSeq uint64 `json:"newestSeq"`
 }
 
-// MarshalJSON leaves `apps` off the one entry whose reader knows no such key, and writes it on
-// every other, exactly as CheckView.MarshalJSON leaves off `role`: that entry is marshalled
-// through a value whose own nil `apps` field, being `omitempty`, shadows the embedded one and so
-// is written by nothing. The shadowing field is the whole mechanism, and the embedded `apps` is
-// left as the band cleared it.
-func (m MappedRepositoryView) MarshalJSON() ([]byte, error) {
-	type wire MappedRepositoryView
-	out := wire(m)
-	if m.appsHidden {
-		return json.Marshal(struct {
-			wire
-			Apps *AppInstallationsView `json:"apps,omitempty"`
-		}{wire: out})
+// IntakeGiveUpView is one open give-up as the state lists it, without the message's headers and
+// payload, which the record keeps whole: its record id, the consumer that delivered it, its
+// subject as the store keeps text (storetext.Text: each NUL and each run of bytes that is no UTF-8
+// shown as U+FFFD, where the record keeps the publisher's bytes), stream sequence and stored
+// time, the fact's event id (null for a message that did not decode), how many deliveries
+// JetStream made of it, when the intake gave it up and why (record.IntakeGiveUpReason), and the
+// start of its last error, cut where the projection cuts it (projection's stateGiveUpErrorRunes).
+type IntakeGiveUpView struct {
+	ID         int64                     `json:"id"`
+	Consumer   string                    `json:"consumer"`
+	Subject    string                    `json:"subject"`
+	StreamSeq  uint64                    `json:"streamSeq"`
+	StoredAt   time.Time                 `json:"storedAt"`
+	EventID    *string                   `json:"eventId"`
+	Deliveries int                       `json:"deliveries"`
+	GaveUpAt   time.Time                 `json:"gaveUpAt"`
+	Reason     record.IntakeGiveUpReason `json:"reason"`
+	LastError  string                    `json:"lastError"`
+}
+
+// MarshalJSON keeps `consumers` and `newest` arrays on the wire: a nil Go slice is `null`, which
+// the plugin's reader refuses, and a daemon with no give-up open writes both empty.
+func (v IntakeGiveUpsView) MarshalJSON() ([]byte, error) {
+	type wire IntakeGiveUpsView
+	out := wire(v)
+	if out.Consumers == nil {
+		out.Consumers = []IntakeGiveUpCountView{}
+	}
+	if out.Newest == nil {
+		out.Newest = []IntakeGiveUpView{}
 	}
 	return json.Marshal(out)
 }
 
+// RepositoriesView is the repositories the daemon works in, as legion state reports them
+// (INFRA-4401 A6): Live, one entry for each repository the project's live records name — the
+// records of the state's own read, so the list and the issues beside it come from one snapshot —
+// WithoutWebhookApp, each of those that Dispatch's webhook App is not known to be installed on,
+// with why, and Caches, the repository caches of repositories no live record names, each kept until
+// its RetainedUntil (contract 32). All three are never null on the wire, Live sorted by each
+// repository's lowercased <owner>/<name>, WithoutWebhookApp in Live's order and Caches as the
+// runtime lists them. A repository is served once GitHub answered that both role Apps are installed
+// on it, whatever names it, so no entry is reported as a project's default or as refused for want
+// of a listing in Dispatch.
+//
+// WithoutWebhookApp is the block's one report of Dispatch's webhook App, and no Live entry carries
+// a copy of it. It keeps the shape contract 152 gave it for every caller: an operator's `legion
+// state` states no contract and asks from no pod, so the route serves it this block whatever
+// binary it is, and a `legion state` of 152 reads its webhook App lines from this list alone. A
+// body without the key, as a daemon before contract 43 serves, decodes nil.
+//
+// narrowed is set on the copy the state route serves a caller below shaping.go's
+// repositoriesLiveContract (api's withoutRepositoriesLive). A plugin from 152 to 189 reads the
+// block with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
+// `withoutWebhookApp` beside `caches` and knows no `live`, and one below 152 with an earlier schema
+// that requires them too, so it would refuse the whole state for the block this contract writes,
+// which lacks the first three. A plugin from 193 on reads every key of the block as optional
+// (main's #3659), and it is served the older block all the same. MarshalJSON writes that one body
+// in the shape contract 152 gave the block, from these same entries (at152), rather than this
+// block with keys taken out, since no part of it is a block that schema parses.
+//
+// appsHidden is set on the copy the route serves a caller below shaping.go's
+// repositoryAppsContract (api's withoutRepositoryApps): the strict reader at 46 and 48 knows no
+// `apps` on an entry of `mapped` or `refused` and refuses the whole body for it, so at152 leaves
+// the key off every entry of that older block. Every such caller is below repositoriesLiveContract
+// too, so the flag is read by at152 alone, and the block this contract writes carries `apps`
+// wherever an entry holds it.
+type RepositoriesView struct {
+	Live              []LiveRepositoryView `json:"live"`
+	WithoutWebhookApp []WebhookAppGapView  `json:"withoutWebhookApp"`
+	Caches            []CacheView          `json:"caches"`
+	narrowed          bool
+	appsHidden        bool
+}
+
+// LiveRepositoryView is one repository a live record names: Repo, the name the records keep it
+// under (GitHub's spelling, as the record holds it); ServedAs, the other name of its configured
+// pair (`repository_renames`) where the rename rule serves it under that one, absent otherwise;
+// and, from what GitHub last answered for the name it is served under, Apps, each role App's
+// installation on it, absent until GitHub answered both reads; ReadError, why GitHub's last read
+// did not name it — a refusal such as a 404, or a read that did not answer — absent once a read
+// named it; and, under the Kubernetes runtime, Cache, its repository cache once the runtime has
+// made one (absent before, and under tmux). What Dispatch answered of its webhook App is in the
+// block's WithoutWebhookApp alone.
+type LiveRepositoryView struct {
+	Repo      string                `json:"repo"`
+	ServedAs  string                `json:"servedAs,omitempty"`
+	Apps      *AppInstallationsView `json:"apps,omitempty"`
+	ReadError string                `json:"readError,omitempty"`
+	Cache     *CacheView            `json:"cache,omitempty"`
+}
+
+// NotInstalled is the sentence naming each role App GitHub answered is not installed on the name r
+// is served under (servedName), in the words the daemon refuses an admission with
+// (appauth.NotInstalledOn): "the review App is not installed on acme/gadgets", or both Apps named
+// in one sentence. It is "" while GitHub has not answered both reads, and where it answered both
+// installed.
+func (r LiveRepositoryView) NotInstalled() string {
+	if r.Apps == nil {
+		return ""
+	}
+	var missing []appauth.AppRole
+	if !r.Apps.Implement {
+		missing = append(missing, appauth.Implement)
+	}
+	if !r.Apps.Review {
+		missing = append(missing, appauth.Review)
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return appauth.NotInstalledOn(missing, r.servedName())
+}
+
+// servedName is the name r is served under: ServedAs where the rename rule serves it under the
+// other name of its configured pair, else Repo.
+func (r LiveRepositoryView) servedName() string { return cmp.Or(r.ServedAs, r.Repo) }
+
 // AppInstallationsView is each role App's installation on one repository, which is what decides
 // whether a project can work there at all (INFRA-2543 R6): the implement App a worker pushes and
 // opens pull requests with, and the review App a reviewer approves with. It is a field rather
-// than a sentence a reader must parse out of a refusal's reason, because it is the answer an
-// operator and a plugin both ask of a repository, and the daemon holds it for every repository it
-// has facts for.
-//
-// Both are true on a repository the daemon serves, which is the admission rule of each of the
-// two doors into the served set: a mapped repository one of the two Apps does not reach is
-// served for nothing — no token exists for its work — so it stands under
-// RepositoriesView.Refused instead, and an issue is recorded on a repository no mapping names only
-// once GitHub has answered that both Apps are installed on it. So the entries where the two can
-// differ are the refused ones, and each carries what GitHub answered of both Apps on the name
-// Dispatch maps (RefusedRepositoryView.Apps).
+// than a sentence a reader must parse out of a reason, because it is the answer an operator and a
+// plugin both ask of a repository, and the daemon holds it for every repository it has read.
 type AppInstallationsView struct {
 	Implement bool `json:"implement"`
 	Review    bool `json:"review"`
@@ -267,7 +348,8 @@ type AppInstallationsView struct {
 // Service of its name that is not its own and why — and, while its pod is Ready behind its own
 // Service, its address; from its last health read (the runtime's minute tick) the default
 // branch's head, when it last fetched GitHub and the bytes it serves, or why its /healthz could not
-// be read; and, for a repository the mapping no longer names, until when it is kept (contract 32).
+// be read; and, for a repository no live record names any more, until when it is kept (contract
+// 32).
 type CacheView struct {
 	Repo          string    `json:"repo"`
 	Sandbox       string    `json:"sandbox"`
@@ -282,43 +364,17 @@ type CacheView struct {
 	RetainedUntil time.Time `json:"retainedUntil,omitzero"`
 }
 
-// RefusedRepositoryView is a repository the daemon leaves out, as Dispatch maps it or as a record
-// names it, and why: a role App is not installed on it, or that installation could not be read.
-// A repository no mapping names is never refused for that (INFRA-2543 R6), since the mapping
-// stopped deciding where a project may work.
-//
-// Apps is each role App's installation on Repo as GitHub answered it, so a reader learns which
-// App is missing without parsing Reason. It is present wherever GitHub answered both Apps' reads
-// of Repo, a repository left out for its default-branch read after both answered installed
-// among them (both true then, Reason naming the read), and absent where a read of Repo failed or
-// Repo is no <owner>/<name> at all, Reason naming which. A configured rename's other name, read
-// where neither App answered installed on Repo, is not what Apps answers for: Reason names what
-// GitHub said of it.
-type RefusedRepositoryView struct {
-	Repo   string                `json:"repo"`
-	Reason string                `json:"reason"`
-	Apps   *AppInstallationsView `json:"apps,omitempty"`
-}
-
-// WebhookAppGapView is a served repository that Dispatch's GitHub App is not installed on, or
-// whose check failed, and why. The daemon serves it all the same.
-type WebhookAppGapView struct {
-	Repo   string `json:"repo"`
-	Reason string `json:"reason"`
-}
-
-// MarshalJSON keeps the five lists arrays on the wire.
+// MarshalJSON keeps the three lists arrays on the wire, and writes the block in contract 152's
+// shape on the copy the route narrows for a caller below repositoriesLiveContract (narrowed,
+// at152).
 func (r RepositoriesView) MarshalJSON() ([]byte, error) {
+	if r.narrowed {
+		return json.Marshal(r.at152())
+	}
 	type wire RepositoriesView
 	out := wire(r)
-	if out.Owners == nil {
-		out.Owners = []string{}
-	}
-	if out.Mapped == nil {
-		out.Mapped = []MappedRepositoryView{}
-	}
-	if out.Refused == nil {
-		out.Refused = []RefusedRepositoryView{}
+	if out.Live == nil {
+		out.Live = []LiveRepositoryView{}
 	}
 	if out.WithoutWebhookApp == nil {
 		out.WithoutWebhookApp = []WebhookAppGapView{}
@@ -329,13 +385,98 @@ func (r RepositoriesView) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// repositoriesAt152 is the repositories block as contract 152 wrote it, which a plugin of that
+// contract, or of one before it, requires whole: every list sorted and never null.
+type repositoriesAt152 struct {
+	Owners            []string                 `json:"owners"`
+	Mapped            []servedRepositoryAt152  `json:"mapped"`
+	Refused           []refusedRepositoryAt152 `json:"refused"`
+	WithoutWebhookApp []WebhookAppGapView      `json:"withoutWebhookApp"`
+	Caches            []CacheView              `json:"caches"`
+}
+
+// servedRepositoryAt152 is an entry of contract 152's `mapped`: a repository both role Apps are
+// installed on, under the name it is served under, with `default`, which that contract's schema
+// requires and which the daemon no longer knows, so it is false on every entry, and Apps, absent
+// only on a block served a caller below repositoryAppsContract (at152).
+type servedRepositoryAt152 struct {
+	Repo    string                `json:"repo"`
+	Default bool                  `json:"default"`
+	Apps    *AppInstallationsView `json:"apps,omitempty"`
+	Cache   *CacheView            `json:"cache,omitempty"`
+}
+
+// refusedRepositoryAt152 is an entry of contract 152's `refused`: a repository a role App is not
+// known to be installed on, with why, and Apps where GitHub answered both reads.
+type refusedRepositoryAt152 struct {
+	Repo   string                `json:"repo"`
+	Reason string                `json:"reason"`
+	Apps   *AppInstallationsView `json:"apps,omitempty"`
+}
+
+// WebhookAppGapView is an entry of `withoutWebhookApp`, in the shape contract 152 gave it and this
+// contract keeps: a live repository Dispatch's webhook App is not known to be installed on, under
+// the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+// not answer the check). The daemon works it all the same.
+type WebhookAppGapView struct {
+	Repo   string `json:"repo"`
+	Reason string `json:"reason"`
+}
+
+// notAnsweredAt152 is the reason contract 152's `refused` gives a repository GitHub has neither
+// refused nor answered both role Apps' installation reads of yet.
+const notAnsweredAt152 = "GitHub has not answered for it yet"
+
+// at152 is r in contract 152's shape, written from r's entries alone: owners, the lowercased
+// owner of the name each entry both role Apps are installed on is served under, once each and
+// sorted; mapped, each of those entries under that name, with its Apps and its cache and a false
+// `default`, sorted by that name; refused, each other entry under its own name, with its Apps
+// where GitHub answered both reads and why — its ReadError, the Apps not installed on it
+// (NotInstalled), or GitHub's answer not come yet; and withoutWebhookApp and caches, as r holds
+// them. On a block whose appsHidden is set, no entry of mapped or refused carries `apps`.
+func (r RepositoriesView) at152() repositoriesAt152 {
+	block := repositoriesAt152{
+		Owners: []string{}, Mapped: []servedRepositoryAt152{}, Refused: []refusedRepositoryAt152{},
+		WithoutWebhookApp: r.WithoutWebhookApp, Caches: r.Caches,
+	}
+	if block.WithoutWebhookApp == nil {
+		block.WithoutWebhookApp = []WebhookAppGapView{}
+	}
+	if block.Caches == nil {
+		block.Caches = []CacheView{}
+	}
+	for _, repo := range r.Live {
+		apps := repo.Apps
+		if r.appsHidden {
+			apps = nil
+		}
+		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
+			served := repo.servedName()
+			owner, _, _ := strings.Cut(served, "/")
+			block.Owners = append(block.Owners, strings.ToLower(owner))
+			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: apps, Cache: repo.Cache})
+			continue
+		}
+		reason := cmp.Or(repo.ReadError, repo.NotInstalled(), notAnsweredAt152)
+		block.Refused = append(block.Refused, refusedRepositoryAt152{Repo: repo.Repo, Reason: reason, Apps: apps})
+	}
+	slices.Sort(block.Owners)
+	block.Owners = slices.Compact(block.Owners)
+	slices.SortStableFunc(block.Mapped, func(a, b servedRepositoryAt152) int {
+		return cmp.Compare(strings.ToLower(a.Repo), strings.ToLower(b.Repo))
+	})
+	return block
+}
+
 // CapabilityState is one row of that report. Status is "present", "unchecked", "withheld",
 // "decided" or "open" (the probe's own table also prints "missing" and "reported", which never
 // reach the state); Detail is the row's evidence whatever the status; Decision is the operator's
 // reason on a decided row; ConfigLine is, on an open deployment row, the legion.yaml line that
 // records a decision (`capabilities.decided.<name>: "<reason>"`); an open live row has none.
-// Source is, on a deployment row, "configuration" (what legion.yaml alone decides) or "boot"
-// (what boot measured); absent on every other row.
+// Source is, on a deployment row, "configuration" (what legion.yaml alone decides), "boot" (what
+// boot measured) or "caches" (what the repository caches' last health reads said of their room,
+// served without the word to a caller whose stated contract, else its pod's lowest, is below
+// cachesSourceContract: withoutUnadmittedCapabilitySources); absent on every other row.
 type CapabilityState struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -390,29 +531,29 @@ type AgentSecretsLoginView struct {
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
-// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
-// carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead. The optional keys need
-// none of this: `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers
-// with `omitempty`, absent wherever the state holds none, which is how a band hides them too
-// (withoutPause).
+// or slice is `null`, which the plugin's reader refuses. The exceptions are the three keys a
+// contract band hides from a caller below it, `wakesWaiting`, `claimsToRefresh` and
+// `intakeGiveUps`: such a body carries no key of that name at all, and is marshaled through a
+// value whose own field of that name shadows the embedded one. Admission.MarshalJSON hides `trees`
+// and `held`, the two keys of its own block a downgrade hides, with `omitzero` on those fields
+// instead. The optional keys need none of this: `controllerLocator`, `agentSecretsLogin`, `paused`
+// and `lastPause` are pointers with `omitempty`, absent wherever the state holds none, which is
+// how a band hides them too (withoutPause).
 //
-// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
+// One shadow type carries the three keys, and its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
-// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
-// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
-// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
-// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73) as well and is served neither key; a third banded key is one more field here, not four
-// more shapes.
+// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane, two
+// empty lists for the `intakeGiveUps` of an intake with none open. A `[]WakeWaiting` field could
+// not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
+// what lets one type serve every key — each field set when its key is not hidden and left nil
+// when it is — rather than a struct per set of flags. The bands compose, so a caller below
+// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (228)
+// as well and is served none of the three.
 //
-// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
 // after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
-// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// pin bodies that hide nothing: marshaling those through the shadow would move those keys to the
 // end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
@@ -438,19 +579,23 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.intakeGiveUpsHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+		WakesWaiting    *[]WakeWaiting     `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh *int               `json:"claimsToRefresh,omitempty"`
+		IntakeGiveUps   *IntakeGiveUpsView `json:"intakeGiveUps,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
 	}
 	if !s.claimsToRefreshHidden {
 		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	if !s.intakeGiveUpsHidden {
+		shadow.IntakeGiveUps = &shadow.wire.IntakeGiveUps
 	}
 	return json.Marshal(shadow)
 }
@@ -494,17 +639,17 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
-	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow, except while it waits on another issue before that
-	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
+	// the daemon starts it until it is done or Dispatch takes it out of the workflow — accepting,
+	// retro and merging hold none, and a step after accepting whose phase keeps one waits for one
+	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one past its review — a merger at work in merging, one in merging whose start a
+	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
 	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
-	// An issue the daemon has started that waits on another issue before its review is missing
-	// from here too, other than the three roots that keep their slot through such a wait
+	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
+	// missing from here too, other than the three roots that keep their slot through such a wait
 	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
@@ -535,10 +680,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words
-	// is true of, or an issue past its review under `at_work`, which no other issue holds
-	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
-	// workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, a task that was stopped
+	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
+	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
@@ -617,13 +762,21 @@ type Issue struct {
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
-	// default branch, both taken when the daemon first recorded the issue and never changed after.
+	// default branch, both taken when the daemon first recorded the issue and kept after, except
+	// that the daemon's one-time rename pass writes a `repository_renames` pair's `to` over Repo.
 	// Both are absent on an issue the workflow does not record (an operator's claim, Unrecorded).
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
+	// the owner's acceptance waits, before its retro, for the issues beneath it
+	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
+	// escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
@@ -653,12 +806,13 @@ type Issue struct {
 	Workers     map[claim.Role]PhaseView `json:"workers"`
 	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
 	DesignGate  *GateView                `json:"designGate,omitempty"`
-	// GatedSteps is the deployment's design gate as this issue stands in it: one entry for each
-	// step the deployment gates, in the order it gates them (contract 55). It is absent, as the
-	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
-	// step and for an issue the workflow does not record, so the wire never carries an empty
-	// list. DesignGate is unchanged beside it: it is the spec step's row, which every reader that
-	// asks one question of one gate still takes.
+	// GatedSteps is the tree's design gate as this issue stands in it: one entry for each step
+	// the tree is gated on (record.TreeSteps), in the order the deployment gates them with a
+	// criteria row the root's architect registered beside a deployment that gates spec and not
+	// criteria after them (contract 55). It is absent, as the gate itself is, for an issue that
+	// is not its tree's root, for a deployment that gates no step and for an issue the workflow
+	// does not record, so the wire never carries an empty list. DesignGate is unchanged beside it:
+	// it is the spec step's row, which every reader that asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
@@ -757,7 +911,7 @@ type Issue struct {
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
-	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// issue of one tree carries the same pair: an issue in accepting, retro or merging, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
 	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
@@ -780,11 +934,52 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
+	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
+	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
+	// (store.StandingPodHoldsTx). Absent for an issue whose pod no hold stands on: a pod the rule
+	// has not held, one it released, and one whose streak a later pass ended. Absent from every
+	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
+	// withoutPodHold).
+	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
+// rule's own name for what holds the pod (workflow.IdleHold's String, as the daemon's hold
+// records and its per-pass log line spell it); FirstAt, the first pass of the streak; At, its
+// newest pass, so a reader tells a streak the passes still read from one whose passes stopped,
+// since a streak stays standing until the next pass of its pod ends it; and Detail, what that one
+// word leaves out (the kinds a background-work hold's session reported), cut to its first
+// podHoldDetailChars characters, and absent where the record holds none.
+type PodHoldView struct {
+	Reason  string    `json:"reason"`
+	FirstAt time.Time `json:"firstAt"`
+	At      time.Time `json:"at"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// podHoldDetailChars is how many characters of a hold's detail the state shows: enough to name
+// every kind a session reports, and a bound on what one row adds to a body every issue carries.
+const podHoldDetailChars = 200
+
+// PodHoldViewOf is hold as the state shows it, its detail cut to its first podHoldDetailChars
+// characters. A character is a rune, so a cut never splits one.
+func PodHoldViewOf(hold store.PodHold) *PodHoldView {
+	detail, chars := hold.Detail, 0
+	for at := range detail {
+		if chars == podHoldDetailChars {
+			detail = detail[:at]
+			break
+		}
+		chars++
+	}
+	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
-// the unit, the mode in force at that draw and the instant of it.
+// the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
+// `owner` or `default`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the
@@ -792,11 +987,15 @@ type Issue struct {
 // is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
 // Carried, the record's mark of such a row, is no part of the view: what a reader of the state
 // measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+// Plan is absent where the arm named none. It is the group the issue runs on for its whole life,
+// read from the record rather than from the settings, which can change an arm's plan or rename
+// the arm after the draw.
 type AssignmentView struct {
 	Experiment string     `json:"experiment"`
 	Variant    string     `json:"variant"`
 	Mode       string     `json:"mode"`
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
+	Plan       string     `json:"plan,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -889,8 +1088,9 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
+	// questions. LastReady dates the death's cause: a death older than it is one the agent running
+	// now has already survived. The claim drops its start failure when its agent says it is ready
+	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
@@ -1030,7 +1230,7 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Step: StepViewOf(c.Step),
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
+		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
 		LastTurnStart:    instant(c.LastTurnStart),
 		LastTurnEnd:      instant(c.LastTurnEnd),
 		LastReady:        instant(c.LastReady),
@@ -1126,7 +1326,7 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 // completion reported, the Dispatch handoff record it named — and the three counts the phase
 // carries: the passes it has made through its stretch of the workflow, which every backward move
 // counts one of, the review rounds, which only a review that requested changes counts, and the
-// counts of the moves back, by kind, that made those rounds.
+// counts of the moves back, by kind, that made those passes.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
@@ -1134,14 +1334,14 @@ type PhaseView struct {
 	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts review rounds
+	// alone, a conflict round included, and Pass counts every move back, where no pair counts a
+	// move made at a conflicting head, since nobody sent the work back. The counts start empty at
+	// the migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `pass`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
@@ -1238,8 +1438,8 @@ type GateView struct {
 	ApprovedVersion *int   `json:"approvedVersion"`
 }
 
-// GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
-// it: the four answers a record can give.
+// GatedStepStatus is where one step of a tree's design gate (record.TreeSteps) stands, as the
+// issue's gate records say it: the four answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1259,9 +1459,9 @@ const (
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
 )
 
-// GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
-// the document its architect registered for the step, that document's current version, the
-// version a person approved, where the step stands and, for a step whose reviewer asked for
+// GatedStepView is one step of a tree's design gate (record.TreeSteps) as its root stands in it:
+// the step, the document its architect registered for the step, that document's current version,
+// the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
 // no approval.
 type GatedStepView struct {
@@ -1273,15 +1473,18 @@ type GatedStepView struct {
 	ChangesReason   string            `json:"changesReason,omitempty"`
 }
 
-// GatedStepViewsOf is steps, the design-gate steps a deployment gates, as one issue stands in
-// them: gates are that issue's gate rows by step (record.Store.GatesOf), and the answer is one
-// entry for each step, in the order the deployment gates them, never nil.
+// GatedStepViewsOf is steps, the design-gate steps one tree is gated on (record.TreeSteps), as
+// its root stands in them: gates are that issue's gate rows by step (record.Store.GatesOf), and
+// the answer is one entry for each step, in the order steps names them, never nil.
 //
-// The entries are the deployment's steps and not the issue's rows. A row of a step the deployment
-// no longer gates stays in the record — a deployment that gates that step again reads its true
+// The entries are the tree's steps and not the issue's rows. A row of a step the deployment no
+// longer gates stays in the record — a deployment that gates that step again reads its true
 // state — and appears in no entry here, because it holds no work: every reader of the gate asks
-// the configured steps (classify.DesignGatesOpen). A configured step with no row is the other
-// direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+// the tree's steps (classify.DesignGatesOpen). A criteria row the architect registered beside a
+// deployment that gates spec and not criteria is one of the tree's steps, because it holds the
+// work, so the caller passes record.TreeSteps' answer and the row is an entry. A step with no row
+// is the other direction, and is answered unregistered: it holds the tree's work, so a reader must
+// see it.
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {
@@ -1777,9 +1980,4 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
-}
-
-// StateTransactions begins the one snapshot transaction every state response reads through.
-type StateTransactions interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }

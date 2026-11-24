@@ -33,9 +33,11 @@
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
- *   `isViewer`, whether an actor is the signed-in person.
+ *   `isViewer`, whether an actor is the signed-in person;
+ * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
+ *   post's mark say on every surface.
  *
- * The last two are the module's links to files today's pages use.
+ * The last three are the module's links to files today's pages use.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */
@@ -51,6 +53,7 @@ import {
 import type { Actor } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
+import { POST_MARK_WORDS } from "../refs/post-marks";
 import {
   freeze,
   HELP_LINES,
@@ -391,6 +394,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -618,6 +625,22 @@ export const STATE_LINES = freeze({
    *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
+  /** What the outline says over its rows, on load as much as later, of each read they come from
+   *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
+   *  which checks serve each statement, the issue's decisions, the checks' results, the
+   *  questions, the comments, the messages, and each document whose blocks it draws, named by
+   *  the part the document plays. */
+  names_unreadable: "Could not load the names this issue's rows cite.",
+  coverage_unreadable: "Could not load which checks serve each statement.",
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
+  results_unreadable: "Could not load the checks' results.",
+  asks_unreadable: "Could not load the questions.",
+  comments_unreadable: "Could not load the comments.",
+  messages_unreadable: "Could not load the messages.",
+  spec_unreadable: "Could not load the spec.",
+  plan_unreadable: "Could not load the plan.",
+  verification_unreadable: "Could not load the verification document.",
+  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -645,9 +668,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
@@ -655,6 +675,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
+   *  the list has no level above its rows: the outline's own report for those keys speaks of
+   *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */
+  no_level_above: "This list has no level above this row.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -987,6 +1011,14 @@ export const CONTROL_LABELS = freeze({
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",
+  /** A deleted post's line, where a row draws it in place of the post's words, and a chip names
+   *  the post by: `Deleted` for a delete that names nobody, else `Deleted by` and the actor, whose
+   *  name is the author's text (INFRA-1523, R3). The words every surface's deleted line says. */
+  post_deleted: POST_MARK_WORDS.deleted,
+  post_deleted_by: POST_MARK_WORDS.deleted_by,
+  /** What a row's byline, a parent line and a chip say after an edited post's time or words:
+   *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
+  post_edited: POST_MARK_WORDS.edited,
   /** The row of five controls, Conversation and the four filters, as a reader hears it named
    *  (R2). */
   presets: "Filters",
@@ -1166,6 +1198,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   urgency: "urgency",

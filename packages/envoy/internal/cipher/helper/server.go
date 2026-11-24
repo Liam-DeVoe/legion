@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -64,6 +66,10 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
+	// drainTimer, when set (setDrainTimer), arms the timer that ends a drain in place of
+	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
+	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
+	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -174,7 +180,13 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		if req.SessionID != nil {
 			sessionID = *req.SessionID
 		}
-		resp = s.register(ctx, peer, pid, sessionID, req.Attach, req.RootPID, wait)
+		projects, err := sessionProjects(req.Projects)
+		if err != nil {
+			peer.Close()
+			resp = Response{Code: CodeBadRequest, Error: err.Error()}
+			break
+		}
+		resp = s.register(ctx, peer, pid, sessionID, projects, req.Attach, req.RootPID, wait)
 	case "sign":
 		// sign and unregister keep peer's pidfd open through Registry.Root's ancestry walk too,
 		// for the same pid-reuse reason register does (see register's doc comment below); each
@@ -183,7 +195,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	case "sign-request":
 		// sign-request keeps peer's pidfd open through Registry.Root's ancestry walk exactly
 		// like sign, for the same pid-reuse reason (see sign's doc comment below).
-		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds)
+		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds, req.Locations)
 	case "sign-launcher":
 		// sign-launcher keeps peer's pidfd open through Registry.Root's ancestry walk too, and
 		// trusts its "no session" only once peer.PID() still names pid (see signLauncher).
@@ -219,8 +231,13 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 			resp = drainingResponse
 			break
 		}
+		projects, err := sessionProjects(req.Projects)
+		if err != nil {
+			resp = Response{Code: CodeBadRequest, Error: err.Error()}
+			break
+		}
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
-			return s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID)
+			return s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID, projects)
 		})
 	case "unenroll-session-key":
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
@@ -404,13 +421,16 @@ const coversMsg = "pid %d is above the live session rooted at pid %d, so a sessi
 // never publishes a session another request or a Save beside it could see. An identity taken
 // by a registration that then fails is an identity nothing can ever reclaim, and a session
 // published before it is certain is one a restart could re-pin for a stranger.
-func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, attach bool, rootPID int, wait time.Duration) Response {
+func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, projects []string, attach bool, rootPID int, wait time.Duration) Response {
 	if existing := s.Registry.Root(pid); existing != nil {
 		if peer.PID() != pid {
 			peer.Close()
 			return Response{Code: CodeUnidentified, Error: "the peer no longer matches the identified pid"}
 		}
 		peer.Close()
+		if resp, refused := projectsDiffer(existing, projects); refused {
+			return resp
+		}
 		if resp, refused := s.adoptSessionID(ctx, existing, sessionID); refused {
 			return resp
 		}
@@ -448,7 +468,7 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 	// lapsed slot could not hold; the bounded revoke ends them once the admission stands.
 	var orphans []string
 	adm := s.Registry.AdmitRoot(pid, sessionID, func(rec Record, kept bool) (*Session, error) {
-		got := s.reclaimIdentity(sessionID, rec, kept)
+		got := s.reclaimIdentity(sessionID, rec, kept, projects)
 		if got.RuntimeID == "" {
 			got.RuntimeID = fmt.Sprintf("%s:%d:%d", s.Hostname, pid, ticks)
 		}
@@ -456,6 +476,7 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 		if err != nil {
 			return nil, err
 		}
+		sess.projects = projects
 		if got.EnrollmentID != "" {
 			// The broker holds this enrollment for this key under this runtime id, so the
 			// session carries it from the moment it registers — a helper restart before the
@@ -493,6 +514,9 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 		// --session-id must still be applied to it, exactly as on the Root path above:
 		// dropping the name here would answer OK to a register whose name nothing took, and
 		// leave the identity kept for it to the sweep.
+		if resp, refused := projectsDiffer(sess, projects); refused {
+			return resp
+		}
 		if resp, refused := s.adoptSessionID(ctx, sess, sessionID); refused {
 			return resp
 		}
@@ -557,12 +581,25 @@ func (s *Server) dormantRecord(sess *Session) func(identity) (Record, bool) {
 // It takes the record rather than reading it, so the registry decides under ONE lock whether the
 // record is consumed and whether the session that consumes it is admitted (Registry.AdmitRoot,
 // Registry.ClaimName). It must touch no registry state of its own.
-func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool) reclaimed {
+func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projects []string) reclaimed {
 	if sessionID == "" {
 		return reclaimed{}
 	}
 	if !kept {
 		return reclaimed{RuntimeID: SessionRuntimeID(sessionID)}
+	}
+	// A session coming back naming other projects than its record's does not take back the
+	// record's key or enrollment: it starts a new identity, as a record whose key will not read
+	// does, and the enrollments the record named are revoked. That revoke is a launcher's own end
+	// of an enrollment (enroll.Service.Revoke), so one that still holds grants or pending
+	// requests goes dormant rather than ending them, and the new identity's enrollment under the
+	// same session name adopts them. That is safe: a grant of a project-tagged name is re-checked
+	// against the adopting enrollment's projects on every release (requests' checkRelease), and
+	// a grant of an untagged name never depended on the list.
+	if !slices.Equal(rec.Projects, projects) {
+		s.Log.Warn("a session came back naming other projects than its record; it gets a new identity, and the enrollments of the old one are revoked", "session_id", sessionID,
+			"projects", oauthwire.JoinProjects(projects), "recorded_projects", oauthwire.JoinProjects(rec.Projects))
+		return reclaimed{RuntimeID: SessionRuntimeID(sessionID), Revoke: rec.enrollments(), Blocking: rec.EnrollmentID != ""}
 	}
 	key, err := rec.PrivateKey()
 	if err != nil || key == nil {
@@ -576,6 +613,35 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool) reclai
 	}
 	return reclaimed{RuntimeID: rec.RuntimeID, Key: key, EnrollmentID: rec.EnrollmentID,
 		Revoke: nonEmpty(rec.LapsedEnrollmentID)}
+}
+
+// sessionProjects reads the projects a register or an enroll-session-key names as the broker's
+// enrollment route reads them: each element one project key, named once, in any order, held
+// sorted (oauthwire.ValidProjects), nil for none. An element is never split, so "PRIV CORE" is
+// refused as no project key rather than read as two projects. A refusal, which the helper sends
+// back to its caller, says what every other reader of a projects setting says
+// (cipherclient.ProjectsRefusal), with the list's own form (cipherclient.ProjectsListed), naming
+// the rule and never the value, since ValidProjects quotes the key it refuses.
+func sessionProjects(projects []string) ([]string, error) {
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	sorted := slices.Sorted(slices.Values(projects))
+	if err := oauthwire.ValidProjects(sorted); err != nil {
+		return nil, cipherclient.ProjectsRefusal("projects", cipherclient.ProjectsListed)
+	}
+	return sorted, nil
+}
+
+// projectsDiffer refuses a register naming other projects for a session already registered: a
+// session's projects are fixed at its first register, since its enrollment and every grant it
+// holds were decided under them.
+func projectsDiffer(sess *Session, projects []string) (Response, bool) {
+	if slices.Equal(sess.projects, projects) {
+		return Response{}, false
+	}
+	return Response{Code: CodeBadRequest, Error: fmt.Sprintf("this session is registered naming the projects %q, and a session's projects are fixed at its first register: start a new session to name %q",
+		oauthwire.JoinProjects(sess.projects), oauthwire.JoinProjects(projects))}, true
 }
 
 // adoptSessionID gives a session that registered without an omp session id the one its launcher
@@ -611,7 +677,7 @@ func (s *Server) adoptSessionID(ctx context.Context, sess *Session, sessionID st
 		return Response{Code: CodeBadRequest, Error: fmt.Sprintf(sessionAlreadyNamedMsg, cur.SessionID, sessionID)}, true
 	}
 	got := s.Registry.ClaimName(sess, sessionID, func(rec Record, kept bool) reclaimed {
-		return s.reclaimIdentity(sessionID, rec, kept)
+		return s.reclaimIdentity(sessionID, rec, kept, sess.projects)
 	})
 	if got.Held != nil {
 		return Response{Code: CodeBadRequest, Error: fmt.Sprintf(sessionHeldMsg, sessionID, got.Held.PID)}, true
@@ -683,6 +749,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	if wait > 0 && (credential || settled != nil) {
 		select {
 		case <-sess.readyCh():
+		case <-sess.refused:
 		case <-settled:
 		case <-time.After(wait):
 		case <-sess.stop:
@@ -699,8 +766,9 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	// session is stuck. A confirming renew of an inherited id needs no credential at all and
 	// may still be in flight, or still to be retried, when this answers — a register that
 	// asked for no wait sees exactly that — and the session becomes enrolled on its own when
-	// one lands.
-	if resp.State != "enrolled" && !credential {
+	// one lands. A refused session is answered its refusal whatever the helper holds: no login
+	// enrolls it (Session.refuse), so the missing credential is not what it waits for.
+	if resp.State != "enrolled" && resp.State != "refused" && !credential {
 		resp.Code, resp.Error = CodeNoCredential, s.Broker.noCredentialText()
 	}
 	return resp
@@ -709,10 +777,14 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 // notEnrolled answers sign or sign-request for a registered session with no enrollment yet: it is
 // enrolling (NOT_ENROLLED) while the helper holds a launcher credential, and without one the
 // helper enrolls no one until a human logs it in, so the session has no broker identity
-// (NO_CREDENTIAL). NOT_ENROLLED names the last attempt's failure when there is one: an enroll
-// error, or a lapse's refused renew (markLapsed). st is the snapshot the caller found unenrolled,
-// so the failure named is the one that goes with that answer.
+// (NO_CREDENTIAL). A session the broker refused for good (Session.refuse) is NOT_ENROLLED naming
+// the refusal either way, since no login mends it. NOT_ENROLLED names the last attempt's failure
+// when there is one: an enroll error, or a lapse's refused renew (markLapsed). st is the snapshot
+// the caller found unenrolled, so the failure named is the one that goes with that answer.
 func (s *Server) notEnrolled(st enrollmentState) Response {
+	if st.State == "refused" {
+		return Response{Code: CodeNotEnrolled, Error: "the broker refuses to enroll this session, and the helper asks no more: " + st.LastError}
+	}
 	if !s.Broker.HasCredential() {
 		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
@@ -777,12 +849,13 @@ func (s *Server) sign(peer *Peer, pid int, method, url string) Response {
 
 // signRequest builds and signs a credential-request object naming one agent_secret
 // authorization_detail per requested name (POST /v1/requests embeds this signed object
-// rather than carrying "secrets"/"reason" as plain fields), and lifetimeSeconds, the grant's
-// lifetime, when it is not nil, for a pid resolveDescendant ties to a registered session. The
+// rather than carrying "secrets"/"reason" as plain fields), lifetimeSeconds, the grant's
+// lifetime, when it is not nil, and locations, the target that narrows the one secret, when it is
+// not nil (record.SecretDetails), for a pid resolveDescendant ties to a registered session. The
 // audience is always s.Broker.URL, never a value the peer supplies: a request object's aud claim
 // must be the broker's own public URL for the broker to accept it, and there is no reason to trust
 // an untrusted local peer's opinion of that value over the helper's own configuration.
-func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int) Response {
+func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int, locations []string) Response {
 	if len(names) == 0 {
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-request needs at least one secret name"}
@@ -794,11 +867,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	if st := sess.snapshot(); st.EnrollmentID == "" {
 		return s.notEnrolled(st)
 	}
-	details := make([]record.AuthorizationDetail, len(names))
-	for i, name := range names {
-		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
-	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -947,11 +1016,16 @@ func (s *Server) drain() Response {
 	if drain != 0 {
 		bound := s.drainBound()
 		s.Log.Info("draining: refusing new sessions until restart", "bound", bound)
-		time.AfterFunc(bound, func() {
+		end := func() {
 			if s.Registry.EndDrain(drain) {
 				s.Log.Warn(DrainEndedMessage, "bound", bound)
 			}
-		})
+		}
+		if arm := s.drainTimer.Load(); arm != nil {
+			(*arm)(bound, end)
+		} else {
+			time.AfterFunc(bound, end)
+		}
 	}
 	return Response{OK: true, Sessions: infos}
 }
@@ -1023,6 +1097,22 @@ func sessionHeld(err error) bool {
 	return errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "SESSION_HELD"
 }
 
+// restrictedMemberRefusal answers the broker's refusal in err, and true, when err is the broker
+// refusing an enrollment 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: the person of the machine login
+// the attempt enrolled under is one Dispatch calls a restricted member, someone an access list
+// admitted from outside the deployment's sign-in domain, and the broker enrolls no session of
+// theirs and releases them no secret (enroll.ErrRestrictedMember). That answer is about the
+// person and not the moment, so enrollLoop makes it final: one call, the refusal kept on the
+// session as its last error, its state "refused", and no retry; a session relaunched under
+// another person's authority enrolls afresh.
+func restrictedMemberRefusal(err error) (*BrokerError, bool) {
+	var be *BrokerError
+	if errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "RESTRICTED_MEMBER_ENROLLS_NOTHING" {
+		return be, true
+	}
+	return nil, false
+}
+
 // heldRetryCap is the longest enrollLoop waits between attempts at a session name another
 // principal holds. Nothing this box does ends that hold, so the question is asked rarely; but
 // the answer turns on the principal this helper enrols under, a sign-in changes that with no
@@ -1070,11 +1160,11 @@ func heldPrincipal(err error) (string, bool) {
 // launcher credential logs cannotEnrollText, as a registered session's does. An enrollment whose
 // outcome the helper does not know (Broker.enrollUnder) answers ENROLL_OUTCOME_UNKNOWN
 // (enrollUnknown); a known failure answers ENROLL_FAILED with the failure as it came.
-func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) Response {
+func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string) Response {
 	if runtimeID == "" || thumbprint == "" {
 		return Response{Code: CodeBadRequest, Error: "enroll-session-key needs runtime_id and thumbprint"}
 	}
-	id, lease, err := s.Broker.EnrollSessionKey(ctx, runtimeID, thumbprint, sessionID)
+	id, lease, err := s.Broker.EnrollSessionKey(ctx, runtimeID, thumbprint, sessionID, projects)
 	if err != nil {
 		if s.lacksCredential(err) {
 			s.Log.Error(s.cannotEnrollText(), "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
@@ -1305,6 +1395,12 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			if renamed {
 				return
 			}
+			if refusal, final := restrictedMemberRefusal(err); final {
+				sess.refuse(refusal.Error())
+				s.Log.Error("session cannot enroll: the broker refuses every enrollment under this machine login, whose person Dispatch calls a restricted member, and releases no secret to that person's agents. The helper asks no more for this session",
+					"runtime_id", sess.RuntimeID(), "session_id", sess.SessionID(), "code", refusal.Code, "error", refusal)
+				return
+			}
 			sess.setError(err.Error())
 			if principal, held := heldPrincipal(err); held {
 				if principal != heldAs {
@@ -1350,6 +1446,11 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			}
 			var err error
 			id, lease, err = s.Broker.EnrollIdentity(ctx, cur)
+			if _, final := restrictedMemberRefusal(err); final {
+				// The broker's answer for the machine login's person, which no retry changes:
+				// the retry ends at this one attempt (errFinal).
+				return fmt.Errorf("%w: %w", err, errFinal)
+			}
 			return err
 		})
 		if renamed {
@@ -1695,6 +1796,17 @@ func (s *Server) drainBound() time.Duration {
 	return DefaultDrainBound
 }
 
+// setDrainTimer makes arm what starts the timer that ends a drain no restart follows, in place of
+// time.AfterFunc: arm is handed the drain bound and the func that ends the drain, and runs that
+// func when it chooses. Nil puts time.AfterFunc back. Safe to call while the Server runs.
+func (s *Server) setDrainTimer(arm func(bound time.Duration, end func())) {
+	if arm == nil {
+		s.drainTimer.Store(nil)
+		return
+	}
+	s.drainTimer.Store(&arm)
+}
+
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by
 // the bounded revoke (three tries; the lease is the fallback), fired off on goroutines of their
 // own as every sibling path fires it (SweepDormant), so an unregister answers at once with what
@@ -1907,6 +2019,8 @@ func (s *Server) Recover(ctx context.Context) {
 			s.Log.Error("key generation", "runtime_id", rec.RuntimeID, "error", err)
 			continue
 		}
+		// The projects the recorded session registered naming, which its enrollment states.
+		sess.projects = rec.Projects
 		if key != nil {
 			// The recorded key holds this enrollment at the broker, so the session carries it
 			// — but inherited, not confirmed: it may have been revoked while the helper was

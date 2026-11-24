@@ -109,9 +109,9 @@ func testOptions() Options {
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
 		},
-		Mapped:           func() []ghrepo.Repository { return nil },
-		LeakCheckSetting: testLeakCheck,
-		Log:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		CacheRepositories: func() []ghrepo.Repository { return nil },
+		LeakCheckSetting:  testLeakCheck,
+		Log:               slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }
 
@@ -169,7 +169,7 @@ func staticControllerCredential(ctx context.Context, defaultOwner string) (ghcon
 }
 
 // noOwnerControllerCredential is the ControllerCredential of a project with no GitHub owner to
-// mint for (runtime.ErrNoGitHubOwner: every mapped repository lacks an App): a controller's
+// mint for (runtime.ErrNoGitHubOwner: its App installed on no account): a controller's
 // launch then writes no gh files at all and its gh acts as nobody, its gh directory an empty one.
 // It is the controller's own function that refuses, the launch asking for no bundle of any role
 // (relaunch's gitHubBundles).
@@ -182,14 +182,14 @@ func noOwnerControllerCredential(context.Context, string) (ghconfig.Bundle, erro
 // pod a rig launches projects a gh directory for each of them and has drifted from none.
 var staticDirs = []string{"acme", "sjawhar"}
 
-// addedOwner is an owner the project's mapping gained after a pod was created: no owner of
+// addedOwner is an owner the daemon came to serve after a pod was created: no owner of
 // staticDirs, and sorted between them, so a pod built before it holds no directory of that
 // name and a bundle rendered now holds one.
 const addedOwner = "globex"
 
 // servedDirs are the directories a daemon servingAddedOwner serves, sorted: staticDirs with
-// addedOwner among them, which is what appauth.GitHubDirs answers once the mapping names a
-// repository of that owner. It is derived, so a staticDirs this package edits moves it too.
+// addedOwner among them, which is what appauth.GitHubDirs answers once both Apps' bundles read
+// an installation on that owner. It is derived, so a staticDirs this package edits moves it too.
 var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), addedOwner)))
 
 // servingAddedOwner is a restarted daemon serving one owner more: GitHubDirs answers
@@ -197,8 +197,8 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // directories staticCredential always renders, the controller's own among them (its launch and
 // its refresh both ask ControllerCredential), as the daemon's own answers move together
 // (appauth.GitHubDirs, appauth.GitHubCredential and appauth.ControllerCredential read one
-// mapping). A pod created before it projects no directory for the new owner and never will
-// (movedGhDirs).
+// record of the Apps' installations). A pod created before it projects no directory for the new
+// owner and never will (movedGhDirs).
 func servingAddedOwner(o *Options) {
 	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
 	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
@@ -233,15 +233,14 @@ var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), se
 // owner predicate read as the project owning that owner.
 var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
 
-// installedOnMapped is the owner accounts a role's App is installed on, as a bundle reads them
-// from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
-// served, which is the ordinary deployment and what a test that is not about an installation's
-// own reach wants.
-type installedOnMapped struct{ served func() []ghrepo.Repository }
+// installedOnServed is the owner accounts a role's App is installed on, as a bundle reads them at
+// every build (appauth.OwnerInstallations): every owner of the repositories served, which is the
+// ordinary deployment and what a test that is not about an installation's own reach wants.
+type installedOnServed struct{ repos func() []ghrepo.Repository }
 
-func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (i installedOnServed) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	owners := make([]string, 0, 2)
-	for _, repo := range i.served() {
+	for _, repo := range i.repos() {
 		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
 			owners = append(owners, owner)
 		}
@@ -260,21 +259,32 @@ func sourceOf(tokens appauth.Tokens, installs appauth.OwnerInstallations) appaut
 	}{tokens, installs}
 }
 
-// servingRenamed is a daemon serving repos with the smoke pair configured, built as the daemon
-// builds its own answers from one mapping (daemon's sandboxRuntime): the directories it serves,
-// the gh bundles it renders, the provisioning tokens it mints and the mapping its cache sweep
-// reads are one view of those repositories, each read one repository at a time, so a test that
-// moves the mapping moves all four together.
+// servesOneOf is the `served` predicate of a daemon serving repos, which it hands its gh bundles,
+// its directory set and its provisioning tokens (daemon's servesRepository): whether GitHub
+// answered both role Apps installed on a repository, which here is whether it is one of repos,
+// compared as GitHub names a repository, regardless of case (sameRepository).
+func servesOneOf(repos func() []ghrepo.Repository) func(ghrepo.Repository) bool {
+	return func(repo ghrepo.Repository) bool {
+		return slices.ContainsFunc(repos(), func(held ghrepo.Repository) bool { return sameRepository(held, repo) })
+	}
+}
+
+// servingRenamed is a daemon serving repos with the smoke pair configured, whose live records
+// name repos, built as the daemon builds its own answers (daemon's sandboxRuntime): the
+// directories it serves, the gh bundles it renders and the provisioning tokens it mints read one
+// served predicate (servesOneOf), each asked one repository at a time, and the cache set its
+// sweep reads is repos, so the four are one view of those repositories.
 func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 	return func(o *Options) {
-		served := func() []ghrepo.Repository { return repos }
+		listed := func() []ghrepo.Repository { return repos }
+		served := servesOneOf(listed)
 		renames := ghrepo.MustRenames(smokeRename)
 		// The two records the bundles write, as the daemon builds one pair per project and
 		// hands them to both credentials and the directory set alike: the owners each App's
 		// last bundle read installed, and what the mints found GitHub refuses.
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-		apps := sourceOf(&namedLeases{}, installedOnMapped{served: served})
-		o.Mapped = served
+		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
+		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
 		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
@@ -285,20 +295,17 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 }
 
 // servingTokens is the provisioning token source of a daemon that holds configured renames, as
-// the daemon builds it (implementTokens over the mapping's own serving rule): every token is
-// minted for the repository GitHub holds the recorded one under now, and names that owner as
+// the daemon builds it (implementTokens over the rename rule, ghrepo.Renames.Serving): every token
+// is minted for the repository GitHub holds the recorded one under now, and names that owner as
 // staticTokens names its own. The repository it is handed is resolved, and no address a caller
 // builds from that repository is.
 type servingTokens struct {
-	served  func() []ghrepo.Repository
+	served  func(ghrepo.Repository) bool
 	renames ghrepo.Renames
 }
 
 func (s servingTokens) Token(_ context.Context, repo ghrepo.Repository) (string, error) {
-	serving := s.renames.Serving(repo, func(candidate ghrepo.Repository) bool {
-		return ghrepo.Serves(s.served(), candidate)
-	})
-	return "ghs_provision_" + serving.Owner(), nil
+	return "ghs_provision_" + s.renames.Serving(repo, s.served).Owner(), nil
 }
 
 // launchOf is r's launch of spec as a relaunch that replaces the pod builds it: prepared, with each
@@ -1122,18 +1129,54 @@ func (g *rig) spawn(spec runtime.SpawnSpec) runtime.Locator {
 // unless the launch runs in a pod other than the one prev records.
 func (g *rig) relaunchOnNewPod(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
 	g.t.Helper()
-	spec.Generation++
-	spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
+	next := g.resumeNext(prev, spec)
+	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
+		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
+	}
+	return next
+}
+
+// resumeNext is the issue's next launch of spec's role after prev, at its next generation and
+// resumed on its session, as the supervisor starts a role again; spec moves to that generation. It
+// fails the test on an error.
+func (g *rig) resumeNext(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
+	g.t.Helper()
+	*spec = nextGeneration(*spec, spec.Generation+1)
 	resumed := *spec
 	resumed.ResumeSessionFile = resumeSession
 	next, err := g.r.Resume(g.ctx, &prev, resumed)
 	if err != nil {
 		g.t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
 	}
-	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
-		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
-	}
 	return next
+}
+
+// nextGeneration is spec at generation, with that generation's boot token, as the supervisor builds
+// its next try.
+func nextGeneration(spec runtime.SpawnSpec, generation uint64) runtime.SpawnSpec {
+	spec.Generation, spec.BootToken = generation, fmt.Sprintf("boot-%s-g%d", spec.Claim, generation)
+	return spec
+}
+
+// recreatePod has the controller stand-in make the Sandbox name's pod again outside any launch, as
+// Agent Sandbox does after an eviction or a node loss: the pod with uid bound goes, and the
+// controller creates one from the template the Sandbox stores, under the same name, a new uid and
+// the same owner. It returns the new pod's uid once the pod store holds it.
+func (g *rig) recreatePod(name, bound string) string {
+	g.t.Helper()
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		g.t.Fatal(err)
+	}
+	var recreated string
+	g.eventually("the pod store to hold the pod the controller recreated", func() bool {
+		pod := g.r.storedPod(name)
+		if pod == nil || string(pod.UID) == bound {
+			return false
+		}
+		recreated = string(pod.UID)
+		return true
+	})
+	return recreated
 }
 
 // launcher is the test rig's role-private launcher connection. It models only the launcher
@@ -1147,13 +1190,57 @@ func (g *rig) launcher(token claim.Token) {
 	}
 	g.wanted[token] = true
 	g.commandsMu.Unlock()
-	g.r.launchers.mu.Lock()
-	_, exists := g.r.launchers.sessions[token]
-	g.r.launchers.mu.Unlock()
-	if exists || g.pod(SandboxName(token)) == nil {
+	if launcherOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
 		return
 	}
 	g.connect(token)
+}
+
+// launcherOf is the session the runtime holds for token's launcher, or nil.
+func launcherOf(g *rig, token claim.Token) *launcherSession {
+	g.r.launchers.mu.Lock()
+	defer g.r.launchers.mu.Unlock()
+	return g.r.launchers.sessions[token]
+}
+
+// launcherFirstState is the first state a fake launcher reports: its child at generation running,
+// none for 0.
+func launcherFirstState(running uint64) shimwire.LauncherState {
+	if running == 0 {
+		return shimwire.LauncherState{}
+	}
+	return shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: running, PID: 42}}
+}
+
+// answerGeneration is what a fake launcher running generation *running (0 for none) answers
+// command with, a Start or a Stop, running one generation at a time as the real launcher does: a
+// Start while a generation runs is refused, as a Stop of another generation is, and one it accepts
+// moves *running. It answers nothing to any other command. started is whether command was a Start
+// the launcher accepted.
+func answerGeneration(command shimwire.Frame, running *uint64) (answers []shimwire.Frame, started bool) {
+	switch command := command.(type) {
+	case shimwire.LauncherStart:
+		if *running != 0 {
+			return []shimwire.Frame{shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", *running)}}, false
+		}
+		*running = command.Generation
+		return []shimwire.Frame{
+			shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation},
+			shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: command.Generation, PID: 42}},
+		}, true
+	case shimwire.LauncherStop:
+		if *running != 0 && *running != command.Generation {
+			return []shimwire.Frame{shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", *running, command.Generation)}}, false
+		}
+		stopped := *running
+		*running = 0
+		state := shimwire.LauncherState{}
+		if stopped != 0 {
+			state.LastExit = &shimwire.LauncherExit{Generation: stopped, Code: 143, Signal: "terminated"}
+		}
+		return []shimwire.Frame{shimwire.LauncherStopResult{ID: command.ID, OK: true}, state}, false
+	}
+	return nil, false
 }
 
 // connect is one fake launcher process's connection for token, replacing any earlier one.
@@ -1172,11 +1259,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
 		writer := shimwire.NewWriter(client)
-		first := shimwire.LauncherState{}
-		if running != 0 {
-			first.Child = &shimwire.LauncherChild{Generation: running, PID: 42}
-		}
-		_ = writer.WriteFrame(first)
+		_ = writer.WriteFrame(launcherFirstState(running))
 		// held is the slices of each bundle sequence that arrived, as the real launcher holds
 		// them: the whole of one is answered Held (internal/launcher's bundleRestore), and the
 		// start that follows applies the bundle and reports what the restore did, which is what
@@ -1209,33 +1292,17 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commands[token] = append(g.commands[token], frame)
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
-			case shimwire.LauncherStart:
-				if running != 0 {
-					_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", running)})
-					continue
-				}
+			case shimwire.LauncherStart, shimwire.LauncherStop:
+				answers, started := answerGeneration(frame, &running)
 				// The real launcher restores the bundle inside the start, before it answers it
 				// (internal/launcher's manager.start), so the report crosses first.
-				if whole != "" {
+				if started && whole != "" {
 					_ = writer.WriteFrame(shimwire.LauncherRestored{ID: whole, Release: release, OK: g.failRestore == "", Error: g.failRestore})
 					whole, release = "", 0
 				}
-				running = command.Generation
-				_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation})
-				_ = writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: command.Generation, PID: 42}})
-			case shimwire.LauncherStop:
-				if running != 0 && running != command.Generation {
-					_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", running, command.Generation)})
-					continue
+				for _, answer := range answers {
+					_ = writer.WriteFrame(answer)
 				}
-				stopped := running
-				running = 0
-				_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, OK: true})
-				state := shimwire.LauncherState{}
-				if stopped != 0 {
-					state.LastExit = &shimwire.LauncherExit{Generation: stopped, Code: 143, Signal: "terminated"}
-				}
-				_ = writer.WriteFrame(state)
 			case shimwire.LauncherBundle:
 				if g.refuseBundle != "" {
 					_ = writer.WriteFrame(shimwire.LauncherBundleResult{ID: command.ID, Index: command.Index, Error: g.refuseBundle})

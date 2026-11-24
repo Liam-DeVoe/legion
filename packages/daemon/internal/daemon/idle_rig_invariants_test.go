@@ -44,6 +44,14 @@ func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {
 	return w.pods.IssueSandbox(issue)
 }
 
+func (w *idleRigSaveWatch) IssuePod(issue string) (string, bool) {
+	return w.pods.IssuePod(issue)
+}
+
+func (w *idleRigSaveWatch) IssueKeepsVolume(issue string, since time.Time) bool {
+	return w.pods.IssueKeepsVolume(issue, since)
+}
+
 // A release saves the workspace's unpushed work while the role whose shim builds it is still
 // running, and only then stops it. The save is a row of its own (record.IssueBundle) ahead of the
 // release's `release` rows, because the runtime asks the role's shim and refuses a claim with no
@@ -51,6 +59,7 @@ func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {
 // in the teardown behind those stops, as it was, every release of every pod was cancelled
 // bundle_save_failed and no pod was ever released.
 func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -106,6 +115,7 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 // shape that catches a divergence: every test that picks one spelling and uses it on both sides
 // passes either way, which is how it was missed.
 func TestTheEngineAndTheDaemonReadThePodTablesUnderOneProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")

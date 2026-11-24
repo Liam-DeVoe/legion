@@ -131,7 +131,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := next.register(ctx, peer, os.Getpid(), sessionID, false, 0, 20*time.Second)
+	resumed := next.register(ctx, peer, os.Getpid(), sessionID, nil, false, 0, 20*time.Second)
 	if !resumed.OK || resumed.EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, %s", resumed, reg.EnrollmentID)
 	}
@@ -278,7 +278,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	// goRevoke), so the broker has answered the revoke before the grant is read, however long a
 	// loaded machine takes; a poll of five seconds failed here under load on main, 1 run of 12
 	// (the pull request records the runs).
-	next.waitRevokes()
+	next.waitRevokes(t)
 	status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
