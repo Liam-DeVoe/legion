@@ -1,17 +1,18 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -31,13 +32,7 @@ import (
 // slice is answered as a repeated launcher_start id is, and a sequence that did not arrive as it
 // was sent reaches no workspace at all.
 func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t *testing.T) {
-	saved := shimwire.WorkspaceBundle{
-		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (768<<10)/8),
-		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
-		Bookmarks: map[string]string{"legion/INFRA-945": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
-		At:        time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC),
-	}
+	saved := manySlices()
 	frames, err := shimwire.SplitWorkspaceBundle("restore-1", 11, saved)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +42,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	}
 
 	t.Run("a whole sequence is held", func(t *testing.T) {
-		r := newBundleRestore(procgroup.NoReaper)
+		r := newBundleRestore(procgroup.NoReaper, newWorkspace(t))
 		for index, frame := range frames {
 			got := r.receive(frame)
 			if !got.OK || got.ID != frames[0].ID || got.Index != index {
@@ -68,7 +63,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a repeated slice is answered as a repeated start id is", func(t *testing.T) {
-		r := newBundleRestore(procgroup.NoReaper)
+		r := newBundleRestore(procgroup.NoReaper, newWorkspace(t))
 		first := r.receive(frames[0])
 		again := r.receive(frames[0])
 		if again != first {
@@ -85,7 +80,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a wrong digest is refused before anything is written", func(t *testing.T) {
-		r := newBundleRestore(procgroup.NoReaper)
+		r := newBundleRestore(procgroup.NoReaper, newWorkspace(t))
 		corrupt := append([]shimwire.LauncherBundle{}, frames...)
 		payload := append([]byte{}, corrupt[1].Payload...)
 		payload[0] ^= 0xff
@@ -100,13 +95,13 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 		if r.body != nil {
 			t.Fatalf("a refused sequence left %d bytes to restore", len(r.body))
 		}
-		if got := r.apply(context.Background(), []string{"LEGION_WORKSPACE=/nowhere"}); got.Restored || got.Notice != "" {
-			t.Fatalf("a refused sequence restored something: %+v", got)
+		if got, err := r.apply(context.Background(), []string{"LEGION_WORKSPACE=/nowhere"}); got.Restored || got.Notice != "" || err != nil {
+			t.Fatalf("a refused sequence restored something: %+v, %v", got, err)
 		}
 	})
 
 	t.Run("a slice that disagrees with its sequence is refused", func(t *testing.T) {
-		r := newBundleRestore(procgroup.NoReaper)
+		r := newBundleRestore(procgroup.NoReaper, newWorkspace(t))
 		if got := r.receive(frames[0]); !got.OK {
 			t.Fatalf("the first slice answered %#v", got)
 		}
@@ -125,17 +120,17 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("the report names the release whose work it restored", func(t *testing.T) {
-		r := newBundleRestore(procgroup.NoReaper)
+		r := newBundleRestore(procgroup.NoReaper, newWorkspace(t))
 		for _, frame := range frames {
 			if got := r.receive(frame); !got.OK {
 				t.Fatalf("slice %d answered %#v", frame.Index, got)
 			}
 		}
-		// The workspace is a path no restore can read, so this is the report of a restore that
-		// failed: it still names its release, which is what keeps the daemon's copy where a
-		// report of no release at all would have it guess.
-		if got := r.apply(context.Background(), []string{"LEGION_WORKSPACE=/nowhere"}); got.Restored {
-			t.Fatalf("the restore answered %+v, want no work restored", got)
+		// The workspace records no creation, so this is the report of a restore that failed: it
+		// still names its release, which is what keeps the daemon's copy where a report of no
+		// release at all would have it guess.
+		if got, err := r.apply(context.Background(), []string{"LEGION_WORKSPACE=/nowhere"}); got.Restored || err != nil {
+			t.Fatalf("the restore answered %+v, %v; want no work restored and no error", got, err)
 		}
 		report := r.owed()
 		if report == nil {
@@ -147,11 +142,196 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 }
 
+// manySlices is a bundle whose body takes several launcher_bundle slices to carry.
+func manySlices() shimwire.WorkspaceBundle {
+	return shimwire.WorkspaceBundle{
+		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (768<<10)/8),
+		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
+		Bookmarks: map[string]string{"legion/" + bundleIssue: "dffe88ae2f793e13436cef3921adc988433fbd4e"},
+		At:        time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC),
+	}
+}
+
+// refusingStarter is a restore's start that fails the test if the restore starts anything.
+func refusingStarter(t *testing.T) procgroup.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		t.Errorf("the restore started %v", cmd.Args)
+		return func() {}, errors.New("this restore may start nothing")
+	}
+}
+
+// A role that has started on the workspace leaves its record on the workspace's own disk
+// (workspace.MarkInUse), so a launcher that restarts over that disk, holding nothing in memory of
+// the start, still refuses a bundle over the work the role has done.
+func TestABundleOverAWorkspaceInUseIsRefusedAfterTheLauncherRestarts(t *testing.T) {
+	starter := refusingStarter(t)
+	dir := newWorkspace(t)
+	env := []string{"LEGION_WORKSPACE=" + dir}
+	r1 := newBundleRestore(starter, dir)
+	if got, err := r1.apply(context.Background(), env); got != (restoreResult{}) || err != nil {
+		t.Fatalf("the first start's apply answered %+v, %v; want nothing and no error", got, err)
+	}
+	if inUse, err := workspace.InUse(dir); !inUse || err != nil {
+		t.Fatalf("after the first start InUse = %t, %v; want true", inUse, err)
+	}
+	frames, err := shimwire.SplitWorkspaceBundle("restore-late", 12, manySlices())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 3 {
+		t.Fatalf("the fixture sliced into %d frames; the test needs several", len(frames))
+	}
+	// The restarted launcher: a restore of its own, which holds nothing of the one before.
+	r2 := newBundleRestore(starter, dir)
+	for _, frame := range frames {
+		if got := r2.receive(frame); got.OK || got.Held || got.Error != workspaceInUseRefusal {
+			t.Fatalf("slice %d after the restart answered %#v; want it refused, since a role has started on the workspace", frame.Index, got)
+		}
+	}
+	if got, err := r2.apply(context.Background(), env); got != (restoreResult{}) || err != nil {
+		t.Fatalf("the restarted launcher's apply answered %+v, %v; want nothing and no error", got, err)
+	}
+}
+
+// A sequence the daemon began sending before the pod's first start keeps its id, so the slices
+// that arrive after that start are refused as slices of a new sequence would be: only the slice
+// already taken is answered again, as it was answered.
+func TestTheRestOfASequenceThatBeganBeforeTheFirstStartIsRefusedAfterIt(t *testing.T) {
+	starter := refusingStarter(t)
+	dir := newWorkspace(t)
+	env := []string{"LEGION_WORKSPACE=" + dir}
+	frames, err := shimwire.SplitWorkspaceBundle("restore-early", 12, manySlices())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 3 {
+		t.Fatalf("the fixture sliced into %d frames; the test needs several", len(frames))
+	}
+	r := newBundleRestore(starter, dir)
+	first := r.receive(frames[0])
+	if !first.OK || first.Held {
+		t.Fatalf("the first slice answered %#v", first)
+	}
+	if got, err := r.apply(context.Background(), env); got != (restoreResult{}) || err != nil {
+		t.Fatalf("the first start's apply answered %+v, %v; want nothing and no error, since no body was whole", got, err)
+	}
+	if again := r.receive(frames[0]); again != first {
+		t.Fatalf("the slice taken before the start answered %#v, then %#v", first, again)
+	}
+	for _, frame := range frames[1:] {
+		if got := r.receive(frame); got.OK || got.Held || got.Error != workspaceInUseRefusal {
+			t.Fatalf("slice %d after the first start answered %#v; want it refused, since a role has started on the workspace", frame.Index, got)
+		}
+	}
+	if got, err := r.apply(context.Background(), env); got != (restoreResult{}) || err != nil {
+		t.Fatalf("the second start's apply answered %+v, %v; want nothing and no error", got, err)
+	}
+}
+
+// A start that cannot record the workspace in use is refused, so no role ever works a workspace
+// that a later launcher, finding no record, could restore a bundle over. The failure is one root
+// meets too: the record's path resolves through a .jj that is a regular file. Once it clears, a
+// new launcher over the workspace, which nothing has worked, takes the bundle the take left
+// unspent and restores it. This test calls no skip, and no helper it calls skips: jj and git are
+// required before the fixture, whose own skip is for a missing one.
+func TestAStartWhoseWorkspaceCannotBeMarkedIsRefusedAndTheUnspentBundleRestoresAfter(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatalf("git is required: %v", err)
+	}
+	f := newBundleFixture(t)
+	f.workOne()
+	saved := f.bundleWorkspaceOne()
+	ws := f.secondPod("ws6")
+	head := f.run(ws, "jj", "log", "-R", ws, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+
+	jj := filepath.Join(ws, ".jj")
+	aside := jj + ".aside"
+	if err := os.Rename(jj, aside); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := os.Lstat(aside); err == nil {
+			_ = os.Remove(jj)
+			_ = os.Rename(aside, jj)
+		}
+	})
+	if err := os.WriteFile(jj, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.MarkInUse(ws); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("precondition: MarkInUse = %v, want ENOTDIR from the .jj that is a file", err)
+	}
+	if inUse, err := workspace.InUse(ws); err == nil {
+		t.Fatalf("precondition: InUse = %t and no error, want an error from the .jj that is a file", inUse)
+	}
+
+	// The first launcher, sent no slice: the take failed and left the attempt unspent.
+	g := newSessionRig(t, Config{Workspace: ws})
+	refused := func(generation uint64) {
+		t.Helper()
+		marker := filepath.Join(t.TempDir(), "marker")
+		command := g.childStart(generation, marker, nil)
+		command.Env = append(command.Env, "LEGION_WORKSPACE="+ws)
+		got := g.start(command)
+		if got.OK {
+			pid, _ := published(t, marker)
+			t.Fatalf("generation %d's start on a workspace that could not be marked answered %#v, and its child %d ran; want the start refused and the child never ran",
+				generation, got, pid)
+		}
+		if !strings.Contains(got.Error, "mark the workspace") || !strings.Contains(got.Error, ws) {
+			t.Fatalf("generation %d's start answered %#v, want a refusal naming the mark of %s", generation, got, ws)
+		}
+		if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("generation %d's marker %s is there (%v); want the child never ran", generation, marker, err)
+		}
+	}
+	refused(1)
+	// The daemon's retry is a new start, which tries the mark again while the failure stands.
+	refused(2)
+
+	if err := os.Remove(jj); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(aside, jj); err != nil {
+		t.Fatal(err)
+	}
+	// The replacement must not start while the first launcher still runs.
+	g.cancel()
+	select {
+	case err, ok := <-g.result:
+		if !ok {
+			t.Fatal("the first launcher's result was taken before its stop")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the first launcher returned %v, want its context's end", err)
+		}
+	case <-time.After(beforeDeadline(t)):
+		t.Fatalf("the first launcher did not stop after its context ended, to 30 s before the test binary's deadline: %s", g.stderr.String())
+	}
+	if inUse, err := workspace.InUse(ws); inUse || err != nil {
+		t.Fatalf("the cleared workspace reads InUse = %t, %v; want false and no error, since no role started on it", inUse, err)
+	}
+	if at := f.run(ws, "jj", "log", "-R", ws, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); at != head {
+		t.Fatalf("the cleared workspace is on %s, want %s, where provisioning left it", at, head)
+	}
+
+	notice := f.restoreInto(ws, saved, 3)
+	if !strings.Contains(notice, "is restored") {
+		t.Fatalf("the new launcher's restore notice is %q", notice)
+	}
+	f.requireRestored(ws, saved)
+	if inUse, err := workspace.InUse(ws); !inUse || err != nil {
+		t.Fatalf("after the restore InUse = %t, %v; want true", inUse, err)
+	}
+}
+
 // The launcher's command loop ends its connection on a frame type it does not know, so the bundle
 // pair has to be in its switch: a launcher that killed the connection would take the pod's roles
 // with it.
 func TestTheLauncherAnswersABundleFrameOnItsConnection(t *testing.T) {
-	g := newRig(t)
+	g := newSessionRig(t, Config{Workspace: newWorkspace(t)})
 	saved := shimwire.WorkspaceBundle{Bundle: []byte("PACK not a real bundle"), Head: "f2f13454", At: time.Now().UTC()}
 	frames, err := shimwire.SplitWorkspaceBundle("restore-2", 12, saved)
 	if err != nil {
@@ -200,12 +380,53 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 		t.Fatalf("the save recorded the working copy as %s, want %s", saved.Head, f.commits["working copy"])
 	}
 
-	workspace := f.secondPod("ws2")
-	notice := f.restoreInto(workspace, saved, 1)
+	ws := f.secondPod("ws2")
+	notice := f.restoreInto(ws, saved, 1)
 	if !strings.Contains(notice, "restored") {
 		t.Fatalf("the restore's notice is %q", notice)
 	}
-	f.requireRestored(workspace, saved)
+	f.requireRestored(ws, saved)
+	if inUse, err := workspace.InUse(ws); !inUse || err != nil {
+		t.Fatalf("after the restore InUse = %t, %v; want true", inUse, err)
+	}
+}
+
+// A save is read off the shim's own connection, past every connection another process opened to
+// the daemon end ahead of it: one that closes at once, one that sends nothing, an HTTP request and
+// a hello under another pane's boot token, as a client of another test binary redialing a reused
+// loopback port would. Before the fixture's daemon end read each connection's opening, it took the
+// first connection its listener accepted as the shim's and failed on the one that closed.
+func TestASaveIsReadOffTheShimsConnectionPastTheConnectionsAheadOfIt(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	f.aheadOfTheShim = func(address string) {
+		dial := func(open func(net.Conn) error) {
+			t.Helper()
+			conn, err := net.Dial("tcp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := open(conn); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dial(func(conn net.Conn) error { return conn.Close() })
+		dial(func(net.Conn) error { return nil })
+		dial(func(conn net.Conn) error {
+			_, err := conn.Write([]byte("GET /computeMetadata/v1/instance/service-accounts/default/identity HTTP/1.1\r\nHost: metadata\r\n\r\n"))
+			return err
+		})
+		dial(func(conn net.Conn) error {
+			return shimwire.NewWriter(conn).WriteFrame(shimwire.Hello2{BootToken: "another-pane"})
+		})
+	}
+	saved := f.bundleWorkspaceOne()
+	if saved.Head != f.commits["working copy"] || saved.Bookmarks["legion/"+bundleIssue] != f.commits["issue work"] {
+		t.Fatalf("the save is on %s with the bookmarks %v, want the shim's: the working copy %s and legion/%s on %s",
+			saved.Head, saved.Bookmarks, f.commits["working copy"], bundleIssue, f.commits["issue work"])
+	}
 }
 
 // The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
@@ -513,6 +734,10 @@ type bundleFixture struct {
 	ws      string
 	env     []string
 	commits map[string]string
+	// aheadOfTheShim, when a case sets it, is called with the address of bundleWorkspaceOne's
+	// daemon end before the shim starts: what it dials there stands ahead of the shim's own
+	// connection, as another process's client on a reused port would.
+	aheadOfTheShim func(address string)
 }
 
 func newBundleFixture(t *testing.T) *bundleFixture {
@@ -634,16 +859,18 @@ func (f *bundleFixture) at() string {
 // bundleWorkspaceOne runs the real shim against the released pod's workspace and returns the
 // bundle it built: the daemon's end of the worker stream, one bundle-workspace frame, and the
 // result the shim answers, reassembled from its chunk lane as the daemon's reader reassembles it.
+// The daemon end takes the connection that opens with the shim's hello under its boot token,
+// whatever opened before it (daemonEnd).
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		f.t.Fatal(err)
+	bootToken := ownToken("boot")
+	end := listenFor(f.t, shimHello(bootToken))
+	if f.aheadOfTheShim != nil {
+		f.aheadOfTheShim(end.Addr().String())
 	}
-	f.t.Cleanup(func() { _ = listener.Close() })
-	// The fixture's context bounds the save: when it ends, the listener closes under the accept,
-	// and the shim, whose context it is, kills its save and closes its connection under the reads.
-	defer context.AfterFunc(f.ctx, func() { _ = listener.Close() })()
+	// The fixture's context bounds the save: when it ends, the shim, whose context it is, kills its
+	// save and closes its connection under the reads, and a shim that ends before it opens its
+	// connection ends the daemon end's wait for that opening (codeReturned).
 	ctx, cancel := context.WithCancel(f.ctx)
 	defer cancel()
 	exited := make(chan struct{})
@@ -651,11 +878,12 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		defer close(exited)
 		// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the
 		// bundle frame itself, so nothing of Oh My Pi is needed to prove the save.
-		_, _ = shim.Run(ctx, shim.Config{
-			Network: "tcp", Address: listener.Addr().String(), BootToken: "boot",
+		_, err := shim.Run(ctx, shim.Config{
+			Network: "tcp", Address: end.Addr().String(), BootToken: bootToken,
 			Argv: []string{"/bin/sh", "-c", "exec cat"},
 			Env:  append(f.env, "LEGION_WORKSPACE="+f.ws),
 		})
+		end.codeReturned(err)
 	}()
 	f.t.Cleanup(func() {
 		cancel()
@@ -666,16 +894,8 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		}
 	})
 
-	// The accept waits until beforeDeadline runs out, as acceptRole's does: a shim that never dials
-	// fails here, the bound named beside the accept's error.
-	accept := beforeDeadline(f.t)
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(accept)); err != nil {
-		f.t.Fatal(err)
-	}
-	conn, err := listener.Accept()
-	if err != nil {
-		f.t.Fatalf("the shim's connection: %v (the accept waited %s, to 30 s before the test binary's deadline)", err, accept.Round(time.Second))
-	}
+	opened := end.next(f.t, "the shim's hello under its boot token")
+	conn := opened.conn
 	defer conn.Close()
 	// The read of the shim's frames, and the save's own budget, run until beforeDeadline runs out:
 	// a save that runs a while with real git and jj on a loaded machine is merely slow.
@@ -683,12 +903,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	if err := conn.SetDeadline(time.Now().Add(bound)); err != nil {
 		f.t.Fatal(err)
 	}
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := reader.ReadLine(); err != nil {
-		f.t.Fatalf("the shim's hello: %v", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		f.t.Fatalf("the shim opened with %v (%v)", frame, err)
-	}
+	reader := shimwire.NewReader(opened.reader)
 	writer := shimwire.NewWriter(conn)
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)
@@ -746,7 +961,7 @@ const bundleRelease int64 = 9
 // and stops the generation.
 func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBundle, generation uint64) string {
 	f.t.Helper()
-	g := newRig(f.t)
+	g := newSessionRig(f.t, Config{Workspace: workspace})
 	frames, err := shimwire.SplitWorkspaceBundle("restore-"+workspace, bundleRelease, saved)
 	if err != nil {
 		f.t.Fatal(err)
