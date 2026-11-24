@@ -65,7 +65,7 @@ stack_start() { # [dev-airlock.sh option...]
 	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PIDS < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
-	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*log \([^ ]*\) *$/\1/p' "$STACK_LOG")
+	mapfile -t BROKER_LOGS < <(sed -n 's/^  broker [0-9]*:.*, pid [0-9]*, log \(.*\)$/\1/p' "$STACK_LOG")
 	BROKER_BIN="$DEV_BROKER_DIR/bin/broker"
 }
 
