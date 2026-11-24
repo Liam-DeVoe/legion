@@ -41,10 +41,13 @@ die() {
 [[ $# -le 1 ]] || usage
 [[ ${1:-} != -* ]] || usage
 
-# greatest <where>: the greatest number of the released-contracts.json read on standard input.
+# greatest <where>: the greatest number of the released-contracts.json read on standard input,
+# which must be a list of integers in strictly ascending order, so its last, as
+# packages/contracts' daemonContract() reads it.
 greatest() {
-  jq -er 'if type == "array" and length > 0 and all(.[]; type == "number" and . == floor) then max else empty end' ||
-    die "${released} of $1 is no JSON list of integers"
+  jq -er 'if type == "array" and length > 0 and all(.[]; type == "number" and . == floor)
+      and (. as $l | all(range(1; length); $l[.] > $l[. - 1])) then .[-1] else empty end' ||
+    die "${released} of $1 is no JSON list of integers in strictly ascending order"
 }
 
 # count_fixtures: counts the paths read on standard input, one a line, whose names are entry
