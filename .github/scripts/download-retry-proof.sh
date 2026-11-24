@@ -14,8 +14,10 @@
 #          --budget <s>
 #       Reads that proxy's log and says, in lines a person reading the run can count, which site
 #       it was, how many attempts reached the proxy, the offset of each from the first, the
-#       seconds between the first attempt and the last, and the step's own elapsed seconds
-#       against its budget. Then it checks what the mode promises (below) and stops the proxy.
+#       seconds between the first attempt and the last, the requests it passed on counted by
+#       host, and the step's own elapsed seconds against its budget. Then it checks what the mode
+#       promises (below) and stops the proxy. The count by host is printed and checked against
+#       nothing.
 #
 #   build <name|none> --file <Dockerfile> --tag <tag> [--build-arg K=V]... [--secret <spec>]...
 #       `docker buildx build` of one Dockerfile, with <name>'s proxy passed in as the build's
@@ -417,7 +419,7 @@ report() {
   local site_log="$log.site"
   awk -v skip="${probe_lines:-0}" 'NR > skip' "$log" > "$site_log"
 
-  local faults passes fault_count first last fault_line pass_line
+  local faults passes fault_count first last fault_line pass_line pass_hosts
   # One line per request the proxy refused or stalled, as offsets from the step's start, and the
   # same for the ones it passed on. An attempt may open more than one connection — a package
   # manager fetches in parallel — so these are requests, not attempts; the count below is held
@@ -433,6 +435,18 @@ report() {
   # client retries the two differently.
   fault_line=$(awk '$3 == "504" || $3 == "stall" { print; exit }' "$site_log")
   pass_line=$(awk '$3 == "pass" || $3 == "502" { print; exit }' "$site_log")
+  # The requests it passed on, counted by the host each one named, as
+  # .github/workflows/ci-job-proof-sdk-offline.yaml's tally counts its own proxy's: the host of a
+  # CONNECT's `host:port`, or of a plain request's absolute URI, without its port. It names every
+  # host the proxy passed a request of this site on to, a faulted one after its window among
+  # them, which the count alone does not: a host the site fetches from that --hosts leaves out
+  # shows here by name. The lines are printed as the two above are, and checked against nothing.
+  pass_hosts=$(awk '$3 == "pass" {
+                      target = $5
+                      if ($4 != "CONNECT") { sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", target); sub(/\/.*$/, "", target) }
+                      sub(/:[0-9]*$/, "", target)
+                      print target
+                    }' "$site_log" | LC_ALL=C sort | uniq -c | awk '{ printf "    %s %s\n", $1, $2 }')
 
   echo "download-retry: $what, under --mode $mode"
   echo "  the step's own outcome: $outcome"
@@ -443,7 +457,8 @@ report() {
   fi
   echo "  the proxy's own line for the first request it faulted: ${fault_line:-none at all, it faulted no request of this site}"
   echo "  the proxy's own line for the first request it answered itself: ${pass_line:-none at all, it answered no request of this site itself}"
-  echo "  requests the proxy passed on: $passes"
+  echo "  requests the proxy passed on: $passes, by host:"
+  [ -z "$pass_hosts" ] || printf '%s\n' "$pass_hosts"
   echo "  it ran ${elapsed}s from the proxy's start, against a budget of ${budget}s and a floor of ${floor}s for its $attempts attempt(s)"
 
   kill "$pid" 2> /dev/null || true

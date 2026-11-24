@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `ci-fault-proxy.py`: each of its three modes over plain HTTP and over CONNECT, a
-# host outside --hosts passed on in every one of them, and --bind.
+# host outside --hosts passed on in every one of them, and --bind; and the count by host that
+# download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on.
 #
 # Nothing here touches the real internet. The host that is passed on is an origin this test
 # starts, a `python3 -m http.server` on a loopback port, and the host that is faulted is either
@@ -200,4 +201,50 @@ check "and the request it passed on" \
   "$(contains "$fail_log" "^ci-fault-proxy: pass GET http://localhost:$origin_port/hello.txt\$")"
 check "no handler failed" "$(is "$(contains "$fail_log" 'handler failed')" false)"
 
-summary "ci-fault-proxy.py"
+echo "case: download-retry-proof.sh's report counts the requests the proxy passed on by host"
+# The rig the download-retry jobs run, driven whole over the origin above: `start` runs the proxy
+# behind its stamping loop, `probe` reads its pair before the site, and `report` reads the log
+# back. The site is the origin under two of its names, 127.0.0.1 twice over plain HTTP and
+# localhost once through CONNECT, so the log holds passes to two hosts in both of the line shapes
+# the proxy writes. --mode fail, faulting a host the site never asks for, so the report's own
+# check of its mode passes and this case reads the count. RUNNER_TEMP is the rig's state
+# directory, under $work, and GITHUB_OUTPUT is emptied, so a run on a runner writes nothing into
+# its own step's outputs; no_proxy and NO_PROXY are cleared for the reason run_curl gives.
+rig() { env RUNNER_TEMP="$work/rig" GITHUB_OUTPUT= no_proxy= NO_PROXY= "$script_dir/download-retry-proof.sh" "$@"; }
+rig_state="$work/rig/download-retry/tally.state"
+set +e
+rig start tally --mode fail --hosts fetch.invalid > "$work/rig-start.out" 2>&1
+rig_start=$?
+set -e
+[ ! -f "$rig_state" ] || pids+=("$(sed -n 's/^pid=//p' "$rig_state")")
+indent "$(cat "$work/rig-start.out")"
+check "the rig's start exits 0" "$(is "$rig_start" 0)"
+set +e
+rig probe tally > "$work/rig-probe.out" 2>&1
+rig_probe=$?
+set -e
+indent "$(cat "$work/rig-probe.out")"
+check "and its probe reads the pair as it must" "$(is "$rig_probe" 0)"
+rig_proxy=$(sed -n 's/^proxy=//p' "$rig_state" 2> /dev/null || true)
+run_curl -x "$rig_proxy" "http://127.0.0.1:$origin_port/hello.txt"
+run_curl -x "$rig_proxy" "http://127.0.0.1:$origin_port/hello.txt"
+run_curl -x "$rig_proxy" --proxytunnel "http://localhost:$origin_port/hello.txt"
+# The stamping loop writes a line a moment after the answer it belongs to, so the three passes
+# are waited for rather than raced, as the probe waits for its own.
+for _ in $(seq 100); do
+  [ "$(grep -c 'ci-fault-proxy: pass ' "$work/rig/download-retry/tally.log" 2> /dev/null || true)" -lt 3 ] || break
+  sleep 0.05
+done
+set +e
+rig_out=$(rig report tally --what "the by-host case" --outcome success --attempts 1 --floor 0 --budget 600 2>&1)
+rig_report=$?
+set -e
+indent "$rig_out"
+check "the report exits 0" "$(is "$rig_report" 0)"
+check "it counts the requests the proxy passed on, and says a count by host follows" \
+  "$(contains "$rig_out" '^  requests the proxy passed on: 3, by host:$')"
+check "and the two lines after it name both hosts with their own counts, the CONNECT's port taken off" \
+  "$(is "$(sed -n '/^  requests the proxy passed on: 3, by host:$/{n;p;n;p;}' <<<"$rig_out")" \
+    "$(printf '    2 127.0.0.1\n    1 localhost')")"
+
+summary "ci-fault-proxy.py and download-retry-proof.sh's count by host"

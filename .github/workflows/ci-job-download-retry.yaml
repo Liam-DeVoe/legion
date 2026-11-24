@@ -618,12 +618,29 @@ jobs:
       # microsoft.com). windows.net is the one host here no retry stands behind: `az version` reads
       # the newest azure-cli versions from azcliprod.blob.core.windows.net and exits 0 without
       # them, as the Dockerfile's toolchain step says, so a build that meets the fault there passes.
+      # Three kinds more, each behind a retry too (dispatch://INFRA-1545, round 61): go-base's
+      # `apk add --no-cache git`, which reads Alpine's index and git's packages from
+      # dl-cdn.alpinelinux.org (alpinelinux.org); the corepack shims' default Yarn, 1.22.22, which
+      # Node 24.22.1's corepack 0.36.0 fetches from registry.yarnpkg.com under
+      # COREPACK_DEFAULT_TO_LATEST=0 (its default pnpm, 11.24.0, comes from the npm registry); and
+      # the module hosts a go command falls through `|direct` to after a proxy error. Those are
+      # the go-get page of each module path's host that the go.sum files of the build's three Go
+      # fetches name (go.work's modules, go-licenses v2.0.1 and gopls v0.23.0): authelia.com,
+      # cel.dev, codeberg.org, dario.cat, dmitri.shuralyov.com, filippo.io, git.sr.ht, go.etcd.io,
+      # go.opencensus.io (contrib.go.opencensus.io with it), go.opentelemetry.io, go.uber.org,
+      # go.yaml.in, go4.org, gonum.org, gopkg.in, gotest.tools, honnef.co, k8s.io (sigs.k8s.io with
+      # it), modernc.org, mvdan.cc and rsc.io, where google.com and golang.org already hold
+      # cloud.google.com and google.golang.org; and, since go-base carries git, the repositories
+      # those pages name off github.com and go.googlesource.com: gitlab.com, modernc.org's, and the
+      # ones codeberg.org, git.sr.ht, dmitri.shuralyov.com and gopkg.in serve themselves. The
+      # go-notices stage's go-licenses report reads the same pages unretried, and a page it cannot
+      # read leaves only that module's license URL unknown, which the notices do not print.
       - name: Start the recovering fault for the worker image build
         id: worker-proxy
         run: |
           .github/scripts/download-retry-proof.sh start worker --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net
+            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net,alpinelinux.org,registry.yarnpkg.com,authelia.com,cel.dev,codeberg.org,dario.cat,dmitri.shuralyov.com,filippo.io,git.sr.ht,gitlab.com,go.etcd.io,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,mvdan.cc,rsc.io
           .github/scripts/download-retry-proof.sh probe worker
       - name: Build the worker image under the recovering fault
         id: worker-build
@@ -642,13 +659,22 @@ jobs:
             --what "the worker image (packages/daemon/docker/worker.Dockerfile)" \
             --outcome ${{ steps.worker-build.outcome }} --attempts 5 --floor 0 --budget 6470
 
-      # The Envoy image: apt, the npm registry and the Go module proxy.
+      # The Envoy image: apt, the npm registry and the Go module proxy, and the module hosts a go
+      # command falls through `|direct` to after a proxy error: the go-get page of each module
+      # path's host that the go.sum files of its two Go fetches name (packages/envoy's, and
+      # go-licenses v2.0.1's, which scripts/go-third-party-notices.sh installs): authelia.com,
+      # cloud.google.com, dario.cat, dmitri.shuralyov.com, go.opencensus.io, go.opentelemetry.io,
+      # go.uber.org, go.yaml.in, gonum.org, gopkg.in, gotest.tools, honnef.co, k8s.io and rsc.io,
+      # where golang.org already holds google.golang.org. Its golang image carries no git, so the
+      # fall-through reads those pages and clones nothing (dispatch://INFRA-1545, round 61). Its
+      # notices RUN's go-licenses report reads the same pages unretried, and a page it cannot read
+      # leaves only that module's license URL unknown, which the notices do not print.
       - name: Start the recovering fault for the Envoy image build
         id: envoy-proxy
         run: |
           .github/scripts/download-retry-proof.sh start envoy --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com
+            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com,authelia.com,cloud.google.com,dario.cat,dmitri.shuralyov.com,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,rsc.io
           .github/scripts/download-retry-proof.sh probe envoy
       - name: Build the Envoy image under the recovering fault
         id: envoy-build
@@ -667,13 +693,21 @@ jobs:
             --outcome ${{ steps.envoy-build.outcome }} --attempts 5 --floor 0 --budget 3373
 
       # The held-port image: one `go mod download` in its wrapper stage, on the smoke image
-      # built above as its BASE.
+      # built above as its BASE, and the module hosts it falls through `|direct` to after a proxy
+      # error: the go-get page of each module path's host that the go.sum files of
+      # packages/envoy/infra's workspace name (its go.sum and go.work.sum, and packages/envoy's):
+      # authelia.com, cel.dev, charm.land, cloud.google.com, codeberg.org, dario.cat, git.sr.ht,
+      # go.mongodb.org, go.opencensus.io, go.opentelemetry.io, go.uber.org, go.yaml.in,
+      # gocloud.dev, gonum.org, gopkg.in, gotest.tools, honnef.co, lukechampine.com, modernc.org,
+      # mvdan.cc, pgregory.net and rsc.io, where golang.org already holds google.golang.org. Its
+      # golang image carries no git, so the fall-through reads those pages and clones nothing
+      # (dispatch://INFRA-1545, round 61).
       - name: Start the recovering fault for the held-port image build
         id: heldport-proxy
         run: |
           .github/scripts/download-retry-proof.sh start heldport --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts golang.org,googlesource.com,github.com,githubusercontent.com
+            --hosts golang.org,googlesource.com,github.com,githubusercontent.com,authelia.com,cel.dev,charm.land,cloud.google.com,codeberg.org,dario.cat,git.sr.ht,go.mongodb.org,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gocloud.dev,gonum.org,gopkg.in,gotest.tools,honnef.co,lukechampine.com,modernc.org,mvdan.cc,pgregory.net,rsc.io
           .github/scripts/download-retry-proof.sh probe heldport
       - name: Build the held-port image under the recovering fault
         id: heldport-build
@@ -692,14 +726,18 @@ jobs:
             --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)" \
             --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 3181
 
-      # The browser image: Ubuntu's apt mirror, which its base's sources name, and PostgreSQL's
-      # signing key and apt repository, each behind one of the Dockerfile's inline retries.
+      # The browser image: Ubuntu's apt mirror, which its base's sources name
+      # (azure.archive.ubuntu.com and security.ubuntu.com), and PostgreSQL's signing key and apt
+      # repository, each behind one of the Dockerfile's inline retries, and NodeSource's apt
+      # repository, deb.nodesource.com (nodesource.com), whose index the same retried
+      # `apt-get update` reads: the base's own build wrote /etc/apt/sources.list.d/nodesource.list
+      # for its Node 26 and left it there (dispatch://INFRA-1545, round 61).
       - name: Start the recovering fault for the browser image build
         id: browser-proxy
         run: |
           .github/scripts/download-retry-proof.sh start browser --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts postgresql.org,ubuntu.com
+            --hosts postgresql.org,ubuntu.com,nodesource.com
           .github/scripts/download-retry-proof.sh probe browser
       - name: Build the browser image under the recovering fault
         id: browser-build
