@@ -73,9 +73,9 @@ import (
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
-// a deployment (20261123181746), the name of each step's agent (20261123203837) and the five after
-// it, 20261123203838 to 20261123203842, so an upgrade of a database main migrated applies it just
-// before those fourteen. It adds pull_requests.statuses at its default, the empty list, and it
+// a deployment (20261123181746), the name of each step's agent (20261123203837) and the four after
+// it, 20261123203838 to 20261123203841, so an upgrade of a database main migrated applies it just
+// before those thirteen. It adds pull_requests.statuses at its default, the empty list, and it
 // touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
@@ -102,7 +102,7 @@ import (
 // this branch's 20261029121200 adds), it stands below the design news, and it touches no
 // outbox_kind_check, so the design news stays the last word of that check.
 // The kind list with the role-holders publication (20261116165926) stands above every version
-// named before it here but the design news, the commit statuses (20261117112334), the fourteen
+// named before it here but the design news, the commit statuses (20261117112334), the thirteen
 // versions above the commit statuses that their paragraph names and the reviewer's reviewed
 // commit, and below every version named after it: it names every kind the merge-queue list names
 // and its own.
@@ -123,36 +123,36 @@ import (
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
-// a deployment (20261123181746) and 20261123203837 to 20261123203842: it names every kind the
+// a deployment (20261123181746) and 20261123203837 to 20261123203841: it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
 // 20261120012547, 20261120042902, 20261120055717, 20261121170714, 20261123181746 and
-// 20261123203837 to 20261123203842, is the last of them to rewrite outbox_kind_check: it names
+// 20261123203837 to 20261123203841, is the last of them to rewrite outbox_kind_check: it names
 // those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, 20261121170714, 20261123181746 and 20261123203837 to
-// 20261123203842. It runs no statement, so it changes nothing on a database main migrated, and it
+// 20261123203841. It runs no statement, so it changes nothing on a database main migrated, and it
 // touches no outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
 // dispatch://INFRA-4729's 20261120055717, 20261121170714, 20261123181746 and 20261123203837 to
-// 20261123203842; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
+// 20261123203841; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
 // and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // is applied after all of these but 20261121170714, 20261123181746 and 20261123203837 to
-// 20261123203842, the design news among them, and touches no outbox_kind_check: it adds columns to
+// 20261123203841, the design news among them, and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
 // copy holds rows of.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
-// these but 20261123181746 and 20261123203837 to 20261123203842, and touches no outbox_kind_check:
+// these but 20261123181746 and 20261123203837 to 20261123203841, and touches no outbox_kind_check:
 // it adds dispatch_issues.applied_seq at its default, 0, on every row it finds. So the design news
 // stays the last word of that check.
 // The roles of a deployment (20261123181746) are named here too: it stands above every other
-// version of this list but 20261123203837 to 20261123203842, so an upgrade of a database main
-// migrated applies it just before those six. The migration writes the role checks of `claims`,
+// version of this list but 20261123203837 to 20261123203841, so an upgrade of a database main
+// migrated applies it just before those five. The migration writes the role checks of `claims`,
 // `phases` and `issue_releases` and the phase checks of `issues` again, each wider than the check
 // it replaces, so every row an upgrade finds passes them (migration_20261123181746_test.go), and it
 // touches no outbox_kind_check.
@@ -174,10 +174,6 @@ import (
 // The record that a claim took another role (20261123203841) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
 // its own here (migration_20261123203841_test.go).
-// The repair of the claim tables (20261123203842) is applied after it and touches no
-// outbox_kind_check: over the present shapes of 20261123203838 and 20261123203839 it changes no
-// row and leaves the same indexes and constraints, so it needs no row of its own here
-// (migration_20261123203842_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -190,7 +186,6 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
 	20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840, 20261123203841,
-	20261123203842,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -211,10 +206,9 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
 // a deployment's 20261123181746, the name of each step's agent's 20261123203837, the claim of each
 // resume's 20261123203838, the claim of each backstop's 20261123203839, the claims a release
-// suspended's 20261123203840, the record that a claim took another role's 20261123203841 and the
-// repair of the open resume per claim's 20261123203842. That is why the loop below holds the list
-// rather than counting it, so that a version added above any of them is named here rather than
-// read as main's.
+// suspended's 20261123203840 and the record that a claim took another role's 20261123203841. That
+// is why the loop below holds the list rather than counting it, so that a version added above any
+// of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
