@@ -20,10 +20,10 @@
 #      the proxy naming its rule, and Dispatch records no comment and no token. Controls: (b) the
 #      box's token posts a comment, so it is live; (a) with the sign-in's credential revoked, the
 #      same review on the same placeholder is refused 407. (e) the scan of every file the session
-#      and the sign-in wrote, and of the session's environment, finds no candidate whose SHA-256 is
-#      a minted token's the broker logged, and no private key whose thumbprint is a logged binding;
-#      a scan that read no file, no file under a path it was named, or a broker log that names no
-#      minted token or no binding is UNKNOWN.
+#      and the sign-in wrote under the box, of the session's stderr and stdout, and of the session's
+#      environment, finds no candidate whose SHA-256 is a minted token's the broker logged, and no
+#      private key whose thumbprint is a logged binding; a scan that read no file, no file under a
+#      path it was named, or a broker log that names no minted token or no binding is UNKNOWN.
 #   2. --approve --approve-allow-all: the allow list off. (i) the comment and the token mint reach
 #      Dispatch, which refuses them APPROVE_ONLY_TOKEN and records no comment; (ii) the review is
 #      recorded with the person as its author.
@@ -35,7 +35,9 @@
 #      (approve/broker-plants-approve-tokens.patch), and a token lifetime of 60 seconds: of three
 #      approve tokens, one expired and one revoked at the broker before the scans, the scan of each
 #      form finds all three by hash, and the scan of the first the pod key by its thumbprint; the
-#      DPoP diagnostic's answers are printed and decide nothing.
+#      three tokens written to the session's stderr and stdout are found by a scan of step 1e's own
+#      paths, so 1e reads what the session prints. The DPoP diagnostic's answers are printed and
+#      decide nothing.
 #
 # It prints one line per step, "approve-check: <step>: PASS|FAIL|UNKNOWN <what it read>", and
 # exits 0 when every step passed, 1 when one failed, 2 on a usage error, and 3 when none failed and
@@ -200,6 +202,9 @@ sign_in_box() {
 
 # session runs one step of the agent session on the box, with the variables a session there has
 # and no Dispatch bearer, so its credential is the broker credential of the person's sign-in.
+# Its stderr goes to $STACK_DIR/session.err, and its stdout, which holds every answer it printed,
+# is kept in $STACK_DIR/session.out as well as handed back: step 1e scans both
+# (session_scan_paths), since a token the session printed is the likeliest leak on a box.
 session() {
   env -i PATH="$BIN_DIR:$PATH" HOME="$BOX/home" TMPDIR="$BOX/session" AGENT_SECRETS_URL="$AGENT_SECRETS_URL" \
     AGENT_SECRETS_MACHINE_IDENTITY=metadata AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine GCE_METADATA_HOST="$METADATA_HOST" \
@@ -208,10 +213,15 @@ session() {
     AGENT_SECRETS_SIGNIN_DIR="$BOX/signins" AGENT_SECRETS_KEY_DIR="$BOX/keys" AGENT_SECRETS_HELPER_SOCK= \
     DISPATCH_URL="$DEV_STACK_DISPATCH_SERVER_URL" APPROVE_CHECK_DISPATCH_LOCAL="$DISPATCH_URL" \
     APPROVE_CHECK_STATE="$STACK_DIR/state.json" APPROVE_CHECK_REVOKE_COMMAND="${REVOKE_COMMAND:-}" \
-    "$BUN_BIN" "$SCRIPT_DIR/approve/session.ts" "$@" 2>>"$STACK_DIR/session.err"
+    "$BUN_BIN" "$SCRIPT_DIR/approve/session.ts" "$@" 2>>"$STACK_DIR/session.err" | tee -a "$STACK_DIR/session.out"
 }
 
+# session_scan_paths prints the paths step 1e scans, one a line: every file the session and the
+# sign-in wrote under the box, and the session's stderr and stdout.
+session_scan_paths() { printf '%s\n' "$BOX" "$STACK_DIR/session.err" "$STACK_DIR/session.out"; }
+
 broker_sql() { psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
+dispatch_sql() { psql "$DISPATCH_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
 
 # run_scan <paths...>: the session's scan of the paths against the broker's log. It sets scan to
 # the scan's one JSON line, or {} where it printed none, and scan_exit to its exit status, which
@@ -237,21 +247,43 @@ setup_issue() {
 start_stack approve --approve
 sign_in_box
 setup_issue
+# The Idempotency-Key the review carries must reach Dispatch through the proxy: Dispatch keeps one
+# request_keys row per keyed write, so the reviews route holds no answered key before the review
+# and exactly one after it.
+review_keys() {
+  dispatch_sql "select count(*) from request_keys where method = 'POST' and path like '/api/v1/artifacts/%/reviews' and status between 200 and 299"
+}
+keys_before="$(review_keys)"
 approved="$(session approve)"
+keys_after="$(review_keys)"
 reviews="$(session reviews)"
 author="$(jq -r '[.body | if type == "array" then .[] else (.reviews // [])[] end | (.actor.person // .actor.email // .actor // empty)] | map(tostring) | join(",")' <<<"$reviews")"
-grant="$(broker_sql "select session, extra->>'person', array_to_string(scopes, ','), extract(epoch from expires_at - created_at)::int from approve_grants order by created_at desc limit 1")"
+# The grant's lifetime in whole seconds: created_at is the transaction's start and expires_at Go's
+# clock fifteen minutes on, a fraction of a second later, so the floor reads 900.
+grant="$(broker_sql "select session, extra->>'person', array_to_string(scopes, ','), floor(extract(epoch from expires_at - created_at))::int from approve_grants order by created_at desc limit 1")"
 columns="$(broker_sql "select string_agg(column_name, ',' order by ordinal_position) from information_schema.columns where table_name = 'approve_grants'")"
 if [ "$(jq -r .recorded <<<"$approved")" = true ] && [[ "$author" == *"$PERSON"* ]] &&
-  [[ "$grant" == *"|$PERSON|approve|900" ]] && [[ "$columns" != *secret* ]] && [[ "$columns" != *profile* ]] && [[ "$columns" != *approver* ]]; then
-  result "1a review through the proxy" PASS "review $(jq -c '{recorded, state, version, actor}' <<<"$approved"), reviews' authors [$author], grant session|person|scopes|seconds = $grant, its columns $columns"
+  [[ "$grant" == *"|$PERSON|approve|900" ]] && [[ "$columns" != *secret* ]] && [[ "$columns" != *profile* ]] && [[ "$columns" != *approver* ]] &&
+  [ "$keys_before" = 0 ] && [ "$keys_after" = 1 ]; then
+  result "1a review through the proxy" PASS "review $(jq -c '{recorded, state, version, actor}' <<<"$approved"), reviews' authors [$author], grant session|person|scopes|seconds = $grant, its columns $columns; Dispatch's answered keys on the reviews route $keys_before before the review and $keys_after after, so its Idempotency-Key reached Dispatch through the proxy"
 else
-  result "1a review through the proxy" FAIL "review $approved; reviews $reviews; grant $grant; columns $columns"
+  result "1a review through the proxy" FAIL "review $approved; reviews $reviews; grant $grant; columns $columns; answered review keys $keys_before before, $keys_after after"
 fi
 state="$(cat "$STACK_DIR/state.json")"
 artifact="$(jq -r .artifact <<<"$state")"
 version="$(jq -r .version <<<"$state")"
 issue="$(jq -r .issue <<<"$state")"
+# The control of 1a's key check: the same review sent through the proxy with no Idempotency-Key
+# (the session's `proxy` command sends none) reaches Dispatch, which runs it unkeyed, and the
+# reviews route still holds one answered key row, 1a's: the count reads 1 only for a review whose
+# key reached Dispatch.
+keyless="$(session proxy POST "/api/v1/artifacts/$artifact/versions/$version/reviews" '{"state":"approved"}')"
+keys_keyless="$(review_keys)"
+if [[ "$(jq -r .status <<<"$keyless")" == 2?? ]] && [ "$keys_keyless" = 1 ]; then
+  result "1a control: a review with no key leaves no key row" PASS "the keyless review through the proxy answered $(jq -r .status <<<"$keyless") and the reviews route still holds $keys_keyless answered key row, 1a's"
+else
+  result "1a control: a review with no key leaves no key row" FAIL "the keyless review answered $(jq -c 'del(.body)' <<<"$keyless"); answered key rows $keys_keyless, want 1"
+fi
 box_review="$(session box POST "/api/v1/artifacts/$artifact/versions/$version/reviews" '{"state":"approved"}')"
 if [ "$(jq -r .status <<<"$box_review")" = 403 ]; then
   result "1b the box's token reviews" PASS "403 $(jq -r .code <<<"$box_review")"
@@ -295,7 +327,8 @@ else
   result "1a control: the grant revoked" FAIL "$(jq -c 'del(.second.body)' <<<"$revoked")"
 fi
 REVOKE_COMMAND=""
-run_scan "$BOX"
+mapfile -t scan_paths < <(session_scan_paths)
+run_scan "${scan_paths[@]}"
 if [ "$(jq '(.hash_matches // []) + (.key_matches // []) | length' <<<"$scan")" != 0 ]; then
   result "1e scan" FAIL "$(jq -c . <<<"$scan")"
 elif [ "$scan_exit" = 0 ] && [ "$(jq -r .result <<<"$scan")" = clean ]; then
@@ -404,6 +437,13 @@ planted_control "1e control: planted tokens on lines of their own, and the bindi
   "$BOX" "$planted" "$DEV_STACK_DIR/planted-binding-key.pem"
 planted_control "1e control: planted tokens in token endpoint answers" "token endpoint answers naming each token" 0 "$answers"
 planted_control "1e control: planted tokens as NAME=value" "DISPATCH_APPROVE_TOKEN=<token> lines" 0 "$variables"
+# What the session prints: one token on its stderr and two on its stdout, the way a session that
+# printed a token would leave it, scanned through step 1e's own paths.
+printf 'approve-session: %s\n' "$expired" >>"$STACK_DIR/session.err"
+printf '{"step":"proxy","body":{"access_token":"%s"}}\nDPoP %s\n' "$live" "$revoked_token" >>"$STACK_DIR/session.out"
+mapfile -t scan_paths < <(session_scan_paths)
+planted_control "1e control: planted tokens in what the session printed" "the session's stderr and stdout, through step 1e's paths" 0 \
+  "${scan_paths[@]}"
 stop_stack
 
 finish
