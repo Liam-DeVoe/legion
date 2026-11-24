@@ -77,10 +77,10 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 }
 
 // idlePass is one tick of both rules (tickIdle). While the project release holds every pod it
-// decides none: that release stops and deletes every pod of the project itself, and an idle
-// release started beside it would stop roles and save work the project release has taken over.
-// The store refuses such a release as well (store.ReleaseIdleIssue), for a pass that read the mark
-// just before the release set it.
+// decides none: that release stops and deletes every pod of the project itself, and an idle release
+// started beside it would read workspaces and stop roles the project release has taken over. The
+// store refuses such a release as well (store.ReleaseIdleIssue), for a pass that read the mark just
+// before the release set it.
 func (w *workflowRuntime) idlePass(ctx context.Context) {
 	if w.release.held() {
 		return

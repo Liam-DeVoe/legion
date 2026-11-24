@@ -187,8 +187,8 @@ func OutboxLanes() []OutboxLane {
 //     confirmation writes a merge forward's messages;
 //   - the production check's rows, which start and end the checking role's looks: check_wake,
 //     check_look and check_bound;
-//   - the idle release's own save and teardown (issue_bundle, issue_release), which the project
-//     release took over;
+//   - the idle release's own workspace check and teardown (issue_bundle, issue_release), and the
+//     workspace check of a left pod's close, of the same kind, which the project release took over;
 //   - an update round's ask (update_ask), but for the asks of the daemon's own release
 //     (releaseRound, the round its asks ride, while it runs and once it finished; "" before its
 //     record committed, which holds every ask).

@@ -8243,7 +8243,7 @@ The release does five things, in this order:
    A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.
    A project that is paused as well gets the same refusal, not the pause's `PROJECT_PAUSED`, because each of those routes asks the release's refusal first ([Pausing a project](#pausing-a-project)).
    A task, notice, message, backstop or start that comes due waits in the database until after the next boot.
-   An idle release still in flight is taken over and stops nothing more.
+   An idle release still in flight is taken over and stops nothing more, and so is the queued workspace check of the close of a pod whose issue left the workflow: the first idle pass after the next boot checks again each such pod that still stands.
    The daemon still serves its API, and `legion state --json` shows the release and its result as `projectRelease`.
 
 2. It reads each issue pod's workspace through the shim of one running role, each pod on its own and all pods at the same time.

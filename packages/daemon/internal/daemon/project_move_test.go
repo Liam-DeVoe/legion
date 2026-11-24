@@ -510,7 +510,7 @@ func (m *projectMove) awaitLine(t *testing.T, name string, outcome api.ReleaseOu
 // checkMove holds a release that moves the project to what the move reads of it: each
 // case's pod's line, the asks and their answers, each stopped claim's line and its stored
 // suspension, the remote's branch of the role that pushed, the exit and the Sandboxes left in the
-// cluster, and no bundle, no charge and no pod the released daemon made. left names the pods the
+// cluster, and no charge and no pod the released daemon made. left names the pods the
 // release leaves, and refusedImage whether the pod whose shim refuses the read runs another image.
 func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIssue, refusedImage bool) {
 	t.Helper()

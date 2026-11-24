@@ -122,8 +122,9 @@ func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
 // teardown — are finished without acting, while a delivery the issue holds inside the mark's range
 // and a start queued after it stand, and a claim the idle release had already suspended stays
 // `released`. The answer names each release with its issue, its generation, its kind (a quiet
-// pod's, or one no role can use) and the roles it had stopped. Another project's idle release is
-// none of this release's.
+// pod's, or one no role can use) and the roles it had stopped. The queued workspace check of a
+// left pod's close, which writes no mark, is finished too. Another project's idle release and
+// close check are none of this release's.
 //
 // The stop set: every claim of the project stored in a state whose process is up or coming up,
 // launching through idle, the controller's among them, with its tree, issue, role, session and
@@ -178,6 +179,12 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	// Another project's idle release.
 	otherRow := queueReleaseRow(t, st, "OTHER-1", "issue_release", `{"tree":"OTHER-1","generation":1,"treeGeneration":1}`)
 	markIdleRelease(t, st, "other", "OTHER-1", releaseKindUnowned, otherRow, otherRow)
+	// The workspace check of the close of LEGION-211's pod, whose issue left the workflow, and one
+	// of another project's: a close writes no mark (the daemon's leftPodCloseRows).
+	closeCheck := queueReleaseRow(t, st, "LEGION-211", "issue_bundle",
+		`{"tree":"LEGION-208","generation":2,"treeGeneration":1,"role":"implementer","closeRoles":["implementer"]}`)
+	otherClose := queueReleaseRow(t, st, "OTHER-1", "issue_bundle",
+		`{"tree":"OTHER-1","generation":1,"treeGeneration":1,"role":"implementer","closeRoles":["implementer"]}`)
 
 	release, takenOver, stop, err := st.StartProjectRelease(ctx, "legion", atReleaseStart, releaseLength)
 	if err != nil {
@@ -227,9 +234,9 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 		if !slices.Equal(marks, []string{"other/OTHER-1"}) {
 			t.Fatalf("marks after the take-over = %v, want the other project's alone", marks)
 		}
-		if got, wantIDs := outboxIDs(t, st), []int64{notice, start, otherRow}; !slices.Equal(got, wantIDs) {
-			t.Fatalf("outbox rows after the take-over = %v, want the notice %d, the later start %d and the other project's row %d (the release's rows %d, %d, %d, %d and %d gone)",
-				got, notice, start, otherRow, save, stopReviewer, stopTester, teardown, unowned)
+		if got, wantIDs := outboxIDs(t, st), []int64{notice, start, otherRow, otherClose}; !slices.Equal(got, wantIDs) {
+			t.Fatalf("outbox rows after the take-over = %v, want the notice %d, the later start %d and the other project's rows %d and %d (the release's rows %d, %d, %d, %d and %d and the close check %d gone)",
+				got, notice, start, otherRow, otherClose, save, stopReviewer, stopTester, teardown, unowned, closeCheck)
 		}
 		var by string
 		if err := st.Pool().QueryRow(ctx, `select suspended_by from claims where token = $1`, string(released)).Scan(&by); err != nil || by != "released" {

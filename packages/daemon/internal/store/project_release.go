@@ -25,7 +25,7 @@ const ProjectReleaseEndedByBoot ProjectReleaseEnder = "boot"
 // errProjectReleaseRunning is an idle release, or the release of a pod no claim owns, refused
 // because the project has a project release no boot has ended (ReleaseIdleIssue): that release
 // holds every pod of the project until the daemon's next boot, and an idle release started beside
-// it would stop roles and save work the project release has already taken over.
+// it would read workspaces and stop roles the project release has already taken over.
 var errProjectReleaseRunning = errors.New("a project release no boot has ended holds every pod of the project")
 
 // ErrNoUnfinishedProjectRelease is a write of a release's record refused because no release of its
@@ -99,17 +99,17 @@ type ProjectReleaseClaim struct {
 // read from that same moment. A release with no project, no clock or a negative bound is refused
 // before anything is written.
 //
-// It takes over every idle release of the project still in flight: each issue_releases mark of
-// the project is deleted, and the outbox rows of that release still queued — its save
-// (issue_bundle), its role stops (`release` supervise rows) and its teardown (issue_release),
-// every one of them inside the mark's own range (releaseMark.holds) — are finished without
-// acting, which for an outbox row is its delete. No bundle is saved, no role stopped and no pod
-// torn down by them after this, and nothing of what the idle release already did is undone: a
-// bundle it stored stays, and a claim its stops suspended stays `released`. A row of that release
-// a lane is running now finds no mark when it next asks (IssueReleaseStop, IssueRelease), which is
-// the release being over, so it acts on nothing more either. It answers each release it took
-// over, so the caller can arm the backstops that release's teardown would have armed for the
-// claims it had stopped.
+// It takes over every idle release of the project still in flight: each issue_releases mark of the
+// project is deleted, and the outbox rows of that release still queued — its workspace check
+// (issue_bundle), its role stops (`release` supervise rows) and its teardown (issue_release), every
+// one of them inside the mark's own range (releaseMark.holds) — are finished without acting, which
+// for an outbox row is its delete. No workspace is read, no role stopped and no pod torn down by
+// them after this, and nothing of what the idle release already did is undone: a claim its stops
+// suspended stays `released`, and a decline it recorded stands. A row of that release a lane is
+// running now finds no mark when it next asks (IssueReleaseStop, IssueRelease), which is the
+// release being over, so it acts on nothing more either. The queued workspace check of a left pod's
+// close is finished too (takeOverIdleReleases). It answers each release it took over, so the caller
+// can arm the backstops that release's teardown would have armed for the claims it had stopped.
 //
 // It answers the stop set as well: every claim of the project stored running or starting, in
 // token order, read as the last statement of the transaction. That set is the one the release
@@ -125,12 +125,11 @@ type ProjectReleaseClaim struct {
 // release's record and is refused (ProjectReleasingError).
 //
 // It runs until one run commits (transactUntilCommitted), as a write whose caller must know its
-// outcome does (TakeWorkspaceBundleForRestore). Each run writes and reads everything again, so
-// what it answers is the committed run's. Each run reads its start from now and counts the bound
-// from that start, so the record's start and bound are the committed run's, and a run that did
-// not commit takes nothing of the bound. It answers ErrCommitOutcomeUnknown when ctx ends, or the
-// pool closes, before the store says a run's outcome, and that run's record, which Runs, may then
-// stand.
+// outcome does. Each run writes and reads everything again, so what it answers is the committed
+// run's. Each run reads its start from now and counts the bound from that start, so the record's
+// start and bound are the committed run's, and a run that did not commit takes nothing of the
+// bound. It answers ErrCommitOutcomeUnknown when ctx ends, or the pool closes, before the store
+// says a run's outcome, and that run's record, which Runs, may then stand.
 func (s *Store) StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (ProjectRelease, []TakenOverIdleRelease, []ProjectReleaseClaim, error) {
 	if project == "" {
 		return ProjectRelease{}, nil, nil, errors.New("a project release needs its project")
@@ -306,7 +305,14 @@ func runningProjectReleaseTx(ctx context.Context, tx pgx.Tx, project string) (Pr
 
 // takeOverIdleReleases deletes every idle release mark of project and finishes the rows of each
 // that are still queued, without acting (StartProjectRelease), and answers the releases it took
-// over in issue order.
+// over in issue order. It finishes the same way the workspace check of each queued close of a pod
+// whose issue left the workflow (the daemon's leftPodCloseRows), which is written with no mark:
+// the release, which holds that check, stops the pod's roles and deletes the pod or leaves it for
+// an operator, so the check would read a pod the release took away, decline the close because no
+// role runs to read through, and hold the issue under a streak that no idle pass ends, since no
+// pass visits an issue with no Sandbox. The first idle pass after the next boot decides again each
+// such pod that still stands. A check is of the project when a claim of the project names its
+// issue, which every issue whose close reads a live role holds.
 func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]TakenOverIdleRelease, error) {
 	rows, err := tx.Query(ctx, `with taken as (delete from issue_releases where project = $1
 		returning issue, first_row, last_row, suspended, kind)
@@ -342,6 +348,10 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 			return nil, fmt.Errorf("finish the rows of the idle release of %s: %w", taken.issue, err)
 		}
 		takenOver = append(takenOver, TakenOverIdleRelease{Issue: taken.issue, Suspended: taken.mark.roles()})
+	}
+	if _, err := tx.Exec(ctx, `delete from outbox where kind = 'issue_bundle'
+		and issue in (select issue from claims where project = $1)`, project); err != nil {
+		return nil, fmt.Errorf("finish the queued close checks of %s: %w", project, err)
 	}
 	return takenOver, nil
 }

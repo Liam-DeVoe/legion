@@ -208,8 +208,7 @@ func unpushedRequest(id string) shimwire.ReadUnpushed {
 // clone's own `default` workspace on an empty working copy no remote holds; and the issue's
 // workspace added to that clone on the issue's branch with no files and then checked out, as
 // Provision adds one. Every command is real git or jj under fixtureenv.Isolated of a home of the
-// fixture's own and names the directory it runs in (docs/testing.md), as launcher's bundleFixture
-// runs its own.
+// fixture's own and names the directory it runs in (docs/testing.md).
 type podWorkspace struct {
 	t                       *testing.T
 	home, remote, clone, ws string
@@ -226,7 +225,7 @@ func newPodWorkspace(t *testing.T) *podWorkspace {
 	}
 	// The pushes run under the git first on PATH, which in an issue pod is Legion's wrapper and
 	// runs the leak guard before it writes; the fixture carries a stand-in of the check that
-	// clears every write, as launcher's bundleFixture does.
+	// clears every write.
 	f.env = append(fixtureenv.Isolated(f.home),
 		"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
 		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
