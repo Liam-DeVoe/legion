@@ -150,6 +150,61 @@
     },
     "replies": []
   },
+  "comments/comment-100": {
+    "comment": {
+      "id": "comment-100",
+      "author": { "id": "user:smoke", "kind": "user" },
+      "reply_to": null,
+      "answers": null,
+      "body": "@tester which marker did your rerun carry? (question tester-closed-thread of run 4242)",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-3-tester",
+          "state": "sent",
+          "error": null,
+          "session_id": "session-tester"
+        }
+      ]
+    },
+    "replies": [
+      {
+        "id": "comment-101",
+        "author": { "id": "session-tester", "kind": "session" },
+        "reply_to": "comment-100",
+        "answers": "comment-100",
+        "body": "VIOLET-OTTER-88, and 20 of 20 passed. <!-- legion-answer:c3c3c3c3d4d4d4d4 -->"
+      },
+      {
+        "id": "comment-102",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "reply_to": "comment-100",
+        "answers": "comment-101",
+        "body": "Thanks. Which test did that rerun cover, and under which marker? (question tester-thread-reply of run 4242)"
+      },
+      {
+        "id": "comment-103",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "reply_to": "comment-100",
+        "answers": "comment-102",
+        "body": "control: a reply under the person's own reply (run 4242)"
+      },
+      {
+        "id": "comment-104",
+        "author": { "id": "session-planner", "kind": "session" },
+        "reply_to": "comment-100",
+        "answers": "comment-102",
+        "body": "Not mine to answer."
+      },
+      {
+        "id": "comment-105",
+        "author": { "id": "session-tester", "kind": "session" },
+        "reply_to": "comment-100",
+        "answers": "comment-102",
+        "body": "TestQuartzLantern, under VIOLET-OTTER-88. <!-- legion-answer:e5e5e5e5f6f6f6f6 -->"
+      }
+    ]
+  },
   "comments/comment-404": { "error": { "code": "NOT_FOUND", "message": "comment not found" } },
   "issues/ALX-3/collaborators": {
     "legion_registry": "available",

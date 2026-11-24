@@ -51,6 +51,14 @@ answers_lines() {
   boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" \
     '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st))] | length'
 }
+# no_question_lines SESSION BECAUSE: how many of this boot's hand-offs for SESSION the loop took for
+# no question for the reason BECAUSE, whole: its `answers: hand-off is no question; not answered`
+# lines naming SESSION with that `because`. A20's control reads the reason the loop gives a reply in
+# a comment thread that follows no agent's comment.
+no_question_lines() {
+  boot_log | jq -s --arg s "$1" --arg b "$2" \
+    '[.[] | select(.msg == "answers: hand-off is no question; not answered" and .session == $s and .because == $b)] | length'
+}
 # question_lines QUESTION: how many lines of this boot's daemon log name QUESTION, whatever the
 # `answers:` message. Zero says the boot was handed nothing of it at all.
 question_lines() {
@@ -845,6 +853,28 @@ one_delivery_in() {
     'type == "array" and length == 1 and .[0].state == $state and ((.[0].error // "") | startswith($error))' \
     <<<"${1:-null}" >/dev/null 2>&1
 }
+# thread_replies_by HEAD SESSION prints SESSION's replies in the thread of comment HEAD as Dispatch
+# holds it now (GET comments/<head>, which lists every reply under the head, oldest first), each as
+# {id, answers, body}: `answers` is the comment a reply was written under, which Dispatch keeps
+# beside the thread's head (`reply_to`, the head of every reply in a thread). It prints `[]` for
+# none, for Dispatch's error body, and for no comment id at all (A20).
+thread_replies_by() {
+  local body
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  jq -c --arg s "$2" '[.replies[]? | select(.author.id == $s) | {id, answers, body}]' <<<"${body:-null}" 2>/dev/null ||
+    printf '[]\n'
+}
+# first_reply_id REPLIES prints the id of the oldest of those replies, empty for none: in A3's
+# thread, the loop's answer to the mention, which A20's person replies under.
+first_reply_id() { jq -r 'if type == "array" then (.[0].id? // empty) else empty end' <<<"${1:-null}" 2>/dev/null || true; }
+# reply_count REPLIES: how many replies the list holds, 0 for a list that is none.
+reply_count() { jq 'if type == "array" then length else 0 end' <<<"${1:-null}" 2>/dev/null || printf '0\n'; }
+# reply_answering REPLIES COMMENT prints the body of the newest of those replies written under
+# COMMENT (its `answers`), and fails while none is: the answer to a person's reply in a thread.
+reply_answering() {
+  jq -e -r --arg c "$2" 'if type == "array" then ([.[] | select(.answers == $c)] | last | .body? // empty) else empty end' \
+    <<<"${1:-null}" 2>/dev/null
+}
 # rows_hold_paths ROWS PATH...: the omp_session_files rows hold a row for each PATH.
 rows_hold_paths() {
   local rows=$1 path
@@ -868,6 +898,15 @@ registry_entry_matches() {
 # replaced it (the tester the daemon restarted under a new session).
 registry_replaced_by() {
   jq -e --arg s "$2" '.replaced_by == $s' <<<"${1:-null}" >/dev/null 2>&1
+}
+# registry_entry_in_workflow ANSWER SESSION ROLE_TOKEN: the listener's answer for SESSION's Legion
+# agent registry entry (GET /v1/legion/agents/sessions/<session>, the entry inside `agent` or bare,
+# as check_boot reads it) is SESSION's under ROLE_TOKEN, and says neither that its issue has left
+# the workflow (`finished`) nor that the daemon released its claim (`released`). A21 asks its role
+# mention only of such an entry: the role's newest entry, read for an issue still in the workflow.
+registry_entry_in_workflow() {
+  jq -e --arg s "$2" --arg r "$3" '(.agent // .) | type == "object" and .session_id == $s and .role_token == $r
+    and (.finished // false) == false and (.released // false) == false' <<<"${1:-null}" >/dev/null 2>&1
 }
 
 # ---- GitHub ----------------------------------------------------------------------------------------
@@ -994,6 +1033,15 @@ tree_claims_parked() {
   jq -e --arg t "$2" 'type == "object"
     and any(.claims[]?; .tree == $t)
     and all(.claims[]? | select(.tree == $t); .state | IN("suspended", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
+}
+# issue_claims_stopped CLAIMS ISSUE: the listing `legion claims list --json` printed holds at least
+# one claim of ISSUE, and every claim of ISSUE in it stands suspended, failed or retired, so nothing
+# of the issue started (A21, whose implementer's claim is failed and whose architect's suspended).
+# The claim it must hold is what makes the rest mean anything, as in tree_claims_parked.
+issue_claims_stopped() {
+  jq -e --arg i "$2" 'type == "object"
+    and any(.claims[]?; .issue == $i)
+    and all(.claims[]? | select(.issue == $i); .state | IN("suspended", "failed", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
 }
 
 # ---- A13: branch against base ------------------------------------------------------------------------

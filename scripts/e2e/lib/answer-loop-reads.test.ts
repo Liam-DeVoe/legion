@@ -150,6 +150,7 @@ quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
 loud_log=${shq(join(data, "daemon-no-answers-loud.log.txt"))}
 review_log=${shq(join(data, "daemon-review-round.log.txt"))}
 gh_lines_log=${shq(join(data, "daemon-gh-lines.log.txt"))}
+thread_replies_log=${shq(join(data, "daemon-thread-replies.log.txt"))}
 boot_offset=${bootOffset}
 whole_run=0
 store=files
@@ -531,6 +532,35 @@ describe("the daemon's log, boot by boot", () => {
       ).code
     ).toBe(1);
     expect(run("daemon_log=$empty_log; phase_changed ALX-5 reviewing accepting").code).toBe(1);
+  });
+
+  // A20's control: the person's second reply follows their own, in a thread whose root a person
+  // wrote, so the tester's daemon takes it for no question for that reason and logs so. Only the
+  // line of that session and that whole reason counts.
+  test("no_question_lines counts a session's hand-offs taken for no question for one reason", () => {
+    const thread = "daemon_log=$thread_replies_log; boot_offset=0";
+    const nobody = `"a reply in a comment thread whose root and newest comment before the reply no agent wrote"`;
+    expect(read(`${thread}; no_question_lines session-tester ${nobody}`).text).toBe("1");
+    expect(read(`${thread}; no_question_lines session-tester-old ${nobody}`).text).toBe("1");
+    expect(
+      read(
+        `${thread}; no_question_lines session-tester "a root comment that does not mention the agent"`
+      ).text
+    ).toBe("1");
+    // Another session, a prefix of the reason, and a line of another message are not it.
+    expect(read(`${thread}; no_question_lines session-planner ${nobody}`).text).toBe("0");
+    expect(
+      read(`${thread}; no_question_lines session-tester "a reply in a comment thread"`).text
+    ).toBe("0");
+    // The boot after the one that logged it, and an empty log, logged none.
+    expect(
+      read(
+        `${thread}; boot_offset=$(stat -c %s "$daemon_log"); no_question_lines session-tester ${nobody}`
+      ).text
+    ).toBe("0");
+    expect(
+      read(`daemon_log=$empty_log; boot_offset=0; no_question_lines session-tester ${nobody}`)
+    ).toEqual({ code: 0, text: "0" });
   });
 });
 
@@ -1424,6 +1454,46 @@ describe("the questions file", () => {
     }
   });
 
+  // A20 asks the tester a second question in A3's thread, and A21 the implementer it fails on an
+  // issue in implementing. Each question is its row's alone and carries keys, and each key is a
+  // fact of the task its agent was given and none of the question's own words, so an answer
+  // holding them is one read from the agent's conversation.
+  test("the live file asks A20's and A21's questions of agents whose tasks hold their keys", () => {
+    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as {
+      agents: Record<string, { role: string; task: string; replacement_task?: string }>;
+      questions: {
+        id: string;
+        agent?: string;
+        criteria: string[];
+        text: string;
+        must_contain?: string[];
+      }[];
+    };
+    const rows = [
+      { id: "tester-thread-reply", criterion: "A20", agent: "tester", role: "tester" },
+      {
+        id: "failed-implementer-role",
+        criterion: "A21",
+        agent: "failed_implementer",
+        role: "implementer",
+      },
+    ];
+    for (const row of rows) {
+      const question = file.questions.find((q) => q.id === row.id);
+      expect(question?.criteria).toEqual([row.criterion]);
+      expect(question?.agent).toBe(row.agent);
+      const agent = file.agents[row.agent];
+      expect(agent?.role).toBe(row.role);
+      const tasks = `${agent?.task ?? ""} ${agent?.replacement_task ?? ""}`.toLowerCase();
+      const keys = question?.must_contain ?? [];
+      expect(keys.length).toBeGreaterThan(0);
+      for (const key of keys) {
+        expect(tasks).toContain(key.toLowerCase());
+        expect(question?.text.toLowerCase()).not.toContain(key.toLowerCase());
+      }
+    }
+  });
+
   test("recorded_hit reads the hits the file records as not about the loop", () => {
     expect(
       run(`recorded_hit skills/envoy/SKILL.md 'A peer with no tools of its own still answers.'`)
@@ -1577,6 +1647,61 @@ describe("Dispatch", () => {
     expect(read("comment_deliveries ''")).toEqual({ code: 0, text: "[]" });
   });
 
+  // A20 replies under the loop's own answer in A3's thread and reads the second answer there off
+  // the thread as Dispatch holds it now (GET comments/<head>, every reply under the head, oldest
+  // first): one session's replies in it, the first of them (the answer the person replies under),
+  // how many there are, and the one written under a given comment, which Dispatch keeps as the
+  // reply's `answers` beside the thread's head (`reply_to`).
+  test("thread_replies_by reads one session's replies in a comment's thread, oldest first", () => {
+    const tester = read("thread_replies_by comment-100 session-tester");
+    expect(tester.code).toBe(0);
+    expect(JSON.parse(tester.text)).toEqual([
+      {
+        id: "comment-101",
+        answers: "comment-100",
+        body: "VIOLET-OTTER-88, and 20 of 20 passed. <!-- legion-answer:c3c3c3c3d4d4d4d4 -->",
+      },
+      {
+        id: "comment-105",
+        answers: "comment-102",
+        body: "TestQuartzLantern, under VIOLET-OTTER-88. <!-- legion-answer:e5e5e5e5f6f6f6f6 -->",
+      },
+    ]);
+    expect(read("thread_replies_by comment-100 session-planner | jq -r '.[].id'").text).toBe(
+      "comment-104"
+    );
+    expect(read("thread_replies_by comment-100 session-architect")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    // A thread with no replies, Dispatch's error body, a comment it answers nothing for, and no
+    // comment id at all: no replies.
+    expect(read("thread_replies_by comment-90 session-tester")).toEqual({ code: 0, text: "[]" });
+    expect(read("thread_replies_by comment-404 session-tester")).toEqual({ code: 0, text: "[]" });
+    expect(read("thread_replies_by comment-never session-tester")).toEqual({ code: 0, text: "[]" });
+    expect(read("thread_replies_by '' session-tester")).toEqual({ code: 0, text: "[]" });
+  });
+
+  test("first_reply_id, reply_count and reply_answering read those replies", () => {
+    const replies = "replies=$(thread_replies_by comment-100 session-tester)";
+    expect(read(`${replies}; first_reply_id "$replies"`).text).toBe("comment-101");
+    expect(read(`${replies}; reply_count "$replies"`).text).toBe("2");
+    expect(read(`${replies}; reply_answering "$replies" comment-102`).text).toContain(
+      "TestQuartzLantern"
+    );
+    // The first reply is the one written under the head; none of the tester's is written under
+    // the control, nor under a comment named by no id.
+    expect(read(`${replies}; reply_answering "$replies" comment-100`).text).toContain("20 of 20");
+    expect(read(`${replies}; reply_answering "$replies" comment-103`).code).not.toBe(0);
+    expect(read(`${replies}; reply_answering "$replies" ''`).code).not.toBe(0);
+    // No replies, and a list that is none, hold no id, no count and no answer.
+    for (const none of ["'[]'", "''", `'{"error":"comment not found"}'`]) {
+      expect(read(`first_reply_id ${none}`)).toEqual({ code: 0, text: "" });
+      expect(read(`reply_count ${none}`)).toEqual({ code: 0, text: "0" });
+      expect(read(`reply_answering ${none} comment-102`).code).not.toBe(0);
+    }
+  });
+
   test("rows_hold_paths and scan_rows read the daemon's and Oh My Pi's own rows", () => {
     const rows = `[{"path":"/s/architect.jsonl"},{"path":"/s/tester.jsonl"}]`;
     expect(run(`rows_hold_paths '${rows}' /s/architect.jsonl /s/tester.jsonl`).code).toBe(0);
@@ -1600,6 +1725,32 @@ describe("Dispatch", () => {
     expect(run(`registry_replaced_by '${entry}' session-tester`).code).toBe(0);
     expect(run(`registry_replaced_by '${entry}' session-other`).code).toBe(1);
     expect(run(`registry_replaced_by '' session-tester`).code).toBe(1);
+  });
+
+  // A21 asks the role mention of a failed implementer only once the registry's entry for its
+  // session reads as an issue still in the workflow: under the role token the mention names, and
+  // neither finished nor released. The route answers the entry inside `agent`, or bare.
+  test("registry_entry_in_workflow reads an entry under its role token, neither finished nor released", () => {
+    const entry = (fields: string) =>
+      `'{"agent":{"session_id":"session-implementer","role_token":"ALX-11-implementer","issue":"ALX-11","live":false${fields}}}'`;
+    const holds = (answer: string, session = "session-implementer", token = "ALX-11-implementer") =>
+      run(`registry_entry_in_workflow ${answer} ${session} ${token}`).code;
+    expect(holds(entry(""))).toBe(0);
+    expect(holds(entry(`,"finished":false,"released":false`))).toBe(0);
+    expect(
+      holds(
+        `'{"session_id":"session-implementer","role_token":"ALX-11-implementer","answering":true}'`
+      )
+    ).toBe(0);
+    // An issue that has left the workflow, a claim the daemon released: not the case A21 asks.
+    expect(holds(entry(`,"finished":true`))).toBe(1);
+    expect(holds(entry(`,"released":true`))).toBe(1);
+    // Another session's entry, another role's, and no entry at all.
+    expect(holds(entry(""), "session-other")).toBe(1);
+    expect(holds(entry(""), "session-implementer", "ALX-11-tester")).toBe(1);
+    expect(holds(`'{"error":"no such agent"}'`)).toBe(1);
+    expect(holds("null")).toBe(1);
+    expect(holds("''")).toBe(1);
   });
 });
 
@@ -1803,6 +1954,26 @@ describe("the daemon's own record and state", () => {
       run(`tree_claims_parked '{"claims":[{"tree":"ALX-9","state":"suspended"}]}' ALX-1`).code
     ).toBe(1);
     expect(run(`tree_claims_parked '' ALX-1`).code).toBe(1);
+  });
+
+  // A21's issue holds a failed implementer and a suspended architect, and a role mention of the
+  // implementer must start neither: every claim of the issue stands suspended, failed or retired.
+  test("issue_claims_stopped holds only while the issue has a claim and none of them runs", () => {
+    const stopped = `{"claims":[{"issue":"ALX-11","state":"failed"},{"issue":"ALX-11","state":"suspended"},{"issue":"ALX-12","state":"idle"}]}`;
+    expect(run(`issue_claims_stopped '${stopped}' ALX-11`).code).toBe(0);
+    expect(
+      run(`issue_claims_stopped '{"claims":[{"issue":"ALX-11","state":"retired"}]}' ALX-11`).code
+    ).toBe(0);
+    for (const state of ["queued", "launching", "ready", "working", "idle"]) {
+      const started = `{"claims":[{"issue":"ALX-11","state":"failed"},{"issue":"ALX-11","state":"${state}"}]}`;
+      expect(run(`issue_claims_stopped '${started}' ALX-11`).code).toBe(1);
+    }
+    // A listing that holds no claim of the issue examined nothing of it, as in tree_claims_parked.
+    expect(run(`issue_claims_stopped '{"claims":[]}' ALX-11`).code).toBe(1);
+    expect(
+      run(`issue_claims_stopped '{"claims":[{"issue":"ALX-12","state":"failed"}]}' ALX-11`).code
+    ).toBe(1);
+    expect(run(`issue_claims_stopped '' ALX-11`).code).toBe(1);
   });
 });
 

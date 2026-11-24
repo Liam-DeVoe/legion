@@ -218,7 +218,7 @@ Each item below names a script, then what it proves.
 
 - `answer-loop.sh`
 
-  the answer loop (INFRA-204, acceptance A1-A10, A12-A19) on the branch's daemon, listener and Dispatch with real Anthropic models, and OpenAI's GPT-6.1 where the model route serves it (A10), under both tmux conversation stores (`files`, then `session_store: postgres`):
+  the answer loop (INFRA-204, acceptance A1-A10, A12-A21) on the branch's daemon, listener and Dispatch with real Anthropic models, and OpenAI's GPT-6.1 where the model route serves it (A10), under both tmux conversation stores (`files`, then `session_store: postgres`):
   stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence and a negative control, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
   A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte.
   Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys, and A3's second leg drives Playwright's Chromium against the SPA this checkout builds and this run's Dispatch serves
@@ -1628,7 +1628,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   its one delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
   The delivery is read again from `GET /comments/{id}` until it is sent, never off the comment's own `POST` answer, which carries it `pending`: Dispatch settles a mention after it answers.
   Control: a mention of a session nobody registered, on the same closed issue, fails `no live session <id>`, read again from `GET /comments/{id}` until it settles, since Dispatch first waits out a listener take-over (12 s).
-  A mention of a role nobody holds is no control since main's #4079: the listener keeps such a role message for an hour for the role's next holder, on the base commit as on the branch, so its delivery stays `pending`.
+  A mention of a role nobody holds is no control: under a project whose daemon answers, Dispatch keeps a mention of a role the registry holds no entry for, for the role's first holder, rather than refuse it.
   Conversation-page leg: the same person, in Playwright's Chromium signed in by the trusted identity header, opens the closed issue's Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one no later session replaced) by its link to `/agents/<session>/live`, sends a second question there in the mode the page offers a stopped agent (Aside), and waits four minutes for the answer;
   it must hold that question's key both on the page's own thread and in the record the page reads (`GET /agents/{session}/messages`).
   A screenshot per step goes to `a3/<store>/`, and a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL naming every row the page drew.
@@ -1792,6 +1792,25 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   the daemon's unit tests hold that refusal and its control (`internal/ghtool`).
   The rig reads the approvals back as the implement App, as A17 reads the comments (**GitHub** below).
 
+- A20 (right after A3, in whose thread it replies, so a run narrowed to A20 must name A3 too): the proof person replies under the tester's answer to A3's role mention, with `reply_to` that answer's id and no mention, asking a question whose answer the tester's conversation holds.
+  Only a person's reply notifies the sessions that wrote in a thread, so Dispatch sends it to the tester's session on its agent subject, where the listener holds it 60 s before it hands it to the tester's daemon, the session being one it has no record of;
+  the answer is waited for 300 s, the four minutes the other rows give an answer and that minute.
+  The loop answers a reply in a comment thread that mentions nobody when the newest comment before it is the agent's, else when the thread's root is, and posts the answer in that thread under the reply.
+  So the thread of A3's comment (`GET /comments/{id}`, every reply under the head, oldest first) must hold a second reply of the tester's, written under the person's reply (its `answers`, which Dispatch keeps beside the thread's head in `reply_to`) and holding the question's keys;
+  the tester's claim stays suspended and the daemon's tmux server holds no more panes.
+  Control: a second reply the person posts at once, under their own, follows a person's comment in a thread whose root a person wrote, so it is no agent's to answer:
+  the tester's daemon logs it `answers: hand-off is no question; not answered` with `because` `a reply in a comment thread whose root and newest comment before the reply no agent wrote`, and the thread holds the tester's two replies and no third.
+  No later check posts a reply in that thread, or in another the tester wrote in, which the loop would answer as well.
+
+- A21 (last of each pass): a tree of its own, with its architect (no task) and an Oh My Pi implementer whose conversation holds the answer to a question, both suspended, the implementer until its session has left the listener's registry.
+  **Departure:** with the daemon stopped the run writes the issue into the daemon's record in `implementing`, its tree's lifecycle open under the workflow as A6's is, and writes the implementer's claim `failed` as the supervisor fails a claim whose deaths ran out (cause `died` with its sentence and time, no locator, `suspended_by` empty), since no `legion claims` command fails a claim.
+  The daemon boots on that record and relaunches nothing of it: a failed claim waits for an operator, and an operator's suspension holds against the boot's resume.
+  The question is asked only once `legion state` keeps the tree live in `implementing`, the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token as neither `finished` nor `released`:
+  the case of a role with no live holder whose issue has not left the workflow.
+  Then a person's comment on the issue mentions `role:<token>`, as A3's does;
+  its one delivery must be `sent` to the implementer's session, that session's reply to the comment must hold the question's keys, every claim of the issue must still stand `failed` or `suspended`, and no pane may start.
+  The control is what a resolution that names a role's newest entry only once that entry's issue has left the workflow does with this same mention: it settles the delivery `failed` with `no holder for role <token>`, pins no session and answers nothing, and the row's FAIL reads out the delivery's state and error.
+
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it;
   the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;
   then the bus is restored and the base commit's three binaries take the same four.
@@ -1827,7 +1846,7 @@ the reachability preflight counted as a model call, the agent's own words counte
 A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
 the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
 the listener's hand-off, read from the boot's `404` on the heartbeat route;
-INFRA-448's registry routes, read from the checkout (A3); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+INFRA-448's registry routes, read from the checkout (A3, A20, A21); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
 Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
 **Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
 the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs

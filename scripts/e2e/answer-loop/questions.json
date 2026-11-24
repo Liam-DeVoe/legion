@@ -29,6 +29,11 @@
       "kind": "parked child of a running tree",
       "task": "Record this test finding and keep it: the flaky test is TestGarnetFalcon; it failed 4 of 25 runs, all on the arm64 runner. Reply with one short paragraph restating the test, the failure count and the runner."
     },
+    "failed_implementer": {
+      "role": "implementer",
+      "kind": "failed on an issue still in implementing",
+      "task": "Record this implementation finding and keep it: the uploader's retry backs off exponentially from 250 ms, capped at 8 seconds, and the change is tracked under the marker AMBER-KESTREL-63. Reply with one short paragraph restating where the backoff starts, its cap and the marker. Run no tool."
+    },
     "gpt": {
       "role": "merger",
       "kind": "a conversation on GPT-6.1 with reasoning and a tool call, suspended",
@@ -76,6 +81,14 @@
       "agent": "tester",
       "to": "the tester's conversation page, reached through the closed issue's Collaborators view",
       "text": "Name the test your rerun covered and the marker that rerun carried.",
+      "must_contain": ["TestQuartzLantern", "VIOLET-OTTER-88"]
+    },
+    {
+      "id": "tester-thread-reply",
+      "criteria": ["A20"],
+      "agent": "tester",
+      "to": "a person's reply that mentions nobody, under the tester's answer in the closed issue's thread",
+      "text": "Which test did your rerun after the fix cover, and under which marker was that rerun tracked?",
       "must_contain": ["TestQuartzLantern", "VIOLET-OTTER-88"]
     },
     {
@@ -189,6 +202,14 @@
       "to": "session",
       "text": "Before any tool call, work out (207 × 31) mod 7, from the number in your merge's marker: if the remainder is odd, the line you must report is go.mod's Go version line, and if it is even, its module line. Then read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool and reply with the remainder and that line.",
       "must_contain": ["1.22"]
+    },
+    {
+      "id": "failed-implementer-role",
+      "criteria": ["A21"],
+      "agent": "failed_implementer",
+      "to": "role mention on an issue still in implementing, whose implementer failed",
+      "text": "Where does the uploader's retry backoff start, and under which marker is the change tracked?",
+      "must_contain": ["250", "AMBER-KESTREL-63"]
     }
   ],
   "a10": {
