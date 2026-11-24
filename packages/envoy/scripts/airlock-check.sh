@@ -830,8 +830,8 @@ say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_
 say "xother_error=\$(curl -sS -H "X-Other: \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
 say "query_error=\$(curl -sS "$AIRLOCK_S_URL/read?k=\$P" 2>&1 | tr '\n' ' ')"
-say "minted=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: $minted" $AIRLOCK_S_URL/read)"
-say "minted_error=\$(curl -sS -H "X-Other: $minted" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "minted=\$(curl -sS -o $WORK_DIR/k3-minted-answer -w %{http_code} -H "X-Other: $minted" $AIRLOCK_S_URL/read)"
+say "minted_error=\$(tr '\n' ' ' <$WORK_DIR/k3-minted-answer)"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -891,10 +891,11 @@ EOF
 		"X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder" \
 		"X-Other answered ${K3[xother]} and the query ${K3[query]}, each naming the placeholder left after the swap, with $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for their four requests; S recorded $xother_records with X-Other and $query_records with a query; the body carried $(shape "$body_ph")"
 	# The minted form is read as a placeholder too: in a build whose scan reads a release's form
-	# alone (the proxy mutant proxy-leftover-stored-form-only) it reaches S, and this fails.
-	judge "$([ "${K3[minted]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[minted_error]}" && [ "$minted_records" = 0 ] && [ "$left_lines" -ge 6 ] && echo 0 || echo 1)" \
+	# alone (the proxy mutant proxy-leftover-stored-form-only) it reaches S, and this fails. It is
+	# one request, whose answer is kept to read its words from.
+	judge "$([ "${K3[minted]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[minted_error]}" && [ "$minted_records" = 0 ] && [ "$left_lines" -ge 5 ] && echo 0 || echo 1)" \
 		"a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not" \
-		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the six requests that carry a placeholder left after the swap"
+		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the five requests that carry a placeholder left after the swap"
 	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
 		"POST /read and GET /other get an error that names the rule, and S records neither" \
 		"both answered ${K3[post]} and ${K3[other]} with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
@@ -907,7 +908,7 @@ EOF
 		"the request that already carries the value is refused with an error that names it, and S records nothing" \
 		"it was refused: ${K3[carries]}"
 
-	# Seventeen of the eighteen requests this command makes reach the proxy on a CONNECT to a
+	# Sixteen of the seventeen requests this command makes reach the proxy on a CONNECT to a
 	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
 	# handshake fails before a request exists. A carried call logs its call line and a refused
 	# one its refusal record in that line's place, so the two are counted together
@@ -922,9 +923,9 @@ EOF
 	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
 	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
-	judge "$([ "$((log_after - log_before))" -ge 17 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$((log_after - log_before))" -ge 16 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 17 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
+		"$((log_after - log_before)) lines for the 16 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
 	# block with its allow removed: the same host and the authorization header, and no allow list.
