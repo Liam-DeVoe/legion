@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 
@@ -139,14 +138,6 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 	}
 }
 
-// failingHandler fails every fact it is handed, after the handlers before it wrote: the
-// transaction rolls back, as a fact whose apply failed does.
-type failingHandler struct{}
-
-func (failingHandler) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
-	return intake.Result{}, errors.New("the apply failed")
-}
-
 // A give of a plan delivered again writes nothing a second time and tells nobody a second time,
 // whatever its first delivery came to, and answers the same: a give refused for good (an issue that
 // started its work before Legion took plans), one an issue's group takes no plan for
@@ -197,7 +188,7 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				root := stepRoot(t, pool, phase.Admitted)
 				id, given := planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, widget(t))
 				before := settledRows(t, pool, engine)
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", id, given, engine, failingHandler{}); err == nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", id, given, engine, laterHandlerFails{}); err == nil {
 					t.Fatal("premise: the apply with a failing handler succeeded, want it failed")
 				}
 				if after := storeRows(t, pool); !reflect.DeepEqual(after, before) {
