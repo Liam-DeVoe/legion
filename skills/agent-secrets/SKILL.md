@@ -21,10 +21,11 @@ agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <c
 - **Pass `--reason` wherever a person or the model judge decides:** such a request that carries none is denied whole. A request every name of which is granted at once needs none.
 - **Write `--reason` as one sentence the approver can decide on.** Name in it the issue you work on. Meet the key's `guidance:` in it.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
-  The same command run again (the same names, `--ttl` and `--target`) uses the live grant or joins the waiting request, and asks nobody again.
+- The same command run again (the same names, `--ttl` and `--target`) uses the live grant or joins the waiting request, and asks nobody again.
 - A GitHub App credential is a profile. `--target ACCOUNT`, or `--target ACCOUNT/REPOSITORY` for each repository of one account, narrows it in a run of that name alone.
-  A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`.
-  A line `the profile NAME left out …` names permissions the token lacks (calls needing them get `403`).
+- A profile of value `token` puts one token in the name.
+- Any other profile puts the JSON object of installations in the name. GitHub answers that object `401`.
+- A line `the profile NAME left out …` names permissions the token lacks. A call that needs them gets `403`.
 
 ## The command reads the value, your shell does not
 
