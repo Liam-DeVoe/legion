@@ -3901,6 +3901,8 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
       (button) => button.textContent === handed.pressed
     );
     pressed?.focus();
+    // The click and the commit after it come in one task, before the armed press ends; user-event
+    // waits a task after every press.
     if (pressed !== undefined) fireEvent.click(pressed);
     const recorded = recordMoves();
     try {
@@ -5250,6 +5252,7 @@ test("Enter, and Space on a control that takes no typed text, arm a component's 
       for (const [named, target, key] of keys) {
         disarm();
         target.focus();
+        // The arm is read in the task the key is pressed in, which user-event's keyboard waits past.
         fireEvent.keyDown(target, { key });
         armed[named] = causedByReader(target);
       }

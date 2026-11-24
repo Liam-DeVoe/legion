@@ -146,6 +146,7 @@ test("ControlRow: a chip's ×, pressed on its glyph, arms the row's hand-off", (
   draw(<FilterRow names={["Alpha", "Beta"]} />);
   const chip = screen.getByRole("button", { name: "Remove Beta" });
   const glyph = within(chip).getByText("×");
+  // The arm is read in the task the click is made in, which user-event's own click waits past.
   expectArms(chip, () => fireEvent.click(glyph));
 });
 
@@ -782,6 +783,7 @@ test("the List: a column filter pick made by Enter in its text box arms the List
   const user = userEvent.setup();
   const box = await openStatusFilter(user);
   await user.paste("Done");
+  // The arm is read in the task the key is pressed in, which user-event's keyboard waits past.
   expectArms(box, () => fireEvent.keyDown(box, { key: "Enter" }));
 });
 
