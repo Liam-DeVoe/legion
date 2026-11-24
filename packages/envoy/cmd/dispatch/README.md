@@ -5045,7 +5045,10 @@ Each item below names a path with its method and identity, then its purpose.
   - `include_parent` moves each ancestor that is not in work to `in_progress`, a `done` ancestor too.
 
   Each issue that an option changes gets a comment from Dispatch's system actor, `{kind: "system", id: "parent-status-rule"}`, that names the caller, the issue the call names and the option.
-  The write itself records the caller, as a `PATCH` does, and the issue the call names gets no comment.
+  The write itself records the caller, as a `PATCH` does.
+  When the options changed at least one issue, the issue the call names gets one comment from the same actor after the last write, which names the call and lists each issue that the options changed, with the status it moved from and to, or its removal from the issue.
+  A call whose options changed no issue, a call with no option and a dry run leave the issue no such comment, and so does a call that a write refuses: each write that committed before the refusal keeps its own comment.
+  A keyed call leaves it once, in the transaction that marks its recovery point finished, and a repeat that finishes the call lists the changes of the attempts before it too.
   Before the first write, the call reads its plan again under the owner locks of each issue it writes and of each one's current and new parent, and checks the whole plan.
   Then it writes one issue at a time, each through the `PATCH`'s own write in a transaction of its own, in an order where each write keeps the rule.
   That order is the ancestors that `include_parent` moves, highest first, then the children that `unlink_children` removes, then the issue itself.

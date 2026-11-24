@@ -1289,13 +1289,15 @@ func outlivingTheClient(r *http.Request) context.Context {
 // it, and the progress of a status change. A route binds one (bindRequestKeyRecovery) and its
 // keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
-// the asks its steps made, then the mark and the answer's issue - and one row per step in
-// request_key_steps holding the step's entry, which every reader reads back under changed
-// (recoveryPointRead); status_change.go names each member once (pointChanged and the others).
-// Each step writes its part in its own transaction, right after its write phase's batch
-// (queueStatusChangeStep, which writeIssue queues through docs.Ledger.AfterWrites), since the
-// step's issue as its write answered it is known only once that batch has run, and the call
-// marks the point finished in a transaction of its own (markStatusChangeFinished).
+// the asks its steps made, what each step of an option changed, then the mark and the answer's
+// issue - and one row per step in request_key_steps holding the step's entry, which every reader
+// reads back under changed (recoveryPointRead); status_change.go names each member once
+// (pointChanged and the others). Each step writes its part in its own transaction, right after
+// its write phase's batch (queueStatusChangeStep, which writeIssue queues through
+// docs.Ledger.AfterWrites), since the step's issue as its write answered it is known only once
+// that batch has run, and the call marks the point finished in the transaction that ends it, with
+// the comment on the named issue where it owes one (statusChangeRun.finish,
+// markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
 }

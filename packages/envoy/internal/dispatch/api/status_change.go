@@ -13,13 +13,21 @@ package api
 // plan writes (planStatusChange). Each write then decides what it writes from what it reads under
 // its own lock, so a write that another writer made unneeded writes nothing.
 //
+// Each write of an option leaves a comment of Dispatch's system actor on its issue, which names
+// the call. When the options changed at least one issue, the issue the call names gets one comment
+// of that actor too, which names the call and lists each of those changes. The call writes it after
+// its last step, in a transaction of its own (statusChangeRun.finish). A call that a step refuses
+// writes no such comment, and each step that committed before the refusal keeps its own.
+//
 // A keyed call keeps its progress in its request key's recovery point (statusChangeRecovery):
 // each step that writes adds its entry there in its own transaction, right after its write phase,
-// with its issue as that write answered it, and the call marks the point finished after its last
-// step, with the answer's issue. A repeat of a call that finished is answered from the point
-// (replayStatusChange). A repeat that finds the holder gone before the mark takes the key over
-// (claimRequestKey), and that attempt runs only the steps the point does not hold, answering the
-// stored entries as their steps answered them.
+// with its issue as that write answered it and, for a step of an option, what it changed. The call
+// marks the point finished after its last step, with the answer's issue, in the transaction that
+// writes the named issue's comment. A repeat of a call that finished is answered from the point
+// (replayStatusChange) and writes no comment. A repeat that finds the holder gone before the mark
+// takes the key over (claimRequestKey), and that attempt runs only the steps the point does not
+// hold, answering the stored entries as their steps answered them; its comment on the named issue
+// lists the changes that the point holds before its own.
 
 import (
 	"cmp"
@@ -198,7 +206,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		ran, err = run.steps(ctx, plan.steps)
 	}
-	run.answer(ctx, w, ran, err)
+	run.answer(w, ran, err)
 }
 
 // statusChangeStep is one step of a status change's plan: the write of one issue, the option that
@@ -478,7 +486,9 @@ func refuseStepsOutsideCallerProject(callerProject string, steps []statusChangeS
 // earlier attempt this one resumes (resumedStatusChange), nil for a first attempt. pointed is that
 // the request key holds a recovery point, which the call marks finished after its last step: the
 // point this attempt resumed, or one a step of this keyed attempt wrote. named is the result of
-// the named issue's own step, when this attempt ran it (namedRan).
+// the named issue's own step, when this attempt ran it (namedRan). moved is what each step of an
+// option that this attempt ran changed, in the order the steps committed, which the comment on the
+// named issue lists (namedComment).
 type statusChangeRun struct {
 	server        *server
 	key           string
@@ -491,17 +501,19 @@ type statusChangeRun struct {
 	pointed       bool
 	named         issueWriteResult
 	namedRan      bool
+	moved         []statusChangeMove
 }
 
 // steps runs each step of the plan through the PATCH's write core, in a transaction of its own,
-// and answers the entry of each issue it changed. A step refused stops the call: it answers that
-// refusal, with the entries of the steps that committed before it. A call that sent
-// expected_sequence is fenced at each step (issueWriteFence), with every event an earlier step
-// appended on the issue the call names counted as the call's own, those of the point it resumes
-// included. Each step of a keyed call that writes adds its entry to the call's recovery point in
-// its own transaction (writeIssue, queueStatusChangeStep), under the request key's claim that
-// each step carries (issueWriteCallStep.claim). The close of the issue the call names leaves its
-// ask sweep to the call's answer (statusChangeRun.answer).
+// and answers the entry of each issue it changed. It keeps what each step of an option changed in
+// run.moved. A step refused stops the call: it answers that refusal, with the entries of the steps
+// that committed before it. A call that sent expected_sequence is fenced at each step
+// (issueWriteFence), with every event an earlier step appended on the issue the call names counted
+// as the call's own, those of the point it resumes included. Each step of a keyed call that writes
+// adds its entry, and what it changed for a step of an option, to the call's recovery point in its
+// own transaction (writeIssue, queueStatusChangeStep), under the request key's claim that each
+// step carries (issueWriteCallStep.claim). The close of the issue the call names leaves its ask
+// sweep to the call's answer (statusChangeRun.answer).
 func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep) ([]statusChangeEntry, error) {
 	s := run.server
 	ran := []statusChangeEntry{}
@@ -530,6 +542,9 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 			}
 		}
 		ran = append(ran, answeredStatusChangeEntry(written.issue, written.previousLastSeq))
+		if written.moved != nil {
+			run.moved = append(run.moved, *written.moved)
+		}
 		run.pointed = run.pointed || claim != nil
 		if s.statusChangeAfterStep != nil {
 			s.statusChangeAfterStep(ctx, index)
@@ -539,20 +554,20 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 }
 
 // answer ends the attempt, refused by err or not, with ran the entries of its own steps. After the
-// last step it takes the answer's issue (namedIssue) and marks the call's recovery point finished
-// with it, when the request key holds one (markStatusChangeFinished). Then it runs the ask sweep of
-// the named issue's close (sweep), since a close that committed is owed its sweep whatever the
+// last step it takes the answer's issue (namedIssue) and finishes the call with it (finish): the
+// comment on the named issue, and the mark of the call's recovery point. Then it runs the ask sweep
+// of the named issue's close (sweep), since a close that committed is owed its sweep whatever the
 // answer, and answers changed: the entries of the point it resumed, as their steps answered them,
 // followed by ran. An attempt whose key another attempt took over sweeps nothing: the attempt that
 // holds the key sweeps instead.
-func (run *statusChangeRun) answer(ctx context.Context, w http.ResponseWriter, ran []statusChangeEntry, err error) {
+func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntry, err error) {
 	s := run.server
 	var issue model.Issue
 	if err == nil {
 		issue, err = run.namedIssue()
 	}
-	if err == nil && run.pointed {
-		err = s.markStatusChangeFinished(ctx, issue)
+	if err == nil {
+		err = run.finish(issue)
 	}
 	if !errors.Is(err, errRequestKeyTakenOver) {
 		run.sweep()
@@ -606,9 +621,106 @@ func (run *statusChangeRun) sweep() {
 	}
 }
 
+// statusChangeMove is what the write of one step of an option changed on its issue, as the comment
+// on the issue the call names lists it (statusChangeRun.namedComment): the issue, the option, and
+// the status the write moved it from and to, both empty for an unlink. A keyed call keeps each one
+// in its recovery point (statusChangeRecovery.Moved), so the comment of an attempt that resumes
+// the call lists the moves of the attempts before it too.
+type statusChangeMove struct {
+	Key    string `json:"key"`
+	Option string `json:"option"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+}
+
+// line is the move as the comment on named, the issue the call names, lists it.
+func (move statusChangeMove) line(named string) string {
+	if move.Option == optionUnlinkChildren {
+		return fmt.Sprintf("- %s removed from %s (`%s`)", move.Key, named, move.Option)
+	}
+	return fmt.Sprintf("- %s moved from `%s` to `%s` (`%s`)", move.Key, move.From, move.To, move.Option)
+}
+
+// namedComment is the body of the comment on the issue the call names: the call, as the comment
+// of each step of an option names it, with each option that changed an issue, the rule sentence,
+// and a list of each change of the options, the moves of the point this attempt resumed first and
+// then this attempt's own, in the order their steps committed. It is "" when the options changed
+// no issue. The named issue's own step is no change of an option, so a call with no option, and
+// one whose options found nothing to change, owe no such comment.
+func (run *statusChangeRun) namedComment() string {
+	var moves []statusChangeMove
+	if run.resumed != nil {
+		moves = append(moves, run.resumed.Moved...)
+	}
+	moves = append(moves, run.moved...)
+	if len(moves) == 0 {
+		return ""
+	}
+	var options []string
+	var lines strings.Builder
+	for _, move := range moves {
+		if !slices.Contains(options, move.Option) {
+			options = append(options, move.Option)
+		}
+		lines.WriteString("\n" + move.line(run.key))
+	}
+	return fmt.Sprintf("Dispatch changed the issues below, because %s's status change of %s passed `%s`. %s\n%s",
+		run.callerName, run.key, strings.Join(options, "` and `"), statusChangeRuleSentence, lines.String())
+}
+
+// finish ends a call whose last step has run, with issue, the answer's issue, in one transaction of
+// its own that s.begin opens on run.outliving, so a client that goes away does not stop it. It
+// leaves the comment on the issue the call names (namedComment), when the options changed an
+// issue, and marks the call's recovery point finished when the request key holds one
+// (markStatusChangeFinished). The comment and the mark commit together or not at all: a repeat
+// that finds the mark is answered from the point and writes no second comment, and a repeat that
+// finds no mark takes the key over and writes the comment that this attempt did not. The comment is
+// Dispatch's system actor's, as the comment of each step of an option is (queueIssueComment), on
+// the named issue's owner, whose lock the transaction takes before it writes. It comes after the
+// events of every step, so no fence of a step reads it. A call that owes neither writes nothing.
+func (run *statusChangeRun) finish(issue model.Issue) error {
+	s, ctx := run.server, run.outliving
+	body := run.namedComment()
+	if body == "" && !run.pointed {
+		return nil
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if body == "" {
+		if err := markStatusChangeFinished(ctx, tx, issue); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	_, ledger := s.deps.Docs.Join(ctx, tx)
+	defer ledger.Discard()
+	if err := lockPatchOwners(ctx, tx, run.key); err != nil {
+		return err
+	}
+	commented, stored, err := s.queueIssueComment(ctx, tx, ledger, run.key, parentStatusRuleActor, body)
+	if err != nil {
+		return err
+	}
+	if run.pointed {
+		if err := markStatusChangeFinished(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		return err
+	}
+	s.publish(ctx, appendedEvents(commented)...)
+	s.storeDisplayTrees(ctx, run.key, stored)
+	return nil
+}
+
 // call is the write of one step: the status or the unlink the step writes, as the caller writes
-// it, and, for a step an option makes, the comment of Dispatch's system actor that names the call.
-// claim is the request key's claim of a keyed call, nil for a call with no key.
+// it, and, for a step an option makes, the comment of Dispatch's system actor that names the call
+// and what the write changed (issueWriteCallStep.moved). claim is the request key's claim of a
+// keyed call, nil for a call with no key.
 func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, claim *requestKeyClaim) issueWriteCall {
 	call := issueWriteCall{
 		writer:        run.writer,
@@ -630,6 +742,13 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 	call.comment = &issueComment{author: parentStatusRuleActor}
 	named, status := run.key, run.change.status
 	because := fmt.Sprintf("because %s's status change of %s passed `%s`. %s", run.callerName, named, step.option, statusChangeRuleSentence)
+	call.step.moved = func(before model.Issue) statusChangeMove {
+		move := statusChangeMove{Key: step.key, Option: step.option}
+		if !step.reparent {
+			move.From, move.To = before.Status, *step.statusAfter
+		}
+		return move
+	}
 	switch step.option {
 	case optionIncludeChildren:
 		call.step.leaves = func(before model.Issue) bool {
@@ -756,6 +875,9 @@ const (
 	pointEvents = "events"
 	// pointWithdrawn is the ids of the asks the named issue's own close withdrew.
 	pointWithdrawn = "withdrawn"
+	// pointMoved is what each step of an option changed, which the comment on the named issue
+	// lists.
+	pointMoved = "moved"
 	// pointFinished is the mark that every step of the call ran.
 	pointFinished = "finished"
 	// pointIssue is the answer's issue, written with the mark.
@@ -767,8 +889,9 @@ const (
 // to it in its own transaction, right after its write phase, with a statement that builds the
 // head's members in its SQL and adds its entry as a row of request_key_steps
 // (queueStatusChangeStep), and the call marks it finished, with the answer's issue, once its last
-// step has run (markStatusChangeFinished). Every reader reads it with the steps' entries under
-// changed (recoveryPointRead). Each field's json tag is the name of its member above, so every
+// step has run, in the transaction that writes the comment on the named issue
+// (markStatusChangeFinished). Every reader reads it with the steps' entries under changed
+// (recoveryPointRead). Each field's json tag is the name of its member above, so every
 // json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey, replayRecovered) names
 // each member as those statements do, and a member the point does not hold stays empty.
 type statusChangeRecovery struct {
@@ -781,6 +904,9 @@ type statusChangeRecovery struct {
 	// Withdrawn is the ids of the asks that the close of the issue the call names withdrew, which
 	// that close's ask sweep takes.
 	Withdrawn []string `json:"withdrawn"`
+	// Moved is what each step of an option changed, in the order the steps committed, which the
+	// comment on the issue the call names lists (statusChangeRun.namedComment).
+	Moved []statusChangeMove `json:"moved"`
 	// Finished is the mark that every step of the call ran.
 	Finished bool `json:"finished"`
 	// Issue is the answer's issue (statusChangeRun.namedIssue), written with the mark, which a
@@ -849,15 +975,17 @@ func (s *server) resumedStatusChange(ctx context.Context) (*statusChangeRecovery
 	return &point, nil
 }
 
-// markStatusChangeFinished writes into the recovery point of the keyed status change ctx carries
-// the mark that every step of the call ran, with issue, the answer's issue, once the last step has
-// run and before the call answers. A repeat that finds the mark is answered from the point, with
-// that issue, and never takes the key over. It runs in a transaction of its own that s.begin
-// opens, whose only write is to request_keys, which the commit step does not count
-// (markRequestKeyCommitted). The statement is scoped to the request's own claim, so an attempt
-// whose key another attempt took over is refused (errRequestKeyTakenOver). A request with no key
-// marks nothing.
-func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue) error {
+// markStatusChangeFinished writes in tx, the transaction that finishes the call
+// (statusChangeRun.finish), into the recovery point of the keyed status change ctx carries the mark
+// that every step of the call ran, with issue, the answer's issue, once the last step has run and
+// before the call answers. A repeat that finds the mark is answered from the point, with that
+// issue, and never takes the key over. Where tx writes the mark alone, its only write is to
+// request_keys, which the commit step does not count (markRequestKeyCommitted); where it writes
+// the comment on the named issue too, that step marks the key committed with it. The statement is
+// scoped to the request's own claim, so an attempt whose key another attempt took over is refused
+// (errRequestKeyTakenOver), and tx then rolls back with the comment. A request with no key marks
+// nothing.
+func markStatusChangeFinished(ctx context.Context, tx pgx.Tx, issue model.Issue) error {
 	claim, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 	if !keyed {
 		return nil
@@ -866,11 +994,6 @@ func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue
 	if err != nil {
 		return fmt.Errorf("mark a status change finished: %w", err)
 	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `
 		update request_keys set recovery = recovery || jsonb_build_object('`+pointFinished+`', true, '`+pointIssue+`', $4::jsonb)
 		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
@@ -881,7 +1004,7 @@ func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue
 	if tag.RowsAffected() == 0 {
 		return errRequestKeyTakenOver
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // queueStatusChangeStep queues on b, the batch that runs right after the write phase of one step
@@ -890,18 +1013,27 @@ func (s *server) markStatusChangeFinished(ctx context.Context, issue model.Issue
 // the head the key holds, which is the call's point so far, since only the attempt that holds the
 // key writes it: the ids of the events on the issue the call names (step.named) after
 // namedLastSeq, its last_seq as the step read it under that issue's owner lock, when the step holds
-// that lock (holdsNamed), and withdrawn, the ids of the asks that the named issue's own close
-// withdrew. It adds entry, the step's entry with its issue as the step's write answered it, as a
-// row of request_key_steps. The event ids exist, and the issue's last_seq and a close's closed_at
+// that lock (holdsNamed), withdrawn, the ids of the asks that the named issue's own close
+// withdrew, and moved, what a step of an option changed (nil for the named issue's own step). It
+// adds entry, the step's entry with its issue as the step's write answered it, as a row of
+// request_key_steps. The event ids exist, and the issue's last_seq and a close's closed_at
 // are known, only once the batch has run, so the statement derives the ids in its own SQL, after
 // the step's last event insert, and its callback reads them into events, the step's own events on
 // the named issue (issueWriteResult.namedEvents). The statement is scoped to the request's own
 // claim, so a step whose key another attempt took over rolls back (errRequestKeyTakenOver).
 func queueStatusChangeStep(
-	b *store.WriteBatch, step *issueWriteCallStep, entry statusChangeEntry, namedLastSeq int, holdsNamed bool,
-	withdrawn []string, events *[]int64,
+	b *store.WriteBatch, step *issueWriteCallStep, entry statusChangeEntry, moved *statusChangeMove, namedLastSeq int,
+	holdsNamed bool, withdrawn []string, events *[]int64,
 ) error {
 	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	moves := []statusChangeMove{}
+	if moved != nil {
+		moves = append(moves, *moved)
+	}
+	encodedMoves, err := json.Marshal(moves)
 	if err != nil {
 		return err
 	}
@@ -913,7 +1045,8 @@ func queueStatusChangeStep(
 		), head as (
 			update request_keys set recovery = jsonb_build_object(
 				'`+pointEvents+`', coalesce(recovery -> '`+pointEvents+`', '[]') || to_jsonb(named.ids),
-				'`+pointWithdrawn+`', coalesce(recovery -> '`+pointWithdrawn+`', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
+				'`+pointWithdrawn+`', coalesce(recovery -> '`+pointWithdrawn+`', '[]') || coalesce(to_jsonb($8::text[]), '[]'),
+				'`+pointMoved+`', coalesce(recovery -> '`+pointMoved+`', '[]') || $9::jsonb)
 			from named
 			where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
 			returning named.ids
@@ -921,7 +1054,7 @@ func queueStatusChangeStep(
 			insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
 		)
 		select ids from head
-	`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, encoded, withdrawn,
+	`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, encoded, withdrawn, encodedMoves,
 	).QueryRow(func(row pgx.Row) error {
 		err := row.Scan(events)
 		if errors.Is(err, pgx.ErrNoRows) {
