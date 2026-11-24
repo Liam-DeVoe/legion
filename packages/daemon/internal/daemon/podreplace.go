@@ -284,12 +284,23 @@ func tookWithPod(taken runtime.TakenPod) string {
 //     while this daemon remembers that launch (launchReplaced, endRoundALaunchReplaced).
 //   - A turn another holds, a read that fails, and an act the runtime cannot say was made leave
 //     the record standing.
-//   - An act not made — the issue's Sandbox runs the pod as its own — is forgotten, and the round
+//   - An act not made — its target still in use: the issue's Sandbox runs the pod as its own, or
+//     the Sandbox of the volume runs a live pod of its own on it — is forgotten, and the round
 //     decides again in this sweep's walk, from a new read.
 //   - An act made was made by the recorded replacement: its suspension landed, whether or not the
 //     call answered so. The round ends as that replacement, from the read made before it
 //     (roundReplaced), with the members that had not answered named, and the architect is told
 //     what it took. A launch's record tells the architect from the launch's own read.
+//
+// The sweep reads the records newest first, and finishes each target once (the Legion reviewer's
+// Important 3 on #5285 at acda4d1e). A target is taken once, so the finish of its newest record
+// takes the target's other records with it, and the notice is the newest record's: the last read
+// recorded before the target was taken. An older record of a target this sweep has decided is not
+// finished again: where its round is the one that ended, or it is a launch's, it went with the
+// newer record; where the newer record's finish was refused, it stands with it, and holds its
+// round; where the walk ends the target's round as a launch's replacement, it is the walk's too.
+// An older record of another round, whose record a launch's act finished, ends that round, which
+// queues no notice, since the record is gone.
 //
 // A runtime that reads no act leaves every record standing; such a runtime replaces no pod.
 func (s *supervision) finishReplacements(ctx context.Context, claims []supervise.Claim) (map[string]bool, error) {
@@ -298,7 +309,9 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 		return nil, err
 	}
 	held := map[string]bool{}
-	for _, r := range standing {
+	decided := map[actKey]targetDecided{}
+	for i := len(standing) - 1; i >= 0; i-- {
+		r := standing[i]
 		if ctx.Err() != nil {
 			return held, ctx.Err()
 		}
@@ -309,12 +322,25 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			continue
 		}
 		ofRound := rec.Round != ""
-		if ofRound && rec.By == viaLaunch.String() {
-			if _, replaced := s.launchReplaced(r.Issue, rec.Round); replaced {
+		attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
+		keys := actKeysOf(r, rec)
+		if was, ok := decidedOf(decided, keys); ok {
+			switch {
+			case was.walk || was.finished && (!ofRound || rec.Round == was.round):
+				s.log.Info("supervise: a newer record of the same target was decided at this sweep; this record of a replacement of the issue's pod goes with it", attrs...)
+				continue
+			case !was.finished:
+				s.log.Info("supervise: a newer record of the same target stands at this sweep; this record of a replacement of the issue's pod stands with it", attrs...)
+				held[r.Issue] = held[r.Issue] || ofRound
 				continue
 			}
 		}
-		attrs := []any{"issue", r.Issue, "pod", r.PodUID, "operation", r.Operation, "round", rec.Round}
+		if ofRound && rec.By == viaLaunch.String() {
+			if _, replaced := s.launchReplaced(r.Issue, rec.Round); replaced {
+				decide(decided, keys, targetDecided{walk: true})
+				continue
+			}
+		}
 		state, err := s.readAct(ctx, r)
 		switch {
 		case errors.Is(err, runtime.ErrTurnBusy):
@@ -330,20 +356,65 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.log.Info("supervise: the runtime cannot say whether a recorded replacement took the issue's pod; its record stands", attrs...)
 			held[r.Issue] = held[r.Issue] || ofRound
 		case state == runtime.ActNotMade:
-			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten", attrs...)
+			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: its target is still in use, the pod running as the issue's own or the Sandbox of the volume running a pod on it; its record is forgotten", attrs...)
 		case !ofRound:
 			taken := rec.taken(r)
-			s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, tookWithPod(taken), launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
+			finished := s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, tookWithPod(taken), launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
+			decide(decided, keys, targetDecided{finished: finished})
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it, and its round is not over yet: its call did not answer so, its daemon stopped, or the store refused the architect's workspace-taken notice; the round ends as that replacement, from the read made before it",
 				attrs...)
-			if !s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r) {
+			finished := s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r)
+			if !finished {
 				held[r.Issue] = true
 			}
+			decide(decided, keys, targetDecided{round: rec.Round, finished: finished})
 		}
 	}
 	return held, nil
+}
+
+// actKey is one target of an issue's acts: what an act takes and the uid of what it takes.
+type actKey struct {
+	issue string
+	act   runtime.RecordedAct
+}
+
+// targetDecided is what a sweep decided of a target from its newest record (finishReplacements):
+// the round that record ended, "" for a launch's own record; whether its finish committed; and
+// whether the walk ends the round as a launch's replacement (walk).
+type targetDecided struct {
+	round    string
+	finished bool
+	walk     bool
+}
+
+// actKeysOf is every target the act r records takes: its own, and the pod a launch's act took with
+// its volume (replacementRecord.WithPod).
+func actKeysOf(r store.PodReplacement, rec replacementRecord) []actKey {
+	keys := []actKey{{issue: r.Issue, act: r.Act}}
+	if rec.WithPod && r.PodUID != "" {
+		keys = append(keys, actKey{issue: r.Issue, act: runtime.PodAct(r.PodUID)})
+	}
+	return keys
+}
+
+// decidedOf is what the sweep decided of the first of keys it decided, and whether it decided any.
+func decidedOf(decided map[actKey]targetDecided, keys []actKey) (targetDecided, bool) {
+	for _, key := range keys {
+		if was, ok := decided[key]; ok {
+			return was, true
+		}
+	}
+	return targetDecided{}, false
+}
+
+// decide records was as what the sweep decided of each of keys.
+func decide(decided map[actKey]targetDecided, keys []actKey, was targetDecided) {
+	for _, key := range keys {
+		decided[key] = was
+	}
 }
 
 // readAct is the runtime's read of the act that r records (runtime.ActReader), under the pod's
