@@ -158,22 +158,8 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 	return claim.NewToken(project, issue, role)
 }
 
-// IssueWorkspaceDir is the directory an issue pod gives the issue's workspace of repository: the
-// place on the issue's volume where workspace-init provisions it (workspace.Location under
-// TreeRoot) and where every role of the pod works. A launch's working directory is read here
-// (issuePod.prepare), and so is the path the daemon names to the roles of an issue's next pod for
-// the workspace that a pod of another repository left on a kept volume (internal/daemon's
-// keptDiskMessage), so a change of the pod's layout moves both.
-func IssueWorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
-	located, err := workspace.Location(TreeRoot, repository, issue)
-	if err != nil {
-		return "", err
-	}
-	return located.Dir, nil
-}
-
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
-// the workspace's place on the issue's disk (IssueWorkspaceDir). It runs at every launch and
+// the workspace's place on the issue's disk (WorkspaceDir). It runs at every launch and
 // expects nothing of that disk. The pod's own disk is created with the pod and deleted with it
 // (INFRA-80). A kept volume (keptVolume) outlives the pod, so a new pod of the issue finds on it
 // what the pods before it left. Only a new or replacement pod provisions its workspace
@@ -185,12 +171,27 @@ func (issuePod) prepare(l *launch) error {
 	if spec.Repository.IsZero() {
 		return errors.New("no repository: a pod's init container provisions the issue's workspace from one")
 	}
-	working, err := IssueWorkspaceDir(spec.Repository, spec.Issue)
+	dir, err := WorkspaceDir(spec.Repository, spec.Issue)
 	if err != nil {
 		return err
 	}
-	l.workspace = working
+	l.workspace = dir
 	return nil
+}
+
+// WorkspaceDir is the directory of issue's workspace of repository in its pod: its place on the
+// issue's disk (workspace.Location under TreeRoot), the working directory of every role container
+// of the pod (issuePod.prepare), and so the directory each agent of the issue starts in. The
+// workflow engine names it in every task it composes (workflow.Config.WorkspaceDir, which the
+// daemon reads from here), and the daemon names it to the roles of an issue's next pod for the
+// workspace that a pod of another repository left on a kept volume (internal/daemon's
+// keptDiskMessage), so a change of the pod's layout moves all three.
+func WorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
+	working, err := workspace.Location(TreeRoot, repository, issue)
+	if err != nil {
+		return "", err
+	}
+	return working.Dir, nil
 }
 
 // labels carry the pod's tree and issue and no role: a role belongs to a process locator, not to a

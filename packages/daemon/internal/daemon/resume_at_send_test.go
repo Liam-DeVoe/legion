@@ -13,19 +13,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // startTaskNow is the text an architect start of key delivers: a resume carries the wait it
 // answers and no text (record.SuperviseRequest.Awaiting), and its send writes it from the record
-// (the daemon's rootTask, workflow.ResumeTask), so it is written here from the record as tx reads
-// it, under steps; any other start carries its own text.
+// (the daemon's rootTask, workflow.ResumeAwaitedRootTask), so it is written here from the record
+// as tx reads it, under steps; any other start carries its own text.
 func startTaskNow(ctx context.Context, tx pgx.Tx, records record.Store, key string, steps []record.DesignStep, start record.SuperviseRequest) (string, error) {
 	if start.Awaiting == nil {
 		return start.Task, nil
 	}
-	return workflow.ResumeTask(ctx, tx, records, key, *start.Awaiting, steps)
+	return workflow.ResumeAwaitedRootTask(ctx, tx, records, key, *start.Awaiting, steps)
 }
 
 // resumeDocument is the primary document of mainPathRoot these tests register its gate on.
@@ -35,7 +36,7 @@ const resumeDocument = "artifact-451"
 func (r *mainPathRig) putSpecGate(gate record.DesignGate) {
 	r.t.Helper()
 	gate.Issue, gate.Step, gate.ArtifactID = r.key, record.DesignStepSpec, resumeDocument
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.PutGate(r.ctx, tx, gate) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return r.records.PutGate(ctx, tx, gate) }); err != nil {
 		r.t.Fatalf("register the spec gate: %v", err)
 	}
 }
@@ -89,7 +90,9 @@ func (r *mainPathRig) runStart(id int64) {
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		r.t.Fatalf("run start row %d: %v", row.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
 		r.t.Fatalf("finish start row %d: %v", row.ID, err)
 	}
 	r.waitMachine()
@@ -254,8 +257,8 @@ func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testin
 		t.Run(fmt.Sprintf("approved since %t", approved), func(t *testing.T) {
 			r := newMainPathRig(t, true)
 			r.put(r.waitingRoot())
-			if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-				return r.records.KeepReadmittedApproval(r.ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
+			if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return r.records.KeepReadmittedApproval(ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
 			}); err != nil {
 				t.Fatalf("keep the re-admission's approval: %v", err)
 			}

@@ -57,7 +57,7 @@ const (
 	OutcomeProviderError Outcome = "provider_error"
 	// OutcomeProcessDied is the claim's process found gone while it was live (supervise's died).
 	OutcomeProcessDied Outcome = "process_died"
-	// OutcomeLaunchFailed is a launch the runtime refused (supervise's launchNow).
+	// OutcomeLaunchFailed is a launch the runtime refused (supervise's launchTries).
 	OutcomeLaunchFailed Outcome = "launch_failed"
 	// OutcomeNeverRegistered is a process whose agent did not register before its deadline, or
 	// registered and never said it was ready (supervise's registrationDeadline). It is a member of

@@ -64,7 +64,7 @@ type FailureCause string
 
 const (
 	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out, or
-	// refused it in a way no try changes, a system prompt past the start frame (launchNow,
+	// refused it in a way no try changes, a system prompt past the start frame (launchTries,
 	// promptRefused), with no other cause pending for the relaunch it refused.
 	CauseLaunchRefused FailureCause = "launch_refused"
 	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
@@ -127,7 +127,7 @@ var FailureCauses = []FailureCause{
 // o is what failed the process this relaunch replaces, from the caller that saw it. Where the
 // policy charges o, the cause derived from it (failureCause) is recorded on the claim before the
 // charge: it is what the claim fails under when this budget runs out, and what a launch the
-// runtime refuses on the way fails under too (launchNow, Claim.PendingCause). An outcome the
+// runtime refuses on the way fails under too (launchTries, Claim.PendingCause). An outcome the
 // policy charges nothing records no cause and leaves the one pending as it was: it fails nothing
 // itself, so it has no word for the claim to fail under. The retry of a relaunch the lifecycle
 // check refused carries the same outcome, which is why it is handed over in a closure rather than
@@ -151,13 +151,13 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if m.chargeLaunch(o) {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, ending)
+	return m.launchAfter(ctx, true, false, false, ending)
 }
 
 // chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether
 // the launch budget is spent. It is the count both launch-budget sites make: a process that did not
-// survive (relaunchAfterFailure) and a launch the runtime refused (launchNow, which retries in its
-// own loop rather than relaunching).
+// survive (relaunchAfterFailure) and a launch the runtime refused (launchTries, which retries in
+// its own loop rather than relaunching).
 func (m *Machine) chargeLaunch(o runtime.Outcome) bool {
 	if !Charges(o) {
 		return false

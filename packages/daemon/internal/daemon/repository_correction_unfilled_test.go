@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // unfilledKey is the issue whose record these tests write with no repository.
@@ -40,17 +41,15 @@ func recordUnfilled(t *testing.T, w *workflowRuntime, key string) {
 // transaction with its commit hooks, as every pass over a recorded issue's resolution does.
 func applyCorrection(t *testing.T, w *workflowRuntime, fact intake.DispatchIssue) {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		stored, err := w.records.Issue(scoped, tx, fact.Key)
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		stored, err := w.records.Issue(ctx, tx, fact.Key)
 		if err != nil {
 			return err
 		}
-		return w.engine.ApplyRepositoryChange(scoped, tx, *stored, fact)
+		return w.engine.ApplyRepositoryChange(ctx, tx, *stored, fact)
 	}); err != nil {
 		t.Fatalf("apply the correction of %s: %v", fact.Key, err)
 	}
-	committed()
 }
 
 // Every pass over a recorded issue's resolution leaves a record with no repository as it is:
@@ -127,7 +126,7 @@ func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T
 				t.Fatalf("notes on %s = %q, want none", unfilledKey, notes)
 			}
 
-			if _, _, left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil || left {
+			if left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil || left {
 				t.Fatalf("the backfill left a record = %t (%v), want every record filled", left, err)
 			}
 			got = recordedIssue(t, w, unfilledKey)

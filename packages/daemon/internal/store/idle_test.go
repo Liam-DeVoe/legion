@@ -184,7 +184,7 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 		values ($1, 'd-3', 'test it', $2, $2, $2, 'testing', 1, 3)`, string(token), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: rootIssue, Role: claim.RoleTester, Claim: token,
 			Entry: 4, HandoffCommit: "c0de"}); err != nil {
@@ -204,7 +204,7 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	// The issue moves into merging and its pull request merges: the claim reads the merging
 	// finished (record.MergedInMerging), and the ask made in testing does not hold the tester,
 	// which works no phase in merging.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `update issues set phase = 'merging' where key = $1`, rootIssue); err != nil {
 			return err
 		}
@@ -248,7 +248,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 	t.Helper()
 	ctx := context.Background()
 	var view pods.IdleView
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		view, err = readIdleView(ctx, tx, "legion", issue, st.idleRecordsOf())
 		return err
@@ -579,7 +579,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	releasedClaim(t, st, claim.RoleImplementer)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleImplementer)
 
-	park, err := st.Pool().Begin(ctx)
+	park, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

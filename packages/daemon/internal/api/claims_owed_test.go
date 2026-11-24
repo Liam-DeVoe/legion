@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -91,7 +90,7 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -543,7 +542,7 @@ func owedIssue(t *testing.T, h *harness) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
@@ -588,7 +587,9 @@ func recordMergeForward(t *testing.T, h *harness, asked record.MergeForward) {
 	}
 	pr.MergeForward = &asked
 	ctx := context.Background()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().PutPullRequest(ctx, tx, *pr) }); err != nil {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutPullRequest(ctx, tx, *pr)
+	}); err != nil {
 		t.Fatalf("record the merge forward %+v: %v", asked, err)
 	}
 }
@@ -940,10 +941,7 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 	h := newHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: unreadableIssues{record.NewStore()}, RoleFor: workflow.RoleFor,
-	}).Handler
+	serveOwedOver(h, h.store.Pool(), unreadableIssues{record.NewStore()})
 	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("owed on a daemon whose issue read fails = %d, want 500; body %s", recorder.Code, recorder.Body)

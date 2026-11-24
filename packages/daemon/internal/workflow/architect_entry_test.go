@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seededArchitectTask is the work the architect's seeded entry names: the text the transition
@@ -216,10 +217,11 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 		waiting := record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 5}, AnsweredAt: &answeredAt,
 			AnsweredBy: record.AnsweredByAsk}
 
-		seedRecord(t, pool, func(tx pgx.Tx) error {
-			ctx, _ := intake.WithCommitHooks(context.Background())
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ResumeAwaitedRoot(ctx, tx, root, waiting)
-		})
+		}); err != nil {
+			t.Fatalf("resume the answered root: %v", err)
+		}
 
 		assertArchitectEntryRaised(t, pool, engine, seededEntry+1, waiting)
 	})
@@ -261,8 +263,8 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 // names entry, carries the work of it, keeps waiting, the wait it answers, and the moment the
 // engine raised it, and the one start the resume wrote carries that same entry and that same wait,
 // claims no kept decision, and carries no text of its own. The daemon renders that start's task at
-// its send (its rootTask, through ResumeTask), so it is rendered here the same way, from the
-// record as it stands, and it must be the very task the row keeps.
+// its send (its rootTask, through ResumeAwaitedRootTask), so it is rendered here the same way,
+// from the record as it stands, and it must be the very task the row keeps.
 func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine, entry int64, waiting record.Awaiting) {
 	t.Helper()
 	row := entryRow(t, pool, claim.RoleArchitect)

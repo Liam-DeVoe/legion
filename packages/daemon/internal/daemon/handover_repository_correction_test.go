@@ -67,7 +67,7 @@ func (r *handOverCorrectionRig) seed() {
 	ctx := context.Background()
 	until := handOverCorrectionMoment.Add(time.Hour)
 	parent := handOverCorrectionRoot
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			r.records.PutIssue(ctx, tx, record.Issue{Key: handOverCorrectionRoot, Repo: "acme/widgets", DefaultBranch: "main",
 				GitHubRepo: "acme/widgets", Tree: handOverCorrectionRoot, Project: "LEGION", Title: handOverCorrectionRoot,
@@ -113,15 +113,7 @@ func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 // child is the handed-over child's record as it stands.
 func (r *handOverCorrectionRig) child() record.Issue {
 	r.t.Helper()
-	ctx := context.Background()
-	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		got, err = r.records.Issue(ctx, tx, handOverCorrectionChild)
-		return err
-	}); err != nil {
-		r.t.Fatalf("read the handed-over child: %v", err)
-	}
+	got := readIssue(r.t, r.pool, handOverCorrectionChild)
 	if got == nil {
 		r.t.Fatalf("%s is not recorded", handOverCorrectionChild)
 	}

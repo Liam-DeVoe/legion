@@ -146,12 +146,12 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 		}
 	})
 
-	// Past its review the wait has no row to take (record.KeepsSlot), so the repair of a worker
-	// with no task reaches the issue as it reaches any issue past its review
-	// (resumeSlottedWorkers' second half, record.PastReview): the merger is started at once on a
-	// start held for no slot, though the link still holds the issue, and the issue never stands
-	// in the line as a release for a wait, since it needs no slot to wait for.
-	t.Run("a merger with no task past its review is started again whatever holds its issue", func(t *testing.T) {
+	// In merging the wait has no row to take, since merging keeps none (record.KeepsSlot), so the
+	// repair of a worker with no task reaches the issue as it reaches any issue in accepting,
+	// retro or merging (resumeSlottedWorkers' second half, record.InSlotlessPhase): the merger is
+	// started at once on a start held for no slot, though the link still holds the issue, and the
+	// issue never stands in the line as a release for a wait, since it needs no slot to wait for.
+	t.Run("a merger with no task in merging is started again whatever holds its issue", func(t *testing.T) {
 		const (
 			waiter  = "LEGION-20"
 			blocker = "LEGION-91"
@@ -165,14 +165,14 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 		tick(t, pool, admission, "the-wait-begins")
 
 		if holdsSlot(t, pool, waiter) {
-			t.Fatalf("%s holds a row in merging, want none: its work is past its review", waiter)
+			t.Fatalf("%s holds a row in merging, want none: merging keeps no row", waiter)
 		}
 		if marked := issue(t, pool, waiter).ReleasedForWaitAt; marked != nil {
-			t.Fatalf("%s carries a release for a wait at %v, want none: past its review it holds no slot to give back", waiter, marked)
+			t.Fatalf("%s carries a release for a wait at %v, want none: in merging it holds no slot to give back", waiter, marked)
 		}
 		got := startsOf(t, pool, waiter)
 		if len(got) != 1 || got[0].role != claim.RoleMerger || got[0].needsSlot || !got[0].claimable {
-			t.Fatalf("the starts of %s = %+v, want the merger's one row, held for no slot and claimable at once: a phase past the review runs on no slot, so the wait holds nothing of it",
+			t.Fatalf("the starts of %s = %+v, want the merger's one row, held for no slot and claimable at once: merging runs on no slot, so the wait holds nothing of it",
 				waiter, got)
 		}
 		if want := seededEntryTask(waiter); got[0].task != want {
@@ -458,7 +458,7 @@ func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsSentItsTaskOnceItsBlockerIs
 	applyMovement(t, pool, admission, engine, "supervise", silenceID, silence)
 
 	got := startsOf(t, pool, waiter)
-	if want := workflow.ResumePhaseTask(issue(t, pool, waiter)); len(got) != 1 || got[0].role != claim.RoleImplementer || got[0].task != want {
+	if want := resumeTaskOf(t, pool, engine, waiter); len(got) != 1 || got[0].role != claim.RoleImplementer || got[0].task != want {
 		t.Fatalf("the starts of %s once its wait ended = %+v, want the implementer's one start carrying %q: the first silence fact after the slot sends the task",
 			waiter, got, want)
 	}

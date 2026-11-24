@@ -112,7 +112,8 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // now. The row is the durable half and the fact the acting half: a backstop that came due while
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
-// pod once.
+// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
+// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
 //
 // A row of an issue the daemon records as waiting on another issue is passed over while it was
 // armed less than workflow.WaitSilenceBound ago, so such a pod is woken a day after its release
@@ -150,9 +151,7 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
 		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
-			continue
 		}
-		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
 	}
 }
 
@@ -346,8 +345,21 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark)
-	if err != nil {
+	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
+	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
+	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	var taken bool
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if taken, err = r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark); err != nil || !taken {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
+				"issue", issue.Key, "role", held.Role, "detail", detail)
+		})
+		return nil
+	}); err != nil {
 		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
@@ -368,9 +380,6 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, detail)
-	} else {
-		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
@@ -502,7 +511,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		// role's record.
 		var facts pods.IdleClaim
 		var gets bool
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			whole, err := store.ClaimTx(ctx, tx, c.Token)
 			if err != nil {
 				return err
@@ -581,7 +590,7 @@ func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase
 // send can fail before any turn and then waits for the claim to come back (supervise's
 // delivery). A relaunch of a failed or retired worker keeps the task of an earlier entry that it
 // still holds, and does not deliver the new entry (keepsStartTask). A task of no entry is a
-// resume task (workflow.ResumePhaseTask) or a task of news alone (supervise.Delivery.NewsOnly),
+// resume task (workflow.Engine.ResumeTask) or a task of news alone (supervise.Delivery.NewsOnly),
 // which names the issue's run and phase too. This kind does not count a task of news alone, which
 // is no task of the phase (supervise.Delivery.StillWorked excludes it); the second kind does
 // (holdsUndeliveredNewsTask). The daemon sends the resume task with no entry, to a ready worker

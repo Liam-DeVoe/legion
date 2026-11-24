@@ -47,7 +47,7 @@ var ruleAskers = map[string]string{
 // review of a design document.
 var storedTaskReaders = map[string]string{
 	"(*" + senderModule + "workflow.Engine).sendOwedEntry": "a phase worker's entry, whose task its transition composed from the " +
-		"phase (workflow's task and ResumePhaseTask) and which names no person's review; a root architect's entry is sent by " +
+		"phase (workflow's task and Engine.ResumeTask) and which names no person's review; a root architect's entry is sent by " +
 		"workflow.Engine.SendArchitectStart, which sends none of it",
 	"(*" + senderModule + "workflow.Engine).enter": "the raise of an entry, which writes the task its caller composed and reads it " +
 		"back only to add a reviewer's round sentences (workflow.namingTheReviewRound) and hand that text to its caller; for a root " +
@@ -269,7 +269,8 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 		t.Error("the walk found no loop over kept decisions that writes them into text in workflow.KeptDecisionsTask")
 	}
 	// The resume of an answered root is rendered at each send from the gate as it stands
-	// (workflow.ResumeTask, the daemon's rootTask), so it is a sender too: the walk has to see it.
+	// (workflow.ResumeAwaitedRootTask, the daemon's rootTask), so it is a sender too: the walk has
+	// to see it.
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.short() == "workflow.resumeTask" }) {
 		t.Error("the walk found no resume sender (workflow.resumeTask) in internal/workflow")
 	}

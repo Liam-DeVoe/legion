@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -41,7 +43,7 @@ import (
 // the row's entry, of an earlier one or of no entry. The same claim with its completion of the
 // row's entry recorded gets none, since the exception's other terms are read at the row's entry.
 //
-// The fourth control is a ready worker's resume task (workflow.ResumePhaseTask), a task of no
+// The fourth control is a ready worker's resume task (workflow.Engine.ResumeTask), a task of no
 // entry: the implementer took entry 1, its row stands on entry 3, and it holds a task of entry 0
 // of the issue's run and phase unconfirmed. The repair passes over it as well, so the release
 // arms its backstop. The third and fourth controls fail if the exception reads only a task of the
@@ -90,7 +92,7 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 		completed              bool
 		// noEntryTask is whether the worker holds, unconfirmed in the same way, a task of no
 		// entry (entry 0) of the issue's run and phase in place of a task of an entry: a ready
-		// worker's resume task (workflow.ResumePhaseTask), which gives the claim no entry.
+		// worker's resume task (workflow.Engine.ResumeTask), which gives the claim no entry.
 		noEntryTask bool
 		// news is the task of news alone (supervise.Delivery.NewsOnly, newsTask) the worker
 		// holds in place of any other, nil for none.
@@ -209,7 +211,7 @@ func (r *pauseRig) putPullRequest(state record.PullRequestState, ask *record.Mer
 	r.t.Helper()
 	pr := record.PullRequest{State: state, Issue: pauseIssue, Repo: "acme/widgets", Number: 42, Branch: "legion/" + pauseIssue,
 		HeadSHA: "c0de", Failing: []string{}, MergeForward: ask}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.pauses.records.PutPullRequest(r.ctx, tx, pr)
 	}); err != nil {
 		r.t.Fatalf("record the pull request of %s: %v", pauseIssue, err)

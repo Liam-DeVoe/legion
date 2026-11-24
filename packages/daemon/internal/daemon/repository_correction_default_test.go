@@ -87,7 +87,7 @@ func (r *defaultChangeRig) recordRoot(key string, index int) {
 	root := record.Issue{Key: key, Tree: key, Project: correctionProject, Title: "a root on the project's default",
 		Phase: phase.Implementing, Generation: correctionGeneration, Status: "in_progress", DispatchStatus: "in_progress",
 		Rank: "A", HandedOver: true, LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -109,20 +109,19 @@ func (r *defaultChangeRig) recordRoot(key string, index int) {
 func (r *defaultChangeRig) followed(resolved, branch string) {
 	r.t.Helper()
 	read := &ghbranch.Repository{Name: ghrepo.MustParse(resolved), DefaultBranch: branch}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
 		for _, key := range defaultChangeKeys {
-			stored, err := r.records.Issue(scoped, tx, key)
+			stored, err := r.records.Issue(ctx, tx, key)
 			if err != nil {
 				return err
 			}
 			fact := intake.ListedIssue(dispatch.IssueSummary{Key: key, Title: "a root on the project's default", Status: "in_progress",
 				Rank: "A", HandedOver: true, LastSeq: 1, ResolvedRepo: resolved})
 			fact.RepositoryRead = read
-			if err := r.engine.ApplyRepositoryChange(scoped, tx, *stored, fact); err != nil {
+			if err := r.engine.ApplyRepositoryChange(ctx, tx, *stored, fact); err != nil {
 				return err
 			}
 		}
@@ -130,21 +129,12 @@ func (r *defaultChangeRig) followed(resolved, branch string) {
 	}); err != nil {
 		r.t.Fatalf("the follow onto %s: %v", resolved, err)
 	}
-	committed()
 }
 
 // issue is key's record as it stands.
 func (r *defaultChangeRig) issue(key string) record.Issue {
 	r.t.Helper()
-	ctx := context.Background()
-	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		issue, err = r.records.Issue(ctx, tx, key)
-		return err
-	}); err != nil {
-		r.t.Fatal(err)
-	}
+	issue := readIssue(r.t, r.pool, key)
 	if issue == nil {
 		r.t.Fatalf("%s is not recorded", key)
 	}

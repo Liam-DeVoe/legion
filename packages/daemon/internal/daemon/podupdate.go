@@ -2793,10 +2793,10 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
+	reasons := roundReasons(group, round)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound)}
 	}
 	written, err := s.plan.enqueue(ctx, issue, rows...)
 	if err != nil {
@@ -3756,11 +3756,11 @@ func podOrigin(moved repositoryMove) string {
 // record could not be read (repositoryMove.unread), the next pod's repository is unknown, so the
 // message names the path and says how a role keeps the work if that pod makes a workspace of
 // another repository; pushedWorkMessage says that the daemon could not read the record. The path
-// is the one the Sandbox runtime's pod gives the workspace (sandbox.IssueWorkspaceDir), as that
+// is the one the Sandbox runtime's pod gives the workspace (sandbox.WorkspaceDir), as that
 // runtime is the one that keeps a volume (runtime.IssueVolumeReader).
 func keptDiskMessage(issue, unpushed string, moved repositoryMove) string {
 	if moved != (repositoryMove{}) {
-		if old, err := sandbox.IssueWorkspaceDir(moved.from, issue); err == nil {
+		if old, err := sandbox.WorkspaceDir(moved.from, issue); err == nil {
 			if moved.unread() {
 				return fmt.Sprintf("%[3]s is on that volume, "+
 					"in the workspace of `%[1]s` at `%[2]s`. "+

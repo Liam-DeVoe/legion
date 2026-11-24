@@ -111,7 +111,7 @@ func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store, 
 	root := record.Issue{Key: key, Tree: key, Project: correctionProject, Title: title, Phase: phase.Implementing,
 		Generation: correctionGeneration, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -167,20 +167,18 @@ func (r *correctionRig) follow(seq int64, resolved string) {
 	r.t.Helper()
 	fact := r.prepared(intake.ListedIssue(dispatch.IssueSummary{Key: correctionKey, Title: "root", Status: "in_progress", Rank: "A",
 		HandedOver: true, LastSeq: seq, ResolvedRepo: resolved}))
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
-		stored, err := r.records.Issue(scoped, tx, correctionKey)
+		stored, err := r.records.Issue(ctx, tx, correctionKey)
 		if err != nil {
 			return err
 		}
-		return r.engine.ApplyRepositoryChange(scoped, tx, *stored, fact)
+		return r.engine.ApplyRepositoryChange(ctx, tx, *stored, fact)
 	}); err != nil {
 		r.t.Fatalf("the follow onto %s: %v", resolved, err)
 	}
-	committed()
 }
 
 // issue is the record as it stands.
@@ -188,7 +186,7 @@ func (r *correctionRig) issue() record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, correctionKey)
 		return err
@@ -278,7 +276,7 @@ func (r *correctionRig) uncorrected() record.Issue {
 func correctRecord(t *testing.T, pool *store.Pool, records record.Store, key, repo, branch string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		corrected, err := records.CorrectIssueRepository(ctx, tx, key, repo, branch, repo, at)
 		if err != nil {
 			return err

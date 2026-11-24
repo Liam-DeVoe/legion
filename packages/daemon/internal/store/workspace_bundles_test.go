@@ -633,7 +633,7 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	unrestored := func() bool {
 		t.Helper()
 		var held bool
-		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			held, err = workspaceBundleUnrestored(ctx, tx, "INFRA-945")
 			return err
@@ -681,7 +681,7 @@ func TestABundleRefusalTellsOnceAndEndsWithTheNextSaveOrDelete(t *testing.T) {
 	refused := func() bool {
 		t.Helper()
 		var found bool
-		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			r, _, err := workspaceBundleRefusal(ctx, tx, issue)
 			found = r != nil
 			return err
@@ -1064,8 +1064,8 @@ func TestABundleSavedBeforeTheRenamePassIsSentOnceThePairIsRemoved(t *testing.T)
 		want   runtime.WorkspaceBundleTake
 	}{
 		{name: "the pass", want: runtime.WorkspaceBundleSend, rename: func(t *testing.T, s *Store) {
-			if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
-				_, err := record.RenameIssueRepository(context.Background(), tx, "INFRA-945", savedRepo, to)
+			if err := Transact(context.Background(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+				_, err := record.RenameIssueRepository(ctx, tx, "INFRA-945", savedRepo, to)
 				return err
 			}); err != nil {
 				t.Fatalf("the rename pass's write of INFRA-945: %v", err)
@@ -1137,7 +1137,7 @@ func TestABundleRefusedForItsRepositoryHoldsNoPod(t *testing.T) {
 				t.Fatalf("the pod was answered %v (%v), want %v", take, err, tc.want)
 			}
 			var held bool
-			if err := s.Tx(ctx, func(tx pgx.Tx) error {
+			if err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				held, err = workspaceBundleUnrestored(ctx, tx, "INFRA-945")
 				return err

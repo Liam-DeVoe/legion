@@ -305,7 +305,7 @@ func TestIdleOfAClaimThatOwesNothingGetsItsPodBackForItsNextWork(t *testing.T) {
 func (r *idleWakeRig) moveBack(issue idleRigIssue) {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var given int64
 		if err := tx.QueryRow(ctx, `select given_entry from claims where token = $1`, string(r.token(issue))).Scan(&given); err != nil {
 			return err
@@ -329,7 +329,7 @@ func (r *idleWakeRig) moveBack(issue idleRigIssue) {
 func (r *idleWakeRig) recordCompletion(issue idleRigIssue) {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := r.records.Phases(ctx, tx, issue.key)
 		if err != nil {
 			return err

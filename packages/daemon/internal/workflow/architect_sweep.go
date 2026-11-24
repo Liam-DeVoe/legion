@@ -252,7 +252,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
 // StartOrOwe, so it waits for no admission slot and marks no movement: a root architect's start
-// takes no slot, whether the root holds its row, holds none past its review (record.KeepsSlot) or
+// takes no slot, whether the root holds its row, holds none in accepting, retro or merging (record.KeepsSlot) or
 // gave it back for a wait (admit's releaseSlotsForWaits). It raises no entry, as no resume of the
 // work an entry already names does (enter, SendOwedEntry).
 //
@@ -275,12 +275,13 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.
 // coming", which is false of a root whose person's answer stands
 // (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). So it writes the start the
 // resume wrote: the wait it answers, no text, and the entry. The daemon renders that start's task
-// at its send from the record as it stands then (ResumeTask, through its rootTask), which asks
-// whether the person's review the answer names is still their word (SupersedingApproval). The text the
-// row keeps is not sent: it was rendered at the raise, and a person who approved the reviewed
-// version since has answered the changes request it names (dispatch://INFRA-3136/spec R2). The
-// sweep sends it while the claim has not been given it, whether the root stands at admitted or
-// in a phase past admitted that the pass of the answer promoted it to (ArchitectAtWork).
+// at its send from the record as it stands then (ResumeAwaitedRootTask, through its rootTask),
+// which asks whether the person's review the answer names is still their word
+// (SupersedingApproval). The text the row keeps is not sent: it was rendered at the raise, and a
+// person who approved the reviewed version since has answered the changes request it names
+// (dispatch://INFRA-3136/spec R2). The sweep sends it while the claim has not been given it,
+// whether the root stands at admitted or in a phase past admitted that the pass of the answer
+// promoted it to (ArchitectAtWork).
 func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseRow) error {
 	if row.EntryAwaiting != nil {
 		return e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{

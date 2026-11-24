@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -72,7 +73,7 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 	// rerun's own fact starts its planner, as the api test reads the rerun child planning.
 	r.admission = admit.New(r.records, r.engine, 2, correctionProject, quietLogger())
 	root := correctionKey
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutGate(ctx, tx, openSpecGate(correctionKey, 1)); err != nil {
 			return err
 		}
