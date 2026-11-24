@@ -214,16 +214,16 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 }
 
 // subOwnerGrant says whether grantID names a grant of role sub-owner (claim.RoleSubOwner) whose
-// claim is a task's sub-owner's: its agent is named for one (record.IsSubOwnerAgent). It calls
-// credential.Grants.Redeem, which writes nothing, and answers no refusal: the rule it picks redeems
-// the grant through s.redeem and answers an expired or revoked one itself.
+// claim is a task's sub-owner's (record.SubOwnerOf). It calls credential.Grants.Redeem, which
+// writes nothing, and answers no refusal: the rule it picks redeems the grant through s.redeem and
+// answers an expired or revoked one itself.
 func (s *server) subOwnerGrant(grantID string) bool {
 	held, err := s.grants.Redeem(grantID)
 	if err != nil || held.Controller || held.Role != claim.RoleSubOwner {
 		return false
 	}
-	_, agent, named := held.Claim.Cut()
-	return named && record.IsSubOwnerAgent(agent)
+	_, subOwner := record.SubOwnerOf(held.Claim)
+	return subOwner
 }
 
 // subOwnerOfIssue authorizes register_plan for the grant of a task's sub-owner (subOwnerGrant)

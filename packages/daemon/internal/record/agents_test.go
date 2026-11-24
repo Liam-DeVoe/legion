@@ -123,3 +123,35 @@ func TestEachTaskWithASubOwnerHasAnAgentOfItsOwn(t *testing.T) {
 		t.Errorf("AgentToken(legion, I-1, SubOwnerAgent(f)) = %q, %v; want legion-legion-i-1-sub-owner-f", token, err)
 	}
 }
+
+// A claim is a task's sub-owner's where the agent its token ends in is named for one, and only
+// then: a step's claim, an architect's, the controller's and a token that names no agent are not,
+// even one that starts with `sub-owner-`. The fault it catches is a test of the whole token in
+// place of its agent (its control: SubOwnerOf testing the prefix of the whole token, which misses
+// the sub-owner's claim and takes the token with no agent).
+func TestSubOwnerOfReadsTheAgentOfTheClaim(t *testing.T) {
+	token := func(agent claim.Agent) claim.Token {
+		t.Helper()
+		token, err := claim.AgentToken("legion", "I-1", agent)
+		if err != nil {
+			t.Fatalf("AgentToken(legion, I-1, %s): %v", agent, err)
+		}
+		return token
+	}
+	for _, tc := range []struct {
+		name      string
+		token     claim.Token
+		wantAgent claim.Agent
+		want      bool
+	}{
+		{name: "a sub-owner's claim", token: token(SubOwnerAgent("f")), wantAgent: "sub-owner-f", want: true},
+		{name: "a step's claim", token: token("implementer")},
+		{name: "an architect's claim", token: token(claim.Agent(claim.RoleArchitect))},
+		{name: "the controller's claim", token: claim.ControllerToken("legion")},
+		{name: "a token that names no agent", token: claim.Token(SubOwnerAgent("f"))},
+	} {
+		if agent, ok := SubOwnerOf(tc.token); agent != tc.wantAgent || ok != tc.want {
+			t.Errorf("SubOwnerOf(%s), %s = %q, %t; want %q, %t", tc.token, tc.name, agent, ok, tc.wantAgent, tc.want)
+		}
+	}
+}

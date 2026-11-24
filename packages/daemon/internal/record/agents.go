@@ -39,6 +39,17 @@ func IsSubOwnerAgent(agent claim.Agent) bool {
 	return strings.HasPrefix(string(agent), subOwnerPrefix)
 }
 
+// SubOwnerOf is the agent of token where token is the claim of a task's sub-owner: the agent its
+// token ends in (claim.Token.Cut) is named for one (IsSubOwnerAgent). It is false, with no agent,
+// for a step's claim, an architect's, the controller's and a token that names no agent. It is the
+// one test of "this claim is a task's sub-owner's", which the route, the fact and the record read.
+func SubOwnerOf(token claim.Token) (claim.Agent, bool) {
+	if _, agent, named := token.Cut(); named && IsSubOwnerAgent(agent) {
+		return agent, true
+	}
+	return "", false
+}
+
 // NameAgents is steps, copied, with the name of each step's agent (PlanStep.Agent) given: the one
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write

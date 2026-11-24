@@ -1246,10 +1246,9 @@ type PlanGiven struct {
 func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
 
 // SubOwner is the name of the agent whose claim gave the version where that agent is the
-// sub-owner of a task (record.IsSubOwnerAgent), and false where an architect gave it.
+// sub-owner of a task (record.SubOwnerOf), and false where an architect gave it.
 func (f PlanGiven) SubOwner() (claim.Agent, bool) {
-	_, agent, named := f.GivenBy.Cut()
-	return agent, named && record.IsSubOwnerAgent(agent)
+	return record.SubOwnerOf(f.GivenBy)
 }
 
 // TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
