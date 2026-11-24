@@ -371,7 +371,10 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLI
 	// The daemon behind the second URL serves a store of its own, and its starting read is good.
 	// No cheap path of the intake then leaves the cursor owing a read that is due and that no
 	// message holds, so the test writes INFRA's cursor so by hand: a call no message makes would
-	// make a read now. A message of the store the setting named before makes no read all the same.
+	// make a read now. A message of the store the setting named before calls for no read of its
+	// own, and it makes that owed read as such a call (callRead): the intake cannot tell the old
+	// daemon from the setting's own daemon moved into that store, whose messages are then all of
+	// it (read-rule-cases row 4.3). The read is good, so nothing stays owed.
 	t.Run("another store, verified", func(t *testing.T) {
 		named := newFakeDaemon(t, strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 		rig, _ := repoint(t, named)
@@ -394,12 +397,15 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLI
 
 		rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
 		rig.settled()
-		if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return named.served() > 1 }) {
-			t.Errorf("the daemon the setting names served %d reads after the message of the store the setting named before, want its starting read alone: the message called for a read while the cursor held another store", named.served())
+		rig.awaitWholeReads(3)
+		reads = wholeReadsOf(t, rig.database, "INFRA")
+		requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
+		if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return named.served() > 2 }) {
+			t.Errorf("the daemon the setting names served %d reads, want its starting read and the owed read the message made: the message called for more than the owed read", named.served())
 		}
-		if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID == nil || *c.stateID != namedStore ||
+		if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.stateID == nil || *c.stateID != namedStore ||
 			c.previousStateID == nil || *c.previousStateID != rigStateID {
-			t.Errorf("INFRA's cursor is %s, want the read still owed for retry, the store %s and the store %s still recorded", c, namedStore, rigStateID)
+			t.Errorf("INFRA's cursor is %s, want nothing owed after the good read, the store %s and the store %s still recorded", c, namedStore, rigStateID)
 		}
 		if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
 			t.Errorf("the phase's history is %v: the message of the store the setting named before was applied", got)
