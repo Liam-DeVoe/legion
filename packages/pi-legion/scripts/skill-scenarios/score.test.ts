@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -4084,4 +4084,77 @@ test("the summary tables print how many counted runs carry a flag", () => {
   expect(out).toContain("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\n");
   expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\n");
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
+});
+
+// owner-walk, a scored scenario: `score.ts runs <runs dir> --run <name>` writes one run's row.json.
+// A scored run must have run on its label's model, the `model` line of the built-from rig.sh copies
+// into the run, and on that model alone (unscored).
+const onModel = (model: string) => ({
+  type: "message",
+  message: {
+    role: "assistant",
+    provider: model.split("/")[0],
+    model: model.split("/").slice(1).join("/"),
+    content: [{ type: "text", text: "Done." }],
+  },
+});
+const scoredRun = (model: string | null) => ({
+  "out.txt": "exit=0\n",
+  "built-from": `checkout /checkouts/head\n${model === null ? "" : `model ${model}\n`}`,
+});
+// The header names the label's model, and an answer comes from another one.
+run("owner-walk-root-B-claude-head-1", scoredRun("anthropic/claude-opus-4-8"), [
+  ...header,
+  turn[0],
+  onModel("openai/gpt-6.1-sol"),
+]);
+// The whole session ran on a model other than the label's.
+run("owner-walk-root-B-claude-head-2", scoredRun("anthropic/claude-opus-4-8"), [
+  { ...header[0] },
+  { type: "model_change", model: "anthropic/claude-sonnet-5-5" },
+  turn[0],
+  onModel("anthropic/claude-sonnet-5-5"),
+]);
+// The label's built-from names no model.
+run("owner-walk-root-B-claude-head-3", scoredRun(null), [
+  ...header,
+  turn[0],
+  onModel("anthropic/claude-opus-4-8"),
+]);
+
+/** The row.json `score.ts runs <runs> --run <name>` writes for the run. */
+function scoredRowOf(name: string): { outcome: string; error?: string } {
+  const scored = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+    "--run",
+    name,
+  ]);
+  expect(scored.exitCode).toBe(0);
+  return JSON.parse(readFileSync(path.join(runs, name, "row.json"), "utf8"));
+}
+
+// Catches: a scored run on a model its label did not name counted in its label's cells, as when a
+// fallback answered for the gateway's model.
+test("a run on another model is a rig error", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-1")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names 2 models, anthropic/claude-opus-4-8 and openai/gpt-6.1-sol: a scored run runs on its label's model alone",
+  });
+  expect(scoredRowOf("owner-walk-root-B-claude-head-2")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names the model anthropic/claude-sonnet-5-5, and its label's built-from names anthropic/claude-opus-4-8",
+  });
+});
+
+// Catches: a model check that passes a run whose label names no model, which it cannot check.
+test("a scored run whose label's built-from names no model line is a rig error, saying so", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-3")).toMatchObject({
+    outcome: "rig-error",
+    error: "its label's built-from names no model line, so the run's model cannot be checked",
+  });
 });
