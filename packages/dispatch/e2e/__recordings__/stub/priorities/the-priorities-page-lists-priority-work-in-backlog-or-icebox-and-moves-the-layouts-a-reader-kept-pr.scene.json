@@ -1,0 +1,5 @@
+{
+  "issue": "CORE-1",
+  "priority": "Ship the daemon everywhere",
+  "title": "Daemon rollout to the fleet"
+}
