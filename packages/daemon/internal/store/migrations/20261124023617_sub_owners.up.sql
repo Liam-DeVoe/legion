@@ -1,4 +1,4 @@
--- 20261123180305_sub_owners.up.sql — a task that stands at its parts or at its report, the parts
+-- 20261124023617_sub_owners.up.sql — a task that stands at its parts or at its report, the parts
 -- whose join GitHub refused, and the outbox kind that joins the parts of a task (parts_join).
 --
 -- plan_tasks.running_kind takes two kinds of place more (record.PlaceParts, record.PlaceReported),
@@ -59,7 +59,7 @@
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --   'conflict_confirm', 'merge_forward', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
 -- alter table plan_tasks drop column if exists parts_conflicts;
--- delete from schema_version where version = 20261123180305;
+-- delete from schema_version where version = 20261124023617;
 -- commit;
 alter table plan_tasks drop constraint plan_tasks_running_kind_check,
   add constraint plan_tasks_running_kind_check check (running_kind in ('', 'step', 'retro', 'merge', 'parts', 'reported'));

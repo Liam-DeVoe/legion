@@ -15,7 +15,7 @@ import (
 
 // subOwnersVersion is the version of the migration this file tests, so a test can migrate through
 // everything before it whatever lands beside it.
-const subOwnersVersion = 20261123180305
+const subOwnersVersion = 20261124023617
 
 // refusedByCheck says whether err is the refusal of the check constraint named constraint (SQLSTATE
 // 23514): a write the check refuses, not one that failed for another reason. A check added over a
@@ -60,7 +60,7 @@ func (r subOwnersRows) queue(kind, payload string) error {
 		values ($1, 'LEGION-208', $2, 0, now(), '')`, kind, payload)
 }
 
-// 20261123180305 lets a task stand at its parts and at its report (record.PlaceParts,
+// 20261124023617 lets a task stand at its parts and at its report (record.PlaceParts,
 // record.PlaceReported), each at position 0, keeps the parts whose join GitHub refused
 // (record.PlanTask.PartsConflicts), and lets the outbox queue the join of a task's parts
 // (parts_join). Before it the store refuses a task at its parts and a parts_join row, each by its
@@ -179,7 +179,7 @@ const (
 	subOwnersWayBackUpdateEnd = "where running_kind in ('parts', 'reported');\n"
 )
 
-// The way back the header of 20261123180305 gives lets the release before read the store again. It
+// The way back the header of 20261124023617 gives lets the release before read the store again. It
 // deletes each parts_join row, and each notice and controller notice of the three kinds that
 // release decodes no row of (parts-done, report-refused, merge-returned), and no other row. It
 // stands each task at its parts or at its report at no act: a running or a held one stopped for
@@ -276,7 +276,7 @@ func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) 
 			if err := rows.exec(`update plan_tasks set parts_conflicts = '{}'`); err == nil || !strings.Contains(err.Error(), "does not exist") {
 				t.Fatalf("a write of plan_tasks.parts_conflicts after the way back = %v, want the column gone", err)
 			}
-			if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261123180305`); got[0] != "0" {
+			if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261124023617`); got[0] != "0" {
 				t.Fatalf("schema_version rows of %d after the way back = %s, want none", subOwnersVersion, got[0])
 			}
 

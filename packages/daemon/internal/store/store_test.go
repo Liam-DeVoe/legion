@@ -1091,7 +1091,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261119003157 (conflict_confirm and merge_forward), the copies of a plan's tasks'
 // 20261121165047 (task_branch), the pull requests by task's 20261122122826
 // (task_pull_requests_close), the removal of a removed task's working copy's 20261123072431
-// (task_copy_remove) and the sub-owners' 20261123180305 (parts_join) do: the case of a database
+// (task_copy_remove) and the sub-owners' 20261124023617 (parts_join) do: the case of a database
 // main migrated applies a version left out of the list before the list's own rewrites of that
 // check, which do not name the later kind, so the row seeded of that kind fails the upgrade. So
 // does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1113,7 +1113,7 @@ var thisRelease = map[int]bool{
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261117204629: true, 20261117213545: true,
 	20261117224125: true, 20261119003157: true, 20261121165047: true, 20261122074350: true,
-	20261122122826: true, 20261123072431: true, 20261123180305: true, 20261123221142: true,
+	20261122122826: true, 20261123072431: true, 20261123221142: true, 20261124023617: true,
 }
 
 const idleRelease = 20261101222956

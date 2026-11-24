@@ -2806,7 +2806,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // GitHub could not join the work of a part into the task's branch after the report, so the task
 // stands at its parts again, and the reason names each such part. `merge-returned` says that the
 // merger returned the task from its retro or its merge, with the reason of that move. No earlier
-// release decodes them, so the way back of migration 20261123180305 deletes their unsent rows.
+// release decodes them, so the way back of migration 20261124023617 deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
