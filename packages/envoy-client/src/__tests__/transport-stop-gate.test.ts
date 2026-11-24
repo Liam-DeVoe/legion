@@ -7,7 +7,7 @@ import {
   type EnvoyClient,
   EnvoyStoppingError,
   type SubscribeInput,
-  stopCallsOf,
+  stopHandBack,
 } from "../transport";
 
 // The client's stop gate (R24 of dispatch://INFRA-3589): once the host's stop reading answers
@@ -117,7 +117,7 @@ describe("the stop gate", () => {
     const { client, fetched } = stoppedClient();
 
     await client.unregisterSession({ sessionID: SESSION, clientInstanceID: "0f8c2b1a4d6e7f90" });
-    await stopCallsOf(client).handBack({
+    await stopHandBack(client)({
       sessionID: SESSION,
       topics: ["notifications.role.reviewer"],
       clientInstanceID: "0f8c2b1a4d6e7f90",

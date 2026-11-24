@@ -1,5 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors";
-import { type EnvoyClient, isBusUnanswered, stopCallsOf } from "@legion/envoy-client/transport";
+import { type EnvoyClient, isBusUnanswered, stopHandBack } from "@legion/envoy-client/transport";
 
 /**
  * The ledger of the role holds this process gave up: what it still owes the listener, and what
@@ -67,7 +67,7 @@ export interface HandBackLedger {
   /**
    * Hands back, side by side, `held` (the hold the process still keeps) and every hold in both
    * books, each once, for a process whose session is stopping: the stop's own call, which the
-   * client's stop gate lets through (`stopCallsOf`). Each release names this process, as every
+   * client's stop gate lets through (`stopHandBack`). Each release names this process, as every
    * release here does, so the listener frees only a claim this process made. A release that
    * fails is warned about on `warn`, the stop's own writer, which no tell gate holds, and let
    * go, and neither book changes: no pass runs after a stop, so nothing is left to send one again.
@@ -199,23 +199,21 @@ export function createHandBackLedger(deps: HandBackLedgerDeps): HandBackLedger {
       if (held !== undefined) owed.set(keyOf(held.topic, held.id), held);
       for (const [key, hold] of pending) owed.set(key, hold);
       for (const [key, hold] of abandoned) owed.set(key, { topic: hold.topic, id: hold.id });
-      const stop = stopCallsOf(deps.client());
+      const handBackForStop = stopHandBack(deps.client());
       await Promise.all(
         [...owed.values()].map((hold) =>
-          stop
-            .handBack({
-              sessionID: hold.id,
-              topics: [hold.topic],
-              clientInstanceID: deps.clientInstanceID,
-            })
-            .catch((error: unknown) =>
-              warn(
-                isBusUnanswered(error)
-                  ? "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic."
-                  : "envoy: the stop did not hand back a role this process held",
-                { topic: hold.topic, sessionID: hold.id, error: messageFor(error) }
-              )
+          handBackForStop({
+            sessionID: hold.id,
+            topics: [hold.topic],
+            clientInstanceID: deps.clientInstanceID,
+          }).catch((error: unknown) =>
+            warn(
+              isBusUnanswered(error)
+                ? "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic."
+                : "envoy: the stop did not hand back a role this process held",
+              { topic: hold.topic, sessionID: hold.id, error: messageFor(error) }
             )
+          )
         )
       );
     },

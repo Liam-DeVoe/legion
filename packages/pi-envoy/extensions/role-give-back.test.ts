@@ -1,8 +1,8 @@
 // The rows on how a session gives back a role: the warning when a role's notice subjects are not
 // taken out of the registry, and the release of the role claim at `session_shutdown`. They have a
 // file of their own so that `envoy.test.ts` stays below the size Biome reads a file up to (1 MiB
-// by default). They keep the `describe` they had in that file, so their full names do not change.
-// Both files share one harness (`../test/extension-harness`).
+// by default). Their `describe` is "envoy OMP extension", the one `envoy.test.ts` uses, so a row's
+// full name is the same in every file. Both files share one harness (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import { logger } from "@oh-my-pi/pi-utils";

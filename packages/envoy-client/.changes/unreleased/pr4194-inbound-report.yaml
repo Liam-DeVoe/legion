@@ -6,8 +6,9 @@ body: |-
   the session's first accepted registration, such an outage is held: it is told once only when
   `INBOUND_FIRST_OPEN_BOUND_MS` (two minutes) has passed since the first one, so a relay that
   opens on a later try at the pod's start tells nothing. The first registration of that hold goes
-  at once to the new `held` option, with why the relay subject could not be opened
-  (`NoRelaySubjectError.relayMissing`, also new), so a host can log it while the notice waits. A
+  at once to the new `held` option, with why the relay subject could not be opened (the
+  `relayMissing` that `registerWithRelay` takes, which it passes on as `noRelay`'s second
+  argument), so a host can log it while the notice waits. A
   refusal with a reason is told at once, as before (the bus-outage 503 is held, as
   `pr4194-unrecorded-registration.yaml` says), and so is a lost relay subject after the first
   accepted registration. The first registration accepted after a told outage calls the

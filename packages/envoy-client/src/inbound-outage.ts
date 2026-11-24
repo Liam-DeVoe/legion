@@ -1,6 +1,5 @@
 import { envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
-import { NoRelaySubjectError } from "./relay-registration";
 import { EnvoyApiError, isBusUnanswered } from "./transport";
 
 /**
@@ -35,8 +34,8 @@ import { EnvoyApiError, isBusUnanswered } from "./transport";
  *   which is the only path an Envoy message reaches it by, so it receives nothing until a
  *   registration is accepted.
  * - `no_relay`: no registration was sent, because the session holds no relay subject
- *   (`NoRelaySubjectError`): its relay never opened, or one that was open was lost. It receives
- *   nothing until a registration is accepted, as after `refused`.
+ *   (`InboundUnavailable.noRelay`): its relay never opened, or one that was open was lost. It
+ *   receives nothing until a registration is accepted, as after `refused`.
  *
  * The kinds say how little reaches the session (`OUTAGE_DEPTH`): everything may still reach it
  * after `unrecorded`, its other messages may after `github_withheld`, and nothing does after
@@ -178,9 +177,11 @@ export interface InboundUnavailable {
    * passes; after it, a relay that was open was lost, which tells the session at once. Either
    * way it is told once per outage, and once more after a told outage that let more reach the
    * session (`InboundOutageKind`). The first call of the start race goes to the host's `held` at
-   * once, so the host can log it while the session's notice waits.
+   * once, with `relayMissing`, so the host can log it while the session's notice waits.
+   * `relayMissing` is why the relay subject could not be opened, as the host said it
+   * (`RelayRegistration.relayMissing`), undefined when the host named no reason.
    */
-  noRelay(error: unknown): void;
+  noRelay(error: unknown, relayMissing?: string): void;
   /**
    * A registration was refused or failed: its kind is read from `error` (`InboundOutageKind`),
    * and the session is told at once, through the host's `tell`, unless this outage already told
@@ -215,7 +216,7 @@ export interface InboundUnavailableOptions {
   /**
    * Called once, at once, when the start race's hold begins: the first registration before the
    * session's first accepted one that found no relay subject. `relayMissing` is why the relay
-   * subject could not be opened (`NoRelaySubjectError.relayMissing`), undefined when the host
+   * subject could not be opened (`noRelay`'s `relayMissing`), undefined when the host
    * named no reason. The session is told nothing yet, so a host logs it here: its log then shows
    * at once that a registration found no relay subject, while the notice waits for the bound.
    * It is not called for a call the bound does not hold, or once `stopping` answers true.
@@ -279,15 +280,13 @@ export function inboundUnavailable(
     tell(told);
   };
   return {
-    noRelay(error) {
+    noRelay(error, relayMissing) {
       if (!everAccepted) {
         const at = now();
         const begins = heldSince === undefined;
         heldSince ??= at;
         if (at < heldSince + firstOpenBoundMs) {
-          if (begins && !stopping()) {
-            held?.(error instanceof NoRelaySubjectError ? error.relayMissing : undefined);
-          }
+          if (begins && !stopping()) held?.(relayMissing);
           return;
         }
       }

@@ -189,7 +189,11 @@ describe("a claim whose session's stop has begun", () => {
       await claim.bootstrap(context);
       // The bound is armed and has not run: the stop begins first.
       claim.stop();
-      await settled();
+      // A timer armed after the bound, with the same delay of 0 ms, runs after the bound's: had the
+      // stop left the bound armed, its claim would have started by then. It costs no wait.
+      const afterBound = Promise.withResolvers<void>();
+      setTimeout(afterBound.resolve, 0);
+      await afterBound.promise;
       await settled();
 
       expect(claims).toEqual([]);

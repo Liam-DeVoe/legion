@@ -19993,7 +19993,11 @@ console.log(JSON.stringify(args));
     const failedInjection = Promise.withResolvers<void>();
     const followingDelivery = Promise.withResolvers<void>();
     const delivered: string[] = [];
-    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    const warnings: logger.LogEvent[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.startsWith("envoy: failed to deliver envelope"))
+        warnings.push(entry);
+    });
     const pi: TestPi = {
       ...fixture.pi,
       sendMessage: (message) => {
@@ -20035,11 +20039,12 @@ console.log(JSON.stringify(args));
 
       expect(delivered).toHaveLength(2);
       expect(delivered[0]).toContain("the redelivery repairs the failed injection");
-      expect(warning).toHaveBeenCalledTimes(1);
-      expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining("evt-retry-after-failure"),
-        expect.any(Error)
-      );
+      expect(warnings.map(({ message, context }) => ({ message, context }))).toEqual([
+        {
+          message: "envoy: failed to deliver envelope evt-retry-after-failure",
+          context: { error: "injection rejected mid-compaction" },
+        },
+      ]);
       // Each frame travels the session's relay and is answered there: the failed attempt is
       // naked, so the listener sends it again, and the redelivery is taken.
       expect(
@@ -20053,7 +20058,7 @@ console.log(JSON.stringify(args));
           .map((published) => new TextDecoder().decode(published.data))
       ).toContain("received");
     } finally {
-      warning.mockRestore();
+      stopSink();
     }
   });
 

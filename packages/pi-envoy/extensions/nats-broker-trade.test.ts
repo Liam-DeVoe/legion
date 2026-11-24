@@ -2,8 +2,9 @@
 // answers 503 or grants late, a broker token the hub refuses, the token's renewal for the
 // connection's life, and the token a session switch moves to, with what a viewer of the session
 // left is replayed after a switch or a rollback. They have a file of their own so that
-// `nats-start.test.ts` stays under 1,000 lines. They keep the `describe` they had in that file, so
-// their full names do not change. Both files share one harness (`../test/extension-harness`).
+// `nats-start.test.ts` stays under 1,000 lines. Their `describe` is "envoy OMP extension", the one
+// `envoy.test.ts` uses, so a row's full name is the same in every file. The files share one
+// harness (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,10 +34,8 @@ useExtensionHarness();
 const MACHINE_IDENTITY_TOKEN = fixtureSecret("machine");
 
 describe("envoy OMP extension", () => {
-  // A failing row for #4140 at c8903b20b8, found by the acceptance (AcceptE2-2). It was put in
-  // packages/pi-envoy/extensions/envoy.test.ts, inside `describe("envoy OMP extension", ...)`,
-  // beside "natsCredential follows a session switch", and it moved with that row to this file:
-  // run `bun test extensions/nats-broker-trade.test.ts -t 'a broker that answers no trade'` in
+  // The acceptance's row for #4140 (AcceptE2-2): a broker that answers no trade. Run it alone with
+  // `bun test extensions/nats-broker-trade.test.ts -t 'a broker that answers no trade'` in
   // packages/pi-envoy.
   // With the broker trade one retry loop per session (71dc1b565f), a broker that answers 503 is
   // traded again at 15 s doubling to 5 minutes, and each caller waits on that loop within its own

@@ -3,7 +3,7 @@ import * as fsPromises from "node:fs/promises"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
-import { createEnvoyClient } from "@legion/envoy-client/transport"
+import { createEnvoyClient, EnvoyApiError } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { modSocketPath } from "../hooks/mod-protocol"
 import { legion } from "../package.json" with { type: "json" }
@@ -52,6 +52,9 @@ const scratchState = useScratchState()
 function held(): { readonly promise: Promise<void>; readonly resolve: () => void } {
   return Promise.withResolvers<void>()
 }
+
+/** The Legion claim's first-turn bound in the row below (`LEGION_CLAIM_FIRST_TURN_BOUND_MS`). */
+const BOUND_MS = 300
 
 // A Legion pane's claim boot registers and says ready, and the claim waits for the first turn or
 // its bound. The server's stop begins before either: it aborts the boot's signal, and its
@@ -103,18 +106,25 @@ test("the Legion claim's bound firing during shutdown() sends no claim and write
     stop: () => undefined,
     // No turn starts: only the bound can claim here.
     onFirstTurn: () => undefined,
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "300" },
+    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(BOUND_MS) },
     pollMs: 5,
   })
   let stopping: Promise<void> | undefined
   try {
     await claim.booted
+    // The boot armed the bound before it settled, so this timer, armed after it with the same
+    // delay, runs after the bound would have. The bound is a real timer of the claim core, which
+    // the row does not fake.
+    const pastBound = Promise.withResolvers<void>()
+    setTimeout(pastBound.resolve, BOUND_MS)
     // The server's stop: the abort first, then the shutdown, whose DELETE is held.
     booting.abort()
     stopping = channel.shutdown()
     await waitFor(async () => calls.includes(`unregister ${session}`), "the stop's DELETE")
     // The claim step answers once it ran, or once the stop took it off.
     await claim.claimed
+    // The DELETE is still on the wire when the bound's time comes.
+    await pastBound.promise
     await settled()
 
     expect(calls.filter((call) => call.startsWith("setRole"))).toEqual([])
@@ -325,6 +335,105 @@ test("control: a delivery that fails with no stop begun says so on stderr", asyn
   } finally {
     stderr.restore()
     await channel.shutdown()
+  }
+})
+
+/** A session whose notifier holds the first frame it is handed until the row lets it go
+ *  (`release`), and takes every other write at once, recording each on `written`. The listener
+ *  accepts each registration until the row queues its notice (`noticeBehindHeldFrame`), and
+ *  refuses each from then on, as a listener that can give the session no consumer does.
+ *  `booting` is the server's stop reading. */
+async function heldFrameSession() {
+  const booting = new AbortController()
+  const writing = held()
+  const releasing = held()
+  const written: { readonly content: string; readonly eventId?: string }[] = []
+  const notifier: ChannelNotifier = {
+    notification: async (notification) => {
+      written.push(notification)
+      if (notification.eventId === undefined || written.length > 1) return
+      writing.resolve()
+      await releasing.promise
+    },
+  }
+  let refusing = false
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      if (!refusing) return noInterest(input.sessionID)
+      throw new EnvoyApiError({
+        method: "POST",
+        url: "http://127.0.0.1:4000/v1/interests/subscribe",
+        status: 409,
+        responseBody: JSON.stringify({
+          error: "the listener could not give this session a consumer",
+          reason: "not_requested",
+        }),
+      })
+    },
+  })
+  const channel = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      notifier,
+      client,
+      startSignal: booting.signal,
+    }),
+  )
+  return {
+    booting,
+    release: releasing.resolve,
+    written,
+    channel,
+    /** Queues a frame the notifier holds, then, behind it, the outage notice of a follow whose
+     *  registration the listener refuses: the refusal tells the session as it is answered, so
+     *  the notice is queued once the follow settles. Answers the frame's delivery. */
+    noticeBehindHeldFrame: async (): Promise<{ readonly delivered: Promise<boolean> }> => {
+      const delivered = channel.delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
+      await writing.promise
+      refusing = true
+      await channel.follow(["notifications.team.r24-queued-notice"]).catch(() => [])
+      return { delivered }
+    },
+  }
+}
+
+// A notice queued before the stop waits its turn behind a frame the notifier still holds as the
+// stop begins. The queue reads the stop when the notice's turn comes, and shows it to nobody.
+test("a notice queued before the stop behind a frame still being written is shown to nobody once the stop has begun", async () => {
+  const session = await heldFrameSession()
+  const stderr = stderrWrites()
+  try {
+    const { delivered } = await session.noticeBehindHeldFrame()
+    // The server's stop: the abort is the session's stop reading.
+    session.booting.abort()
+    session.release()
+    expect(await delivered).toBe(true)
+    await settled()
+
+    // A notice this server writes for itself is the one write that names no Envoy event.
+    expect(session.written.map((write) => write.eventId ?? "notice")).toEqual(["evt-42"])
+  } finally {
+    stderr.restore()
+    session.release()
+    await session.channel.shutdown()
+  }
+})
+
+// The control of the row above: the same notice behind the same frame, with no stop begun, is
+// shown once the frame is written.
+test("control: a notice queued behind a frame still being written with no stop begun is shown after it", async () => {
+  const session = await heldFrameSession()
+  const stderr = stderrWrites()
+  try {
+    const { delivered } = await session.noticeBehindHeldFrame()
+    session.release()
+    expect(await delivered).toBe(true)
+    await settled()
+
+    expect(session.written.map((write) => write.eventId ?? "notice")).toEqual(["evt-42", "notice"])
+  } finally {
+    stderr.restore()
+    session.release()
+    await session.channel.shutdown()
   }
 })
 

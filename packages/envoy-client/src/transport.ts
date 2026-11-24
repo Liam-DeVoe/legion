@@ -1033,18 +1033,10 @@ export type EnvoyClient = {
 };
 
 /**
- * The calls a host's stop makes itself (R24 of dispatch://INFRA-3589), which the stop gate lets
- * through: the hand-back of each role hold the process still has. The stop's DELETE is
- * `EnvoyClient.unregisterSession`, which the gate never refuses.
+ * A call this client makes: one of `EnvoyClient`'s, or `handBack`, the stop's release of one role
+ * hold (`stopHandBack`), which only a host's stop makes (R24 of dispatch://INFRA-3589).
  */
-export interface EnvoyStopCalls {
-  /** The stop's release of one role hold: the removal of the role's topic, naming the process
-   *  that held it (`UnsubscribeInput.clientInstanceID`). */
-  readonly handBack: (input: UnsubscribeInput) => Promise<void>;
-}
-
-/** A call this client makes: one of `EnvoyClient`'s, or one of the stop's own. */
-export type EnvoyCall = keyof EnvoyClient | keyof EnvoyStopCalls;
+export type EnvoyCall = keyof EnvoyClient | "handBack";
 
 /**
  * The stop gate's one list (R24 of dispatch://INFRA-3589): what becomes of each call once the
@@ -1052,10 +1044,11 @@ export type EnvoyCall = keyof EnvoyClient | keyof EnvoyStopCalls;
  * and role state is refused: a registration and a heartbeat (`subscribe`), a removal of topics
  * (`unsubscribe`), a read of the session's registry entry (`getInterest`), a role claim, transfer
  * or re-assertion (`setRole`) and a role read (`getRole`). These calls are sent: the stop's own
- * (its DELETE, `unregisterSession`, and its hand-back, `EnvoyStopCalls.handBack`), the session's
- * own content (`send`, `publish`: a message the model asked for before or as the stop began, which
- * is worse lost than sent), and the list of sessions (`listSessions`), which changes nothing at
- * the listener. A call added to the client must be named here, or the client does not compile.
+ * (its DELETE, `unregisterSession`, and, from a host whose stop hands its roles back, the
+ * hand-back of each role hold, `stopHandBack`), the session's own content (`send`, `publish`: a
+ * message the model asked for before or as the stop began, which is worse lost than sent), and
+ * the list of sessions (`listSessions`), which changes nothing at the listener. A call added to
+ * the client must be named here, or the client does not compile.
  */
 const STOP_GATE: { readonly [Call in EnvoyCall]: "refused" | "sent" } = {
   subscribe: "refused",
@@ -1093,16 +1086,20 @@ export class EnvoyStoppingError extends Error {
   }
 }
 
-/** The gate-free calls of each client `createEnvoyClient` made (`stopCallsOf`). */
-const stopCalls = new WeakMap<EnvoyClient, EnvoyStopCalls>();
+/** The gate-free hand-back of each client `createEnvoyClient` made (`stopHandBack`). */
+const handBacks = new WeakMap<EnvoyClient, (input: UnsubscribeInput) => Promise<void>>();
 
 /**
- * The stop's own calls on `client` (`EnvoyStopCalls`), which its stop gate lets through. Only a
- * host's stop calls this. A client `createEnvoyClient` did not make has no gate, so its hand-back
- * is its own `unsubscribe`.
+ * The stop's release of one role hold on `client` (R24 of dispatch://INFRA-3589): the removal of
+ * the role's topic, naming the process that held it (`UnsubscribeInput.clientInstanceID`), which
+ * the client's stop gate lets through. Only a host's stop calls it, and only a host whose stop
+ * hands its roles back: the Envoy entry's stop hands back each hold, and claude-envoy's stop
+ * hands back none (`@legion/pi-shared/role-claim-stopping`). The stop's DELETE is
+ * `EnvoyClient.unregisterSession`, which the gate never refuses. A client `createEnvoyClient`
+ * did not make has no gate, so its hand-back is its own `unsubscribe`.
  */
-export function stopCallsOf(client: EnvoyClient): EnvoyStopCalls {
-  return stopCalls.get(client) ?? { handBack: (input) => client.unsubscribe(input) };
+export function stopHandBack(client: EnvoyClient): (input: UnsubscribeInput) => Promise<void> {
+  return handBacks.get(client) ?? ((input) => client.unsubscribe(input));
 }
 
 type RequestOptions = {
@@ -1433,7 +1430,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
   // A removal of topics from the session's registry entry: the session's own (`unsubscribe`),
   // which the stop gate refuses once the stop has begun, and the stop's hand-back of a role hold
-  // (`EnvoyStopCalls.handBack`), which it lets through.
+  // (`stopHandBack`), which it lets through.
   const removeTopics = async (
     call: "unsubscribe" | "handBack",
     input: UnsubscribeInput
@@ -1691,7 +1688,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       );
     },
   };
-  stopCalls.set(client, { handBack: (input) => removeTopics("handBack", input) });
+  handBacks.set(client, (input) => removeTopics("handBack", input));
   return client;
 }
 

@@ -240,7 +240,7 @@ import {
   type RoleSnapshot,
   type TaskHandle,
 } from "../src/registration-state";
-import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
+import { scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
   ANSWERS_SENT_ENTRY,
@@ -2240,29 +2240,28 @@ export default function envoyExtension(hostApi: PiApi): void {
     // Runs a side turn or a Dispatch reply off the caller (the relay's queue), so the next frame
     // is handed without waiting on it. One that throws is handled as a delivery that throws: its
     // claim is released and the relay frame is done (a BTW is in the ledger already, so its
-    // redelivery would be dropped).
+    // redelivery would be dropped). Its warning, as each warning of this delivery's own, goes
+    // through the tell gate (`logger`), so a reply that fails once the stop has begun writes no
+    // line.
     const offWorker = (work: () => Promise<void>): void => {
       relayed.release();
       void work().catch((error: unknown) => {
         held.release();
-        scrubbedConsole.warn(
-          `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
-          error
-        );
+        logger.warn(`envoy: failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, {
+          error: messageFor(error),
+        });
         relayed.done();
       });
     };
     try {
       if (rendered.rejectedDelivery !== undefined) {
-        scrubbedConsole.warn(
-          `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
+        logger.warn(
+          `envoy: rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );
         const rejected = rendered.rejectedDelivery;
         offWorker(() => refuse(rejected, "Invalid Dispatch targeted delivery frame"));
       } else if (rendered.malformedDelivery === true) {
-        scrubbedConsole.warn(
-          "[envoy] dropping malformed Dispatch targeted delivery without a reply address"
-        );
+        logger.warn("envoy: dropping malformed Dispatch targeted delivery without a reply address");
         claim.settle();
       } else if (rendered.delivery?.mode === "btw" && relayed.late === true) {
         // A BTW that arrives late (delivered before, or stored before this connection's epoch
@@ -2452,10 +2451,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     } catch (error) {
       handing = false;
       held.release();
-      scrubbedConsole.warn(
-        `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
-        error
-      );
+      logger.warn(`envoy: failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, {
+        error: messageFor(error),
+      });
       // The failure is the relay's to count: the frame comes again, or, from its third delivery
       // on, the relay shows its failure notice (`createConsumerDelivery`).
       throw error;
@@ -4762,9 +4760,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A session event: learn what the session the host is on continues, take its id at once (its
   // tools and messages name it from here on), end at once a role its records rule out, then
   // converge in a pass, which may claim again a role the listener refused that session before.
+  // `subagent` is whether the context is a subagent's, when the caller already asked
+  // (`rebindDispatch`): the check then runs once per event.
   const rebind = async (
     reason: SessionSwitchReason | undefined,
-    context: SessionContext
+    context: SessionContext,
+    subagent?: boolean
   ): Promise<void> => {
     // The cards a check was armed for belong to the session the host left.
     cardWake.cancel();
@@ -4773,7 +4774,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // the roles back and deletes the record next. The stop is read before the subagent check too,
     // which can publish the transcript and log a failed publish outside the tell gate, and again
     // after its wait.
-    if (shuttingDown || (await isSubagent(context)) || shuttingDown) return;
+    if (shuttingDown || (subagent ?? (await isSubagent(context))) || shuttingDown) return;
     const host = context.sessionManager.getSessionId();
     noteMove(host, { kind: reason });
     lastHeard = host;
@@ -4818,10 +4819,12 @@ export default function envoyExtension(hostApi: PiApi): void {
     context: SessionContext
   ): Promise<void> => {
     // The stop is read before the subagent check, as `rebind` reads it, and again after its wait.
-    if (!shuttingDown && !(await isSubagent(context)) && !shuttingDown) {
+    // The answer goes on to `rebind`, which asks nothing again.
+    const subagent = shuttingDown ? undefined : await isSubagent(context);
+    if (subagent === false && !shuttingDown) {
       bindDispatchSession(context.sessionManager.getSessionId(), context.ui);
     }
-    await rebind(reason, context);
+    await rebind(reason, context, subagent);
   };
   pi.on("session_switch", (event, context) => {
     cardWake.noteIfIdle(context);

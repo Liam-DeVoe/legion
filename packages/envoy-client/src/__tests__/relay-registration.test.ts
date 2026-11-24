@@ -27,6 +27,7 @@ import {
 import {
   NoRelaySubjectError,
   type RegisteringRelay,
+  RegistrationStoppingError,
   registerWithRelay,
 } from "../relay-registration";
 import { createEnvoyClient, EnvoyApiError, expandSubscriptionTopics } from "../transport";
@@ -530,6 +531,53 @@ describe("one registration", () => {
     });
     if (!(outcome instanceof Error)) throw new Error(`no refusal: ${String(outcome)}`);
     expect(outcome.message).toBe("this session is stopping, so it registers nothing");
+  });
+
+  /**
+   * One registration of a session that holds no relay subject, whose relay could not be opened,
+   * with `stopping` as its host's stop reading. Its outage report is a stand-in that records each
+   * call it is handed. Answers what the registration threw, the calls the report was handed, and
+   * what was sent.
+   */
+  async function withoutRelayWhile(stopping: boolean) {
+    const reported: unknown[][] = [];
+    const sent: (readonly string[])[] = [];
+    const outcome = await registerWithRelay({
+      relay: undefined,
+      relayMissing: "Authentication Timeout",
+      ownAgentSubject: AGENT,
+      followed: () => [TEAM],
+      outage: {
+        noRelay: (_error, relayMissing) => reported.push(["noRelay", relayMissing]),
+        refused: () => reported.push(["refused"]),
+        accepted: () => reported.push(["accepted"]),
+      },
+      send: (topics) => {
+        sent.push(topics);
+        return Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      ...quiet,
+      stopping: () => stopping,
+    }).catch((error: unknown) => error);
+    return { outcome, reported, sent };
+  }
+
+  test("a session with no relay subject whose host began stopping is refused for the stop, and its outage report is handed nothing", async () => {
+    const { outcome, reported, sent } = await withoutRelayWhile(true);
+
+    expect(outcome).toBeInstanceOf(RegistrationStoppingError);
+    expect({ reported, sent }).toEqual({ reported: [], sent: [] });
+  });
+
+  test("control: a session with no relay subject and no stop begun is refused for the missing relay subject, and its outage report is handed why", async () => {
+    const { outcome, reported, sent } = await withoutRelayWhile(false);
+
+    expect(outcome).toBeInstanceOf(NoRelaySubjectError);
+    expect({ reported, sent }).toEqual({
+      reported: [["noRelay", "Authentication Timeout"]],
+      sent: [],
+    });
   });
 });
 

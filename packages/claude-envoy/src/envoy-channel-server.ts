@@ -565,6 +565,10 @@ export function createChannelDelivery(input: {
   /** Writes one stderr line of the queue's own: the session's tell gate (`gatedStderr`), so
    *  a notice queued before the stop that fails after it says nothing. */
   readonly stderr: (line: string) => void
+  /** Whether the session's stop has begun, read when a notice's turn in the queue comes: a
+   *  notice queued before the stop is shown to nobody once the stop has begun. Omitted, the
+   *  session never reads as stopping. */
+  readonly stopping?: () => boolean
 }): ChannelDeliveryPath {
   const inbox: ChannelInboxEntry[] = []
   let tail = Promise.resolve()
@@ -676,6 +680,7 @@ export function createChannelDelivery(input: {
     },
     notice(content, addressed) {
       return queued(async () => {
+        if (input.stopping?.() === true) return
         if (addressed !== undefined && addressed !== input.identity.id) {
           throw new Error(
             `the notice names session ${addressed}, and this process serves ${input.identity.id}`,
@@ -867,9 +872,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     configFile: options.configFile,
     router: () => router,
     stderr: sessionStderr,
+    stopping: () => shuttingDown,
   })
   /** A notice card of Envoy's own (`ChannelDeliveryPath.notice`), through the tell gate: one the
-   *  gate drops resolves at once, shown to nobody. */
+   *  gate drops resolves at once, shown to nobody. A notice queued before the stop waits its turn
+   *  behind the frames queued before it, and the queue reads the stop again when that turn comes
+   *  (`createChannelDelivery`'s `stopping`). */
   const showNotice = (content: string, addressed?: string): Promise<void> =>
     shuttingDown ? Promise.resolve() : delivery.notice(content, addressed)
   const handoffFile =
@@ -2252,7 +2260,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         lost.dialError = dialError
       })
     } catch (error) {
-      if (shuttingDown || options.startSignal?.aborted === true) return
+      if (shuttingDown) return
       lost.dialError = error
       sessionStderr(
         `envoy-channel: gave up opening a new NATS connection (${natsFailureReason(error)}); dialing again at the next heartbeat\n`,

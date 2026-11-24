@@ -427,8 +427,9 @@ each retry. Once it answers true, a call of the session's registration and role 
 before anything is sent, with `EnvoyStoppingError`, whose `call` names it: `subscribe` (a
 registration and every heartbeat), `unsubscribe`, `getInterest`, `setRole` (a claim, a transfer
 and a re-assertion) and `getRole`. The one list is `STOP_GATE` in `transport.ts`. The stop's own
-calls still go: its DELETE (`unregisterSession`) and its hand-back of each role hold
-(`stopCallsOf(client).handBack`). A `send` and a `publish` still go too: they carry a message the
+calls still go: its DELETE (`unregisterSession`) and, where the host's stop hands its roles back
+(the Envoy entry's does; claude-envoy's does not), the hand-back of each role hold
+(`stopHandBack(client)`). A `send` and a `publish` still go too: they carry a message the
 model asked for before or as the stop began, and losing it is worse than sending it. An attempt
 already sent when the stop begins is not cancelled, and its answer is read as before. A retry the
 gate refuses after an earlier attempt was sent ends the call with that attempt's own error, as a

@@ -1,9 +1,8 @@
-// The harness `extensions/envoy.test.ts`, `extensions/consumer-delivery.test.ts`,
-// `extensions/stopping-registration.test.ts`, `extensions/heartbeat-registration.test.ts` and
-// `extensions/role-give-back.test.ts` share: the NATS stand-in the extension dials, the fetch
-// that records every registration, the host modules the suites mock, the reset every row starts and
-// ends with, and the helpers the suites call. Bun evaluates an imported module once per process, so
-// the files drive this one set of state, and `mock.module` replaces a module for the whole process.
+// The harness every test file under `extensions/` that calls `useExtensionHarness()` shares: the
+// NATS stand-in the extension dials, the fetch that records every registration, the host modules
+// the suites mock, the reset every row starts and ends with, and the helpers the suites call. Bun
+// evaluates an imported module once per process, so the files drive this one set of state, and
+// `mock.module` replaces a module for the whole process.
 // For the same reason this module registers no hook in its body: a hook here would take the scope
 // of whichever test file imported it first. Each file calls `useExtensionHarness()` at its own
 // module scope instead.

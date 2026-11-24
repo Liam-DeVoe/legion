@@ -56,8 +56,9 @@ export interface ControllerSession {
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
   /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
    * dispatch://INFRA-3589: the claim's signal aborts, so a role claim the listener answered 503
-   * is not made again, and a claim of the daemon-launched controller that fails from then on says
-   * nothing and exits nothing. A role claim or a notice subscription Envoy refuses because the
+   * is not made again, and a claim that fails from then on says nothing: the daemon-launched
+   * controller's exits nothing, and the operator-launched controller's start command and re-claim
+   * log and show nothing. A role claim or a notice subscription Envoy refuses because the
    * session's stop has begun (`claimRefusedForStop`) is that same stop: in RPC mode, which the
    * daemon-launched controller runs, a SIGTERM stops Envoy's session with no `session_shutdown`. */
   readonly stop: () => void;
@@ -549,9 +550,11 @@ export function createControllerSession(
    * start message once that claim succeeds; refused after it (the role
    * claim or the subscription), the start turn runs holding the registration, and
    * `/legion-claim-controller` claims the role and its wakes again. The command itself never fails
-   * past that notice. Run again once the start message is sent, it claims nothing: there is
-   * nothing to do once a claim succeeded, and while the last claim that registered (the one that
-   * sent it, or a later one) did not finish, a warning names `/legion-claim-controller`. A `/new`
+   * past that notice. A refusal that comes once the session's stop has begun (`stop`) is neither
+   * logged nor shown: the stop ends the process itself. Run again once the start message is sent,
+   * it claims nothing: there is nothing to do once a claim succeeded, and while the last claim that
+   * registered (the one that sent it, or a later one) did not finish, a warning names
+   * `/legion-claim-controller`. A `/new`
    * while its claim runs stops that claim at its registration, before the send, clearing the
    * replaced session's unsent mark, and the command shows nothing: the re-claim the session change
    * starts claims the new session, sends the start message there, marking it sent, and shows the
@@ -583,6 +586,9 @@ export function createControllerSession(
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
+        // A claim the session's stop overtook (`stopped`) logs nothing and shows nothing (R24 of
+        // dispatch://INFRA-3589): the stop ends the process itself.
+        if (stopped.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
         // Refused before the send: the start `session_start` marked due is not coming, so the
@@ -620,7 +626,8 @@ export function createControllerSession(
    * clears, nor the return to the main session takes down; the session's next run
    * (`handleAgentStart`) or a later claim that succeeds does. A host with no widget shows the
    * outcome as notices from its managed timer once the re-claim settles, a macrotask that runs
-   * after an unfocused `/new`'s reset, which waits on nothing but promises.
+   * after an unfocused `/new`'s reset, which waits on nothing but promises. A re-claim that settles
+   * once the session's stop has begun (`stop`) shows no outcome: the stop ends the process itself.
    *
    * The claim runs with a context whose `ui` collects its notices for the same delivery and that
    * delegates everything else to the host's (`Object.create`, as the host scopes a handler's
@@ -683,6 +690,9 @@ export function createControllerSession(
         landed = true;
       });
     } catch (error) {
+      // A re-claim the session's stop overtook shows no failure, as the start command's claim
+      // shows none (`startCommand`).
+      if (stopped.signal.aborted) return;
       notify(
         progress.registered
           ? `legion: re-claiming the controller for this session failed (${messageFor(error)}). The session keeps its controller registration, so the \`legion\` tool's set_status still works, but until a re-claim succeeds controller wakes and merges will not reach this session.`
@@ -691,6 +701,9 @@ export function createControllerSession(
       );
     } finally {
       const { ui } = context;
+      // Once the session's stop has begun, the re-claim shows nothing: no notice it held for its
+      // outcome either, such as its wait notices or the start claim's hand-over.
+      if (stopped.signal.aborted) notices.splice(0);
       if (landed) {
         const kept = notices.filter(({ message }) => !waitNotices.has(message));
         notices.splice(0, notices.length, ...kept);

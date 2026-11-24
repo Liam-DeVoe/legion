@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
-import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
+import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ControllerSession } from "./controller-session";
 import { HOST_STOP_GRACE_MS } from "./host-stop";
 
 // The module reaches the Oh My Pi host through `@legion/pi-shared/subagent-session`, which only
@@ -30,6 +31,8 @@ restoreEnvironment([
   "LEGION_SLACK_CHANNELS",
   "LEGION_DAEMON_URL",
   "LEGION_CONTROLLER_START_MESSAGE",
+  "LEGION_CONTROLLER_SECRET",
+  "LEGION_CONTROLLER_SECRET_FILE",
 ]);
 afterEach(() => resetEnvoyPluginInterfaceForTests());
 
@@ -379,3 +382,127 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
     run.stopSink();
   }
 });
+
+/**
+ * The controller `legion controller start` launched for the operator (`LEGION_CONTROLLER=1` and a
+ * controller capability, no boot token), against a daemon that answers its health and answers its
+ * registration with `answers.register`. Every notice, every widget line and every line the Oh My
+ * Pi log takes is recorded, and so is every exit.
+ */
+function operatorLaunchedController(answers: {
+  readonly register: () => Response | Promise<Response>;
+}) {
+  process.env.LEGION_CONTROLLER = "1";
+  delete process.env.LEGION_TREE;
+  delete process.env.LEGION_BOOT_TOKEN;
+  delete process.env.LEGION_BOOT_TOKEN_FILE;
+  delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+  process.env.LEGION_CONTROLLER_SECRET = fixtureSecret("ctl");
+  process.env.LEGION_CONTROLLER_START_MESSAGE = "Run the controller's start procedure.";
+  process.env.LEGION_PROJECT = "legion";
+  process.env.LEGION_DAEMON_URL = "http://daemon.test";
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: 60,
+    fetch: (async (input) => {
+      const route = new URL(input.toString()).pathname;
+      if (route === "/healthz") {
+        return new Response(daemonFixture("health.json"), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (route === "/legion/v1/claims/register") return answers.register();
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
+  });
+  const exits: number[] = [];
+  const controller = createControllerSession({
+    daemon: () => daemon,
+    persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
+    pi: {} as PiApi,
+    exitProcess: (code) => {
+      exits.push(code);
+      return undefined as never;
+    },
+    hostStop: () => undefined,
+  });
+  const shown: string[] = [];
+  const context = {
+    sessionManager: {
+      getSessionId: () => CONTROLLER_SESSION,
+      getSessionFile: () => TRANSCRIPT,
+    },
+    ui: {
+      notify: (message: string) => shown.push(message),
+      setWidget: (_key: string, lines: readonly string[] | undefined) => {
+        if (lines !== undefined) shown.push(...lines);
+      },
+    },
+  } as unknown as SessionContext & CommandContext;
+  const lines: string[] = [];
+  const stopSink = logger.registerLogSink((entry) => {
+    lines.push(entry.message);
+  });
+  return { controller, context, exits, shown, lines, stopSink };
+}
+
+// The operator-launched controller claims from its start command (`/legion-controller-start`) and
+// from a session change's re-claim, and each shows its failure to the operator. A claim the
+// session's stop overtook says nothing there either (R24 of dispatch://INFRA-3589): the stop
+// begins while `claims/register` is on the wire, and the daemon then refuses the registration. The
+// control rows are the same refusals with no stop begun, which the operator is shown.
+for (const { name, run, failed } of [
+  {
+    name: "start command",
+    run: (controller: ControllerSession, context: SessionContext & CommandContext) =>
+      controller.startCommand(context),
+    failed: "legion: the controller claim failed: ",
+  },
+  {
+    name: "re-claim after a session change",
+    run: (controller: ControllerSession, context: SessionContext & CommandContext) =>
+      controller.reclaimAfterSessionChange(context),
+    failed: "legion: re-claiming the controller for this session failed (",
+  },
+] as const) {
+  test(`an operator-launched controller's ${name} whose session stops while claims/register is on the wire, and whose registration the daemon then refuses, logs and shows nothing`, async () => {
+    const asked = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<Response>();
+    const operator = operatorLaunchedController({
+      register: () => {
+        asked.resolve();
+        return held.promise;
+      },
+    });
+    try {
+      const claiming = run(operator.controller, operator.context);
+      await asked.promise;
+      operator.controller.stop();
+      held.resolve(registerRefused());
+      await claiming;
+      await settled();
+
+      expect(operator.shown).toEqual([]);
+      expect(operator.lines).toEqual([]);
+      expect(operator.exits).toEqual([]);
+    } finally {
+      operator.stopSink();
+    }
+  });
+
+  test(`control: an operator-launched controller's ${name} whose registration the daemon refuses with no stop begun shows the failure`, async () => {
+    const operator = operatorLaunchedController({ register: registerRefused });
+    try {
+      await run(operator.controller, operator.context);
+      await settled();
+
+      expect(operator.shown).toHaveLength(1);
+      expect(operator.shown[0]).toStartWith(failed);
+      expect(operator.lines).toContainEqual(
+        expect.stringContaining("claims/register for the controller failed (409)")
+      );
+      expect(operator.exits).toEqual([]);
+    } finally {
+      operator.stopSink();
+    }
+  });
+}

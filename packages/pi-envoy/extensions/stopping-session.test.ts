@@ -16,8 +16,8 @@ import type { Subprocess } from "bun";
 // emits no `session_shutdown`; the interactive mode disposes the session from an exit callback
 // of its own, so there both reach the extension. The listener is a fake that models a role claim
 // the way the listener weighs one under a single session id (`store.Registry.SetRoleWithPrevious`,
-// `roleHeldByAnotherProcess` in `packages/envoy/cmd/listener/api.go`): a soft claim of a role
-// held under the claimant's own session id by another process is refused while that claim
+// `roleHeldByAnotherProcess` in `packages/envoy/cmd/listener/role_holder.go`): a soft claim of a
+// role held under the claimant's own session id by another process is refused while that claim
 // stands, and the release that names the process holding it frees it.
 
 const CHILD = join(import.meta.dir, "..", "test", "stopping-session.ts");
