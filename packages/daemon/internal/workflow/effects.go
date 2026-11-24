@@ -1074,7 +1074,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // from is written with them too: the phase the move that raises this entry left, "" where no
 // move raises it (StartPromotedWorker, EnterArchitect), which is no move back, and held for the
-// release of a hold that raises one (restartTask, startHeldRetro). The admission pass reads it to
+// release of a hold that raises one (restartTask, StartHeldRetro). The admission pass reads it to
 // leave a parent whose entry a role's move back raised out of retro or merging where it stands
 // (record.PhaseRow.EntryFrom, StopForChildren).
 //

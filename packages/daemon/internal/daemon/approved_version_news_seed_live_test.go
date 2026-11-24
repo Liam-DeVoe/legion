@@ -453,7 +453,7 @@ func (r *versionNewsLive) dispatchAs(login, method, path string, body, into any)
 // reaches it, requires want and decodes the answer into into when it is not nil.
 func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.dispatch.token) })
+	r.dispatchCall(method, path, body, want, into, bearing(r.dispatch.token))
 }
 
 // setDefaultRepository makes repo, an owner/name, the default repository of the Dispatch project

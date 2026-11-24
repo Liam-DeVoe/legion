@@ -52,11 +52,12 @@ type Admission struct {
 	// names none (config.Config.StalledTreeNotice).
 	stalledTreeNotice time.Duration
 
-	// mu guards pending, stamps, target, catchingUp and unknownChains, the only Admission state a
-	// caller outside its own transactions touches: the daemon's boot-owned poll calls Held on every
-	// tick, outside any transaction and the database's own advisory fact lock, concurrently with
-	// whatever release call currently holds both while it clears them, and a release's hook that
-	// runs late clears them on the commit watcher's goroutine (clearReleased).
+	// mu guards pending, stamps, target, catchingUp, unknownChains and retroHeldReads, the only
+	// Admission state a caller outside its own transactions touches: the daemon's boot-owned poll
+	// calls Held on every tick, outside any transaction and the database's own advisory fact lock,
+	// concurrently with whatever release call currently holds both while it clears them, and a
+	// commit hook that runs late clears or writes them on the commit watcher's goroutine
+	// (clearReleased, rememberHeldRetro).
 	mu sync.Mutex
 	// pending holds, for every key Reconcile found the Dispatch consumer still needs to catch up
 	// before an admission decision on it is safe, the boot listing's own summary of that key —
@@ -95,6 +96,13 @@ type Admission struct {
 	// keeper keeps the tree lifecycles the stored trees name open for the release before, once a
 	// pass (record.TreeKeeper, promoteHolds).
 	keeper *record.TreeKeeper
+
+	// retroHeldReads is, for each parent held before its retro (record.HoldForChildren), what the
+	// facts of the last pass that read its release and committed showed of it (retroHeldRead,
+	// readsHeldRetro). It is this daemon run's own memory and nothing durable: a restart reads each
+	// such parent once more, which tells nothing twice, since the told-once marks are durable
+	// (workflow's tellRetroHeld). It holds one entry for each parent held so in this run.
+	retroHeldReads map[string]retroHeldRead
 
 	// openCapabilities answers the deployment capabilities with no decision, by name
 	// (capabilities.Deployment.Open), for the tick notice to carry; nil until the daemon registers
@@ -175,7 +183,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
 		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64),
-		unknownChains: make(map[string]struct{}), keeper: record.NewTreeKeeper(log)}
+		unknownChains: make(map[string]struct{}), keeper: record.NewTreeKeeper(log), retroHeldReads: make(map[string]retroHeldRead)}
 }
 
 // takeTreeDraw settles the tree-unit experiments of key at its first start (R17 of
@@ -1406,10 +1414,13 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting;
 //   - a parent held before its retro that nothing holds any longer — no issue beneath it in the
 //     workflow, no root that rests on its approval in the workflow, no open Dispatch child — has
-//     its retro started (workflow.Engine.ReleaseHeldRetro), on this pass and with nobody acting.
+//     its retro started (workflow.Engine.StartHeldRetro), on this pass and with nobody acting.
 //     The close of an open Dispatch child, or its move to icebox or out from under the parent,
 //     changes the daemon's mirror of Dispatch alone, a child never released among them, so no
-//     settle of the engine reads it and this pass is what releases the parent.
+//     settle of the engine reads it and this pass is what releases the parent. A Dispatch child
+//     filed under it, or a root registered on its approval, is a hold no settle reads either, and
+//     this pass tells it; a parent whose facts show what the last pass that read it found is not
+//     read again (readsHeldRetro).
 //
 // Each reads an issue of this project in the workflow whose gate root has started
 // (record.StartedRoots, record.TreeStarted: the gate root in Legion's work on the pass's chains
@@ -1453,6 +1464,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		owed[start.Issue] = append(owed[start.Issue], start)
 	}
 	wrote := false
+	var retroHolds map[string]record.RetroHolds
 	for _, parent := range parents {
 		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) || !facts.Chains.Chain(parent.Key).Known() {
 			continue
@@ -1463,14 +1475,22 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		wait, open := facts.StartedParentWaits[parent.Key]
 		switch {
 		case record.HeldForChildren(parent):
-			released, err := a.engine.ReleaseHeldRetro(ctx, tx, parent)
+			if retroHolds == nil {
+				retroHolds = record.RetroHoldsOf(issues, facts)
+			}
+			read := retroHeldReadOf(parent, retroHolds[parent.Key])
+			if !a.readsHeldRetro(parent.Key, read) {
+				continue
+			}
+			released, err := a.engine.StartHeldRetro(ctx, tx, parent)
 			if err != nil {
 				return wrote, fmt.Errorf("start the held retro of %s: %w", parent.Key, err)
 			}
+			a.rememberHeldRetro(ctx, parent.Key, read, released)
 			wrote = wrote || released
 		case parent.Phase == phase.AwaitingChildren && !open:
 			if err := a.engine.ReturnFromChildren(ctx, tx, parent); err != nil {
-				return wrote, fmt.Errorf("take %s back to the start it held: %w", parent.Key, err)
+				return wrote, fmt.Errorf("take %s back from awaiting_children to the step its return takes: %w", parent.Key, err)
 			}
 			wrote = true
 		case open && parent.Phase == phase.AwaitingChildren:
@@ -1499,6 +1519,64 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 // one.
 func (a *Admission) dueCloses(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
 	return a.engine.WriteDueCloses(ctx, tx, issues, facts.Chains)
+}
+
+// retroHeldRead is what one pass's facts show of a parent held before its retro: the movement of
+// its record (record.Issue.MovedAt), which the move that enters its hold and the release that ends
+// it each write, and the three holds on its acceptance (record.RetroHolds).
+type retroHeldRead struct {
+	moved time.Time
+	holds record.RetroHolds
+}
+
+// retroHeldReadOf is what holds, the pass's facts of parent, show of it.
+func retroHeldReadOf(parent record.Issue, holds record.RetroHolds) retroHeldRead {
+	return retroHeldRead{moved: parent.MovedAt, holds: holds}
+}
+
+// same says two reads show one movement of the parent's record and the same issues in each hold.
+func (r retroHeldRead) same(other retroHeldRead) bool {
+	return r.moved.Equal(other.moved) && slices.Equal(r.holds.Beneath, other.holds.Beneath) &&
+		slices.Equal(r.holds.Resting, other.holds.Resting) && slices.Equal(r.holds.Open, other.holds.Open)
+}
+
+// readsHeldRetro says whether the pass reads the release of key, a parent held before its retro
+// whose facts are read (workflow.Engine.StartHeldRetro). It reads one whose facts show nothing
+// holding it, since its retro may start. It reads one a hold holds where its facts differ from those
+// of the last pass that read it and committed (retroHeldReads), or where no pass of this run has:
+// a hold no settle of its tree reads, a Dispatch child filed or reopened under it or a root
+// registered on its approval, shows as such a change, and its notice may not have been told yet.
+// It does not read one whose facts are the ones that read found: that read told the first hold
+// they show where no notice of the run had named it (workflow's tellRetroHeld), so a read now has
+// nothing new to tell, and a hold still holds it, so no release can start its retro. The movement
+// keeps the run apart: the move that enters a hold and the release that ends it each write it, so a
+// parent held again is read again. A change beneath it is a write of its tree, whose settle reads
+// it already (workflow's releaseHeldParents).
+func (a *Admission) readsHeldRetro(key string, read retroHeldRead) bool {
+	if read.holds.None() {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	last, seen := a.retroHeldReads[key]
+	return !seen || !last.same(read)
+}
+
+// rememberHeldRetro writes read as what the last read of key's release found, once the pass
+// commits, and forgets key where that read started its retro: a pass rolled back told nothing, so
+// its facts stay unread. The hook may run late, after a later pass wrote newer facts of key
+// (store.OnCommit); what it writes stays true of a read that committed, so a late write costs that
+// later pass's facts at most one more read, and never leaves a notice untold.
+func (a *Admission) rememberHeldRetro(ctx context.Context, key string, read retroHeldRead, released bool) {
+	store.OnCommit(ctx, func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if released {
+			delete(a.retroHeldReads, key)
+			return
+		}
+		a.retroHeldReads[key] = read
+	})
 }
 
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
@@ -1599,8 +1677,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	// A started parent an open Dispatch child holds stops, one whose last open child has gone goes
-	// back to the start it held, and one held before its retro that nothing holds any longer starts
+	// A started parent an open Dispatch child holds stops, one whose last open child has gone comes
+	// back as the step its return takes (record.ReturnStep: the start it held, or for a held
+	// testing, reviewing or accepting the first step of its walk after the implementer's that stands
+	// at or before that start), and one held before its retro that nothing holds any longer starts
 	// its retro (childrenWaits). Each is written before the releases and read again where any was,
 	// so a stopped parent's slot is freed on this pass by the release below (awaiting_children
 	// keeps none), and a returned parent's start stands in this pass's line among the issues whose

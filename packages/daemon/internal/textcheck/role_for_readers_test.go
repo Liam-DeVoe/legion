@@ -50,7 +50,7 @@ type roleForReader struct {
 // task's first step: a planner's or an implementer's, as plan.Supported holds every task to an
 // implementer step with each tester, reviewer and acceptance step after it), or reads the retro's
 // own phase and the phase of the last step of a parent's task, neither of which is admitted
-// (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its retro for
+// (retroHeldNotice and Engine.StartHeldRetro, which run only for a parent held before its retro for
 // the issues beneath it), or never reads admitted at all because a check before it refuses that
 // phase, which is what each named test holds it to. A parent's wait on its open children
 // (awaiting_children.go, dispatch://INFRA-3320) is of the last kind: each of its readers runs only
@@ -109,7 +109,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/return.go", fn: "Engine.runOwner"}:                      {calls: 1, test: "TestAnIssueBackInWorkResumesItsPhaseAtANewEntry"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:                  {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
-	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:            {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.StartHeldRetro"}:            {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                      {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                     {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:                  {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},

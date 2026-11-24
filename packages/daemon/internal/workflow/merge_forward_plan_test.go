@@ -310,7 +310,7 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 // the merge comes next asks nothing at a conflicting head (classify.MergeComesNext). A parent whose
 // last step is the implementer's is held before its retro while an issue beneath it is still in
 // the workflow (holdBeforeRetro). Neither the hold nor its release into the retro once that issue
-// leaves (startHeldRetro) asks the merge forward again: the retro is where the merge comes next,
+// leaves (StartHeldRetro) asks the merge forward again: the retro is where the merge comes next,
 // and the move into merging asks the merger. Neither tells the architect a checks-red notice, and
 // the ask of implementing stays on the record. The control is the same parent with nothing beneath
 // it, which moves into its retro at the completion.
@@ -338,7 +338,7 @@ func TestAParentHeldBeforeItsRetroAsksWhatTheMoveIntoItsRetroAsks(t *testing.T) 
 
 	t.Run("held before its retro for an issue beneath it, then released into it", func(t *testing.T) {
 		pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
-		// The release starts the retro only where its gate root on the chain runs (startHeldRetro,
+		// The release starts the retro only where its gate root on the chain runs (StartHeldRetro,
 		// record.TreeRuns), which LEGION-208, a root at work, does.
 		stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 		confirmsConflict(t, pool, unread)
@@ -377,7 +377,7 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
 			// The release starts the retro only where its gate root on the chain runs
-			// (startHeldRetro, record.TreeRuns), which LEGION-208, a root at work, does.
+			// (StartHeldRetro, record.TreeRuns), which LEGION-208, a root at work, does.
 			if tc.child {
 				stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 			}

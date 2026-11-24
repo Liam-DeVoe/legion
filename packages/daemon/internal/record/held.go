@@ -74,7 +74,7 @@ const (
 	// rest on its approval still in the workflow, or open Dispatch children of it. heldBy names
 	// each issue of the first of them that holds it, in R8's order (retroHeldBy), as the
 	// retro-held notice and the refusal of a retry name them. Once none of them holds it in a tree
-	// that runs, the hold ends and the daemon starts the retro itself (workflow's startHeldRetro).
+	// that runs, the hold ends and the daemon starts the retro itself (workflow's StartHeldRetro).
 	// It stands below every word that speaks of the issue's chain, a Dispatch link or an issue
 	// above it, because each of those holds the issue whatever its own hold is, and above at_work
 	// and unclassified, which it read before it had a word of its own: at_work's sentence, that
@@ -180,26 +180,60 @@ func openChildren(wait ChildWait) []string {
 	return children
 }
 
+// RetroHolds is what a pass's facts show of the three holds on the acceptance of a parent held
+// before its retro (HoldForChildren), each by key: the issues beneath it on its Dispatch chain
+// still in the workflow (Beneath, OpenBeneath over the pass's chains), the roots still in the
+// workflow that rest on its approval (Resting, LineFacts.RetroHeldResting), and its open Dispatch
+// children (Open, LineFacts.RetroHeldChildren), the same three the workflow reads to hold the
+// parent and to release it (workflow's acceptanceHeld).
+type RetroHolds struct {
+	Beneath, Resting, Open []string
+}
+
+// None says none of the three holds the parent.
+func (h RetroHolds) None() bool {
+	return len(h.Beneath) == 0 && len(h.Resting) == 0 && len(h.Open) == 0
+}
+
+// retroHoldsIn is the RetroHolds of key, a parent held before its retro, over facts, the pass's
+// own.
+func retroHoldsIn(key string, facts LineFacts) RetroHolds {
+	resting := facts.RetroHeldResting[key]
+	roots := make([]string, len(resting))
+	for i, root := range resting {
+		roots[i] = root.Key
+	}
+	return RetroHolds{Beneath: OpenBeneath(facts.Chains, key), Resting: roots, Open: openChildren(facts.RetroHeldChildren[key])}
+}
+
+// RetroHoldsOf is the RetroHolds of each parent held before its retro among issues
+// (RetroHeldParents), by key, read over facts, the pass's own: what the admission pass compares
+// from one pass to the next (admit's childrenWaits). It builds nothing where no parent is held so.
+func RetroHoldsOf(issues []Issue, facts LineFacts) map[string]RetroHolds {
+	held := RetroHeldParents(issues)
+	if len(held) == 0 {
+		return nil
+	}
+	holds := make(map[string]RetroHolds, len(held))
+	for _, key := range held {
+		holds[key] = retroHoldsIn(key, facts)
+	}
+	return holds
+}
+
 // retroHeldBy is what holds issue, a parent held before its retro (HoldForChildren), as heldBy
-// names it: the first of the three holds on its acceptance that holds it, in R8's order, as the
-// workflow reads them (acceptanceHeld) — the issues beneath it on its Dispatch chain still in the
-// workflow (OpenBeneath over the pass's chains), then the roots still in the workflow that rest on
-// its approval (LineFacts.RetroHeldResting), then its open Dispatch children
-// (LineFacts.RetroHeldChildren) — each by key, and nothing where none holds it, as in a tree that
-// runs nothing yet.
+// names it: the first of the three holds on its acceptance that holds it (RetroHolds), in R8's
+// order, as the workflow reads them (acceptanceHeld) — the issues beneath it on its Dispatch chain,
+// then the roots that rest on its approval, then its open Dispatch children — each by key, and
+// nothing where none holds it, as in a tree that runs nothing yet.
 func retroHeldBy(issue Issue, facts LineFacts) []string {
-	if beneath := OpenBeneath(facts.Chains, issue.Key); len(beneath) > 0 {
-		return beneath
-	}
-	if resting := facts.RetroHeldResting[issue.Key]; len(resting) > 0 {
-		keys := make([]string, len(resting))
-		for i, root := range resting {
-			keys[i] = root.Key
-		}
-		return keys
-	}
-	if children := openChildren(facts.RetroHeldChildren[issue.Key]); len(children) > 0 {
-		return children
+	switch holds := retroHoldsIn(issue.Key, facts); {
+	case len(holds.Beneath) > 0:
+		return holds.Beneath
+	case len(holds.Resting) > 0:
+		return holds.Resting
+	case len(holds.Open) > 0:
+		return holds.Open
 	}
 	return nil
 }
@@ -257,7 +291,7 @@ func HeldReasonOf(issue Issue, holds bool, facts LineFacts) (HeldReason, []strin
 	// open children and not a gate. The children that hold it are the started parents' judgement
 	// (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it back by; a
 	// parent whose last open child has gone since stands with no issue beside it until the pass
-	// takes it back to the start it held.
+	// takes it back to the step its return takes (ReturnStep).
 	if issue.Phase == phase.AwaitingChildren {
 		return HeldAwaitingChildren, openChildren(facts.StartedParentWaits[issue.Key])
 	}

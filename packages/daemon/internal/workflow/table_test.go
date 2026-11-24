@@ -371,7 +371,7 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 }
 
 // Every trigger reaching a parent in awaiting_children is a named ignore: no row of the table
-// leaves the phase, and validateTable (TestEveryPhaseAndTriggerHasARowOrNamedIgnore) holds each
+// leaves the phase, and validateTable (TestEveryLineHasARowForEachPhaseAndTrigger) holds each
 // trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
 // pass and failure or a review's approval and rejection, share one reason.
 func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {

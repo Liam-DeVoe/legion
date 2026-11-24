@@ -614,7 +614,7 @@ func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the hold still stands posted beside it (heldParentWait's reason), so the person who set the todo
 // reads why the board went back, as the release of any other hold queues the status of the phase
 // it ends in: every later status write of the issue is keyed on the record's status
-// (Engine.status), the retro's that ends the hold among them (startHeldRetro), and also takes the
+// (Engine.status), the retro's that ends the hold among them (StartHeldRetro), and also takes the
 // board at the todo the record saw Dispatch show when it was queued
 // (record.StatusWrite.DispatchStatus), so the retro lands whether this row put the board back
 // first or the retro's raised entry refused it before it ran (record.LateAt).
@@ -2516,7 +2516,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 }
 
 // endChildrenFirst is what the refusals over children, sign_off's and close_root's while an issue
-// beneath is still in the workflow or a Dispatch child is open (acceptanceRefusals), tell the
+// beneath is still in the workflow or a Dispatch child is open (acceptanceHolds), tell the
 // architect to do: wait for its status write to be taken, end a child by that write
 // (record.EndChildRule), and ask the person about a child that no move fits. hold is what the
 // architect holds until the person answers.
@@ -2528,7 +2528,7 @@ func endChildrenFirst(hold string) string {
 // ending a child (record.StatusNotTakenYet, record.EndChildRule), which the architect's refusals
 // over children still in the workflow, the pr-merged notice and the retro-held notice carry.
 // endChildrenFirst puts it before its sentence on asking the person (sign_off's and close_root's
-// refusals, acceptanceRefusals); the architect's WAITING_ON_CHILDREN refusal (waitingRefusal),
+// refusals, acceptanceHolds); the architect's WAITING_ON_CHILDREN refusal (waitingRefusal),
 // waitingForTree and retroHeldNotice end with it. The notices over open children end a child by
 // childrenLeave instead.
 const endChildWords = record.StatusNotTakenYet + " " + record.EndChildRule
@@ -2557,34 +2557,33 @@ type acceptanceHold struct {
 }
 
 // The words each hold acceptanceHeld answers names its issues with: the clause every text that
-// names the issues of a hold reads before them, the refusals of the acts it holds
-// (acceptanceRefusals) and the words of a parent held before its retro (holding).
+// names the issues of a hold reads before them (holdTexts.holding, and its refusals).
 const (
 	beneathHolding   = "these issues beneath it are still in the workflow"
 	restingHolding   = "these roots that rest on its approval are still in the workflow"
 	openChildHolding = "these Dispatch children of it are open"
 )
 
-// holdingWords is the words of each hold acceptanceHeld answers, by its code.
-var holdingWords = map[string]string{
-	signOffChildInWorkflow: beneathHolding,
-	signOffRestingRoot:     restingHolding,
-	signOffChildOpen:       openChildHolding,
-}
-
 // holding is what holds the issue h holds, in the words the refusals of h use, followed by each
 // issue h names: "these issues beneath it are still in the workflow: LEGION-209". The retro-held
 // notice (retroHeldNotice), the refusal of a release of that hold and the reason beside a todo
 // set back on a held root (heldParentWait) read it.
 func (h acceptanceHold) holding() string {
-	return holdingWords[h.code] + ": " + h.names
+	return acceptanceHolds[h.code].holding + ": " + h.names
 }
 
-// What a sign-off's refusal over a resting root and over an open Dispatch child tell the owner,
-// which the retro-held notice of a parent those holds hold before its retro tells it too
-// (acceptanceRefusals, retroHeldNotice). restingAcceptedAfter is a format of the issue's key.
+// The sentences that more than one text of the holds acceptanceHeld answers says
+// (acceptanceHolds): beneathAccepted, what a parent with issues beneath it is accepted after;
+// restingAfter, a format of the issue's key, the start of why a resting root holds the issue,
+// which restingAcceptedAfter (the sign-off's refusal and the retro-held notice) and the close's
+// refusal end each in its own words; restingTreeMover, who moves a resting root; and
+// childrenAcceptedAfter and ownTreeChildMover, what the sign-off's refusal over an open Dispatch
+// child and the retro-held notice of a parent such a child holds tell the owner.
 const (
-	restingAcceptedAfter  = "The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it."
+	beneathAccepted       = "A parent is accepted only once no issue beneath it is still in the workflow"
+	restingAfter          = "The design-gate step of each rests on an approval of %[1]s, so %[1]s"
+	restingTreeMover      = "Each is a tree of its own: its own architect, or a person, moves it."
+	restingAcceptedAfter  = restingAfter + " is accepted after them. " + restingTreeMover
 	childrenAcceptedAfter = "A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released."
 	ownTreeChildMover     = "A child that runs as a tree of its own is moved by its own architect or a person."
 )
@@ -2603,38 +2602,67 @@ const (
 	actStopTask     architectAct = "stop_task"
 )
 
-// acceptanceRefusals is the refusal text of each hold acceptanceHeld answers, by its code and by
-// the act it refuses. Each text is a format of the issue's key (%[1]s) and the names the hold
-// carries (%[2]s), and a sign-off's of the step a held acceptance goes back to (%[3]s,
-// heldAcceptanceBack); the two holds over children end with endChildrenFirst's words, which carry
-// no formatting verb. It is the one place a hold's refusal is written for both acts, so a hold
-// added to acceptanceHeld is read here for each of them, and one the table misses for an act still
-// refuses that act (acceptanceHold.refusal).
-var acceptanceRefusals = map[string]map[architectAct]string{
+// holdTexts is what one hold acceptanceHeld answers says wherever it is named. holding is the
+// clause every text that names the hold's issues reads before them (acceptanceHold.holding).
+// refusals is the refusal text of each act the hold refuses (acceptanceHold.refusal): a format of
+// the issue's key (%[1]s) and the names the hold carries (%[2]s), and a sign-off's of the step a
+// held acceptance goes back to (%[3]s, heldAcceptanceBack); the two holds over children end with
+// endChildrenFirst's words, which carry no formatting verb. retro is what the retro-held notice of
+// a parent the hold holds before its retro tells the owner to do about its issues
+// (retroHeldNotice), a format of the parent's key (%[1]s) that the notice's own format carries,
+// and childRules says that notice ends with the rules for ending a child (endChildWords).
+type holdTexts struct {
+	holding    string
+	refusals   map[architectAct]string
+	retro      string
+	childRules bool
+}
+
+// acceptanceHolds is the texts of each hold acceptanceHeld answers, by its code: the one place a
+// hold's words are written, which its refusals (acceptanceHold.refusal), the words naming what
+// holds a parent before its retro (acceptanceHold.holding) and that parent's retro-held notice
+// (retroHeldNotice) all read. So a hold added to acceptanceHeld is written here for each of them,
+// which TestEveryAcceptanceHoldRefusesBothActs holds every entry to, and one the table misses for
+// an act still refuses that act (acceptanceHold.refusal).
+var acceptanceHolds = map[string]holdTexts{
 	signOffChildInWorkflow: {
-		actSignOff:   "%[1]s is not accepted while " + beneathHolding + ": %[2]s. A parent is accepted only once no issue beneath it is still in the workflow, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held%[3]s; otherwise sign off again. " + endChildrenFirst("acceptance"),
-		actCloseRoot: "%[1]s is not closed while " + beneathHolding + ": %[2]s. Closing it would close their parent under them mid-turn. Close the tree again when each of them has left the workflow. " + endChildrenFirst("close"),
+		holding: beneathHolding,
+		refusals: map[architectAct]string{
+			actSignOff:   "%[1]s is not accepted while " + beneathHolding + ": %[2]s. " + beneathAccepted + ", on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held%[3]s; otherwise sign off again. " + endChildrenFirst("acceptance"),
+			actCloseRoot: "%[1]s is not closed while " + beneathHolding + ": %[2]s. Closing it would close their parent under them mid-turn. Close the tree again when each of them has left the workflow. " + endChildrenFirst("close"),
+		},
+		retro:      beneathAccepted + ". Run each one to done, or end it.",
+		childRules: true,
 	},
 	signOffRestingRoot: {
-		actSignOff:   "%[1]s is not accepted while " + restingHolding + ": %[2]s. " + restingAcceptedAfter + " Sign off again once each one is done or out of the workflow",
-		actCloseRoot: "%[1]s is not closed while " + restingHolding + ": %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
+		holding: restingHolding,
+		refusals: map[architectAct]string{
+			actSignOff:   "%[1]s is not accepted while " + restingHolding + ": %[2]s. " + restingAcceptedAfter + " Sign off again once each one is done or out of the workflow",
+			actCloseRoot: "%[1]s is not closed while " + restingHolding + ": %[2]s. " + restingAfter + " closes after them. " + restingTreeMover + " Close the tree again once each one is done or out of the workflow",
+		},
+		retro: restingAcceptedAfter,
 	},
 	signOffChildOpen: {
-		actSignOff:   "%[1]s is not accepted while " + openChildHolding + ": %[2]s. " + childrenAcceptedAfter + " Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held%[3]s; otherwise sign off again. " + ownTreeChildMover + " " + endChildrenFirst("acceptance"),
-		actCloseRoot: "%[1]s is not closed while " + openChildHolding + ": %[2]s. A parent closes after its children, and a child that was never released holds the close until it is done or in icebox: close the tree again once none of them is open. " + ownTreeChildMover + " " + endChildrenFirst("close"),
+		holding: openChildHolding,
+		refusals: map[architectAct]string{
+			actSignOff:   "%[1]s is not accepted while " + openChildHolding + ": %[2]s. " + childrenAcceptedAfter + " Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held%[3]s; otherwise sign off again. " + ownTreeChildMover + " " + endChildrenFirst("acceptance"),
+			actCloseRoot: "%[1]s is not closed while " + openChildHolding + ": %[2]s. A parent closes after its children, and a child that was never released holds the close until it is done or in icebox: close the tree again once none of them is open. " + ownTreeChildMover + " " + endChildrenFirst("close"),
+		},
+		retro:      childrenAcceptedAfter + " " + ownTreeChildMover,
+		childRules: true,
 	},
 }
 
 // refusal is the refusal of act on the issue key that h makes, and false where h holds nothing:
-// the hold's own code with that act's text (acceptanceRefusals), back being the words of the step
-// a held acceptance of key goes back to (heldAcceptanceBack), which only a sign-off's text reads.
+// the hold's own code with that act's text (acceptanceHolds), back being the words of the step a
+// held acceptance of key goes back to (heldAcceptanceBack), which only a sign-off's text reads.
 // A hold the table names no text of for act refuses it all the same, with its code and the issues
 // it names, so no hold lets a sign-off or a close through for want of its words.
 func (h acceptanceHold) refusal(act architectAct, key, back string) (intake.Result, bool) {
 	if h.code == "" {
 		return intake.Result{}, false
 	}
-	text, ok := acceptanceRefusals[h.code][act]
+	text, ok := acceptanceHolds[h.code].refusals[act]
 	if !ok {
 		return refused(h.code, fmt.Sprintf("%s is held by %s, which names %s, so this %s changed nothing", key, h.code, h.names, act)), true
 	}
@@ -2657,15 +2685,15 @@ func heldAcceptanceBack(w Walk) string {
 // answers the first that holds; each later one is read only when the one before it holds nothing.
 // First, an issue beneath it on its Dispatch chain that is still in the workflow
 // (record.OpenBeneath, SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step
-// rests on its approval and is still in the workflow (RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW):
-// the checks of the issues under an ancestor prove its requirements together, so it is accepted
-// only after them. Then a Dispatch child of it that is still open, one that runs as a tree of its
-// own included (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and
-// is a Dispatch child of it is named by the second, as it holds there first. It is the one
-// statement of the rule for the sign-off (signOff), the close of a root (closeRoot), and the retro
-// of a parent that no sign-off accepts, which it holds (retroHeld) and releases (startHeldRetro).
-// It reads the Dispatch chains of issue's project with issue named (record.ReadChains); a caller
-// that has read them already asks acceptanceHeldOn.
+// rests on its approval and is still in the workflow (record.RestingRoots,
+// SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks of the issues under an ancestor prove its
+// requirements together, so it is accepted only after them. Then a Dispatch child of it that is
+// still open, one that runs as a tree of its own included (childrenOpen, SIGNOFF_CHILD_OPEN). A
+// root that rests on the issue's approval and is a Dispatch child of it is named by the second, as
+// it holds there first. It is the one statement of the rule for the sign-off (signOff), the close
+// of a root (closeRoot), and the retro of a parent that no sign-off accepts, which it holds
+// (retroHeld) and releases (StartHeldRetro). It reads the Dispatch chains of issue's project with
+// issue named (record.ReadChains); a caller that has read them already asks acceptanceHeldOn.
 func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) (acceptanceHold, error) {
 	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
@@ -2676,7 +2704,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // acceptanceHeldOn is acceptanceHeld on chains, the Dispatch chains of issue's project read with
 // issue named (record.ReadChains), for a caller that read them for a judgement of its own: the
-// release of a parent held before its retro (startHeldRetro) and why it still waits
+// release of a parent held before its retro (StartHeldRetro) and why it still waits
 // (heldParentWaitOf), so a held parent's settle reads the chains once.
 func (e *Engine) acceptanceHeldOn(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains) (acceptanceHold, error) {
 	if open := record.OpenBeneath(chains, issue.Key); len(open) > 0 {
@@ -2788,14 +2816,23 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
 }
 
-// acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
-// the acceptance's place on the task of its walk, by place and never by type, so the step after
-// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
-// where the review stands before accepting.
+// acceptedRole is the role of the step the owner's acceptance of issue accepts (acceptedRoleOn),
+// on the walk of its run, which it reads (walk).
 func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
+	if err != nil {
 		return claim.RoleReviewer, err
+	}
+	return acceptedRoleOn(issue, w)
+}
+
+// acceptedRoleOn is the role of the step the owner's acceptance of issue accepts on w, the walk of
+// its run: the step before the acceptance's place on the task of w, by place and never by type, so
+// the step after the sign-off reads the report the owner read. An issue with no plan rows walks
+// today's line, where the review stands before accepting.
+func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
+	if !w.Stored {
+		return claim.RoleReviewer, nil
 	}
 	place, ok := w.PlaceOf(phase.Accepting)
 	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
@@ -2887,10 +2924,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if len(open) > 0 {
 		return e.holdForChildren(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, open)
 	}
-	// A parent whose last step is not the owner's acceptance passes that step into its retro, and
-	// while any of the three holds on its acceptance holds it — an issue beneath it still in the
-	// workflow, a root that rests on its approval still in the workflow, an open Dispatch child of
-	// it — Legion holds it before its retro instead (retroHeld, holdBeforeRetro).
+	// A parent whose last step is not the owner's acceptance moves into its retro by that step's
+	// pass or by a move back out of merging, and while any of the three holds on its acceptance
+	// holds it — an issue beneath it still in the workflow, a root that rests on its approval still
+	// in the workflow, an open Dispatch child of it — Legion holds it before its retro instead
+	// (retroHeld, holdBeforeRetro).
 	held, err := e.retroHeld(ctx, tx, issue, w, row.To)
 	if err != nil {
 		return err
@@ -3032,17 +3070,18 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	return from, nil
 }
 
-// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a task whose last
-// step is not the owner's acceptance while held, the first of the three holds on its acceptance,
-// holds it (retroHeld): the task moves to its retro's place and the issue stands in held for its
-// children (record.HoldForChildren) instead. The hold writes no status, since held has none,
-// starts no retro, which starts once none of the three holds it (startHeldRetro), and keeps the
-// last step's handoff for the retro's task, which no clear of a handoff takes. The architect is
-// told the pass and the hold, naming what holds the parent (tellRetroHeld). The hold asks nothing
-// of the merge forward: the retro is where the merge comes next (classify.MergeComesNext), where a
-// move asks nothing (mergeForwardOnEntry). An ask made in implementing stays on the record,
-// neither the hold nor its release (startHeldRetro) asks it again, and the move into merging asks
-// the merger.
+// holdBeforeRetro is the move of a parent into to, its retro, by the pass of its task's last step
+// or by a move back out of merging (TriggerBackward), on a task whose last step is not the owner's
+// acceptance while held, the first of the three holds on its acceptance, holds it (retroHeld): the
+// task moves to its retro's place and the issue stands in held for its children
+// (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
+// retro, which starts once none of the three holds it (StartHeldRetro), and keeps the last step's
+// handoff for the retro's task, which no clear of a handoff takes. The architect is told the move
+// and the hold, naming what holds the parent and the move that entered the hold (tellRetroHeld,
+// trigger). The hold asks nothing of the merge forward: the retro is where the merge comes next
+// (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry). An ask made in
+// implementing stays on the record, neither the hold nor its release (StartHeldRetro) asks it
+// again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, held acceptanceHold) error {
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
@@ -3054,7 +3093,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
 		return err
 	}
-	return e.tellRetroHeld(ctx, tx, issue, w, held, true)
+	return e.tellRetroHeld(ctx, tx, issue, w, held, trigger)
 }
 
 // queueMovedNews queues the reconcile of the news of the approved design of issue's tree, the tree
@@ -3068,7 +3107,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 // recorded it.
 //
 // Each release out of held calls it after the start of the phase it releases into, as a move does
-// (restartTask, retryPhase, startHeldRetro): a hold owes the issue nothing (record.OwedNews names a
+// (restartTask, retryPhase, StartHeldRetro): a hold owes the issue nothing (record.OwedNews names a
 // held issue UntoldHeld), so a version approved while it was held can reach the holder of the
 // phase entered with no change set recorded, which that start cannot carry and the reconcile
 // records and sends.

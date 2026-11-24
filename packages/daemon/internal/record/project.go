@@ -29,13 +29,18 @@ func RankLess(a, b Issue) bool {
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
 
-// AcceptedStatus says whether Dispatch shows an issue accepted: retro, its reviewed head accepted,
-// or done (DoneStatus). It is the Dispatch half of R1's first condition for a basis
-// (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the daemon
-// ends a step's wait on such an ancestor's request, wherever it reads the status.
+// AcceptedStatus says whether Dispatch shows an issue accepted: retro, the head the step before its
+// retro passed accepted, or done (DoneStatus). It is the Dispatch half of R1's first condition for
+// a basis (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the
+// daemon ends a step's wait on such an ancestor's request, wherever it reads the status.
 func AcceptedStatus(status string) bool {
 	return status == DoneStatus || status == "retro"
 }
+
+// BasisNotYetAccepted is what every BASIS_ACCEPTED refusal of a registration on a basis ends with:
+// register_gate's of an ancestor that Dispatch shows accepted or the daemon records so (api's
+// registrationBasis), and the daemon's of one accepted since that read (workflow's acceptedBasis).
+const BasisNotYetAccepted = "a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document"
 
 // OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
 // and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
@@ -251,9 +256,9 @@ func Accepted(issue Issue) bool {
 // It is the one reading of that half of the condition inside a transaction of the daemon's own: a
 // registration on a basis reads it again under the lock every fact applies under (workflow's
 // gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
-// on the ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and
-// the person's approval as its live event read it before either opens a step; and a step carried
-// onto a child keeps a basis or a rest only on an ancestor it passes (the daemon's carriedGate).
+// on the ancestor (RestingRoots), apply in one order; the pending-basis seed's read and the
+// person's approval as its live event read it before either opens a step; and a step carried onto
+// a child keeps a basis or a rest only on an ancestor it passes (the daemon's carriedGate).
 func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
@@ -545,13 +550,13 @@ type LineFacts struct {
 	// by parent key (readChildWaits over StartedParents): an issue in planning through
 	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
 	// entry for one no open child holds. It is what the admission pass moves a started parent into
-	// awaiting_children by and takes one back to the start it held by (admit's childrenWaits), and
-	// the children the held word awaiting_children names (HeldReasonOf). It is apart from
-	// ChildWaits, the wait of an issue whose first phase has not started: a started parent's
-	// children hold no first phase, so no children-first notice, no children_first word and no
-	// wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it, since
-	// the judgement reads the mirror against the daemon's records in the transaction the line is
-	// never given; it is never stored, and each read of the facts judges it again.
+	// awaiting_children by and returns one by, to the step ReturnStep gives its held start (admit's
+	// childrenWaits), and the children the held word awaiting_children names (HeldReasonOf). It is
+	// apart from ChildWaits, the wait of an issue whose first phase has not started: a started
+	// parent's children hold no first phase, so no children-first notice, no children_first word
+	// and no wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it,
+	// since the judgement reads the mirror against the daemon's records in the transaction the line
+	// is never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
 	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
 	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over
@@ -681,10 +686,14 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		}
 	}
 	facts := LineFacts{Chains: chains, Gates: gates, Owed: owed, OwedRows: rows}
-	// The children are judged last, since the gates say which issues are children-first
-	// candidates and an issue owing a start is a started parent (StartedParents).
-	facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren = readChildWaits(issues, facts)
-	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, RetroHeldParents(issues)); err != nil {
+	// The children are judged after the rest, since the gates say which issues are children-first
+	// candidates and an issue owing a start is a started parent (StartedParents). The parents held
+	// before their retro (RetroHeldParents) are found once, for that judgement and for the read of
+	// the roots that rest on them (RestingRootsOn) after it, which reads nothing where no parent is
+	// held so.
+	held := RetroHeldParents(issues)
+	facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren = readChildWaits(issues, held, facts)
+	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, held); err != nil {
 		return LineFacts{}, err
 	}
 	return facts, nil

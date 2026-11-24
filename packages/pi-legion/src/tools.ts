@@ -1018,7 +1018,6 @@ export function createLegionTool(deps: {
             let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } =
               {};
             if (basis === undefined) {
-              // The daemon takes the document's id alone, which a reference is looked up as.
               artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
             } else {
               const board = dispatch();
@@ -1040,8 +1039,11 @@ export function createLegionTool(deps: {
               const basisArtifactId =
                 "id" in ancestor
                   ? ancestor.id
-                  : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
-                      resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
+                  : await documentIdOf(
+                      "register_gate",
+                      dispatch,
+                      ancestor.issue,
+                      ancestor.document
                     );
               basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
             }
@@ -1073,8 +1075,6 @@ export function createLegionTool(deps: {
             if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
               throw new Error("register_plan requires a positive integer version");
             }
-            // The document is named as register_gate's is: its id, or a reference looked up in the
-            // pane's Dispatch.
             const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
             // The fact is keyed by the issue, its generation, the document and the version, so a
             // repeat is the registration again, answered the same.

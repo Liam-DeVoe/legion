@@ -158,14 +158,21 @@ const sessionsFile = scriptValue("sessions_file");
 const promptsDir = scriptValue("prompts_dir");
 // Part one's driver files, which the control copies from the checkout into the base tree.
 const partOneDriverFiles = ["driver_file", "steps_file", "seed_file"].map(scriptValue);
+// The Go of each seam the control copies into the base tree where the base defines none
+// (control_compat), at the path the script copies it from.
+const controlSeamFiles = [
+  "approved-version-news-control-transact.go.txt",
+  "approved-version-news-control-task.go.txt",
+].map((name) => join("scripts", "e2e", "lib", name));
+// This checkout's sessions_file, line by line.
+const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
 // The news marks: the text of every sessions…Mark constant of this checkout's part two driver,
 // which the scratch checkout holds as it is here, so a scratch prompt written with them is one the
 // script's own read of that file finds.
-const newsMarks = [
-  ...readFileSync(join(repoRoot, sessionsFile), "utf8").matchAll(
-    /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/gm
-  ),
-].map((match) => match[1]);
+const newsMarks = sessionsLines.flatMap((line) => {
+  const mark = /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/.exec(line);
+  return mark === null ? [] : [mark[1]];
+});
 // The two prompt files part two's base arm takes in the scratch checkout, a prompt with no news
 // mark, and the same prompt with every news mark after it.
 const reviewerPrompt = join(promptsDir, "roles", "reviewer.md");
@@ -256,9 +263,8 @@ const secondMarkFirst: History = ({ commit }, c0) => {
   return { c0, c1, c2 };
 };
 
-/** This checkout's sessions_file, line by line, and its first line that assigns a news mark in the
- * form the script reads (unreadLine), numbered from 1, with the name of the constant it assigns. */
-const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
+/** The first line of sessionsLines that assigns a news mark in the form the script reads
+ * (unreadLine), numbered from 1, with the name of the constant it assigns. */
 const firstMarkIndex = sessionsLines.findIndex((line) =>
   /^\s*sessions\w*Mark\s*=\s*".*"$/.test(line)
 );
@@ -298,10 +304,10 @@ const mergedForward: History = ({ git, commit }, c0) => {
 
 /**
  * Lays out a scratch checkout in DIR/checkout and builds its history. Its first commit holds the
- * script and the libraries it sources, this checkout's part two driver (sessions_file) and part
- * one's three driver files, each at the path it has here, a placeholder of packages/envoy, which
- * the control's base must hold, and the two prompt files part two's base arm takes, with no news
- * mark. HISTORY builds the rest on that commit.
+ * script and the libraries it sources, this checkout's part two driver (sessions_file), part one's
+ * three driver files and the Go of the control's two seams, each at the path it has here, a
+ * placeholder of packages/envoy, which the control's base must hold, and the two prompt files part
+ * two's base arm takes, with no news mark. HISTORY builds the rest on that commit.
  */
 function scratchCheckout(dir: string, history: History) {
   const checkout = join(dir, "checkout");
@@ -316,7 +322,7 @@ function scratchCheckout(dir: string, history: History) {
   for (const path of sourcedLibraries(script)) {
     copyFileSync(path, place(join("scripts", "e2e", relative(dirname(script), path))));
   }
-  for (const path of [sessionsFile, ...partOneDriverFiles]) {
+  for (const path of [sessionsFile, ...partOneDriverFiles, ...controlSeamFiles]) {
     copyFileSync(join(repoRoot, path), place(path));
   }
   write({

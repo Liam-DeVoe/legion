@@ -534,7 +534,10 @@ describe("the arguments check's jj", () => {
 const transactSeam =
   "packages/daemon/internal/daemon/approved_version_news_control_transact_live_test.go";
 const taskSeam = "packages/daemon/internal/daemon/approved_version_news_control_task_live_test.go";
-const seedFile = "packages/daemon/internal/daemon/approved_version_news_seed_live_test.go";
+const seedFile = assignment("seed_file").slice("seed_file=".length);
+// The checkout the script's own root names, whose scripts/e2e/lib holds the Go of each seam that
+// control_compat copies.
+const checkout = join(import.meta.dir, "../../..");
 
 /** Runs control_compat over a scratch base tree whose package daemon holds two Go files, the
  * first defining seedTransact where TRANSACT says so and the second defining recordTaskAt where
@@ -556,7 +559,7 @@ function controlCompat(transact: boolean, task: boolean) {
     "-c",
     `set -euo pipefail
 ${helperGuard}
-check=base-tree seed_file=${seedFile}
+check=base-tree root=${JSON.stringify(checkout)} ${assignment("seed_file")}
 ${note}
 ${fail}
 ${fn("control_compat")}
@@ -570,23 +573,30 @@ control_compat ${JSON.stringify(tree)}`,
 
 // Part one's control builds this checkout's part-one driver in a scratch copy of the base, and
 // the driver's seed calls two seams an older base lacks, seedTransact and recordTaskAt. The
-// control writes the base's version of each, a test file of package daemon under //go:build e2e,
-// where the base tree defines no such function, and no file where it does; its transcript names
-// each file it writes and each seam the base already defines.
+// control copies the base's version of each, a test file of package daemon under //go:build e2e
+// that scripts/e2e/lib holds as a .go.txt file, where the base tree defines no such function, and
+// writes no file where it does; its transcript names each file it writes and each seam the base
+// already defines.
 describe("the control's seam files", () => {
   test("are written where the base defines neither seam", () => {
     const run = controlCompat(false, false);
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
     const transact = readFileSync(join(run.tree, transactSeam), "utf8");
+    expect(transact).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-transact.go.txt"), "utf8")
+    );
     expect(transact.startsWith("//go:build e2e\n")).toBe(true);
     expect(transact).toContain("\npackage daemon\n");
     expect(transact).toContain(
       "\nfunc seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {\n" +
         "\tctx, committed := intake.WithCommitHooks(ctx)\n"
     );
-    expect(transact).toContain("\n\tcommitted()\n\treturn nil\n} // seedTransact\n");
+    expect(transact.endsWith("\n\tcommitted()\n\treturn nil\n}\n")).toBe(true);
     const task = readFileSync(join(run.tree, taskSeam), "utf8");
+    expect(task).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-task.go.txt"), "utf8")
+    );
     expect(task.startsWith("//go:build e2e\n")).toBe(true);
     expect(task).toContain("\npackage daemon\n");
     expect(task).toContain(

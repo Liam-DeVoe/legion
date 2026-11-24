@@ -451,79 +451,30 @@ news_base() {
 # an older base lacks, each a test file of package daemon of the control's own under
 # //go:build e2e, so the base's own packages and any daemon built from them carry neither. The
 # head defines both beside the basis tests (basis_stays_scratch_dispatch_test.go), a file the
-# control does not copy. seedTransact, the seed's transaction, is written where TREE's package
-# daemon defines none: it opens a commit scope (intake.WithCommitHooks), runs the write in one
-# transaction on the base's Pool and runs the hooks once it committed, as the seed did before
-# #4533 moved it onto store.Transact, which the base lacks. recordTaskAt, which keeps a member's
-# plan task where its recorded phase stands, is written where TREE's package daemon defines none:
-# it does nothing, since the base records no task place, so a record the seed writes in a phase
-# needs no move there. The transcript names each file written and each seam TREE already
-# defines. No line of the Go it writes holds `}` alone, since such a line ends this shell
-# function for lib/script-functions.ts, which the script's bun tests read it with.
+# control does not copy. Each seam's Go is a file under scripts/e2e/lib whose name ends .go.txt,
+# which no Go tool reads there, and the control copies it where TREE's package daemon defines no
+# function of that name. seedTransact, the seed's transaction
+# (approved-version-news-control-transact.go.txt), opens a commit scope
+# (intake.WithCommitHooks), runs the write in one transaction on the base's Pool and runs the hooks
+# once it committed, as the seed did before #4533 moved it onto store.Transact, which the base
+# lacks. recordTaskAt, which keeps a member's plan task where its recorded phase stands
+# (approved-version-news-control-task.go.txt), does nothing, since the base records no task place,
+# so a record the seed writes in a phase needs no move there. The transcript names each file
+# written and each seam TREE already defines.
 control_compat() {
-  local tree=$1 daemon_dir file
+  local tree=$1 daemon_dir seam fn source file use
   daemon_dir=$tree/packages/daemon/internal/daemon
-  if grep -q -E '^func seedTransact\(' "$daemon_dir"/*.go 2>/dev/null; then
-    note "the base's package daemon defines seedTransact, so the control writes no file for it"
-  else
-    file=$daemon_dir/approved_version_news_control_transact_live_test.go
-    cat >"$file" <<'EOF' || fail "could not write $file"
-//go:build e2e
-
-// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
-// scratch copy of the base commit alone, whose package daemon defines no seedTransact, the seam
-// the head's part-one seed takes its transaction through. It does what that seed did before
-// #4533 (78a2a9692d) moved it onto store.Transact, which the base lacks: it opens a commit scope
-// (intake.WithCommitHooks), runs write in one transaction on the base's Pool, and runs the hooks
-// the writes registered once the transaction committed, never when it rolled back.
-package daemon
-
-import (
-	"context"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/store"
-)
-
-func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
-	ctx, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return write(ctx, tx) }); err != nil {
-		return err
-	}
-	committed()
-	return nil
-} // seedTransact
-EOF
-    note "wrote $file: the base's package daemon defines no seedTransact, which $seed_file takes its transaction through"
-  fi
-  if grep -q -E '^func recordTaskAt\(' "$daemon_dir"/*.go 2>/dev/null; then
-    note "the base's package daemon defines recordTaskAt, so the control writes no file for it"
-  else
-    file=$daemon_dir/approved_version_news_control_task_live_test.go
-    cat >"$file" <<'EOF' || fail "could not write $file"
-//go:build e2e
-
-// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
-// scratch copy of the base commit alone, whose package daemon defines no recordTaskAt, the seam
-// the head's part-one seed calls to keep a member's plan task where its recorded phase stands.
-// The base records no task place, so a record the seed writes in a phase needs no move, and this
-// recordTaskAt does nothing.
-package daemon
-
-import (
-	"context"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/record"
-)
-
-func recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }
-EOF
-    note "wrote $file: the base's package daemon defines no recordTaskAt, which $seed_file calls"
-  fi
+  for seam in \
+    "seedTransact approved-version-news-control-transact.go.txt approved_version_news_control_transact_live_test.go takes its transaction through" \
+    "recordTaskAt approved-version-news-control-task.go.txt approved_version_news_control_task_live_test.go calls"; do
+    read -r fn source file use <<<"$seam"
+    if grep -q -E "^func $fn\\(" "$daemon_dir"/*.go 2>/dev/null; then
+      note "the base's package daemon defines $fn, so the control writes no file for it"
+    else
+      cp "$root/scripts/e2e/lib/$source" "$daemon_dir/$file" || fail "could not write $daemon_dir/$file"
+      note "wrote $daemon_dir/$file: the base's package daemon defines no $fn, which $seed_file $use"
+    fi
+  done
 }
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload

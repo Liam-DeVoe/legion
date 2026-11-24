@@ -211,7 +211,7 @@ func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 	const beneath = heldBeneath
 	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}
 	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro while these issues beneath it are still in the workflow: " + beneath + ". " +
-		intake.HeldParentRetroStarts + " This retry changed nothing."}
+		retroHeldStarts + " This retry changed nothing."}
 	for _, h := range heldWorks {
 		for _, release := range []struct {
 			name string

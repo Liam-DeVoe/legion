@@ -663,7 +663,7 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
 			[]string{
 				"a stop in `accepting`, `retro` or `merging` holds none, and a stop in any other phase keeps the slot it holds",
-				"a parent whose task passed its last step, which is not your `acceptance:owner` step",
+				"a parent bound for its retro, whose task ends in a step other than your `acceptance:owner`",
 				"It moves the issue on to its task's next step, `accepting` where your step `acceptance:owner` comes next.",
 			},
 			[]string{"past its review", "Past review", "a stop before `accepting` keeps it", "no `acceptance:owner` step to wait in"},

@@ -45,7 +45,7 @@ func assertRetroStarted(t *testing.T, pool *pgxpool.Pool, key, why string) {
 
 // A parent whose plan has no acceptance step is held before its retro while an issue beneath it
 // on its Dispatch chain is in the workflow (record.HoldForChildren), and its retro starts once
-// nothing beneath it is and its gate root runs (workflow's startHeldRetro). A leave of the last
+// nothing beneath it is and its gate root runs (workflow's StartHeldRetro). A leave of the last
 // issue beneath it is one way the set empties; a change of parent in Dispatch that moves the last
 // issue beneath it under another issue is another (admission's recordObservation), and the moved
 // issue's new chain no longer reaches the parent, which the settle reads by project
@@ -88,7 +88,7 @@ func assertRetriesRefused(t *testing.T, pool *pgxpool.Pool, admission *Admission
 
 // A retry of a parent held before its retro for its children is refused, and where nothing
 // beneath the parent on its Dispatch chain is open, the retro waits only for the parent's gate
-// root to run (workflow's startHeldRetro, record.TreeRuns): here a root whose work came back to
+// root to run (workflow's StartHeldRetro, record.TreeRuns): here a root whose work came back to
 // implementing without the slot it needs waits in the line for that slot, and its project is
 // paused, which grants none. Then the refusal says why the tree runs nothing, naming the tree the
 // state names for the parent (record.Chains.StateTree), and lists no issue. A person's todo on the

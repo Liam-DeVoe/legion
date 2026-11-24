@@ -592,9 +592,9 @@ func heldIssue(t *testing.T, h *harness, from phase.Phase) {
 	}
 }
 
-// failedImplementer is the harness with the operator's server applying facts to handler, a root,
-// and LEGION-209's implementer failed: the runtime refused every launch of it.
-func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.Token) {
+// failedPhaseWorker is the harness with the operator's server applying facts to handler, a root,
+// and LEGION-209's worker of role failed: the runtime refused every launch of it.
+func failedPhaseWorker(t *testing.T, handler intake.Handler, role claim.Role) (*harness, claim.Token) {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -606,7 +606,7 @@ func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.To
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
 	h.runtime.ScriptSpawn(refused, refused, refused)
 	worker := spawnBody()
-	worker.Issue, worker.Role = "LEGION-209", claim.RoleImplementer
+	worker.Issue, worker.Role = "LEGION-209", role
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", worker); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("spawn of a worker whose every launch the runtime refused = %d, want 500; body %s", recorder.Code, recorder.Body)
 	}
@@ -625,7 +625,7 @@ func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.To
 // relaunch every claim a runtime failed to launch once the cause is gone.
 func TestTheOperatorsRetryOfAFailedPhaseWorkerOnAHeldIssueRetriesThePhase(t *testing.T) {
 	facts := &heldRetrier{}
-	h, workerToken := failedImplementer(t, facts)
+	h, workerToken := failedPhaseWorker(t, facts, claim.RoleImplementer)
 	heldIssue(t, h, phase.Implementing)
 	calls := len(h.runtime.Calls())
 
@@ -660,7 +660,7 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerOnAHeldIssueRetriesThePhase(t *tes
 // issue, the phase and the claim, never 202.
 func TestTheOperatorsRetryOfAHeldPhaseThatStaysHeldIsRefused(t *testing.T) {
 	facts := &heldRetrier{outOfWork: true}
-	h, workerToken := failedImplementer(t, facts)
+	h, workerToken := failedPhaseWorker(t, facts, claim.RoleImplementer)
 	heldIssue(t, h, phase.Implementing)
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
@@ -698,18 +698,36 @@ func (r *childrenWaiter) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // A retry the workflow applies that moves the issue to awaiting_children started no phase: a
 // Dispatch child of the issue is open, so the workflow holds the start instead. The operator is
 // answered 409 that the issue waits on its open children, naming them and the start it holds,
-// rather than told that a retry restarted a phase.
+// rather than told that a retry restarted a phase, and where the return takes it: a held
+// implementing back to that start, and a held testing or reviewing
+// (record.ReturnsPastImplementing) to the first step of its walk after implementing that stands at
+// or before that start, or to that start.
 func TestTheOperatorsRetryThatMovesTheIssueToAwaitingChildrenSaysItWaits(t *testing.T) {
-	facts := &childrenWaiter{}
-	h, workerToken := failedImplementer(t, facts)
-	heldIssue(t, h, phase.Implementing)
+	const pastImplementing = "the daemon takes it back by itself to the first step of its walk after implementing, where that step stands at or before that start (testing on today's line)," +
+		" or to that start where the walk holds none or its pull request merged during the wait,"
+	for _, tc := range []struct {
+		role claim.Role
+		from phase.Phase
+		back string
+	}{
+		{role: claim.RoleImplementer, from: phase.Implementing, back: "the daemon goes back to that start by itself"},
+		{role: claim.RoleTester, from: phase.Testing, back: pastImplementing},
+		{role: claim.RoleReviewer, from: phase.Reviewing, back: pastImplementing},
+	} {
+		t.Run(string(tc.from), func(t *testing.T) {
+			facts := &childrenWaiter{}
+			h, workerToken := failedPhaseWorker(t, facts, tc.role)
+			heldIssue(t, h, tc.from)
 
-	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
-		"LEGION-209 waits on its open children after the retry of its phase implementing, so no phase of it was started for "+string(workerToken)+
-			": the retry moved it to awaiting_children, holding the start of implementing (retry held phase, while these Dispatch children of LEGION-209 were open: LEGION-301 (todo)),"+
-			" and the daemon goes back to that start by itself once no Dispatch child of LEGION-209 is open")
-	if applied := facts.recorded(); len(applied) != 1 {
-		t.Errorf("the retry applied %#v, want the held phase's retry alone", applied)
+			wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
+				"LEGION-209 waits on its open children after the retry of its phase "+string(tc.from)+", so no phase of it was started for "+string(workerToken)+
+					": the retry moved it to awaiting_children, holding the start of "+string(tc.from)+
+					" (retry held phase, while these Dispatch children of LEGION-209 were open: LEGION-301 (todo)), and "+tc.back+
+					" once no Dispatch child of LEGION-209 is open")
+			if applied := facts.recorded(); len(applied) != 1 {
+				t.Errorf("the retry applied %#v, want the held phase's retry alone", applied)
+			}
+		})
 	}
 }
 
@@ -718,7 +736,7 @@ func TestTheOperatorsRetryThatMovesTheIssueToAwaitingChildrenSaysItWaits(t *test
 // applies nothing, and the claim is relaunched on its own, with whatever task it still holds.
 func TestTheOperatorsRetryOfAFailedPhaseWorkerHeldForAnotherRoleStartsNoPhase(t *testing.T) {
 	facts := &heldRetrier{}
-	h, workerToken := failedImplementer(t, facts)
+	h, workerToken := failedPhaseWorker(t, facts, claim.RoleImplementer)
 	heldIssue(t, h, phase.Testing)
 	spawns := len(h.runtime.CallsOf("Spawn"))
 
@@ -750,9 +768,9 @@ func workingIssue(t *testing.T, h *harness, at phase.Phase) {
 	})
 }
 
-// stoppedImplementer is the harness of failedImplementer with LEGION-209's implementer registered
-// on a session, standing in its phase, and then stopped: what `legion claims stop` leaves, which
-// is a retired claim and an issue no hold waits on.
+// stoppedImplementer is the harness of failedPhaseWorker with LEGION-209's implementer
+// registered on a session, standing in its phase, and then stopped: what `legion claims stop`
+// leaves, which is a retired claim and an issue no hold waits on.
 func stoppedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.Token) {
 	t.Helper()
 	h := newHarness(t)

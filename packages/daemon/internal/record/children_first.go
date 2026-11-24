@@ -87,27 +87,27 @@ func OpenChildHolds(p phase.Phase) bool {
 // readChildWaits is the three judgements of a parent's open Dispatch children that one pass makes
 // (ReadLineFacts): the children-first waits of the issues whose first phase has not started
 // (ChildrenFirstCandidates, ChildWaits), the open children of every started parent
-// (StartedParents), and those of every parent held before its retro (RetroHeldParents), the last
-// two with the one child withoutHeldUnderAccepted leaves out. It reads nothing: the pass's chains
-// hold the copy's children of every issue the pass was read for and the daemon's record of each of
-// them (ReadChains), so the judgement costs no query whatever the number of parents, which matters
-// because every judgement the daemon makes about a parent's children runs under the one fact lock
-// every fact takes (intake.ApplyFact). ChildWaits judges each parent on its own, from that
-// parent's children and their records alone, so one judgement split by parent gives each set
-// exactly what a judgement of its own parents would; an issue in two sets — one at admitted that
-// owes a start — is judged in both. A parent with none has no entry in any map.
+// (StartedParents), and those of every parent held before its retro, held (RetroHeldParents,
+// LineFacts.RetroHeldChildren), the last two with the one child withoutHeldUnderAccepted leaves
+// out. It reads nothing: the pass's chains hold the copy's children of every issue the pass was
+// read for and the daemon's record of each of them (ReadChains), so the judgement costs no query
+// whatever the number of parents, which matters because every judgement the daemon makes about a
+// parent's children runs under the one fact lock every fact takes (intake.ApplyFact). ChildWaits
+// judges each parent on its own, from that parent's children and their records alone, so one
+// judgement split by parent gives each set exactly what a judgement of its own parents would; an
+// issue in more than one set — one at admitted that owes a start — is judged in each. A parent
+// with none has no entry in any of the three maps.
 //
 // Nothing here is stored, and nothing here moves an issue: the admission pass moves a started
 // parent with an open child into awaiting_children and takes one whose last open child has gone
-// back to the start it held (admit's childrenWaits), and the held list names the children of a
-// parent in awaiting_children and of a parent held before its retro (HeldReasonOf), each from this
-// one judgement of the pass.
-func readChildWaits(issues []Issue, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait) {
+// back to the step ReturnStep gives its held start (admit's childrenWaits), and the held list
+// names the children of a parent in awaiting_children and of one held before its retro
+// (HeldReasonOf), each from this one judgement of the pass.
+func readChildWaits(issues []Issue, held []string, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait) {
 	candidates := ChildrenFirstCandidates(issues, facts)
 	startedParents := StartedParents(issues, facts.Owed)
-	heldParents := RetroHeldParents(issues)
-	parents := make(map[string]struct{}, len(candidates)+len(startedParents)+len(heldParents))
-	for _, key := range slices.Concat(candidates, startedParents, heldParents) {
+	parents := make(map[string]struct{}, len(candidates)+len(startedParents)+len(held))
+	for _, key := range slices.Concat(candidates, startedParents, held) {
 		parents[key] = struct{}{}
 	}
 	judged := make([]Issue, 0, len(parents))
@@ -118,7 +118,7 @@ func readChildWaits(issues []Issue, facts LineFacts) (childrenFirst, started, re
 	}
 	waits := ChildWaits(facts.Chains, judged)
 	return waitsOf(waits, candidates), withoutHeldUnderAccepted(waitsOf(waits, startedParents), facts.Chains),
-		withoutHeldUnderAccepted(waitsOf(waits, heldParents), facts.Chains)
+		withoutHeldUnderAccepted(waitsOf(waits, held), facts.Chains)
 }
 
 // RetroHeldParents is every issue of issues in the workflow held before its retro
