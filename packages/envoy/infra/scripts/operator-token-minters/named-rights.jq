@@ -13,14 +13,16 @@
 # reviewed principals' labels (the first field of principals.rec); a Group subject is reviewed when
 # it is one the API server gives a reviewed ServiceAccount or anyone (system:authenticated,
 # system:serviceaccounts and system:serviceaccounts:<its namespace>, system:unauthenticated), or
-# one reviewed alone. $reviewed and $iam_users each come from a file (--slurpfile), so each one's
-# value is its first: a cluster's reviewed principals are more than a command line's argument holds.
+# one reviewed alone. $reviewed and $iam_users each come from a file (--slurpfile), and must hold one
+# JSON array (one_array): a cluster's reviewed principals are more than a command line's argument
+# holds.
+include "rec";
 def right($verb; $group; $resource; $ns; $name):
   {verb: $verb, group: $group, resource: $resource, sub: "", ns: $ns, name: $name,
    key: ([$verb, $group, $resource, "", $ns, $name] | join("|")),
    label: ("\($verb) \($resource)\(if $group != "" then "." + $group else "" end) \($name)"
            + (if $ns != "" then " in " + $ns else " cluster-wide" end))};
-$reviewed[0] as $reviewed | $iam_users[0] as $iam_users
+one_array($reviewed; "the reviewed principals") as $reviewed | one_array($iam_users; "the IAM holders") as $iam_users
 | ([$reviewed[] | select(startswith("system:serviceaccount:")) | split(":")[2]] | unique) as $sa_namespaces
 | def reviewed($s; $bns):
     if $s.kind == "ServiceAccount" then any($reviewed[]; . == "system:serviceaccount:\($s.namespace // $bns):\($s.name)")

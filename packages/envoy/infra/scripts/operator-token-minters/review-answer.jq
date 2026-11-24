@@ -2,9 +2,9 @@
 # principal, the right's label, allowed, refused or error, the evaluation error and the API server's
 # reason, matched to its question by the subject and the attributes the answer echoes; one `short`
 # record when the answer holds fewer reviews than were asked. $principals and $rights each come from
-# a file (--slurpfile), so each one's value is its first.
+# a file (--slurpfile), and must hold one JSON array (one_array).
 include "rec";
-      $principals[0] as $principals | $rights[0] as $rights
+      one_array($principals; "the principals") as $principals | one_array($rights; "the rights") as $rights
       | ($rights | map({(.key): .label}) | add) as $labels
       | ($principals | map({("\(.user)|\(.groups | join(","))"): .principal}) | add) as $names
       | [(if .kind == "List" then .items[] else . end)
