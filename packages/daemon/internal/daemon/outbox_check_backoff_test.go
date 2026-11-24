@@ -2,12 +2,18 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // failedImplementer is issue's implementer failed under cause with budgets, its session kept:
@@ -115,5 +121,82 @@ func TestACheckRoleProviderErrorIsRetriedWithAFreshRunAtTheNextLook(t *testing.T
 				t.Fatalf("the implementer's budgets after the look's retry of %s = %+v, want a fresh run", tc.cause, got.Budgets)
 			}
 		})
+	}
+}
+
+// checkLookStart is the start row the workflow queued for look of issue's production check.
+func checkLookStart(t *testing.T, r *adoptionRig, issue string, look int) record.OutboxRow {
+	t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id, kind, issue, payload from outbox
+		where kind = 'supervise' and issue = $1 and payload->>'op' = 'start' and (payload->>'checkLook')::int = $2 order by id`, issue, look)
+	if err != nil {
+		t.Fatalf("read the start rows of %s: %v", issue, err)
+	}
+	starts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (record.OutboxRow, error) {
+		var out record.OutboxRow
+		return out, row.Scan(&out.ID, &out.Kind, &out.Issue, &out.Payload)
+	})
+	if err != nil || len(starts) != 1 {
+		t.Fatalf("the start rows of %s's look %d = %+v (%v), want one", issue, look, starts, err)
+	}
+	return starts[0]
+}
+
+// The half-open trial of a checking role that keeps failing is that one attempt and no more. A
+// look's start retries the claim, failed at its launch budget, with one attempt left; the runtime
+// refuses that launch as it refused the ones before, so the claim fails again at once, and its
+// failure ends the look it was started for as the second failed look in a row, which names the
+// next look twice the look bound out. The same start row run again, as the outbox runs a row again
+// after an error, finds its look ended and launches nothing: the runtime is asked for no launch past
+// the one attempt, and the claim stays failed for the next look's start. A retry at a fresh budget
+// would have launched the role twice in the look, and at a start that is not fenced on its look,
+// again at the rerun.
+func TestACheckRolesOneAttemptThatFailsEndsTheLookAndItsStartRunAgainLaunchesNothing(t *testing.T) {
+	t.Parallel()
+	r := newAdoptionRig(t)
+	root := checkRoot()
+	check := openCheck(root, "a1b2c3d4")
+	check.LookOpen, check.FailedLooks = false, 1
+	r.put(root)
+	putProductionCheck(t, r.pool, r.records, check)
+	r.openTree(root.Key)
+	failed := r.suspended(root.Key, root.Key, claim.RoleImplementer)
+	failed.State, failed.SuspendedBy = supervise.StateFailed, ""
+	failed.Failure, failed.FailureCause, failed.FailedAt = "the claim failed for the test", supervise.CauseNeverRegistered, time.Now().Add(-time.Hour)
+	failed.Budgets = supervise.Budgets{LaunchFailures: 2}
+	r.admitClaims(failed)
+	r.restoreClaims()
+	refused := fake.SpawnResult{Err: errors.New("the pod died in workspace-init")}
+	r.rt.ScriptResume(refused, refused, refused)
+	launches := func() int { return len(r.rt.CallsOf("Resume")) + len(r.rt.CallsOf("Spawn")) }
+
+	r.apply("check-wake", intake.CheckWakeDue{Issue: root.Key, Look: 1, OpenedAt: check.OpenedAt, Reason: "the retry of a look nobody reported: claim failed"})
+	start := checkLookStart(t, r, root.Key, 2)
+	started := time.Now()
+	if err := r.runner.execute(r.ctx, start); err != nil {
+		t.Logf("look 2's start against the failed implementer = %v", err)
+	}
+	r.settle()
+	if got := launches(); got != 1 {
+		t.Fatalf("the runtime was asked for %d launches by look 2's start, want the one attempt", got)
+	}
+	if c := r.claimOf(root.Key, claim.RoleImplementer); c.State != supervise.StateFailed || c.Budgets.LaunchFailures != 2 {
+		t.Fatalf("the implementer after its one attempt failed = %s with budgets %+v, want it failed again at its launch limit of 2", c.State, c.Budgets)
+	}
+	ended := readProductionCheck(t, r.pool, r.records, root.Key)
+	if !ended.Open() || ended.LookOpen || ended.Looks != 2 || ended.FailedLooks != 2 || ended.WakeAt == nil ||
+		ended.WakeAt.Before(started.Add(2*workflow.CheckLookBound)) || ended.WakeAt.After(time.Now().Add(2*workflow.CheckLookBound)) {
+		t.Fatalf("the check after its implementer failed in look 2 = %+v, want look 2 ended, 2 failed looks in a row and the next look %s out", ended, 2*workflow.CheckLookBound)
+	}
+
+	if err := r.runner.execute(r.ctx, start); err != nil {
+		t.Fatalf("look 2's start run again = %v, want it to finish without acting", err)
+	}
+	r.settle()
+	if got := launches(); got != 1 {
+		t.Fatalf("the runtime was asked for %d launches after look 2's start ran again, want still the one attempt", got)
+	}
+	if c := r.claimOf(root.Key, claim.RoleImplementer); c.State != supervise.StateFailed {
+		t.Fatalf("the implementer after look 2's start ran again = %s, want it still failed", c.State)
 	}
 }
