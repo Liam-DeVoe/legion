@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -14,17 +13,15 @@ import (
 )
 
 // The numbers of the numbered entries are written where every reader with no Go toolchain reads
-// them: `released-contracts.json`, a JSON list of the number of every numbered entry of
-// version.go, read from its entry headers, in strictly ascending order. Its greatest number is L,
-// to which `scripts/daemon-contract.sh`, `daemonContract()` of packages/contracts and
-// `legion-pins` add the count of entry fixtures to read a commit's contract, and each of them
-// refuses a file of another form. The numbered entries never move, so neither does the file; a
-// new entry changes neither. (SupportedContracts' frozen list is the part of it from
-// ServingFloor up, TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp.)
+// them: `released-contracts.json`, a JSON list of SupportedContracts' frozen list
+// (frozenContracts), the numbered entries from ServingFloor up, in strictly ascending order. Its
+// greatest number is L, to which `scripts/daemon-contract.sh`, `daemonContract()` of
+// packages/contracts and `legion-pins` add the count of entry fixtures to read a commit's
+// contract, and each of them refuses a file of another form. The list never moves, so neither
+// does the file; a new entry changes neither.
 func TestReleasedContractsGolden(t *testing.T) {
-	released := slices.Sorted(maps.Keys(numberedEntries(t)))
-	if greatest := released[len(released)-1]; greatest != LastNumberedContract {
-		t.Errorf("the greatest numbered entry of version.go is %d, want L (%d)", greatest, LastNumberedContract)
+	if greatest := frozenContracts[len(frozenContracts)-1]; greatest != LastNumberedContract {
+		t.Errorf("the frozen list ends at %d, want L (%d)", greatest, LastNumberedContract)
 	}
 	if !*updateGolden {
 		path := goldenPath("released-contracts.json")
@@ -42,7 +39,7 @@ func TestReleasedContractsGolden(t *testing.T) {
 			}
 		}
 	}
-	golden(t, "released-contracts.json", released)
+	golden(t, "released-contracts.json", frozenContracts)
 }
 
 // The closed set of causes a claim can fail under is two hand-kept lists — the constants of

@@ -51,8 +51,8 @@ func SupportedContracts() []int { return registry().supported }
 // frozenContracts is SupportedContracts' numbered half: each number version.go carries a numbered
 // entry for, from ServingFloor up to LastNumberedContract, which no entry moves.
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
-// headers out of version.go and holds this list to them in both directions; every header, those
-// below the floor too, is a number of `released-contracts.json` (TestReleasedContractsGolden).
+// headers out of version.go and holds this list to them in both directions, and
+// TestReleasedContractsGolden writes it as `released-contracts.json`.
 //
 // 193, 202, 205, 213, 219, 220 and 228 are constants rather than their numbers, because the
 // entries that added them name them (shapedAnswersContract, the shaped answers' entry;
