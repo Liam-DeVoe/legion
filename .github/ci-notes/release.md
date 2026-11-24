@@ -114,18 +114,9 @@ into that target's binary alone) whenever what the binary links moves:
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 ci.yaml's lint job holds the list to what the release builds legion from
 (.github/scripts/check-legion-release-paths.sh) on every change the go_notices filter selects,
-which names release.yaml, the target list, the three scripts the check runs, and every Go and
-module file, and runs it after the module cache that filter restores.
-The check keeps no rule of its own. Bash expands the list unquoted at the root, as the version step
-does; `release-push.sh version-paths` takes the paths out of it with `version`'s own parse; git
-says which files they cover (`git ls-files -- <paths>`), as it does for release-bump.sh's
-`git log`, so a glob or an `:(exclude)` in the list counts as the release counts it;
-release-build-legion.sh's `targets`, `list` and `env` give the targets, their environment and the
-command; and `go list -deps -f` gives the files each package compiles or embeds and its module's
-go.mod. The check fails naming each package of this repository with a tracked file of those that
-the list does not cover, each such module's go.mod and go.sum, and the go.work the build reads and
-its go.work.sum. A file git does not track is named by no commit, so no path can release a change
-to it, and the check does not require it.
+which names release.yaml, the target list, the check and the two scripts it runs, and every Go and
+module file, and runs it after the module cache that filter restores. The check's header says
+which program it asks each question of, and what it fails on.
 
 ## Why GOPROXY falls through to direct
 

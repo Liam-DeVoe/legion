@@ -232,8 +232,8 @@ jobs:
       #
       # It runs when the go_notices filter matches, as the restore does, and whenever `changes` did
       # not succeed. That filter names every Go and module file and the binary's package
-      # directories, and release.yaml and the three scripts the check runs too, so a change to any
-      # of them runs it. With no `if:` it ran on every change, and on one that changes no Go file
+      # directories, and release.yaml, the check and the two scripts it runs too, so a change to
+      # any of them runs it. With no `if:` it ran on every change, and on one that changes no Go file
       # the restore is skipped, so its go list fetched 156 modules (1.2 GB unpacked) from the
       # proxy. Restoring the cache for it whatever the filter said would cost every run 82 s (the
       # restore, step 26 of job 138280389296), where the fetch took 7 s in the build cluster. The
