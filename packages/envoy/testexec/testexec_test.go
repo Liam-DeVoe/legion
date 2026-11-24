@@ -78,8 +78,9 @@ func writeUnder(t *testing.T, root, path, body string) {
 // one, a Chmod on a call that opens no file for writing, the old path of an os.Rename that moved
 // another file onto the open's path, a test file of a package whose tests do not run beside each
 // other, a write by testexec.WriteFile, another module below root, and programfile.Write itself,
-// the Write function of github.com/sjawhar/envoy/programfile: another function of that package is
-// named, and so is a Write of a package of that name elsewhere. The code a deployment runs is
+// the Write function of github.com/sjawhar/envoy/programfile in a file that is no test file:
+// another function of that package is named, and so are a Write in a test file of that package
+// and a Write of a package of that name elsewhere. The code a deployment runs is
 // planted in daemonish: the shapes the daemon's own program files had before programfile.Write,
 // the git helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to
 // 0o700, and a copy that keeps a file's mode.
@@ -156,6 +157,16 @@ func Write(name string, flag int, perm os.FileMode) error {
 }
 
 func Other(name string) error { return os.WriteFile(name, nil, 0o755) }
+`)
+	write("programfile/write_test.go", `package programfile
+
+import (
+	"os"
+	"testing"
+)
+
+`+parallel+`
+func Write(name string) error { return os.WriteFile(name, nil, 0o755) }
 `)
 	write("daemonish/programfile/programfile.go", `package programfile
 
@@ -379,7 +390,7 @@ func followed(t *testing.T, dir string) {
 		"daemonish/install.go:5", "daemonish/install.go:8",
 		"daemonish/programfile/programfile.go:5",
 		"fakestest/fakestest.go:5",
-		"programfile/programfile.go:13",
+		"programfile/programfile.go:13", "programfile/write_test.go:10",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
