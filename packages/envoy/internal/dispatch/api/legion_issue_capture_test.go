@@ -1,5 +1,7 @@
 package api
 
+// legion: tool - BenchmarkTheLegionReadMatchesACapturedDaemonState holds GET /api/v1/issues/{key}/legion and one board answer to a capture of one daemon's GET /legion/v1/state, for a person who changes the route, Dispatch's decode of the daemon's state or the daemon's state document; run with LEGION_STATE_CAPTURE=<the capture> DISPATCH_TEST_DATABASE_URL=<a PostgreSQL server> go test -count=1 -run '^$' -bench '^BenchmarkTheLegionReadMatchesACapturedDaemonState$' -benchtime 1x ./internal/dispatch/api
+
 import (
 	"encoding/json"
 	"maps"
@@ -15,13 +17,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// a-c-real-state: GET /api/v1/issues/{key}/legion against a real daemon's state. The test reads a
+// a-c-real-state: GET /api/v1/issues/{key}/legion against a real daemon's state. The tool reads a
 // capture of one daemon's GET /legion/v1/state (curl -sS "$LEGION_DAEMON_URL/legion/v1/state" >
 // "$TMPDIR/state.json"), which LEGION_STATE_CAPTURE names, serves its bytes unchanged as the
 // project's daemon, lets the base's own whole read record it, and holds the route's answer for
-// every issue of the file to the file's own record of that issue. CI has no capture, so the test
-// skips there (packages/envoy/scripts/database-skips.sh names it in EXPECTED_SKIPS); it has no
-// build tag, so the race build still compiles it.
+// every issue of the file to the file's own record of that issue. CI has no capture, so it is a
+// Benchmark, which no go test of the package runs, and not a test that would skip there; it has no
+// build tag, so every build of the package, the race build too, compiles it.
 
 // capturedState is the part of a daemon's state the comparison reads, decoded from the capture in
 // the daemon's own wire shape (packages/daemon/internal/api/state.go's State, Issue, ClaimView,
@@ -180,20 +182,48 @@ func compareCapturedIssue(report *captureDisagreements, key string, issue captur
 	}
 }
 
-// TestTheLegionReadMatchesACapturedDaemonState is a-c-real-state. It seeds the capture's project
-// and one Dispatch issue for every captured key, names a server of the file's bytes as the
-// project's daemon, and makes the base's whole read of it, the sampler's pass, which records the
-// rows the route reads as production records them. Then for every captured issue it compares the
-// route's answer with the capture (C-1 to C-6), and each card of one board answer with that
-// issue's answer (C-7). It prints how many issues it compared, which is how many the file holds,
-// the file's size, how many issues carry a waitingOn, and the median and largest time of one GET.
-func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
-	t.Parallel()
+// BenchmarkTheLegionReadMatchesACapturedDaemonState is a-c-real-state, a tool and not a test: CI
+// has no capture, and no job passes -bench, so no go test of the package runs it. Run it once
+// (-benchtime 1x) with LEGION_STATE_CAPTURE naming a capture; without one it skips, as the
+// package's other tools do without their corpus. Its body,
+// theLegionReadMatchesACapturedDaemonState below, runs as one test of its own, and a body that
+// failed, or that skipped and so compared nothing, fails it.
+func BenchmarkTheLegionReadMatchesACapturedDaemonState(b *testing.B) {
 	path := os.Getenv("LEGION_STATE_CAPTURE")
 	if path == "" {
-		t.Skip(`LEGION_STATE_CAPTURE is unset: it names a capture of a daemon's GET /legion/v1/state ` +
-			`(curl -sS "$LEGION_DAEMON_URL/legion/v1/state" > "$TMPDIR/state.json"), which CI does not have`)
+		b.Skip(`LEGION_STATE_CAPTURE is unset: it names a capture of a daemon's GET /legion/v1/state ` +
+			`(curl -sS "$LEGION_DAEMON_URL/legion/v1/state" > "$TMPDIR/state.json")`)
 	}
+	// Why RunTests: the body uses the package's test helpers (newTestHandlerWithStore,
+	// seedLegionProjects, legionExec, nameLegionDaemon, decodeLegionIssue, requireLegionNames and
+	// legionBoardOf), which take a *testing.T, as every test of the package that shares them does,
+	// and a benchmark's *testing.B is none. So the body runs as one test of its own through
+	// testing.RunTests, the function `go test` runs a package's tests with, given a matcher that
+	// takes it whatever -test.run says (the run's `^$`). The body keeps no Test name, so go test and
+	// .github/scripts/check-test-reach.sh see only this benchmark.
+	compared := false
+	every := func(string, string) (bool, error) { return true, nil }
+	body := func(t *testing.T) {
+		theLegionReadMatchesACapturedDaemonState(t, path)
+		compared = true
+	}
+	if !testing.RunTests(every, []testing.InternalTest{{Name: "TheLegionReadMatchesACapturedDaemonState", F: body}}) {
+		b.Fatal("the comparison with the capture failed; each disagreement is above")
+	}
+	if !compared {
+		b.Fatal("the comparison with the capture skipped, so it compared nothing; its reason is above")
+	}
+}
+
+// theLegionReadMatchesACapturedDaemonState compares the Legion read with the capture at path. It
+// seeds the capture's project and one Dispatch issue for every captured key, names a server of the
+// file's bytes as the project's daemon, and makes the base's whole read of it, the sampler's pass,
+// which records the rows the route reads as production records them. Then for every captured issue
+// it compares the route's answer with the capture (C-1 to C-6), and each card of one board answer
+// with that issue's answer (C-7). It prints how many issues it compared, which is how many the file
+// holds, the file's size, how many issues carry a waitingOn, and the median and largest time of one
+// GET.
+func theLegionReadMatchesACapturedDaemonState(t *testing.T, path string) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read the capture LEGION_STATE_CAPTURE names: %v", err)

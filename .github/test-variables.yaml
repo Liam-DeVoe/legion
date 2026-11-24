@@ -123,6 +123,9 @@ variables:
   LEGION_SCALE_TEST:
     class: tool
     why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.
+  LEGION_STATE_CAPTURE:
+    class: tool
+    why: The capture of one daemon's GET /legion/v1/state that BenchmarkTheLegionReadMatchesACapturedDaemonState holds Dispatch's Legion read to.
   LEGION_TEST_CLAUDE:
     class: set
     jobs: [pi, agent-harness, go-envoy]
