@@ -19,7 +19,7 @@ import (
 // The state route's source reads the cap the way an admission pass does, in the state's own
 // snapshot (dispatch://INFRA-5616): `admission.cap` is the cap in force, here the regulator's 2
 // under a ceiling of 4, `admission.ceiling` the deployment's cap, `admission.override` the cap that
-// stands with who set it, when, why and at which tick, and `admission.capChanges` every change,
+// stands with who set it, when, why and by which decision, and `admission.capChanges` every change,
 // newest first, under the names a regulator's readings are compared with
 // (dispatch://INFRA-979/spec#b-r39). The control is the state before any change: the cap is the
 // ceiling, no override stands, and the list is empty rather than absent.
@@ -79,7 +79,7 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 			Reason: "a pool is down", At: at},
 		{Project: cfg.Project, Cap: 2, CapBefore: 3, CapAfter: 2, Ceiling: 4,
 			By:     store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
-			Reason: "the merge queue waits 52 minutes", TickID: "admission:" + cfg.Project + ":2026-11-24T07:00:00Z", At: at.Add(time.Hour)},
+			Reason: "the merge queue waits 52 minutes", DecisionID: "admission:" + cfg.Project + ":2026-11-24T07:00:00Z", At: at.Add(time.Hour)},
 	} {
 		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, err := store.RecordAdmissionCapChangeTx(ctx, tx, change)
@@ -93,11 +93,11 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 		Cap      int `json:"cap"`
 		Ceiling  int `json:"ceiling"`
 		Override *struct {
-			Cap    int               `json:"cap"`
-			SetBy  map[string]string `json:"setBy"`
-			SetAt  time.Time         `json:"setAt"`
-			Reason string            `json:"reason"`
-			TickID string            `json:"tickId"`
+			Cap        int               `json:"cap"`
+			SetBy      map[string]string `json:"setBy"`
+			SetAt      time.Time         `json:"setAt"`
+			Reason     string            `json:"reason"`
+			DecisionID string            `json:"decisionId"`
 		} `json:"override"`
 		CapChanges []map[string]any `json:"capChanges"`
 	}
@@ -107,14 +107,14 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	}
 	if got.Cap != 2 || got.Ceiling != 4 || got.Override == nil || got.Override.Cap != 2 || got.Override.SetBy["kind"] != "controller" ||
 		got.Override.SetBy["session"] != "ses_controller" || !got.Override.SetAt.Equal(at.Add(time.Hour)) ||
-		got.Override.Reason != "the merge queue waits 52 minutes" || got.Override.TickID == "" {
-		t.Fatalf("the admission after two changes = %s, want cap 2 of a ceiling of 4 set by the controller's tick", after)
+		got.Override.Reason != "the merge queue waits 52 minutes" || got.Override.DecisionID == "" {
+		t.Fatalf("the admission after two changes = %s, want cap 2 of a ceiling of 4 set by the controller's decision", after)
 	}
 	if len(got.CapChanges) != 2 {
 		t.Fatalf("capChanges = %s, want the two changes", after)
 	}
 	newest, oldest := got.CapChanges[0], got.CapChanges[1]
-	for _, key := range []string{"id", "cap", "capBefore", "capAfter", "ceiling", "setBy", "setAt", "reason", "tickId"} {
+	for _, key := range []string{"id", "cap", "capBefore", "capAfter", "ceiling", "setBy", "setAt", "reason", "decisionId"} {
 		if _, ok := newest[key]; !ok {
 			t.Errorf("the newest change %v names no %s", newest, key)
 		}
@@ -122,7 +122,7 @@ func TestTheStateNamesTheCapInForceTheCeilingAndEveryChange(t *testing.T) {
 	if newest["capBefore"] != float64(3) || newest["capAfter"] != float64(2) || oldest["cap"] != float64(3) {
 		t.Errorf("capChanges = %s, want the controller's 3 to 2 first and the operator's 3 after it", after)
 	}
-	if _, ticked := oldest["tickId"]; ticked {
-		t.Errorf("the operator's change %v names a tick, want none", oldest)
+	if _, decided := oldest["decisionId"]; decided {
+		t.Errorf("the operator's change %v names a decision, want none", oldest)
 	}
 }

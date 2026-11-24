@@ -723,7 +723,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerAdmissionCap: {roots: typesOf(AdmissionCapResponse{}), bodies: []any{AdmissionCapResponse{Cap: 5, Ceiling: 8,
 			Override: &AdmissionCapOverride{Cap: 5, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
 				SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-				TickID: "admission:LEGION:2026-11-24T06:00:00Z"}}}},
+				DecisionID: "admission:LEGION:2026-11-24T06:00:00Z"}}}},
 	}
 }
 

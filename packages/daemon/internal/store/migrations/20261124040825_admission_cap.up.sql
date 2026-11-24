@@ -10,10 +10,13 @@
 -- the deployment's cap at the change (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP), so
 -- each row reads on its own as from what to what. Who changed it has a pause's shape
 -- (project_pauses_by_session): the kind `controller` with the controller's session id, or the kind
--- `operator` with no session. reason is why, which may not be white space alone. tick_id is the id
--- of the controller's regulator tick that made the change, which the regulator also logs its
--- readings under, so a change and the readings it was decided on are read together; it is null
--- for a change no tick made, a person's through the controller or the operator's, and never blank.
+-- `operator` with no session. reason is why, which may not be white space alone. decision_id is the
+-- regulator's name for the decision that made the change, `admission:<KEY>:<time>`, KEY the
+-- project's Dispatch key and time the RFC 3339 UTC time of the newest value the decision rests on,
+-- and decision_at is that time; both are null for a change no regulator made, a person's through
+-- the controller or the operator's (dispatch://INFRA-5616/spec#b-r6-fenced-ticks). The fence
+-- refuses a decision whose time is at or before the project's newest decision_at
+-- (store's FenceAdmissionCapDecisionTx), and the second index serves that read.
 --
 -- The cap in force is read off the project's newest row (store's AdmissionCapTx): its cap where it
 -- set one, and none after a clear. The daemon admits under the smaller of that cap and the
@@ -37,8 +40,12 @@ create table project_admission_cap_changes (
   by_kind text not null check (by_kind in ('controller', 'operator')),
   by_session text not null default '',
   reason text not null check (reason ~ '[^[:space:]]'),
-  tick_id text check (tick_id ~ '[^[:space:]]'),
+  decision_id text check (decision_id ~ ('^admission:' || project || ':')),
+  decision_at timestamptz,
   changed_at timestamptz not null,
-  constraint project_admission_cap_changes_by_session check ((by_kind = 'controller') = (by_session <> ''))
+  constraint project_admission_cap_changes_by_session check ((by_kind = 'controller') = (by_session <> '')),
+  constraint project_admission_cap_changes_decision check ((decision_id is null) = (decision_at is null))
 );
 create index project_admission_cap_changes_newest on project_admission_cap_changes (project, id desc);
+create index project_admission_cap_changes_decisions on project_admission_cap_changes (project, decision_at desc)
+  where decision_at is not null;

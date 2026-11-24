@@ -2609,18 +2609,18 @@
     "route": "POST /legion/v1/project/admission-cap",
     "fieldPaths": [
       "cap",
+      "decisionId",
       "grantId",
-      "reason",
-      "tickId"
+      "reason"
     ]
   },
   {
     "contract": 247,
     "route": "POST /legion/v1/project/admission-cap/clear",
     "fieldPaths": [
+      "decisionId",
       "grantId",
-      "reason",
-      "tickId"
+      "reason"
     ]
   },
   {

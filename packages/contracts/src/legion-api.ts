@@ -1018,15 +1018,15 @@ const legionPauseActor = z.discriminatedUnion("kind", [
 /** `api.AdmissionCapOverride` — the admission cap the controller or the operator set while the
  * daemon runs and that stands (contract 247, dispatch://INFRA-5616): `cap`, the cap set, which may
  * stand above `ceiling` where a later configuration lowered the ceiling; `setBy`, who set it;
- * `setAt`, when; `reason`, why; and `tickId`, the regulator tick that set it, absent where no tick
- * did. The controller's `read_state` summary prints every field (LEGION_ANSWER_READS), so each is
- * required but `tickId`, which the daemon leaves off a change no tick made. */
+ * `setAt`, when; `reason`, why; and `decisionId`, the regulator decision that set it, absent where
+ * no regulator did. The controller's `read_state` summary prints every field (LEGION_ANSWER_READS),
+ * so each is required but `decisionId`, which the daemon leaves off a change no regulator made. */
 const legionAdmissionCapOverride = z.object({
   cap: z.number().int().positive(),
   setBy: legionPauseActor,
   setAt: timestamp,
   reason: nonEmptyString,
-  tickId: nonEmptyString.optional(),
+  decisionId: nonEmptyString.optional(),
 });
 
 /** `api.AdmissionCapChangeView` — one change of the admission cap as the state's
@@ -1035,7 +1035,7 @@ const legionAdmissionCapOverride = z.object({
  * daemon holds them as they stand: `id`, the change's own, rising; `cap`, the cap it set, absent
  * for a clear, which returns the project to the deployment's cap; `capBefore` and `capAfter`, the
  * caps the daemon admitted under before the change and from it on; `ceiling`, the deployment's cap
- * then; `setBy`, who made it; `setAt`, when; `reason`, why; and `tickId`, the regulator tick that
+ * then; `setBy`, who made it; `setAt`, when; `reason`, why; and `decisionId`, the regulator decision that
  * made it, absent for a person's change through the controller and for the operator's. A set of
  * the cap that stands and a clear where none stands change nothing and are no entry. No plugin code
  * reads a change, so every field is optional (LEGION_ANSWER_READS); `setBy` is the actor view, whose
@@ -1051,7 +1051,7 @@ const legionAdmissionCapChange = z.object({
   setBy: legionPauseActor.optional(),
   setAt: timestamp.optional(),
   reason: nonEmptyString.optional(),
-  tickId: nonEmptyString.optional(),
+  decisionId: nonEmptyString.optional(),
 });
 
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
@@ -1101,7 +1101,7 @@ const legionAdmissionCapChange = z.object({
  * `cap` is the cap the admission passes admit under: since contract 247 the smaller of the cap
  * the controller or the operator set while the daemon runs and `ceiling`, the deployment's cap
  * (legion.yaml's `admission_cap`, else `LEGION_ADMISSION_CAP`), or `ceiling` where none is set.
- * `override` is that cap with who set it, when, why and at which tick, absent where none stands,
+ * `override` is that cap with who set it, when, why and by which decision, absent where none stands,
  * and `capChanges` the newest changes of it (`legionAdmissionCapChange`). A daemon at contract 247
  * writes `ceiling` and `capChanges` on every state, the list empty rather than null, and the three
  * keys are optional here for the one reason `trees` is: the route strips them for a caller below
@@ -2062,7 +2062,7 @@ export const LegionAdmissionCapResponse = z.object({
       setBy: legionPauseActor.optional(),
       setAt: timestamp.optional(),
       reason: nonEmptyString.optional(),
-      tickId: nonEmptyString.optional(),
+      decisionId: nonEmptyString.optional(),
     })
     .optional(),
 });
@@ -2306,27 +2306,30 @@ export const LegionIntakeDiscardRequest = z.union([
 export type LegionIntakeDiscardRequestBody = z.output<typeof LegionIntakeDiscardRequest>;
 
 /** `api.ProjectAdmissionCapRequest`, the controller's set of the admission cap (contract 247): its
- * grant, `cap`, a whole number from 1 to the deployment's ceiling, `reason`, why, and `tickId`, the
- * regulator tick that sets it, left out of a set no tick makes. It names no project: the daemon
+ * grant, `cap`, a whole number from 1 to the deployment's ceiling, `reason`, why, and `decisionId`, the
+ * regulator decision that sets it, `admission:<KEY>:<RFC 3339 UTC time>`, left out of a set no
+ * regulator makes. It names no project: the daemon
  * changes its own. The daemon refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a
  * cap below 1 (`INVALID_ADMISSION_CAP`), a cap above the ceiling, naming the ceiling
- * (`ADMISSION_CAP_ABOVE_CEILING`), a blank reason (`ADMISSION_CAP_REASON_REQUIRED`), a tick id of
- * white space (`INVALID_TICK_ID`) and a daemon with no workflow (`ADMISSION_CAP_UNAVAILABLE`). */
+ * (`ADMISSION_CAP_ABOVE_CEILING`), a blank reason (`ADMISSION_CAP_REASON_REQUIRED`), a decision id
+ * of another form (`INVALID_DECISION_ID`), a decision at or before the time of the project's newest
+ * one, naming it (`ADMISSION_CAP_DECISION_FENCED`), and a daemon with no workflow
+ * (`ADMISSION_CAP_UNAVAILABLE`). */
 export const LegionProjectAdmissionCapRequest = z.strictObject({
   grantId: nonEmptyString,
   cap: z.number().int().positive(),
   reason: nonEmptyString,
-  tickId: nonEmptyString.optional(),
+  decisionId: nonEmptyString.optional(),
 });
 
 /** `api.ProjectAdmissionCapClearRequest`, the controller's clear of the admission cap (contract
- * 247), which returns the daemon to the deployment's cap: its grant, why, and the regulator tick
- * that clears it, left out of a clear no tick makes. The daemon refuses it as it refuses a set, but
+ * 247), which returns the daemon to the deployment's cap: its grant, why, and the regulator decision
+ * that clears it, left out of a clear no regulator makes. The daemon refuses it as it refuses a set, but
  * for the cap's own two codes. */
 export const LegionProjectAdmissionCapClearRequest = z.strictObject({
   grantId: nonEmptyString,
   reason: nonEmptyString,
-  tickId: nonEmptyString.optional(),
+  decisionId: nonEmptyString.optional(),
 });
 
 /** `api.OperatorPauseRequest`, the operator's pause of the project (`legion project pause`, under
@@ -2339,7 +2342,7 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
 /** `api.OperatorAdmissionCapRequest` and `api.OperatorAdmissionCapClearRequest`, the operator's set
  * and clear of the admission cap (`legion project set-admission-cap` and `clear-admission-cap`,
  * under the operator's bearer): the cap and why, and why alone. An operator's change names no
- * tick. The CLI sends both; the plugin never does. */
+ * decision. The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectAdmissionCapRequest = z.strictObject({
   cap: z.number().int().positive(),
   reason: nonEmptyString,
@@ -2572,7 +2575,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.held[].reason",
     "admission.held[].heldBy",
     // The summary's `admission cap` line names the cap that stands, who set it, when, why and at
-    // which tick (contract 247). The summary reads `admission.ceiling` and `admission.override`
+    // which decision (contract 247). The summary reads `admission.ceiling` and `admission.override`
     // through the `admission` it destructures, which the census cannot follow, as it cannot the
     // block's older fields, so neither is named; the override's own fields are, read through the
     // `override` the summary binds. Each change of `capChanges` is no read, but its actor's `kind`
@@ -2585,7 +2588,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.override.setBy|0.session",
     "admission.override.setAt",
     "admission.override.reason",
-    "admission.override.tickId",
+    "admission.override.decisionId",
     "admission.capChanges[].setBy|0.kind",
     "admission.capChanges[].setBy|1.kind",
     "admission.capChanges[].setBy|0.session",
@@ -2719,7 +2722,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "override.setBy|0.session",
     "override.setAt",
     "override.reason",
-    "override.tickId",
+    "override.decisionId",
   ],
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.

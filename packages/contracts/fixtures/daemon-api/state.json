@@ -21,7 +21,7 @@
       },
       "setAt": "2026-09-22T09:00:00Z",
       "reason": "the merge queue waits 52 minutes, above its limit of 45",
-      "tickId": "admission:LEGION:2026-09-22T09:00:00Z"
+      "decisionId": "admission:LEGION:2026-09-22T09:00:00Z"
     },
     "capChanges": [
       {
@@ -36,7 +36,7 @@
         },
         "setAt": "2026-09-22T09:00:00Z",
         "reason": "the merge queue waits 52 minutes, above its limit of 45",
-        "tickId": "admission:LEGION:2026-09-22T09:00:00Z"
+        "decisionId": "admission:LEGION:2026-09-22T09:00:00Z"
       },
       {
         "id": 1,

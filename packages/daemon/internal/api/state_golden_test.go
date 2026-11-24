@@ -312,11 +312,11 @@ func populatedState(t *testing.T) State {
 			Ceiling: 8,
 			Override: &AdmissionCapOverride{Cap: 5, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
 				SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-				TickID: "admission:LEGION:2026-09-22T09:00:00Z"},
+				DecisionID: "admission:LEGION:2026-09-22T09:00:00Z"},
 			CapChanges: []AdmissionCapChangeView{
 				{ID: 2, Cap: 5, CapBefore: 8, CapAfter: 5, Ceiling: 8, SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
 					SetAt: time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC), Reason: "the merge queue waits 52 minutes, above its limit of 45",
-					TickID: "admission:LEGION:2026-09-22T09:00:00Z"},
+					DecisionID: "admission:LEGION:2026-09-22T09:00:00Z"},
 				{ID: 1, CapBefore: 3, CapAfter: 8, Ceiling: 8, SetBy: PauseActorView{Kind: "operator"},
 					SetAt: time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC), Reason: "the provider outage is over"},
 			},

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -137,13 +138,13 @@ func controllerSessionGrantID(t *testing.T, h *harness) string {
 }
 
 // TestAdmissionCapRouteGoldens writes the controller's two answers of the cap as the routes serve
-// them, over the handler chain and a database of their own: a set of 2 at a regulator tick, and the
+// them, over the handler chain and a database of their own: a set of 2 by a regulator's decision, and the
 // clear after it. `packages/pi-legion/src/tools.test.ts` reads both through the plugin's client.
 func TestAdmissionCapRouteGoldens(t *testing.T) {
 	h := capHarness(t)
 	grant := controllerSessionGrantID(t, h)
 	set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: "the merge queue waits 52 minutes",
-		TickID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
+		DecisionID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
 	golden(t, "admission-cap.json", set)
 	grant = controllerSessionGrantID(t, h)
 	cleared := capOK(t, h, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant, Reason: "the signals are back under their limits"}, nil)
@@ -160,15 +161,15 @@ func TestAdmissionCapRoutes(t *testing.T) {
 	// a cap of 1 starts one of the four waiting roots and a raise to the ceiling two more, each
 	// answered with the cap in force, the ceiling and the cap that stands. A clear answers the
 	// ceiling and no cap set. Every change is recorded, newest first, with the caps before and
-	// after it, who, when, why and the regulator's tick.
+	// after it, who, when, why and the regulator's decision.
 	t.Run("the controller's grant sets and clears the cap, in force on the request's own pass", func(t *testing.T) {
 		h := capHarness(t)
 		grant := controllerSessionGrantID(t, h)
 
 		set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 1, Reason: "the merge queue waits 52 minutes",
-			TickID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
+			DecisionID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
 		want := AdmissionCapOverride{Cap: 1, SetBy: controller, SetAt: capChangedAt, Reason: "the merge queue waits 52 minutes",
-			TickID: "admission:LEGION:2026-11-24T06:00:00Z"}
+			DecisionID: "admission:LEGION:2026-11-24T06:00:00Z"}
 		if set.Cap != 1 || set.Ceiling != capCeiling || set.Override == nil || *set.Override != want {
 			t.Fatalf("the set answered %+v (override %+v), want cap 1 of the ceiling %d set as %+v", set, set.Override, capCeiling, want)
 		}
@@ -177,7 +178,7 @@ func TestAdmissionCapRoutes(t *testing.T) {
 		}
 		grant = controllerSessionGrantID(t, h)
 		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling, Reason: "the signals are back under their limits",
-			TickID: "admission:LEGION:2026-11-24T07:00:00Z"}, nil)
+			DecisionID: "admission:LEGION:2026-11-24T07:00:00Z"}, nil)
 		if n := slotted(t, h); n != capCeiling {
 			t.Fatalf("slots after a raise to the ceiling = %d, want %d", n, capCeiling)
 		}
@@ -193,12 +194,12 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			t.Fatalf("the changes = %+v, want three", changes)
 		}
 		clear, raise, first := changes[0], changes[1], changes[2]
-		if clear.Cap != 0 || clear.CapBefore != capCeiling || clear.CapAfter != capCeiling || clear.TickID != "" ||
+		if clear.Cap != 0 || clear.CapBefore != capCeiling || clear.CapAfter != capCeiling || clear.DecisionID != "" ||
 			clear.SetBy != controller || clear.Reason != "a person asked for the deployment's cap" {
-			t.Errorf("the clear = %+v, want no cap, from %d to %d, by the controller, with no tick", clear, capCeiling, capCeiling)
+			t.Errorf("the clear = %+v, want no cap, from %d to %d, by the controller, with no decision", clear, capCeiling, capCeiling)
 		}
-		if raise.Cap != capCeiling || raise.CapBefore != 1 || raise.CapAfter != capCeiling || raise.TickID != "admission:LEGION:2026-11-24T07:00:00Z" {
-			t.Errorf("the raise = %+v, want %d from 1, at the second tick", raise, capCeiling)
+		if raise.Cap != capCeiling || raise.CapBefore != 1 || raise.CapAfter != capCeiling || raise.DecisionID != "admission:LEGION:2026-11-24T07:00:00Z" {
+			t.Errorf("the raise = %+v, want %d from 1, by the second decision", raise, capCeiling)
 		}
 		if first.Cap != 1 || first.CapBefore != capCeiling || first.CapAfter != 1 || first.Ceiling != capCeiling ||
 			first.SetBy != controller || !first.SetAt.Equal(capChangedAt) || first.ID == 0 || first.ID >= raise.ID || raise.ID >= clear.ID {
@@ -206,17 +207,17 @@ func TestAdmissionCapRoutes(t *testing.T) {
 		}
 	})
 
-	// The operator's routes record the operator and no tick, and take no tickId at all; a grant the
+	// The operator's routes record the operator and no decision, and take no decisionId at all; a grant the
 	// operator's token minted records the operator too.
 	t.Run("the operator's routes and the operator's grant record the operator", func(t *testing.T) {
 		h := capHarness(t)
 		if set := capOK(t, h, operatorCapRoute, OperatorAdmissionCapRequest{Cap: 2, Reason: "a pool is down"}, bearer); set.Override == nil ||
-			set.Override.SetBy != operator || set.Override.TickID != "" {
-			t.Fatalf("the operator's set answered %+v, want the cap set by the operator at no tick", set.Override)
+			set.Override.SetBy != operator || set.Override.DecisionID != "" {
+			t.Fatalf("the operator's set answered %+v, want the cap set by the operator by no decision", set.Override)
 		}
-		ticked := h.request(http.MethodPost, operatorCapRoute, `{"cap":2,"reason":"a pool is down","tickId":"t"}`, bearer)
-		if ticked.Code != http.StatusBadRequest {
-			t.Fatalf("an operator's set naming a tick = %d, want 400: an operator's change is no tick's; body %s", ticked.Code, ticked.Body)
+		decided := h.request(http.MethodPost, operatorCapRoute, `{"cap":2,"reason":"a pool is down","decisionId":"admission:LEGION:2026-11-24T06:00:00Z"}`, bearer)
+		if decided.Code != http.StatusBadRequest {
+			t.Fatalf("an operator's set naming a decision = %d, want 400: an operator's change is no regulator's; body %s", decided.Code, decided.Body)
 		}
 		grant := controllerGrant(t, h).GrantID
 		if set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 1, Reason: "an operator's grant"}, nil); set.Override == nil ||
@@ -233,7 +234,7 @@ func TestAdmissionCapRoutes(t *testing.T) {
 	})
 
 	// Each refusal changes nothing: a cap below 1, a cap above the ceiling, whose sentence names the
-	// ceiling and where it is raised, a blank reason, a tick id of white space, a body naming a field
+	// ceiling and where it is raised, a blank reason, a decision id of another form, a body naming a field
 	// the route does not take, a phase worker's grant, and an operator route with no bearer or a
 	// wrong one. The control is the set at the ceiling after them, which is recorded.
 	t.Run("the refusals change nothing", func(t *testing.T) {
@@ -256,8 +257,11 @@ func TestAdmissionCapRoutes(t *testing.T) {
 			http.StatusBadRequest, admissionCapReasonRequired)
 		capRefused(t, h.request(http.MethodPost, operatorCapClearRoute, OperatorAdmissionCapClearRequest{}, bearer),
 			http.StatusBadRequest, admissionCapReasonRequired)
-		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: "why", TickID: "  "}, nil),
-			http.StatusBadRequest, invalidTickID)
+		for _, malformed := range []string{"  ", "admission:LEGION", "admission:INFRA:2026-11-24T06:00:00Z", "tick-1",
+			"admission:LEGION:2026-11-24 06:00:00", "admission:LEGION:2026-11-24T06:00:00+01:00"} {
+			capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: "why", DecisionID: malformed}, nil),
+				http.StatusBadRequest, invalidDecisionID)
+		}
 		if named := h.request(http.MethodPost, capRoute, `{"grantId":"`+grant+`","cap":2,"reason":"why","project":"LEGION"}`, nil); named.Code != http.StatusBadRequest {
 			t.Fatalf("a set naming a project = %d, want 400: the route takes none; body %s", named.Code, named.Body)
 		}
@@ -283,6 +287,78 @@ func TestAdmissionCapRoutes(t *testing.T) {
 		}
 		if n := slotted(t, h); n != capCeiling {
 			t.Fatalf("slots after the control's set = %d, want the ceiling's %d", n, capCeiling)
+		}
+	})
+
+	// The fence (dispatch://INFRA-5616/spec#b-r6-fenced-ticks): once the project holds a change of
+	// the decision at 07:00, a change naming a decision at that time or an earlier one is refused
+	// ADMISSION_CAP_DECISION_FENCED, naming the newest decision, and changes nothing, a clear and a
+	// set of the cap that stands included. A person's change, which names no decision, is not
+	// fenced, and the next decision, at 08:00, is taken. The controls are the first change, which
+	// the fence takes, and the two the fence lets through: a fence that refused every decision, or
+	// every change after one, fails at them.
+	t.Run("a decision at or before the newest one is fenced", func(t *testing.T) {
+		h := capHarness(t)
+		const newest = "admission:LEGION:2026-11-24T07:00:00Z"
+		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: controllerSessionGrantID(t, h), Cap: 2, Reason: "the first decision",
+			DecisionID: newest}, nil)
+		for _, tc := range []struct {
+			name, decision string
+			cap            int
+			clear          bool
+		}{
+			{name: "the same decision again", decision: newest, cap: 1},
+			{name: "an earlier decision", decision: "admission:LEGION:2026-11-24T06:59:59.5Z", cap: 1},
+			{name: "an earlier decision setting the cap that stands", decision: "admission:LEGION:2026-11-24T06:00:00Z", cap: 2},
+			{name: "an earlier decision's clear", decision: "admission:LEGION:2026-11-24T06:30:00Z", clear: true},
+		} {
+			grant := controllerSessionGrantID(t, h)
+			var recorder *httptest.ResponseRecorder
+			if tc.clear {
+				recorder = h.request(http.MethodPost, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant, Reason: "a late clear", DecisionID: tc.decision}, nil)
+			} else {
+				recorder = h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: tc.cap, Reason: "a late decision", DecisionID: tc.decision}, nil)
+			}
+			refusal := capRefused(t, recorder, http.StatusConflict, admissionCapDecisionFenced)
+			if !strings.Contains(refusal.Error, newest) {
+				t.Errorf("%s: the refusal says %q, want it to name the newest decision %s", tc.name, refusal.Error, newest)
+			}
+			if changes := capChangeViews(t, h); len(changes) != 1 || changes[0].DecisionID != newest || changes[0].Cap != 2 {
+				t.Fatalf("%s: the changes = %+v, want the first decision's alone", tc.name, changes)
+			}
+		}
+
+		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: controllerSessionGrantID(t, h), Cap: 1, Reason: "a person asked for 1"}, nil)
+		later := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: controllerSessionGrantID(t, h), Cap: 3, Reason: "the next decision",
+			DecisionID: "admission:LEGION:2026-11-24T08:00:00Z"}, nil)
+		if later.Cap != 3 {
+			t.Fatalf("the decision after the newest one answered %+v, want the cap of 3 in force", later)
+		}
+		changes := capChangeViews(t, h)
+		if len(changes) != 3 || changes[1].DecisionID != "" || changes[1].Cap != 1 || changes[0].DecisionID != "admission:LEGION:2026-11-24T08:00:00Z" {
+			t.Fatalf("the changes = %+v, want the first decision, the person's change with no decision and the next decision", changes)
+		}
+	})
+
+	// A fresh daemon's state at this contract carries `"capChanges":[]`, never no key
+	// (dispatch://INFRA-5616/spec#b-r7-tick-log), and a caller below the contract is served none.
+	// The control is that caller's body, which a band that never hid the key fails.
+	t.Run("a fresh daemon's state carries an empty list of changes", func(t *testing.T) {
+		var fresh Admission
+		body, err := json.Marshal(fresh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `"capChanges":[]`) {
+			t.Fatalf("a fresh admission at contract %d = %s, want `\"capChanges\":[]`", admissionCapContract, body)
+		}
+		older, _ := withoutAdmissionCap(State{Admission: fresh})
+		body, err = json.Marshal(older.Admission)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), `"capChanges"`) {
+			t.Fatalf("the admission served below contract %d = %s, want no `capChanges`", admissionCapContract, body)
 		}
 	})
 

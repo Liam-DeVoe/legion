@@ -1784,14 +1784,15 @@ func withoutIntakeGiveUps(state State) (State, bool) {
 // keys of this one. `cap` stays, and says to every reader what it always said: the cap the passes
 // admit under. The ceiling is `omitzero` and at least 1 on every body the source builds, so zeroing
 // it takes the key off; the override is a pointer with `omitempty`, absent where none stands; and
-// the list is `omitzero`, so nil takes it off where the source writes it empty. The band reports a
-// move for every state that carries any of them. Admission is a value of the state, so the state
-// the source answered is left as it was, as withoutPause leaves it.
+// the list, which every body at the contract carries, `[]` before the first change, is left off by
+// its flag (Admission.capChangesHidden), as withoutHeld leaves off `held`. The list is on every
+// body the band serves, so the band reports a move on every one, as withoutIntakeGiveUps does.
+// Admission is a value of the state, so the state the source answered is left as it was, as
+// withoutPause leaves it.
 func withoutAdmissionCap(state State) (State, bool) {
-	admission := state.Admission
-	moved := admission.Ceiling != 0 || admission.Override != nil || admission.CapChanges != nil
-	state.Admission.Ceiling, state.Admission.Override, state.Admission.CapChanges = 0, nil, nil
-	return state, moved
+	state.Admission.Ceiling, state.Admission.Override = 0, nil
+	state.Admission.CapChanges, state.Admission.capChangesHidden = nil, true
+	return state, true
 }
 
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
