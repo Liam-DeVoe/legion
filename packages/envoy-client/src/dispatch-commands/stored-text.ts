@@ -15,7 +15,11 @@ import {
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { BunFile } from "bun";
 import { fileTextBytes, unstorableBytes } from "../dispatch-file-text";
-import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
+import {
+  DispatchAnswerNotKeptError,
+  type DispatchClient,
+  DispatchServiceError,
+} from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 import { dispatchAnswered } from "./failures";
@@ -33,10 +37,18 @@ const FILE_ROUND_TRIP = "POST /api/v1/markdown/file-round-trip";
  * open, and an upload sent anyway would store the changed text this check exists to stop. A text
  * Dispatch refused, its answer marked as a refusal of the text (`TEXT_REFUSAL_HEADER`), is no such
  * failure: the check answers it with Dispatch's own refusal (`askRoundTrip`).
+ *
+ * The round trip writes nothing, so where Dispatch kept no copy of its answer under either of the
+ * two keys the client asks it under (`DispatchAnswerNotKeptError`), nothing was made either: the
+ * refusal says so (`askRoundTrip`), and that sending the upload again asks it afresh.
  */
 export function storedTextCheckFailed(failed: Extract<StoredTextCheck, { kind: "failed" }>): Error {
+  const again =
+    failed.error instanceof DispatchAnswerNotKeptError
+      ? "Send the upload again, which asks it under a new key."
+      : "Send the upload again once that call is answered.";
   return new Error(
-    `Dispatch could not say how it would store this text, so nothing was uploaded: ${failed.failure}. Send the upload again once that call is answered.`,
+    `Dispatch could not say how it would store this text, so nothing was uploaded: ${failed.failure}. ${again}`,
     { cause: failed.error }
   );
 }
@@ -292,7 +304,10 @@ async function askRoundTrip(
     }
     return {
       kind: "unanswered",
-      failure: `${route} failed with ${messageFor(error)}`,
+      failure:
+        error instanceof DispatchAnswerNotKeptError
+          ? `${route} wrote nothing, and Dispatch kept no copy of its answer (${error.code})`
+          : `${route} failed with ${messageFor(error)}`,
       error,
       routeAbsent,
     };

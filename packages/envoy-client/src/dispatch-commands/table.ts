@@ -15,6 +15,10 @@ import type {
 } from "./context";
 import {
   commentCommand,
+  deleteCommentCommand,
+  deleteMessageCommand,
+  editCommentCommand,
+  editMessageCommand,
   messageCommand,
   resolveCommentCommand,
   sendToAgentCommand,
@@ -132,6 +136,10 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_comment: acting(commentCommand),
   dispatch_suggest: acting(suggestCommand),
   dispatch_resolve_comment: acting(resolveCommentCommand),
+  dispatch_edit_comment: acting(editCommentCommand),
+  dispatch_delete_comment: acting(deleteCommentCommand),
+  dispatch_edit_message: acting(editMessageCommand),
+  dispatch_delete_message: acting(deleteMessageCommand),
   dispatch_message: acting(messageCommand),
   dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),
