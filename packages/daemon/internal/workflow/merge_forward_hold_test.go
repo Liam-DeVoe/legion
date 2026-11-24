@@ -205,6 +205,42 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 	}
 }
 
+// A worker that starts again while another role's merge forward of the head is open is held as a
+// worker that a move starts is: the architect's retry of a held phase and the operator's restart of
+// a phase's worker each start the worker of the phase again (retryPhase), and the hold the ask
+// sent earlier may never have reached it - a hold to a claim that failed ends undelivered - or may
+// be in a session the restart does not keep. On the default steps, the implementer is asked in
+// testing and the tester is held; the tester's claim fails, which holds the issue; the retry, or
+// the restart, starts the tester again, and it is held again.
+func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
+	why := record.ConflictCheckNotGreen
+	for _, tc := range []struct {
+		name  string
+		start intake.Fact
+	}{
+		{name: "the architect's retry of the held phase", start: intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"}},
+		{name: "the operator's restart of the phase's worker", start: intake.RestartPhase{Issue: "LEGION-208", Role: claim.RoleTester}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester})
+			if got := issuePhase(t, pool); got != phase.Held {
+				t.Fatalf("after the tester's claim failed the issue is in %s, want held", got)
+			}
+			applyRefusingNothing(t, pool, readsAfter(3*time.Minute), tc.start)
+			if got := issuePhase(t, pool); got != phase.Testing {
+				t.Fatalf("after %s the issue is in %s, want testing", tc.name, got)
+			}
+			want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
+				heldIn(claim.RoleTester, phase.Testing, why)}
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+				t.Errorf("after %s the merge-forward messages are %+v, want %+v: the tester starts again while the implementer merges", tc.name, got, want)
+			}
+		})
+	}
+}
+
 // The plan `implementer reviewer tester`: a merge forward asked in reviewing lands, the head it
 // left conflicts in its turn, and a second merge forward of that head is asked, still in
 // reviewing. The reviewer's approval of that head starts the tester while the second merge is
