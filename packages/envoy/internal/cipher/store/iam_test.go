@@ -64,7 +64,7 @@ func (m *fakeMinter) minted() []mintCall {
 // nothing then holds the role.
 func passwordRole(t *testing.T, password string) (role, adminURL, databaseURL string) {
 	t.Helper()
-	raw := testDatabaseURL(t)
+	raw := testServerURL(t)
 	role = "broker_iam_test_" + randomSuffix(t)
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
 	t.Cleanup(func() { adminExec(t, raw, "drop role if exists "+role) })

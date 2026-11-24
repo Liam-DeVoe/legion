@@ -15,18 +15,27 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-// testDatabaseURL is an empty database of this test's own on the BROKER_TEST_DATABASE_URL server
-// (testdb.DatabaseOn), dropped when the test ends, skipping t when the variable is unset. Every
-// migration takes the broker's advisory lock, which Postgres holds for the whole database, so a
-// test here migrates in a database of its own rather than in the one the variable names, where the
-// migrations of every other test and of every other run on the server would hold it too.
-func testDatabaseURL(t *testing.T) string {
+// testServerURL is the URL BROKER_TEST_DATABASE_URL names, skipping t when the variable is unset.
+// A test makes its databases on that server (testDatabaseURL, emptySchemaStore), and makes roles,
+// which span the server, through it; no test migrates in the database it names.
+func testServerURL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("BROKER_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
 	}
-	return testdb.DatabaseOn(t, url, "broker_store_test")
+	return url
+}
+
+// testDatabaseURL is a new empty database on the BROKER_TEST_DATABASE_URL server
+// (testdb.DatabaseOn), dropped when the test ends, skipping t when the variable is unset. Each call
+// makes another database, so a test that needs one database in two places calls it once. Every
+// migration takes the broker's advisory lock, which Postgres holds for the whole database, so a
+// test here migrates in a database of its own rather than in the one the variable names, where the
+// migrations of every other test and of every other run on the server would hold it too.
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	return testdb.DatabaseOn(t, testServerURL(t), "broker_store_test")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {

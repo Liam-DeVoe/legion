@@ -267,20 +267,20 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 // A guard row that makes migrate wait out a lock timeout holds the broker's migration lock
 // (lockAndPin's pg_advisory_xact_lock(8330001)) for all of that wait, and an advisory lock's key
 // is database-wide. So such a row migrates in a database of its own (emptySchemaStore), and a
-// broker migration on the shared database, which this package's other tests run (testDatabaseURL),
-// does not queue behind it. Here a holder takes that lock in an open transaction on the database
-// emptySchemaStore gives, and a migration of a fresh schema of the shared database must return
-// while the holder still holds the lock. The row fails as soon as it reads the migration's backend
-// waiting on a lock behind the holder. The control holds the lock on the shared database itself:
-// there the migration is read waiting behind the holder, and returns once the holder ends, so the
-// reading sees a wait where there is one.
+// broker migration in another database of the server, as every other test's is (testDatabaseURL,
+// storetest.URL), does not queue behind it. Here a holder takes that lock in an open transaction
+// on the database emptySchemaStore gives, and a migration of a fresh schema of another database
+// must return while the holder still holds the lock. The row fails as soon as it reads the
+// migration's backend waiting on a lock behind the holder. The control holds the lock on the
+// migration's own database: there the migration is read waiting behind the holder, and returns
+// once the holder ends, so the reading sees a wait where there is one.
 func TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration(t *testing.T) {
 	t.Run("a holder on a guard row's database", func(t *testing.T) {
 		ctx := context.Background()
 		s := emptySchemaStore(t)
 		held, holderPID := holdMigrationLock(t, s.Pool.Config().ConnConfig)
 		defer held.Rollback(ctx)
-		migration := migrateASharedSchema(t)
+		migration := migrateASharedSchema(t, testDatabaseURL(t))
 		got := testwait.Until(t, "the shared schema's migration to return or to wait behind the holder", migration.reading(t, holderPID))
 		if got.Waiting != "" {
 			t.Fatalf("the migration of schema %s of the shared database waits behind the holder (pid %d) of the broker's migration lock on the database emptySchemaStore gave: %s", migration.schema, holderPID, got.Waiting)
@@ -299,13 +299,14 @@ func TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration(t *testing.T) {
 	})
 	t.Run("control: a holder on the shared database", func(t *testing.T) {
 		ctx := context.Background()
-		config, err := pgx.ParseConfig(testDatabaseURL(t))
+		shared := testDatabaseURL(t)
+		config, err := pgx.ParseConfig(shared)
 		if err != nil {
 			t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
 		}
 		held, holderPID := holdMigrationLock(t, config)
 		defer held.Rollback(ctx)
-		migration := migrateASharedSchema(t)
+		migration := migrateASharedSchema(t, shared)
 		got := testwait.Until(t, "the shared schema's migration to return or to wait behind the holder", migration.reading(t, holderPID))
 		if got.Returned {
 			t.Fatalf("the migration of schema %s returned (%v) while a holder on the shared database held the broker's migration lock: the reading never saw it wait, so it cannot tell a wait from none", migration.schema, got.Err)
@@ -343,9 +344,11 @@ func holdMigrationLock(t *testing.T, config *pgx.ConnConfig) (pgx.Tx, uint32) {
 	return held, conn.PgConn().PID()
 }
 
-// sharedMigration is a broker migration of a fresh schema of the BROKER_TEST_DATABASE_URL
-// database, running in a goroutine of its own (migrateASharedSchema).
+// sharedMigration is a broker migration of a fresh schema of a test database, running in a
+// goroutine of its own (migrateASharedSchema).
 type sharedMigration struct {
+	// databaseURL is the database it migrates in, which reading watches from.
+	databaseURL string
 	// schema is the schema it migrates, and the application_name of its connections, by which
 	// pg_stat_activity tells them from every other test's.
 	schema string
@@ -353,18 +356,17 @@ type sharedMigration struct {
 	done chan error
 }
 
-// migrateASharedSchema creates a fresh schema on the BROKER_TEST_DATABASE_URL database, opens a
-// store whose search_path is that schema, and starts its Migrate in a goroutine. The store is
-// closed and the schema dropped when t ends; the close waits for the migration to return.
-func migrateASharedSchema(t *testing.T) sharedMigration {
+// migrateASharedSchema creates a fresh schema in databaseURL's database, opens a store whose
+// search_path is that schema, and starts its Migrate in a goroutine. The store is closed and the
+// schema dropped when t ends; the close waits for the migration to return.
+func migrateASharedSchema(t *testing.T, databaseURL string) sharedMigration {
 	t.Helper()
-	raw := testDatabaseURL(t)
 	schema := "broker_shared_migration_" + randomSuffix(t)
-	adminExec(t, raw, "create schema "+schema)
-	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
-	parsed, err := url.Parse(raw)
+	adminExec(t, databaseURL, "create schema "+schema)
+	t.Cleanup(func() { adminExec(t, databaseURL, "drop schema "+schema+" cascade") })
+	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", errors.Unwrap(err))
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	query := parsed.Query()
 	query.Set("search_path", schema)
@@ -375,7 +377,7 @@ func migrateASharedSchema(t *testing.T) sharedMigration {
 		t.Fatalf("open schema %s of the shared database: %v", schema, err)
 	}
 	t.Cleanup(s.Close)
-	migration := sharedMigration{schema: schema, done: make(chan error, 1)}
+	migration := sharedMigration{databaseURL: databaseURL, schema: schema, done: make(chan error, 1)}
 	go func() { migration.done <- s.Migrate(context.Background()) }()
 	return migration
 }
@@ -393,12 +395,12 @@ type migrationReading struct {
 // its backends waits on a lock behind holderPID's backend: on a lock that backend holds, or on one
 // that a backend already counted holds or is ahead of it for. That is the query
 // storetest.LockWaitersBehind runs, which this package cannot import (storetest imports it). It
-// reads on a connection of its own to the shared database, closed when t ends; pg_stat_activity
-// and pg_blocking_pids see the backends of every database on the server.
+// reads on a connection of its own to the migration's database, closed when t ends;
+// pg_stat_activity and pg_blocking_pids see the backends of every database on the server.
 func (m sharedMigration) reading(t *testing.T, holderPID uint32) func() (migrationReading, bool) {
 	t.Helper()
 	ctx := context.Background()
-	watch, err := pgx.Connect(ctx, testDatabaseURL(t))
+	watch, err := pgx.Connect(ctx, m.databaseURL)
 	if err != nil {
 		t.Fatalf("connect the watch: %v", err)
 	}
@@ -558,7 +560,7 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 // (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
-	databaseURL := testdb.DatabaseOn(t, testDatabaseURL(t), "broker_migrate_test")
+	databaseURL := testdb.DatabaseOn(t, testServerURL(t), "broker_migrate_test")
 	const schema = "broker_migrate_test"
 	adminExec(t, databaseURL, "create schema "+schema)
 	parsed, err := url.Parse(databaseURL)
