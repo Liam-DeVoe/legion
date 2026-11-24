@@ -352,13 +352,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// names hold the slots, and LEGION-207 closed. The reviewing roots (waits below) are
 			// the issues whose round waits on GitHub's merge state for its head, and no other issue
 			// carries that object. The issues standing in a tree the admission block names
-			// (measured below), LEGION-240 and LEGION-241 among them, carry that tree's quiet time
-			// where the caller is served it; LEGION-207's tree closed and LEGION-209 stands in no
-			// tree of this fixture, so neither carries a measure whoever asks.
+			// (measured below), LEGION-209, LEGION-240 and LEGION-241 among them, carry that tree's
+			// quiet time where the caller is served it; LEGION-207's tree closed, so it carries no
+			// measure whoever asks.
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
-			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-214": true, "LEGION-218": true, "LEGION-219": true, "LEGION-240": true, "LEGION-241": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
-			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true, "LEGION-240": true, "LEGION-241": true}
+			measured := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true, "LEGION-240": true, "LEGION-241": true}
 			// The issues the fixture holds an experiment answer for: the drawn tree's root and
 			// its child, each under two experiments, and LEGION-210, whose hand-over settled it
 			// at no arm, which is an answer and so a row.
