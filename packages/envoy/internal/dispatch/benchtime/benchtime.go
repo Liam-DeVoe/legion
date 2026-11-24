@@ -85,6 +85,32 @@ func Timing(t testing.TB, value string) {
 	}
 }
 
+// Lane says whether a suite row holds its readings of the machine's clock to the figures the
+// product promises. Such a reading is the runner's load as much as the product's work, so only the
+// row's twin in the timing lane holds them (OnTheClock, through TimedRow), which CI never runs; the
+// row every run makes runs the same scene, holds what it proves without a clock, and logs the
+// readings (EveryRun). cmd/dispatch's and cmd/listener's rows that hold such a figure share it.
+type Lane bool
+
+const (
+	// EveryRun is the row every run of the suite makes: it logs its readings of the clock and
+	// holds them to no figure.
+	EveryRun Lane = false
+	// OnTheClock is the row's twin in the timing lane: it holds its readings of the clock to
+	// their figures.
+	OnTheClock Lane = true
+)
+
+// TimedRow runs row as its twin in the timing lane: skipped unless value, what TimingEnv names,
+// is set (Timing), and then holding the row's readings of the clock to their figures
+// (OnTheClock). As with Timing, the caller reads the variable and passes it in
+// (os.Getenv(benchtime.TimingEnv)).
+func TimedRow(t *testing.T, value string, row func(*testing.T, Lane)) {
+	t.Helper()
+	Timing(t, value)
+	row(t, OnTheClock)
+}
+
 const (
 	// runs is how many times each side of a pair is explained, and discarded how many of those
 	// the median leaves out: runs 2 to 12, eleven readings, the first paying whatever of the

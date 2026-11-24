@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -557,10 +558,7 @@ func TestASuggestionCommittedAfterALaterStartedEventIsStillJudged(t *testing.T) 
 	}
 	defer func() { _ = recording.Rollback(context.Background()) }()
 	// The event must postdate the suggestion's created_at, its transaction's start.
-	var recordingAt time.Time
-	if err := recording.QueryRow(ctx, `select now()`).Scan(&recordingAt); err != nil {
-		t.Fatalf("read the suggestion's transaction's start: %v", err)
-	}
+	recordingAt := testdb.Now(t, recording)
 	awaitDatabaseAge(t, database.Pool, "the suggestion's transaction", recordingAt, time.Microsecond)
 	postOutcomeMessage(t, handler, target, "alice", "Adding the new detail here instead.")
 

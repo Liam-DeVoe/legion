@@ -130,3 +130,17 @@ func TestTheTimingGateSkipsUnlessTheTimingVariableIsSet(t *testing.T) {
 		t.Fatalf("the timing gate ran the row unset: %t, set: %t; want only set", ran[""], ran["1"])
 	}
 }
+
+// A row's twin in the timing lane runs only where TimingEnv is set, and runs the row on the clock:
+// unset, TimedRow skips it, and set, it runs the row with OnTheClock.
+func TestATimedRowRunsOnTheClockOnlyWhereTheTimingVariableIsSet(t *testing.T) {
+	ran := map[string]Lane{}
+	for _, value := range []string{"", "1"} {
+		t.Run(fmt.Sprintf("%s=%q", TimingEnv, value), func(t *testing.T) {
+			TimedRow(t, value, func(_ *testing.T, lane Lane) { ran[value] = lane })
+		})
+	}
+	if _, unset := ran[""]; unset || ran["1"] != OnTheClock {
+		t.Fatalf("the timed row's lanes by the timing variable: %v; want the row run on the clock (%v) only where it is set", ran, OnTheClock)
+	}
+}

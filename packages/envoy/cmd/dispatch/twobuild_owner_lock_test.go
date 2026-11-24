@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -674,19 +676,19 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // row's reason (gateRowSkip): such a build registers without taking the gate, and
 // TestTwoBuildsSerialiseOneOwnersWritersBothWays covers that pairing.
 func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
-	thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t, everyRun)
+	thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t, benchtime.EveryRun)
 }
 
 // TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBoundOnTheClock is the row above
 // in benchtime's timing lane, where the refusal is held to the registration's bound and three
 // seconds more of the moment it began to wait.
 func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBoundOnTheClock(t *testing.T) {
-	timedRow(t, thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound)
 }
 
 // thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound is the scene of the two rows
-// above; lane says whether its reading of the clock is held to its figure (clockLane).
-func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T, lane clockLane) {
+// above; lane says whether its reading of the clock is held to its figure (benchtime.Lane).
+func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T, lane benchtime.Lane) {
 	build := openPreviousBuild(t)
 	skipGateRowBeside(t, build)
 	builds := newTwoBuildsOf(t, build)
@@ -741,7 +743,7 @@ func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing
 	// previous build is refused with 55P03 and exits while this build's PATCH is still paused. A
 	// registration with no bound waits for the PATCH as long as it is held, so the shared wait's end
 	// is what fails it; one whose bound was raised fails the setting's check. How long the refusal
-	// takes on the clock is held by the row's twin in the timing lane alone (onTheClock).
+	// takes on the clock is held by the row's twin in the timing lane alone (benchtime.OnTheClock).
 	const registrationGateBound = 5 * time.Second
 	var config []string
 	if err := builds.database.Pool.QueryRow(ctx, `
@@ -755,7 +757,7 @@ func thePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing
 	testwait.Receive(t, "the "+builds.previousName()+"'s registration to be refused at its lock_timeout while this build's PATCH is held", previous.Exited)
 	took := time.Since(waiting)
 	t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), took.Round(time.Millisecond))
-	if lane == onTheClock && took > registrationGateBound+3*time.Second {
+	if lane == benchtime.OnTheClock && took > registrationGateBound+3*time.Second {
 		t.Errorf("the %s exited %s after its registration began to wait for the gate, want within its bound of %s and the exit", builds.previousName(), took.Round(time.Millisecond), registrationGateBound)
 	}
 	if output := previous.Output.String(); !strings.Contains(output, `msg="dispatch: register this server process"`) || !strings.Contains(output, "SQLSTATE 55P03") {

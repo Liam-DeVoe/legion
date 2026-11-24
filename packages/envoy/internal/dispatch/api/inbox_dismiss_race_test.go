@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -99,18 +100,14 @@ func writeThreadReply(t *testing.T, into queryer, issue, thread, kind, id string
 	return written
 }
 
-// databaseNow is one transaction's own now(), which is the stamp every write in it carries; when
-// a write takes that stamp, and what the Inbox's dismissal builds on that, is migration
-// 20261105093501's header's. A test that needs one write stamped before another transaction
-// began reads the two off this clock, the one that stamps them, rather than off the test
-// process's.
+// databaseNow is one transaction's own now() (testdb.Now), which is the stamp every write in it
+// carries; when a write takes that stamp, and what the Inbox's dismissal builds on that, is
+// migration 20261105093501's header's. A test that needs one write stamped before another
+// transaction began reads the two off this clock, the one that stamps them, rather than off the
+// test process's.
 func databaseNow(t *testing.T, into queryer) time.Time {
 	t.Helper()
-	var at time.Time
-	if err := into.QueryRow(context.Background(), `select now()`).Scan(&at); err != nil {
-		t.Fatalf("read the transaction's own now(): %v", err)
-	}
-	return at
+	return testdb.Now(t, into)
 }
 
 // The Agent half's dismissal is cleared by the trigger of migration 20261105093507, in the

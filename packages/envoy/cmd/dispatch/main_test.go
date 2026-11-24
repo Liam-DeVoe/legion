@@ -2273,13 +2273,13 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
-	aProcessTheRegistryRefusesWritesNoKeywordVersion(t, everyRun)
+	aProcessTheRegistryRefusesWritesNoKeywordVersion(t, benchtime.EveryRun)
 }
 
 // TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock is the row above in benchtime's
 // timing lane, where the refused process's exit is held to main's figure (refusedExitWithin).
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock(t *testing.T) {
-	timedRow(t, aProcessTheRegistryRefusesWritesNoKeywordVersion)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aProcessTheRegistryRefusesWritesNoKeywordVersion)
 }
 
 // refusedExitWithin is how long after its first refusal, read on this test's clock, the refused
@@ -2288,10 +2288,10 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock(t *testing.T
 var refusedExitWithin = processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second
 
 // aProcessTheRegistryRefusesWritesNoKeywordVersion is the scene of the two rows above; lane says
-// whether the exit's reading of the clock is held to refusedExitWithin (clockLane). The row every
-// run makes holds the exit to coming at all, through the shared wait, and to coming after the
-// whole wait, on the process's own log; it logs how long the exit took.
-func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane clockLane) {
+// whether the exit's reading of the clock is held to refusedExitWithin (benchtime.Lane). The row
+// every run makes holds the exit to coming at all, through the shared wait, and to coming after
+// the whole wait, on the process's own log; it logs how long the exit took.
+func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane benchtime.Lane) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2323,7 +2323,7 @@ func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane clockLa
 		}
 	})
 	t.Logf("the refused process exited %v after its first refusal", exitedAfter.Round(time.Millisecond))
-	if lane == onTheClock && exitedAfter > refusedExitWithin {
+	if lane == benchtime.OnTheClock && exitedAfter > refusedExitWithin {
 		t.Errorf("the refused process exited %v after its first refusal, want within %v:\n%s",
 			exitedAfter.Round(time.Millisecond), refusedExitWithin, process.Output.String())
 	}

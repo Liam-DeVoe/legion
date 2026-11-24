@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -278,20 +280,20 @@ func waitForSent(t *testing.T, database *store.Store, process *dispatchProcess, 
 // that minute passes beside the tests that run after it rather than after them; the bound is read
 // off when the listener took the last resend, which a pause does not move.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
-	sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t, everyRun)
+	sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t, benchtime.EveryRun)
 }
 
 // TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapsesOnTheClock is
 // the row above in benchtime's timing lane, where the last resend is held to a claim lapse and a
 // sweep interval of the kill.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapsesOnTheClock(t *testing.T) {
-	timedRow(t, sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses)
 }
 
 // sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses is the scene of
 // the two rows above; lane says whether its reading of the clock is held to its figure
-// (clockLane).
-func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T, lane clockLane) {
+// (benchtime.Lane).
+func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T, lane benchtime.Lane) {
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "sigkill-mention-sends-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -317,9 +319,9 @@ func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLaps
 	t.Logf("the last resend reached the listener %v after the kill", lastResend)
 	// How soon the sweep resends is a service level the claim's lapse and the sweep interval
 	// promise, read on this machine's clock against timers inside the next process, so only the
-	// row's twin in the timing lane holds it to a figure (onTheClock); that every recipient is
-	// handed each comment exactly once is held on every run below.
-	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == onTheClock && lastResend > bound {
+	// row's twin in the timing lane holds it to a figure (benchtime.OnTheClock); that every
+	// recipient is handed each comment exactly once is held on every run below.
+	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == benchtime.OnTheClock && lastResend > bound {
 		t.Errorf("the last resend reached the listener %v after the kill, want within %v", lastResend, bound)
 	}
 
@@ -352,19 +354,19 @@ func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLaps
 // beside the tests that run after it rather than after them; the bound is read off when the
 // listener took the last send, which a pause does not move.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T) {
-	aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t, everyRun)
+	aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t, benchtime.EveryRun)
 }
 
 // TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnceOnTheClock is the row above in
 // benchtime's timing lane, where the last send is held to a claim lapse and a sweep interval of
 // the old process's exit.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnceOnTheClock(t *testing.T) {
-	timedRow(t, aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce)
 }
 
 // aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce is the scene of the two rows
-// above; lane says whether its reading of the clock is held to its figure (clockLane).
-func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T, lane clockLane) {
+// above; lane says whether its reading of the clock is held to its figure (benchtime.Lane).
+func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T, lane benchtime.Lane) {
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "rolling-update-mentions-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -411,7 +413,7 @@ func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T,
 	lastSend := listener.lastSend().Sub(exited)
 	t.Logf("the last send reached the listener %v after the old process exited", lastSend)
 	// The same service level as above, and held to its figure by the same lane.
-	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == onTheClock && lastSend > bound {
+	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lane == benchtime.OnTheClock && lastSend > bound {
 		t.Errorf("the last send reached the listener %v after the old process exited, want within %v", lastSend, bound)
 	}
 

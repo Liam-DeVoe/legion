@@ -217,10 +217,7 @@ func keywordEndArmRound(t *testing.T, bound context.Context, server keywordServe
 	if response := testwait.Receive(t, rounds.what("the held answers read to answer once the lock is released"), held); response.Code != http.StatusOK {
 		t.Fatalf("the held answers read answered %d: %s", response.Code, response.Body.String())
 	}
-	fill.Cancel()
-	testwait.Until(t, rounds.what("the round's keyword fill to return after its stop"), func() (string, bool) {
-		return fill.Log(), fill.Stopped()
-	})
+	fill.Stop(t, rounds.what("the round's keyword fill to return after its stop"))
 	// A batch locks the cursor's row and holds that lock to its end, so the exclusive lock waits
 	// out any batch of the stopped fill still running on the server, whose Go side has already let
 	// go, and the deletes after it see what that batch committed.

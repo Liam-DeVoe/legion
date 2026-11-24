@@ -869,11 +869,11 @@ const (
 	// (outbox.publisherHoldOptions: "a process that is killed is replaced by a standby within 6 s
 	// of its last renewal"), with 2 s above the hold's own TTL and Margin (6 s and 2 s), read off
 	// this machine's clock across two child processes, so only the rows' twins in benchtime's
-	// timing lane (onTheClock) hold a take-over, or a stretch with no publisher, to it. Every run
-	// holds that the take-over happens, that no two processes publish at once and that sessions
-	// take each event once and in order; and the standby's timer to the lapse of the hold it waits
-	// on, armed no later than the hold's TTL after the holder's last renewal, is held on a fake by
-	// outbox.TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses.
+	// timing lane (benchtime.OnTheClock) hold a take-over, or a stretch with no publisher, to it.
+	// Every run holds that the take-over happens, that no two processes publish at once and that
+	// sessions take each event once and in order; and the standby's timer to the lapse of the hold
+	// it waits on, armed no later than the hold's TTL after the holder's last renewal, is held on a
+	// fake by outbox.TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses.
 	takeOverWithin = 10 * time.Second
 	// frozenFor is how long the frozen-publisher row holds the publisher stopped.
 	frozenFor = 10 * time.Second
@@ -1582,9 +1582,10 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since; and, on the clock (onTheClock),
-// requires each within takeOverWithin of since, the moment what happened to the publisher before p.
-func (s *outboxScene) requireTakeOver(t *testing.T, lane clockLane, p *dispatchProcess, since time.Time, what string) {
+// batch, and for a session to take a comment written since since; and, on the clock
+// (benchtime.OnTheClock), requires each within takeOverWithin of since, the moment what happened
+// to the publisher before p.
+func (s *outboxScene) requireTakeOver(t *testing.T, lane benchtime.Lane, p *dispatchProcess, since time.Time, what string) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since)
 	batch := p.waitForOutboxLine(t, sentBatch, took.at)
@@ -1605,7 +1606,7 @@ func (s *outboxScene) requireTakeOver(t *testing.T, lane clockLane, p *dispatchP
 		{"the other process logged its first batch", batch.at},
 		{"a session took a comment written since", arrived},
 	} {
-		if after := step.at.Sub(since); lane == onTheClock && after > takeOverWithin {
+		if after := step.at.Sub(since); lane == benchtime.OnTheClock && after > takeOverWithin {
 			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, takeOverWithin)
 		}
 	}
@@ -1764,8 +1765,9 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // 100 ms on both and against each process's own outbox lines:
 //
 //   - never two publishers, at any sample and over the periods the lines show;
-//   - in the row's twin in benchtime's timing lane (onTheClock), no stretch without a publisher
-//     longer than takeOverWithin, the bound the kill and NATS rows hold a take-over to there;
+//   - in the row's twin in benchtime's timing lane (benchtime.OnTheClock), no stretch without a
+//     publisher longer than takeOverWithin, the bound the kill and NATS rows hold a take-over to
+//     there;
 //   - the run ends with exactly one publisher, waited for after the last sample rather than
 //     demanded of that sample, and that wait counted into a stretch with no publisher that the
 //     last sample was still inside rather than granted on top of it, which is why it is waited
@@ -1785,18 +1787,18 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // designed (job 128324773698, 2026-11-07). The take-over bound is what the product promises, and
 // it is what the first assertion holds the gap to.
 func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
-	oneProcessPublishesTheOutboxAtATime(t, everyRun)
+	oneProcessPublishesTheOutboxAtATime(t, benchtime.EveryRun)
 }
 
 // TestOneProcessPublishesTheOutboxAtATimeOnTheClock is the row above in benchtime's timing lane,
 // where no stretch without a publisher may reach takeOverWithin.
 func TestOneProcessPublishesTheOutboxAtATimeOnTheClock(t *testing.T) {
-	timedRow(t, oneProcessPublishesTheOutboxAtATime)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), oneProcessPublishesTheOutboxAtATime)
 }
 
 // oneProcessPublishesTheOutboxAtATime is the scene of the two rows above; lane says whether its
-// readings of the clock are held to their figures (clockLane).
-func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
+// readings of the clock are held to their figures (benchtime.Lane).
+func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane benchtime.Lane) {
 	// samplingSpan is how long /healthz is read on both processes. It outruns the take-over bound
 	// the gaps are judged against, so a gap that breaks the promise is seen whole.
 	const samplingSpan = 12 * time.Second
@@ -1925,7 +1927,7 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 	if len(sampled) == 0 {
 		t.Fatalf("the sampler read /healthz not once in %v", samplingSpan)
 	}
-	if reached := sampled[len(sampled)-1].after; lane == onTheClock && reached < takeOverWithin {
+	if reached := sampled[len(sampled)-1].after; lane == benchtime.OnTheClock && reached < takeOverWithin {
 		t.Fatalf("the %d reads of /healthz reached only %v in, short of the %v take-over bound the row judges gaps against",
 			len(sampled), reached.Round(time.Millisecond), takeOverWithin)
 	}
@@ -1938,14 +1940,14 @@ func oneProcessPublishesTheOutboxAtATime(t *testing.T, lane clockLane) {
 
 // requireOnePublisherOverTheSamples proves, over the samples alone, the two halves of INFRA-590's
 // promise that /healthz can show: that no sample found both processes publishing, and, on the
-// clock (onTheClock), that no stretch in which neither did reached takeOverWithin, the bound a
-// take-over is held to. A read that failed is a failure of its own and ends the stretch it falls
-// in, since it says nothing about what that process answered.
+// clock (benchtime.OnTheClock), that no stretch in which neither did reached takeOverWithin, the
+// bound a take-over is held to. A read that failed is a failure of its own and ends the stretch it
+// falls in, since it says nothing about what that process answered.
 //
 // sawPublisher is the moment the read of the row's own wait after the sampling that found a
 // publisher again was issued, and it is what ends a stretch the sampling left open: such a
 // stretch does not end at the last sample, it runs on past the end of the sampling.
-func requireOnePublisherOverTheSamples(t *testing.T, lane clockLane, pair *dispatchPair,
+func requireOnePublisherOverTheSamples(t *testing.T, lane benchtime.Lane, pair *dispatchPair,
 	logged map[*dispatchProcess][]outboxLine, sampled []publisherSample, sawPublisher time.Time) {
 	t.Helper()
 	var run []publisherSample
@@ -1963,7 +1965,7 @@ func requireOnePublisherOverTheSamples(t *testing.T, lane clockLane, pair *dispa
 		}
 		first := run[0]
 		length := end.Sub(first.at)
-		if length >= takeOverWithin && lane == onTheClock {
+		if length >= takeOverWithin && lane == benchtime.OnTheClock {
 			t.Errorf("no process reported outbox_publisher true from %v to %v in (%v, at or past the %v take-over bound):\n%s",
 				first.after.Round(time.Millisecond), (first.after + length).Round(time.Millisecond),
 				length.Round(time.Millisecond), takeOverWithin,
@@ -2086,18 +2088,18 @@ func TestEachSessionTakesEachEventOnceAndInOrderAcrossTwoProcesses(t *testing.T)
 // written after the kill, each within 10 s of it, and every session still takes each comment once
 // and in order across the hand-over.
 func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
-	aKilledPublisherIsReplacedWithin10Seconds(t, everyRun)
+	aKilledPublisherIsReplacedWithin10Seconds(t, benchtime.EveryRun)
 }
 
 // TestAKilledPublisherIsReplacedWithin10SecondsOnTheClock is the row above in benchtime's timing
 // lane, where the take-over is held to takeOverWithin of the kill (requireTakeOver).
 func TestAKilledPublisherIsReplacedWithin10SecondsOnTheClock(t *testing.T) {
-	timedRow(t, aKilledPublisherIsReplacedWithin10Seconds)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aKilledPublisherIsReplacedWithin10Seconds)
 }
 
 // aKilledPublisherIsReplacedWithin10Seconds is the scene of the two rows above; lane says whether
-// its readings of the clock are held to their figures (clockLane).
-func aKilledPublisherIsReplacedWithin10Seconds(t *testing.T, lane clockLane) {
+// its readings of the clock are held to their figures (benchtime.Lane).
+func aKilledPublisherIsReplacedWithin10Seconds(t *testing.T, lane benchtime.Lane) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair)
@@ -2118,7 +2120,7 @@ func aKilledPublisherIsReplacedWithin10Seconds(t *testing.T, lane clockLane) {
 
 // restartedPublishesWithin bounds how long a restarted process takes, from its registration, to
 // publish the events the process killed before it left unpublished: both on the database's clock,
-// and held to it by the row's twin in benchtime's timing lane alone (onTheClock), as
+// and held to it by the row's twin in benchtime's timing lane alone (benchtime.OnTheClock), as
 // takeOverWithin is (outbox.publisherHoldOptions' promise; the standby's lapse timer on a fake is
 // outbox.TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses).
 const restartedPublishesWithin = 10 * time.Second
@@ -2136,20 +2138,20 @@ const restartedPublishesWithin = 10 * time.Second
 // that never reached the server are, so nothing of comment 1 reaches the stream but what the
 // restarted process publishes.
 func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T) {
-	aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t, everyRun)
+	aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t, benchtime.EveryRun)
 }
 
 // TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10SecondsOnTheClock
 // is the row above in benchtime's timing lane, where each comment is held to being marked
 // published within restartedPublishesWithin of the restarted process's registration.
 func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10SecondsOnTheClock(t *testing.T) {
-	timedRow(t, aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds)
 }
 
 // aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds is the scene
 // of the two rows above; lane says whether its readings of the clock are held to their figures
-// (clockLane).
-func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T, lane clockLane) {
+// (benchtime.Lane).
+func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T, lane benchtime.Lane) {
 	pair := newPair(t)
 	proxy := testnats.StartProxy(t, pair.nats)
 	tap := startNATSTap(t, proxy.URL())
@@ -2256,8 +2258,8 @@ func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin
 	// Each comment is marked published by the restarted process, after the kill: both on the
 	// database's clock, its now() once the killed process had exited and the stamp the restart's
 	// publication wrote. How soon after its registration the restart publishes is the reading the
-	// row's twin in the timing lane holds (onTheClock), on its records on that clock; the product
-	// does not promise it publishes after it registers, since its outbox starts first.
+	// row's twin in the timing lane holds (benchtime.OnTheClock), on its records on that clock;
+	// the product does not promise it publishes after it registers, since its outbox starts first.
 	for _, comment := range []struct {
 		name, event string
 	}{{"comment 1", firstEvent}, {"comment 2", secondEvent}} {
@@ -2267,7 +2269,7 @@ func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin
 			t.Errorf("%s (%s) was marked published at %s, before the killed process had exited at %s",
 				comment.name, comment.event, published[comment.event].Format(time.RFC3339Nano), killedBy.Format(time.RFC3339Nano))
 		}
-		if lane == onTheClock && after > restartedPublishesWithin {
+		if lane == benchtime.OnTheClock && after > restartedPublishesWithin {
 			t.Errorf("%s (%s) was marked published %v after the restarted process registered, past the %v bound",
 				comment.name, comment.event, after.Round(time.Millisecond), restartedPublishesWithin)
 		}
@@ -2399,18 +2401,18 @@ func (tap *natsTap) hasSent(text string) bool {
 // leaves its connection open and silent. Either way the publisher releases the hold for NATS lost,
 // and every session takes each comment once and in order.
 func TestAPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T) {
-	aPublisherCutFromNATSHandsOverWithin10Seconds(t, everyRun)
+	aPublisherCutFromNATSHandsOverWithin10Seconds(t, benchtime.EveryRun)
 }
 
 // TestAPublisherCutFromNATSHandsOverWithin10SecondsOnTheClock is the row above in benchtime's
 // timing lane, where each hand-over is held to takeOverWithin of the cut (requireTakeOver).
 func TestAPublisherCutFromNATSHandsOverWithin10SecondsOnTheClock(t *testing.T) {
-	timedRow(t, aPublisherCutFromNATSHandsOverWithin10Seconds)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aPublisherCutFromNATSHandsOverWithin10Seconds)
 }
 
 // aPublisherCutFromNATSHandsOverWithin10Seconds is the scene of the two rows above; lane says
-// whether its readings of the clock are held to their figures (clockLane).
-func aPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T, lane clockLane) {
+// whether its readings of the clock are held to their figures (benchtime.Lane).
+func aPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T, lane benchtime.Lane) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	t.Run("cut", func(t *testing.T) {
@@ -2441,7 +2443,7 @@ func aPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T, lane clockLane)
 // the publisher's NATS. It requires the other process to take over, within takeOverWithin on the
 // clock (requireTakeOver), the publisher to release the hold for NATS lost, and every session to
 // take each comment once and in order.
-func (s *outboxScene) handOver(t *testing.T, lane clockLane, publisher *dispatchProcess, what string, cut func()) {
+func (s *outboxScene) handOver(t *testing.T, lane benchtime.Lane, publisher *dispatchProcess, what string, cut func()) {
 	t.Helper()
 	before := s.deliveredCount()
 	stop := s.writeAtRate(t, 4, s.pair.a, s.pair.b)
@@ -2469,18 +2471,18 @@ func (s *outboxScene) handOver(t *testing.T, lane clockLane, publisher *dispatch
 // started after it was stopped, and it neither takes the hold again nor releases a hold that is no
 // longer its own.
 func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
-	aFrozenPublisherSendsNothingWhenItResumes(t, everyRun)
+	aFrozenPublisherSendsNothingWhenItResumes(t, benchtime.EveryRun)
 }
 
 // TestAFrozenPublisherSendsNothingWhenItResumesOnTheClock is the row above in benchtime's timing
 // lane, where the take-over of the stopped publisher is held to takeOverWithin (requireTakeOver).
 func TestAFrozenPublisherSendsNothingWhenItResumesOnTheClock(t *testing.T) {
-	timedRow(t, aFrozenPublisherSendsNothingWhenItResumes)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aFrozenPublisherSendsNothingWhenItResumes)
 }
 
 // aFrozenPublisherSendsNothingWhenItResumes is the scene of the two rows above; lane says whether
-// its readings of the clock are held to their figures (clockLane).
-func aFrozenPublisherSendsNothingWhenItResumes(t *testing.T, lane clockLane) {
+// its readings of the clock are held to their figures (benchtime.Lane).
+func aFrozenPublisherSendsNothingWhenItResumes(t *testing.T, lane benchtime.Lane) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair)
@@ -5533,20 +5535,21 @@ const liveWithin = time.Second
 // the edit's notification asked B for (awaitNotifiedCatchUp): that, and not a poll of B's that
 // would carry it too, only later, is what every run holds. The one second is a reading of this
 // machine's clock across two child processes, so only the row's twin in benchtime's timing lane
-// holds it (onTheClock), as the rows below hold each change they wait for there (withinLive).
+// holds it (benchtime.OnTheClock), as the rows below hold each change they wait for there
+// (withinLive).
 func TestALiveChangeReachesTheOtherProcessWithinASecond(t *testing.T) {
-	aLiveChangeReachesTheOtherProcessWithinASecond(t, everyRun)
+	aLiveChangeReachesTheOtherProcessWithinASecond(t, benchtime.EveryRun)
 }
 
 // TestALiveChangeReachesTheOtherProcessWithinASecondOnTheClock is the row above in benchtime's
 // timing lane, where the edit is held to reaching the reader within liveWithin of the keystroke.
 func TestALiveChangeReachesTheOtherProcessWithinASecondOnTheClock(t *testing.T) {
-	timedRow(t, aLiveChangeReachesTheOtherProcessWithinASecond)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aLiveChangeReachesTheOtherProcessWithinASecond)
 }
 
 // aLiveChangeReachesTheOtherProcessWithinASecond is the scene of the two rows above; lane says
-// whether its reading of the clock is held to liveWithin (clockLane).
-func aLiveChangeReachesTheOtherProcessWithinASecond(t *testing.T, lane clockLane) {
+// whether its reading of the clock is held to liveWithin (benchtime.Lane).
+func aLiveChangeReachesTheOtherProcessWithinASecond(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "LIV")
 	pair.a.createProject(t, project, "Live within a second")
@@ -5563,7 +5566,7 @@ func aLiveChangeReachesTheOtherProcessWithinASecond(t *testing.T, lane clockLane
 	}
 	reached := time.Since(typed)
 	t.Logf("the edit on A reached the reader on B %v after it was typed", reached)
-	if lane == onTheClock && reached > liveWithin {
+	if lane == benchtime.OnTheClock && reached > liveWithin {
 		t.Fatalf("the edit on A reached the reader on B %v after it was typed, want within %v", reached, liveWithin)
 	}
 	pair.b.awaitNotifiedCatchUp(t, artifactID, base, "the edit on A reaching the reader on B")
@@ -6108,7 +6111,7 @@ func versionActorsSince(t *testing.T, pair *dispatchPair, issueKey string, seq i
 // (readerProcess), to show it once it arrives, carried there by the catch-up the typist's write
 // notified (awaitNotifiedCatchUp), and within liveWithin of the keystroke on the clock
 // (withinLive).
-func (p *dispatchPair) typeAndSee(t *testing.T, lane clockLane, artifactID, typistName string, typist *docstest.Peer, text, readerName string, reader *docstest.Peer, readerProcess *dispatchProcess, keystroke int) {
+func (p *dispatchPair) typeAndSee(t *testing.T, lane benchtime.Lane, artifactID, typistName string, typist *docstest.Peer, text, readerName string, reader *docstest.Peer, readerProcess *dispatchProcess, keystroke int) {
 	t.Helper()
 	p.requireConnected(t, artifactID, typistName, typist, fmt.Sprintf("before keystroke %d", keystroke))
 	base := p.catchUpBase(t, readerProcess, artifactID)
@@ -6127,18 +6130,18 @@ func (p *dispatchPair) typeAndSee(t *testing.T, lane clockLane, artifactID, typi
 }
 
 // withinLive holds a change that began at since on one process and has now reached a reader on
-// the other to liveWithin, on the clock only (onTheClock): across two child processes a reading
-// of this machine's clock is its load as much as the product's work, so the row every run makes
-// holds the change to arriving at all, through the shared wait, and to arriving on what the other
-// process's notification carried: an edit on the catch-up its write's notification asked for
-// (awaitNotifiedCatchUp), a cursor or a presence on what the other process's awareness relay sent
-// (awaitRelayedAwareness), and a close of an issue's rooms on the issue's own notification
+// the other to liveWithin, on the clock only (benchtime.OnTheClock): across two child processes a
+// reading of this machine's clock is its load as much as the product's work, so the row every run
+// makes holds the change to arriving at all, through the shared wait, and to arriving on what the
+// other process's notification carried: an edit on the catch-up its write's notification asked
+// for (awaitNotifiedCatchUp), a cursor or a presence on what the other process's awareness relay
+// sent (awaitRelayedAwareness), and a close of an issue's rooms on the issue's own notification
 // (awaitNotifiedIssueClose). It logs how long the change took.
-func withinLive(t *testing.T, lane clockLane, since time.Time, what string) {
+func withinLive(t *testing.T, lane benchtime.Lane, since time.Time, what string) {
 	t.Helper()
 	took := time.Since(since)
 	t.Logf("%s took %v", what, took)
-	if lane == onTheClock && took > liveWithin {
+	if lane == benchtime.OnTheClock && took > liveWithin {
 		t.Errorf("%s took %v, want within %v", what, took, liveWithin)
 	}
 }
@@ -6415,7 +6418,7 @@ func announceAwarenessClients(socket *gws.Conn, artifactID string, first, count,
 // is held in the timing lane (the OnTheClock twin below). Each subtest has a document of its own,
 // so one behaviour failing does not decide another's.
 func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) {
-	twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t, everyRun)
+	twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t, benchtime.EveryRun)
 }
 
 // TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLiveOnTheClock is the row above in
@@ -6426,12 +6429,12 @@ func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) 
 // reader who opens second sees the first reader's cursor at once", and readers "moving at the
 // same moment all cross"); the spec's "at once" is the one second the plan pins (#2414).
 func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLiveOnTheClock(t *testing.T) {
-	timedRow(t, twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive)
 }
 
 // twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive is the scene of the two rows above;
-// lane says whether its readings of the clock are held to their figures (clockLane).
-func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane clockLane) {
+// lane says whether its readings of the clock are held to their figures (benchtime.Lane).
+func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "LIVE")
 	pair.a.createProject(t, project, "Live across processes")
@@ -6644,7 +6647,7 @@ func (p *dispatchPair) issueCloses(t *testing.T, artifactID string) issueCloses 
 // issue's notification, or after a redial the recheck's close, past what closes read before the
 // close or reopen (awaitNotifiedIssueClose), which is what closed the socket's room. On the clock
 // it holds the close to liveWithin of the call (withinLive).
-func requireEndsWithin(t *testing.T, lane clockLane, editor *docstest.Peer, what string, process *dispatchProcess, closes issueCloses) {
+func requireEndsWithin(t *testing.T, lane benchtime.Lane, editor *docstest.Peer, what string, process *dispatchProcess, closes issueCloses) {
 	t.Helper()
 	since := time.Now()
 	testwait.Until(t, what, func() (withOutput[string], bool) {
@@ -6678,7 +6681,7 @@ func reconnectWithScope(t *testing.T, process *dispatchProcess, login, artifactI
 // transaction that changes nothing commits no update - so both rooms stand at the stored head
 // when the issue closes: what closes their sockets, if anything does, is the close.
 func TestClosingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T) {
-	closingAndReopeningAnIssueChangesEveryProcessesRooms(t, everyRun)
+	closingAndReopeningAnIssueChangesEveryProcessesRooms(t, benchtime.EveryRun)
 }
 
 // TestClosingAndReopeningAnIssueChangesEveryProcessesRoomsOnTheClock is the row above in
@@ -6688,12 +6691,12 @@ func TestClosingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T) {
 // read-only or read-write as the issue now allows"), at the spec item's "at once", the one second
 // the plan pins (#2414).
 func TestClosingAndReopeningAnIssueChangesEveryProcessesRoomsOnTheClock(t *testing.T) {
-	timedRow(t, closingAndReopeningAnIssueChangesEveryProcessesRooms)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), closingAndReopeningAnIssueChangesEveryProcessesRooms)
 }
 
 // closingAndReopeningAnIssueChangesEveryProcessesRooms is the scene of the two rows above; lane
-// says whether its readings of the clock are held to their figures (clockLane).
-func closingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T, lane clockLane) {
+// says whether its readings of the clock are held to their figures (benchtime.Lane).
+func closingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SHUT")
 	pair.a.createProject(t, project, "Closed across processes")
@@ -6953,7 +6956,7 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 // closed and reconnects writable, his keystroke is stored, and the settlement the reopened
 // document owes leaves the ask open.
 func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T) {
-	closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t, everyRun)
+	closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t, benchtime.EveryRun)
 }
 
 // TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopenOnTheClock
@@ -6962,13 +6965,13 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // close and reopen ("Every process of this build then closes its rooms of the issue's documents"),
 // at the spec's "at once", the one second the plan pins (#2414).
 func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopenOnTheClock(t *testing.T) {
-	timedRow(t, closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen)
 }
 
 // closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen is the
 // scene of the two rows above; lane says whether its readings of the clock are held to their
-// figures (clockLane).
-func closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T, lane clockLane) {
+// figures (benchtime.Lane).
+func closingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T, lane benchtime.Lane) {
 	const settleDelay = 2 * time.Second
 	pair := newPair(t)
 	pair.startSettling(t, nil, settleDelay, settleDelay)
@@ -7207,7 +7210,7 @@ func decodeLostEdit(t *testing.T, answer httpAnswer) lostEditAnswer {
 // second tab of his there that shows when B's room has applied his delete; A holds no room of
 // the document, so the agent's write forks it from the store. Each case has its own document.
 func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
-	anAgentWriteSeesEditsInFlightOnTheOtherProcess(t, everyRun)
+	anAgentWriteSeesEditsInFlightOnTheOtherProcess(t, benchtime.EveryRun)
 }
 
 // TestAnAgentWriteSeesEditsInFlightOnTheOtherProcessOnTheClock is the row above in benchtime's
@@ -7217,12 +7220,12 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 // browsers see the edit on the socket they already have"), at the spec's "at once", the one
 // second the plan pins (#2414).
 func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcessOnTheClock(t *testing.T) {
-	timedRow(t, anAgentWriteSeesEditsInFlightOnTheOtherProcess)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), anAgentWriteSeesEditsInFlightOnTheOtherProcess)
 }
 
 // anAgentWriteSeesEditsInFlightOnTheOtherProcess is the scene of the two rows above; lane says
-// whether its readings of the clock are held to their figures (clockLane).
-func anAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T, lane clockLane) {
+// whether its readings of the clock are held to their figures (benchtime.Lane).
+func anAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "AGNT")
 	pair.b.createProject(t, project, "Agent writes across processes")
@@ -9413,19 +9416,19 @@ func requireSocketClosed(t *testing.T, ended <-chan streamEnd, code int, what st
 // hook called on A answers on A's acknowledgement alone rather than waiting out the timeout for a
 // process that no longer exists.
 func TestEveryTestHookActsOnBothProcesses(t *testing.T) {
-	everyTestHookActsOnBothProcesses(t, everyRun)
+	everyTestHookActsOnBothProcesses(t, benchtime.EveryRun)
 }
 
 // TestEveryTestHookActsOnBothProcessesOnTheClock is the row above in benchtime's timing lane,
 // where the disconnect hook called on A once B is killed is held to answering well inside the
 // hook's ten-second timeout.
 func TestEveryTestHookActsOnBothProcessesOnTheClock(t *testing.T) {
-	timedRow(t, everyTestHookActsOnBothProcesses)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), everyTestHookActsOnBothProcesses)
 }
 
 // everyTestHookActsOnBothProcesses is the scene of the two rows above; lane says whether its
-// reading of the clock is held to its figure (clockLane).
-func everyTestHookActsOnBothProcesses(t *testing.T, lane clockLane) {
+// reading of the clock is held to its figure (benchtime.Lane).
+func everyTestHookActsOnBothProcesses(t *testing.T, lane benchtime.Lane) {
 	pair := startHookPair(t)
 	project := uniqueProjectKey(t, "HKS")
 	pair.a.createProject(t, project, "Test hooks")
@@ -9476,8 +9479,9 @@ func everyTestHookActsOnBothProcesses(t *testing.T, lane clockLane) {
 	// already refuses, and internal/dispatch/api's TestATestHookStopsWaitingForAProcessWhoseLockIsGone
 	// proves on a fake clock that never reaches the timeout that the call stops waiting once B's
 	// lock is gone. How far inside the timeout the answer came is a reading of this machine's
-	// clock, so only the row's twin in benchtime's timing lane holds it to a figure (onTheClock).
-	if lane == onTheClock && waited >= 10*time.Second {
+	// clock, so only the row's twin in benchtime's timing lane holds it to a figure
+	// (benchtime.OnTheClock).
+	if lane == benchtime.OnTheClock && waited >= 10*time.Second {
 		t.Fatalf("the disconnect hook on A answered %v after B was killed, want well inside the 10s timeout", waited)
 	}
 	requireSocketClosed(t, survivor, gws.CloseServiceRestart,

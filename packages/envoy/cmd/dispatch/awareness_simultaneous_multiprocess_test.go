@@ -5,9 +5,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 )
 
@@ -18,7 +20,7 @@ import (
 // y-protocols), and these readers send none, so such a room never shows bob all five. The second
 // is held only by the row's twin in benchtime's timing lane (withinLive).
 func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T) {
-	fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t, everyRun)
+	fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t, benchtime.EveryRun)
 }
 
 // TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcessOnTheClock is the row above in
@@ -28,12 +30,12 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 // at the same moment all cross rather than the last of them"), at the spec's "at once", the one
 // second the plan pins (#2414).
 func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcessOnTheClock(t *testing.T) {
-	timedRow(t, fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess)
 }
 
 // fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess is the scene of the two rows above;
-// lane says whether its readings of the clock are held to their figures (clockLane).
-func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
+// lane says whether its readings of the clock are held to their figures (benchtime.Lane).
+func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SIM")
 	pair.a.createProject(t, project, "Simultaneous cursors")

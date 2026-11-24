@@ -77,18 +77,18 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // than its whole stop: the edit's settlement is still owed when the signal comes, and Shutdown is
 // always the one that runs it.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
-	sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t, everyRun)
+	sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t, benchtime.EveryRun)
 }
 
 // TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock is the row above in
 // benchtime's timing lane, where the exit is held to promptShutdown (waitPromptExit).
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock(t *testing.T) {
-	timedRow(t, sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)
 }
 
 // sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument is the scene of the two rows
-// above; lane says whether its reading of the clock is held to its figure (clockLane).
-func sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T, lane clockLane) {
+// above; lane says whether its reading of the clock is held to its figure (benchtime.Lane).
+func sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T, lane benchtime.Lane) {
 	database := storetest.Open(t)
 	// Lengthened only, to keep the settle timer from running before the stop does.
 	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
@@ -1720,26 +1720,6 @@ func (p *dispatchProcess) exitedWithOutput() <-chan *cmdtest.LockedBuffer {
 	return exited
 }
 
-// clockLane is where a row holds a reading of this machine's clock across its child processes to
-// the figure the product promises. Such a reading is the runner's load as much as the product's
-// work, so only the row's twin in benchtime's timing lane holds it (onTheClock, through
-// timedRow), which CI never runs; the row every run makes runs the same scene, holds what it
-// proves without a clock, and logs the reading (everyRun).
-type clockLane bool
-
-const (
-	everyRun   clockLane = false
-	onTheClock clockLane = true
-)
-
-// timedRow runs row as its twin in benchtime's timing lane: skipped unless benchtime.TimingEnv is
-// set, and then holding the row's readings of the clock to their figures (onTheClock).
-func timedRow(t *testing.T, row func(*testing.T, clockLane)) {
-	t.Helper()
-	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	row(t, onTheClock)
-}
-
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
 // the shutdown tests' process: no NATS, no DISPATCH_SIGNING_KEY, the default settle delay.
 type dispatchOptions struct {
@@ -1964,13 +1944,13 @@ func (p *dispatchProcess) exitCause() string {
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled. How soon it
 // exits is a service level its stop promises, measured on this machine's clock against timers
 // inside the child process, so the figure is held only by a row's twin in benchtime's timing lane
-// (onTheClock); that it exits at all is held on every run.
-func (p *dispatchProcess) waitPromptExit(t *testing.T, lane clockLane, signalled time.Time) {
+// (benchtime.OnTheClock); that it exits at all is held on every run.
+func (p *dispatchProcess) waitPromptExit(t *testing.T, lane benchtime.Lane, signalled time.Time) {
 	t.Helper()
 	p.WaitExit(t, "SIGTERM")
 	exited := time.Since(signalled)
 	t.Logf("exited %v after SIGTERM", exited)
-	if lane == onTheClock && exited >= promptShutdown {
+	if lane == benchtime.OnTheClock && exited >= promptShutdown {
 		t.Errorf("Dispatch exited %v after SIGTERM, want under %v", exited, promptShutdown)
 	}
 }

@@ -332,7 +332,7 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
 // every lock attempt. The Legion daemon retries a status write it refuses
-// (packages/daemon/internal/dispatch/types.go:526, ParentContended) rather than dropping it, so
+// (packages/daemon/internal/dispatch/types.go's ParentContended) rather than dropping it, so
 // the two spellings change together: no mechanism shares a value between the two Go modules.
 const parentContended = "PARENT_CONTENDED"
 

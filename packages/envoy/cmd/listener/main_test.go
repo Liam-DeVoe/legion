@@ -415,32 +415,13 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 	}
 }
 
-// clockLane says whether a row holds its readings of the machine's clock to their figures. Every
-// run of the suite reads them and logs them (everyRun); only the row's twin in benchtime's timing
-// lane holds them (timedRow), since a reading of a shared runner's clock is the runner's load as
-// much as the listener's work.
-type clockLane bool
-
-const (
-	everyRun   clockLane = false
-	onTheClock clockLane = true
-)
-
-// timedRow runs row as its twin in benchtime's timing lane: skipped unless benchtime.TimingEnv is
-// set, and then holding the row's readings of the clock to their figures (onTheClock).
-func timedRow(t *testing.T, row func(*testing.T, clockLane)) {
-	t.Helper()
-	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	row(t, onTheClock)
-}
-
 // A publish through the listener's API to a team topic, with no session connected to receive it,
 // answers 200 with its envelope and leaves the message on the stream under notifications.team.>,
 // where the consumer of every session that follows the topic reads it whenever it comes back.
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
-	publishATeamTopicNoSessionIsConnectedFor(t, everyRun)
+	publishATeamTopicNoSessionIsConnectedFor(t, benchtime.EveryRun)
 }
 
 // TestPublishHandlerAnswersATeamTopicWithinASecond is the row above's service level: the publish
@@ -448,12 +429,12 @@ func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
 // The reading is of the machine's clock, so the row runs only in benchtime's timing lane; that the
 // publish is answered and stored is the row above, which every run proves.
 func TestPublishHandlerAnswersATeamTopicWithinASecond(t *testing.T) {
-	timedRow(t, publishATeamTopicNoSessionIsConnectedFor)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), publishATeamTopicNoSessionIsConnectedFor)
 }
 
 // publishATeamTopicNoSessionIsConnectedFor is the two rows above: the publish to a team topic is
-// answered 200 and stored, and on the clock (onTheClock) answered within a second.
-func publishATeamTopicNoSessionIsConnectedFor(t *testing.T, lane clockLane) {
+// answered 200 and stored, and on the clock (benchtime.OnTheClock) answered within a second.
+func publishATeamTopicNoSessionIsConnectedFor(t *testing.T, lane benchtime.Lane) {
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -469,7 +450,7 @@ func publishATeamTopicNoSessionIsConnectedFor(t *testing.T, lane clockLane) {
 		t.Fatalf("publish to a team topic: status %d, body %s", recorder.Code, recorder.Body.String())
 	}
 	t.Logf("the publish to a team topic was answered in %s", elapsed)
-	if lane == onTheClock && elapsed >= time.Second {
+	if lane == benchtime.OnTheClock && elapsed >= time.Second {
 		t.Fatalf("publish to a team topic took %s", elapsed)
 	}
 	var answered contracts.Envelope
@@ -2664,18 +2645,18 @@ type bindOutcome struct {
 // proves the bind waits out the hold and binds after the release; the interval is a reading of the
 // machine's clock, held in benchtime's timing lane by the row below.
 func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
-	bindOnRelease(t, everyRun)
+	bindOnRelease(t, benchtime.EveryRun)
 }
 
 // TestBindListenerDurableBindsWithinOneIntervalOfReleaseOnTheClock is the row above on the clock:
 // the replacement binds within 500 ms of the old task's exit, at a 50 ms interval.
 func TestBindListenerDurableBindsWithinOneIntervalOfReleaseOnTheClock(t *testing.T) {
-	timedRow(t, bindOnRelease)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindOnRelease)
 }
 
 // bindOnRelease is the two rows above: a replacement's bind is refused while the old task holds the
 // durable, returns only after the old task's exit, and has then bound it.
-func bindOnRelease(t *testing.T, lane clockLane) {
+func bindOnRelease(t *testing.T, lane benchtime.Lane) {
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-on-release"
 	old, _ := durableHeldElsewhere(t, uri, consumer)
@@ -2697,7 +2678,7 @@ func bindOnRelease(t *testing.T, lane clockLane) {
 		t.Fatalf("subscribe to the durable's reads: %v", err)
 	}
 	t.Cleanup(func() { _ = readSubscription.Unsubscribe() })
-	if err := observer.FlushWithContext(testwait.Context(t)); err != nil {
+	if err := observer.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the read subscription: %v", err)
 	}
 	done := make(chan bindOutcome, 1)
@@ -2728,7 +2709,7 @@ func bindOnRelease(t *testing.T, lane clockLane) {
 	}
 	after := outcome.at.Sub(released)
 	t.Logf("the replacement bound %s after the old task's exit, in %d attempts", after, outcome.bind.attempts)
-	if lane == onTheClock && after > 500*time.Millisecond {
+	if lane == benchtime.OnTheClock && after > 500*time.Millisecond {
 		t.Fatalf("the replacement bound %s after the old task's exit, want within 500 ms at a 50 ms interval", after)
 	}
 	if outcome.bind.attempts < 2 {
@@ -2781,18 +2762,18 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 // soon it returns is a reading of the machine's clock, held in benchtime's timing lane by the row
 // below.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
-	bindCancelledInItsWait(t, everyRun)
+	bindCancelledInItsWait(t, benchtime.EveryRun)
 }
 
 // TestBindListenerDurableStopsWhenTheContextEndsOnTheClock is the row above on the clock: the bind
 // returns within 500 ms of its context's end.
 func TestBindListenerDurableStopsWhenTheContextEndsOnTheClock(t *testing.T) {
-	timedRow(t, bindCancelledInItsWait)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindCancelledInItsWait)
 }
 
 // bindCancelledInItsWait is the two rows above: the context of a bind that waits out its interval
 // after a refused attempt ends, and the bind returns context.Canceled.
-func bindCancelledInItsWait(t *testing.T, lane clockLane) {
+func bindCancelledInItsWait(t *testing.T, lane benchtime.Lane) {
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-cancelled"
 	durableHeldElsewhere(t, uri, consumer)
@@ -2831,7 +2812,7 @@ func bindCancelledInItsWait(t *testing.T, lane clockLane) {
 	}
 	after := outcome.at.Sub(cancelled)
 	t.Logf("the bind returned %s after the context ended", after)
-	if lane == onTheClock && after > 500*time.Millisecond {
+	if lane == benchtime.OnTheClock && after > 500*time.Millisecond {
 		t.Fatalf("the bind returned %s after the context ended, want at once rather than at its next attempt", after)
 	}
 }
@@ -2889,18 +2870,18 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 // interval until the deadline: the grant refuses it again however often it is sent. It once ended
 // after 2m15s and 69 attempts with "listener durable bind exhausted".
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
-	bindRefusedByTheGrant(t, everyRun)
+	bindRefusedByTheGrant(t, benchtime.EveryRun)
 }
 
 // TestBindListenerDurableEndsAtTheGrantsRefusalOnTheClock is the row above on the clock: the bind
 // of a durable the grant refuses ends within 3 s. That it ends at the first attempt, with the
 // grant's refusal, is the row above, which every run proves.
 func TestBindListenerDurableEndsAtTheGrantsRefusalOnTheClock(t *testing.T) {
-	timedRow(t, bindRefusedByTheGrant)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), bindRefusedByTheGrant)
 }
 
 // bindRefusedByTheGrant is the two rows above.
-func bindRefusedByTheGrant(t *testing.T, lane clockLane) {
+func bindRefusedByTheGrant(t *testing.T, lane benchtime.Lane) {
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
@@ -2919,7 +2900,7 @@ func bindRefusedByTheGrant(t *testing.T, lane clockLane) {
 		t.Fatalf("the bind made %d attempts in %s at a durable the grant refuses, want 1", bind.attempts, took.Round(time.Millisecond))
 	}
 	t.Logf("the bind of a durable the grant refuses ended after %s", took.Round(time.Millisecond))
-	if lane == onTheClock && took > 3*time.Second {
+	if lane == benchtime.OnTheClock && took > 3*time.Second {
 		t.Fatalf("the bind of a durable the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
 	}
 }
@@ -2927,18 +2908,18 @@ func bindRefusedByTheGrant(t *testing.T, lane clockLane) {
 // A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
 // the refusal, rather than reading it again every interval until the deadline.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
-	awaitRefusedByTheGrant(t, everyRun)
+	awaitRefusedByTheGrant(t, benchtime.EveryRun)
 }
 
 // TestAwaitDurableBoundEndsAtTheGrantsRefusalOnTheClock is the row above on the clock: the wait for
 // a durable whose read the grant refuses ends within 3 s. That it ends with the grant's refusal
 // rather than at its deadline is the row above, which every run proves.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusalOnTheClock(t *testing.T) {
-	timedRow(t, awaitRefusedByTheGrant)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), awaitRefusedByTheGrant)
 }
 
 // awaitRefusedByTheGrant is the two rows above.
-func awaitRefusedByTheGrant(t *testing.T, lane clockLane) {
+func awaitRefusedByTheGrant(t *testing.T, lane benchtime.Lane) {
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, info)
@@ -2950,7 +2931,7 @@ func awaitRefusedByTheGrant(t *testing.T, lane clockLane) {
 		t.Fatalf("the wait for a durable whose read the grant refuses = %v, want bus.ErrPublishDenied alone", err)
 	}
 	t.Logf("the wait for a durable whose read the grant refuses ended after %s", took.Round(time.Millisecond))
-	if lane == onTheClock && took > 3*time.Second {
+	if lane == benchtime.OnTheClock && took > 3*time.Second {
 		t.Fatalf("the wait for a durable whose read the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
 	}
 }
@@ -3587,18 +3568,18 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 // the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
 // publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
-	fanoutRefusesUnadvertisedDeliveryMode(t, everyRun)
+	fanoutRefusesUnadvertisedDeliveryMode(t, benchtime.EveryRun)
 }
 
 // TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryModeOnTheClock is the row above on
 // the clock: the refusal completes in under 4 s. The reading is of the machine's clock, so the row
 // runs only in benchtime's timing lane; the refusal itself is the row above, which every run proves.
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryModeOnTheClock(t *testing.T) {
-	timedRow(t, fanoutRefusesUnadvertisedDeliveryMode)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), fanoutRefusesUnadvertisedDeliveryMode)
 }
 
 // fanoutRefusesUnadvertisedDeliveryMode is the two rows above.
-func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane clockLane) {
+func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane benchtime.Lane) {
 	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
@@ -3622,7 +3603,7 @@ func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane clockLane) {
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	elapsed := time.Since(started)
 	t.Logf("capability refusal completed in %s", elapsed)
-	if lane == onTheClock && elapsed >= 4*time.Second {
+	if lane == benchtime.OnTheClock && elapsed >= 4*time.Second {
 		t.Fatalf("capability refusal took %s, want less than 4s", elapsed)
 	}
 	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
@@ -4223,7 +4204,7 @@ func requireMarkerNext(t *testing.T, conn *natsgo.Conn, probe *natsgo.Subscripti
 	if err := conn.Publish(subject, marker); err != nil {
 		t.Fatalf("publish the marker on %s: %v", subject, err)
 	}
-	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the marker on %s: %v", subject, err)
 	}
 	message, err := probe.NextMsgWithContext(testwait.Context(t))

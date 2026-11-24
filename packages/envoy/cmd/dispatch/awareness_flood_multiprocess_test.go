@@ -5,9 +5,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -25,7 +27,7 @@ import (
 // must hold an entry free for her. The second is held only by the row's twin in benchtime's timing
 // lane (withinLive).
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
-	aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
+	aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t, benchtime.EveryRun)
 }
 
 // TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcessOnTheClock is the row above in
@@ -34,12 +36,12 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 // presence ("a reader who joins after such a frame is taken in and relayed at once"), at the
 // spec's "at once", the one second the plan pins (#2414).
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
-	timedRow(t, aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess)
 }
 
 // aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess is the scene of the two rows above;
-// lane says whether its readings of the clock are held to their figures (clockLane).
-func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
+// lane says whether its readings of the clock are held to their figures (benchtime.Lane).
+func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLD")
 	pair.a.createProject(t, project, "Awareness flood")
@@ -147,7 +149,7 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 // before she joins - it must hold an entry free for her - and the second is held only by the
 // row's twin in benchtime's timing lane (withinLive).
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
-	aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
+	aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t, benchtime.EveryRun)
 }
 
 // TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcessOnTheClock is the row above in
@@ -157,12 +159,12 @@ func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testi
 // them, here or on another process", and its readers' changes are relayed once per 50 ms at
 // most), at the spec's "at once", the one second the plan pins (#2414).
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
-	timedRow(t, aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess)
 }
 
 // aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess is the scene of the two rows
-// above; lane says whether its readings of the clock are held to their figures (clockLane).
-func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
+// above; lane says whether its readings of the clock are held to their figures (benchtime.Lane).
+func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLL")
 	pair.a.createProject(t, project, "Live awareness flood")

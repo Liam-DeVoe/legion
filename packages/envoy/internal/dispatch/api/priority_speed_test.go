@@ -63,7 +63,7 @@
 // so every timed run runs the plan the server's connections run (speedCustomPlans). A busy box
 // only ever adds to a run's time, so each operation's least is the run the box reached least, and
 // the runs interleave the operations, so every operation is read over the same stretch of the
-// run's load.
+// run's load. The timing lane is priority_speed_timing_test.go.
 package api
 
 import (
@@ -87,14 +87,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// speedRuns is how many times each priorities operation is run and timed after its warm-up runs
-// (speedWarmups), interleaved with the other two: how many runs a load that slows one operation
-// and spares another has to reach before the least of each reads it as cost. Twenty-one was sized
-// when the relation read was timed too, on that read's ratio to the page without it (2026-11-16):
-// groups of 5 passes drawn from five runs of 61 put that ratio over its bound in 31 of 100,000,
-// and groups of 11 or more in none.
-const speedRuns = 21
-
 // speedCustomPlans is how many runs of a prepared statement on one connection Postgres plans for
 // that run's own arguments before it chooses, at every run after, between such a plan and the
 // one generic plan it then makes and keeps (choose_custom_plan in PostgreSQL's
@@ -110,13 +102,6 @@ const speedCustomPlans = 5
 // the pages' hint bits are set; a few leaves room for a reader that needs more than one to settle,
 // at a cost of a few explains a statement.
 const speedSettleReads = 5
-
-// speedWarmups is how many times each timed operation runs before any run is timed: past the
-// runs Postgres plans for their own arguments, so every timed run runs the plan a deployment's
-// connections run from then on. With one warm-up run, the first three timed runs of the whole
-// priorities body read 22.2 to 23.0 ms and every later one 43.9 to 83.3 ms (2026-11-20): the
-// least of the runs was a reading of the plan a connection runs five times and then leaves.
-const speedWarmups = speedCustomPlans
 
 // The bounds the tests hold their readings to, from the issue's own checks: the relation read at
 // no more than twice the same page without it, in rows and in buffer accesses (its scan's
@@ -158,27 +143,6 @@ const (
 // 3.62 times the reference, one that reads each chain row's tuples through the log's index 3.77,
 // one that walks from every issue the filters match 12.90.
 const speedGenericBuffersRatio = 3.25
-
-// speedTiming is one operation's readings: every run, in the order they were taken, so a number
-// in the report can be read against the spread it came from.
-type speedTiming struct {
-	name string
-	runs []time.Duration
-}
-
-// least is the reading of record: the quickest of the runs, the one the box's load added least
-// to, which noise can only raise.
-func (s speedTiming) least() time.Duration {
-	return slices.Min(s.runs)
-}
-
-func (s speedTiming) String() string {
-	readings := make([]string, 0, len(s.runs))
-	for _, run := range s.runs {
-		readings = append(readings, fmt.Sprintf("%.1f", msOf(run)))
-	}
-	return fmt.Sprintf("%s: %.1f ms (least of %v ms)", s.name, msOf(s.least()), readings)
-}
 
 // speedWork is the work Postgres did to answer one statement under one plan, by its own count.
 // EXPLAIN (ANALYZE, BUFFERS) runs the statement and reports, for each node of the plan it ran, how
@@ -240,15 +204,6 @@ type speedReadings struct {
 	prioritiesLite  speedRequestWork
 	priorityGrowth  speedPriorityGrowth
 	timings         *speedTimings
-}
-
-// speedTimings is the three timings of the timing lane, with what the plan counts said of the
-// runs they timed (assertSpeedPlansSettled).
-type speedTimings struct {
-	pagedIssues    speedTiming
-	prioritiesFull speedTiming
-	prioritiesLite speedTiming
-	unsettledRuns  []string
 }
 
 // speedScanRuns is how many scans of the page testing.AllocsPerRun averages, after the one it does
@@ -471,49 +426,12 @@ func TestPrioritiesReadWork(t *testing.T) {
 	}
 }
 
-// TestPrioritiesReadSpeed is TestPrioritiesReadWork's check in time, the measurement lane's
-// (benchtime.TimingEnv): the whole body under two seconds, and under five times the paged
-// listing of every open issue; and the summary the navigation rail reads under 300 ms, since it
-// is drawn on every page. Every timed run runs the plans a deployment's connections run
-// (speedWarmups), or the times are of nothing it runs.
-func TestPrioritiesReadSpeed(t *testing.T) {
-	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	readings := speedCorpusReadings(t).timings
-	if readings == nil {
-		t.Fatal("the run that built the corpus took no times, though the timing lane is open")
-	}
-	t.Log(readings.pagedIssues.String())
-	t.Log(readings.prioritiesFull.String())
-	t.Log(readings.prioritiesLite.String())
-	if len(readings.unsettledRuns) > 0 {
-		t.Fatalf("the timed runs ran a plan a connection runs for no more than its first %d runs of a statement:\n%s",
-			speedCustomPlans, strings.Join(readings.unsettledRuns, "\n"))
-	}
-	paged, full, summary := readings.pagedIssues.least(), readings.prioritiesFull.least(), readings.prioritiesLite.least()
-	ratio := float64(full) / float64(paged)
-	t.Logf("%s costs %.2fx the paged listing of every open issue, at most %.2fx", speedPriorityFullName, ratio, speedPrioritiesRatio)
-	if full > speedPrioritiesBound {
-		t.Fatalf("%s took %.1f ms over %d issues and %d priorities at the least of %d runs, want under %v",
-			speedPriorityFullName, msOf(full), speedCorpusIssues, speedCorpusPriorities, speedRuns, speedPrioritiesBound)
-	}
-	if ratio > speedPrioritiesRatio {
-		t.Fatalf("%s took %.1f ms against the paged listing's %.1f ms, the least of %d runs each (%.2fx), want at most %.2fx",
-			speedPriorityFullName, msOf(full), msOf(paged), speedRuns, ratio, speedPrioritiesRatio)
-	}
-	if summary > speedPrioritySummary {
-		t.Fatalf("the priorities summary took %.1f ms at the least of %d runs, want under %v", msOf(summary), speedRuns, speedPrioritySummary)
-	}
-}
-
 // measureSpeedCorpus builds the corpus, holds the reads to what they answer over it, and counts
 // the work of each: the two listing texts under their plans and the Go side of each, what each
 // page read sends, and the three requests the priorities read is held by. When the timing lane is
-// open it takes every timing: speedWarmups passes over the three timed operations that are not
-// counted, then speedRuns passes, interleaved so a box that slows in the middle of the run slows
-// each of them alike, every other pass in the reverse order, so no operation always runs on what
-// the one before it warmed. The pool's plan counts before and after the timed passes say which
-// plans the timed runs ran (assertSpeedPlansSettled). The Go side's growth (growSpeedPriorities)
-// is read last, since it writes more relations into the corpus every other reading is taken over.
+// open it then times those three requests (timeSpeedOperations). The Go side's growth
+// (growSpeedPriorities) is read last, since it writes more relations into the corpus every other
+// reading is taken over.
 func measureSpeedCorpus(t *testing.T) speedReadings {
 	t.Helper()
 	corpus := seedSpeedCorpus(t)
@@ -569,38 +487,7 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 	readings.prioritiesLite = countSpeedRequest(t, corpus, "the priorities summary", "/api/v1/priorities?summary=true")
 
 	if os.Getenv(benchtime.TimingEnv) != "" {
-		timings := speedTimings{
-			pagedIssues:    speedTiming{name: "the paged listing of every open issue"},
-			prioritiesFull: speedTiming{name: speedPriorityFullName},
-			prioritiesLite: speedTiming{name: "the priorities summary"},
-		}
-		operations := []struct {
-			into *speedTiming
-			run  func()
-		}{
-			{&timings.pagedIssues, func() { speedRequest(t, corpus, speedPagedListingTarget) }},
-			{&timings.prioritiesFull, func() { speedRequest(t, corpus, "/api/v1/priorities") }},
-			{&timings.prioritiesLite, func() { speedRequest(t, corpus, "/api/v1/priorities?summary=true") }},
-		}
-		for range speedWarmups {
-			for _, operation := range operations {
-				operation.run()
-			}
-		}
-		before := speedPlanRuns(t, corpus)
-		for pass := range speedRuns {
-			order := slices.Clone(operations)
-			if pass%2 == 1 {
-				slices.Reverse(order)
-			}
-			for _, operation := range order {
-				started := time.Now()
-				operation.run()
-				operation.into.runs = append(operation.into.runs, time.Since(started))
-			}
-		}
-		timings.unsettledRuns = assertSpeedPlansSettled(before, speedPlanRuns(t, corpus))
-		readings.timings = &timings
+		readings.timings = timeSpeedOperations(t, corpus)
 	}
 	// Last, since it writes more relations into the corpus every reading above was taken over.
 	readings.priorityGrowth = growSpeedPriorities(t, corpus)
@@ -1093,82 +980,6 @@ func speedLiterals(t *testing.T, arguments []any) string {
 		}
 	}
 	return "(" + strings.Join(literals, ", ") + ")"
-}
-
-// speedPrepared is one statement prepared on one connection: the connection's server process and
-// the statement's name, which pgx derives from its text.
-type speedPrepared struct {
-	backend int32
-	name    string
-}
-
-// speedPreparedRuns is how many times one prepared statement has run, each run one plan, custom
-// or generic, as pg_prepared_statements counts them, and the start of its text, which a failure
-// prints.
-type speedPreparedRuns struct {
-	runs      int64
-	statement string
-}
-
-// speedPlanRuns reads the runs of every statement prepared on every idle connection of the pool.
-// It reads them by the simple protocol, so the read prepares no statement of its own to be
-// counted.
-func speedPlanRuns(t *testing.T, corpus speedCorpusShape) map[speedPrepared]speedPreparedRuns {
-	t.Helper()
-	ctx := context.Background()
-	prepared := map[speedPrepared]speedPreparedRuns{}
-	for _, connection := range corpus.server.deps.Store.Pool.AcquireAllIdle(ctx) {
-		rows, err := connection.Query(ctx,
-			`select pg_backend_pid(), name, generic_plans + custom_plans, left(regexp_replace(statement, '\s+', ' ', 'g'), 100) from pg_prepared_statements`,
-			pgx.QueryExecModeSimpleProtocol)
-		if err != nil {
-			connection.Release()
-			t.Fatalf("read the plans prepared on a connection: %v", err)
-		}
-		for rows.Next() {
-			var key speedPrepared
-			var runs speedPreparedRuns
-			if err := rows.Scan(&key.backend, &key.name, &runs.runs, &runs.statement); err != nil {
-				rows.Close()
-				connection.Release()
-				t.Fatalf("read a prepared statement's plans: %v", err)
-			}
-			prepared[key] = runs
-		}
-		rows.Close()
-		err = rows.Err()
-		connection.Release()
-		if err != nil {
-			t.Fatalf("read the plans prepared on a connection: %v", err)
-		}
-	}
-	return prepared
-}
-
-// assertSpeedPlansSettled answers each statement the timed passes ran (its runs grew between
-// before and after) whose runs before them were fewer than speedCustomPlans: one of its timed
-// runs ran a plan made for its own arguments that a connection runs for those first runs alone.
-// A timed pass that ran no prepared statement at all is answered too, since the plans it ran
-// could not be read.
-func assertSpeedPlansSettled(before, after map[speedPrepared]speedPreparedRuns) []string {
-	unsettled := []string{}
-	ran := 0
-	for key, now := range after {
-		earlier := before[key].runs
-		if now.runs == earlier {
-			continue
-		}
-		ran++
-		if earlier < speedCustomPlans {
-			unsettled = append(unsettled, fmt.Sprintf("backend %d ran %q %d times before the timed passes and %d times in them",
-				key.backend, now.statement, earlier, now.runs-earlier))
-		}
-	}
-	if ran == 0 {
-		unsettled = append(unsettled, fmt.Sprintf("no statement prepared on the %d idle connections read ran in the timed passes, so the plans they ran are unknown", len(after)))
-	}
-	slices.Sort(unsettled)
-	return unsettled
 }
 
 // assertSpeedPage holds one of the two texts to what it answers: the page and the whole count

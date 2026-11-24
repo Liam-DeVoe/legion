@@ -4,10 +4,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -25,7 +27,7 @@ import (
 // (MaxAwarenessClientsPerRoomForTest), and the entries the rooms track stay under it. The second
 // is held only by the row's twin in benchtime's timing lane (withinLive).
 func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T) {
-	aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t, everyRun)
+	aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t, benchtime.EveryRun)
 }
 
 // TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcessOnTheClock is the row
@@ -35,12 +37,13 @@ func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t 
 // them, here or on another process", and its readers' changes are relayed once per 50 ms at
 // most), at the spec's "at once", the one second the plan pins (#2414).
 func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
-	timedRow(t, aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess)
+	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess)
 }
 
 // aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess is the scene of the two
-// rows above; lane says whether its readings of the clock are held to their figures (clockLane).
-func aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
+// rows above; lane says whether its readings of the clock are held to their figures
+// (benchtime.Lane).
+func aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T, lane benchtime.Lane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "MNY")
 	pair.a.createProject(t, project, "Many sockets")

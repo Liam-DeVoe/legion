@@ -315,7 +315,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	// Every event has its rows.
 	newest := lastEventID(t, filled.database)
 	keywordAwaitCursor(t, filled.database, newest, fill.Wake)
-	fill.Stop(t)
+	fill.Stop(t, "the keyword fill to return after its stop")
 	textversionstest.RequireRowsOf(t, filled.database, backlog)
 	written := keywordTableRows(t, filled.database, newest)
 	if _, err := filled.database.Pool.Exec(t.Context(), `delete from search_text_versions`); err != nil {

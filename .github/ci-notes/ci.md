@@ -961,7 +961,7 @@ The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
 the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
 packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
-search_text_test.go:107-123 walks (the RULES row for
+search_text_test.go:101-124 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
@@ -2102,9 +2102,9 @@ own.
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
 Dispatch store's tests
-(store_test.go:36) and delivery's take their databases from storetest.Open
-(storetest.go:44-46), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
-cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
+(store_test.go:40, through testdb) and delivery's (storetest.Open) take their databases on the
+server DISPATCH_TEST_DATABASE_URL names and skip without it, and
+cmd/listener/dispatch_resolution_test.go:205 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.
 

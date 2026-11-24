@@ -12,10 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// How the corpus the three reading tests of api/priority_speed_test.go read is built, and what
-// is in it. It is a file of its own because none of it is a reading: a reader asking what each
-// number is held to reads api/priority_speed_test.go, and a reader asking what was in the
-// database when it was taken reads this one.
+// How the corpus the three reading tests of api/priority_speed_test.go and its timing lane
+// (api/priority_speed_timing_test.go) read is built, and what is in it. It is a file of its own
+// because none of it is a reading: a reader asking what each number is held to reads those two
+// files, and a reader asking what was in the database when it was taken reads this one.
 //
 // The whole corpus is five COPY statements into the database storetest.Open cloned from this
 // package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,

@@ -88,7 +88,7 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 
 	died := time.Now()
 	testwait.Returns(t, "the dead holder's pool to close once its fill lets its connections go", first.db.Pool.Close)
-	first.Stop(t)
+	first.Stop(t, "the dead holder's keyword fill to return after its stop")
 	var next []int64
 	for range 3 {
 		next = append(next, commitComment(t, database, broker, textversionstest.Issue).id)
@@ -146,7 +146,7 @@ func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	first.Wake()
 	textversionstest.AwaitRows(t, database, []int64{written}, nil)
 
-	first.Stop(t)
+	first.Stop(t, "the holder's keyword fill to return after its stop")
 	stopped := time.Now()
 	if !first.Logged(t, releasedHoldMessage) {
 		t.Fatalf("the holder stopped without logging its release:\n%s", first.Log())
@@ -207,7 +207,7 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	second := startFillRetrying(t, storetest.SecondProcess(t, database), never, retry, true)
 	second.AwaitLine(t, standingByMessage)
 
-	first.Stop(t)
+	first.Stop(t, "the holder's keyword fill to return after its stop")
 	// The holder released its hold as it stopped, or, where its release did not reach the
 	// database, the hold lapses holdOptions.TTL after its last renewal: either way the stopped
 	// holder's hold ends, and nothing tells the standby.
