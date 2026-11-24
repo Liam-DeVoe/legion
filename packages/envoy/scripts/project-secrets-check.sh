@@ -36,14 +36,19 @@
 # have been refused. It fails for the reason the probe would be blind: a secret the rule cannot see
 # is exactly an untagged one.
 #
-# Live mode, --broker-url URL --secret NAME: no stack and no write, the session half alone,
-# against a running deployment. It needs, in its environment, the pod's exchange token
-# (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's enrolled key directory (AGENT_SECRETS_KEY_DIR), the
-# operator's helper socket with its machine login (AGENT_SECRETS_HELPER_SOCK), and an account token
-# the broker lists in BROKER_API_ACCOUNTS (AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the only caller the
-# broker lets read a token's introspection. It runs the pod's trade, which names the project; the
-# pod's request for the secret; and the operator's session listing that project, which reads F's
-# check as the stack's row does. It takes no Dispatch URL: nothing of that half reads one.
+# Live mode, --broker-url URL --secret NAME --project KEY: no stack and no write, against a running
+# deployment, for one secret of one private project. A deployment's check after each apply of the
+# broker runs it once for each private project it declares and each of that project's secrets.
+# It needs, in its environment, the exchange token of a pod of the
+# project (AGENT_SECRETS_MACHINE_TOKEN_FILE), that pod's enrolled key directory
+# (AGENT_SECRETS_KEY_DIR), the enrolled key directory of a pod whose credential names no private
+# project (AGENT_SECRETS_PUBLIC_KEY_DIR), and an account token the broker lists in
+# BROKER_API_ACCOUNTS (AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the only caller the broker lets read a
+# token's introspection. It runs three rows: the pod's trade, which must be project scope "named"
+# with exactly [KEY]; the pod's request for the secret, which must be granted; and the public pod's
+# request for it, which must be denied project-not-named. A secret that carries no tag of KEY is
+# granted to the public pod, so that row fails for the reason the probe would be blind, naming the
+# public pod. It needs no person's sign-in and takes no Dispatch URL: nothing it runs reads one.
 #
 # It exits 0 only when every row ran and passed. The last line is "project-secrets-check: <n> rows
 # ran, <m> passed"; a run whose rows matched nothing (a stack whose banner lacks PRIV's exports, a
@@ -57,7 +62,7 @@
 #
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh
 #   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged
-#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV
+#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV --project PRIV
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,7 +96,7 @@ usage() {
   cat <<'EOF'
 usage: project-secrets-check.sh [--database-url <postgres url>] [--binaries <dir>]
                                 [--control untagged]
-       project-secrets-check.sh --broker-url <url> --secret <NAME>
+       project-secrets-check.sh --broker-url <url> --secret <NAME> --project <KEY>
 
 Drive dispatch://INFRA-3862's R11 on the binaries production runs: a private project's secret goes
 only to a credential that names the project. With no --broker-url it starts one dev-stack.sh run
@@ -106,12 +111,13 @@ of its own and drives every caller against it.
   --control untagged
                    write PRIV_KEY with no dispatch-project tag: every caller then gets it and this
                    run fails, naming the first caller that should have been refused
-  --broker-url, --secret
-                   live mode: drive the session half against a running deployment, writing
-                   nothing. Its environment names the pod's exchange token
-                   (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's key dir (AGENT_SECRETS_KEY_DIR),
-                   the operator's helper (AGENT_SECRETS_HELPER_SOCK) and an account token the
-                   broker lets introspect (AGENT_SECRETS_ACCOUNT_TOKEN_FILE)
+  --broker-url, --secret, --project
+                   live mode: drive one secret of the private project KEY against a running
+                   deployment, writing nothing. Its environment names the exchange token of a pod
+                   of KEY (AGENT_SECRETS_MACHINE_TOKEN_FILE), that pod's key dir
+                   (AGENT_SECRETS_KEY_DIR), the key dir of a pod whose credential names no private
+                   project (AGENT_SECRETS_PUBLIC_KEY_DIR) and an account token the broker lets
+                   introspect (AGENT_SECRETS_ACCOUNT_TOKEN_FILE)
 EOF
 }
 
@@ -120,6 +126,7 @@ BINARIES_OPTION=""
 CONTROL=""
 LIVE_BROKER_URL=""
 LIVE_SECRET=""
+LIVE_PROJECT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url) DATABASE_URL_OPTION="${2:-}"; shift 2 ;;
@@ -136,6 +143,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --broker-url) LIVE_BROKER_URL="${2:-}"; shift 2 ;;
     --secret) LIVE_SECRET="${2:-}"; shift 2 ;;
+    --project) LIVE_PROJECT="${2:-}"; shift 2 ;;
     --help | -h) usage; exit 0 ;;
     *)
       echo "project-secrets-check: unexpected argument $1" >&2
@@ -146,10 +154,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 LIVE=false
-if [ -n "$LIVE_BROKER_URL$LIVE_SECRET" ]; then
+if [ -n "$LIVE_BROKER_URL$LIVE_SECRET$LIVE_PROJECT" ]; then
   LIVE=true
-  if [ -z "$LIVE_BROKER_URL" ] || [ -z "$LIVE_SECRET" ]; then
-    echo "project-secrets-check: live mode needs --broker-url and --secret together" >&2
+  if [ -z "$LIVE_BROKER_URL" ] || [ -z "$LIVE_SECRET" ] || [ -z "$LIVE_PROJECT" ]; then
+    echo "project-secrets-check: live mode needs --broker-url, --secret and --project together" >&2
     exit 2
   fi
   if [ -n "$CONTROL" ]; then
@@ -161,11 +169,11 @@ if [ -n "$LIVE_BROKER_URL$LIVE_SECRET" ]; then
     exit 2
   fi
   missing=()
-  for name in AGENT_SECRETS_MACHINE_TOKEN_FILE AGENT_SECRETS_KEY_DIR AGENT_SECRETS_HELPER_SOCK; do
+  for name in AGENT_SECRETS_MACHINE_TOKEN_FILE AGENT_SECRETS_KEY_DIR AGENT_SECRETS_PUBLIC_KEY_DIR; do
     [ -n "${!name:-}" ] || missing+=("$name")
   done
   if [ "${#missing[@]}" -gt 0 ]; then
-    echo "project-secrets-check: live mode reads the pod and the operator from its environment, and it names no ${missing[*]}" >&2
+    echo "project-secrets-check: live mode reads the project's pod and a public pod from its environment, and it names no ${missing[*]}" >&2
     exit 2
   fi
 fi
@@ -350,13 +358,14 @@ expect_listing_trade() { # <caller> <project> <person>
 if [ "$LIVE" = true ]; then
   BROKER_URL="$LIVE_BROKER_URL"
   PRIV_SECRET="$LIVE_SECRET"
-  note "live mode against the broker $BROKER_URL, secret $PRIV_SECRET"
-  mkdir -p "$WORK_DIR/no-signins" "$WORK_DIR/no-keys"
-  live_env=(PATH="$PATH" HOME="$HOME" AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_SIGNIN_DIR="$WORK_DIR/no-signins")
+  note "live mode against the broker $BROKER_URL, secret $PRIV_SECRET of the project $LIVE_PROJECT"
+  mkdir -p "$WORK_DIR/no-signins"
+  # No sign-in and no helper: each caller is a pod, and its calls read its own key dir alone.
+  live_env=(PATH="$PATH" HOME="$HOME" AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_SIGNIN_DIR="$WORK_DIR/no-signins"
+    AGENT_SECRETS_HELPER_SOCK=)
   [ -z "${XDG_RUNTIME_DIR:-}" ] || live_env+=(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR")
-  pod_env=("${live_env[@]}" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_KEY_DIR" AGENT_SECRETS_HELPER_SOCK=)
+  pod_env=("${live_env[@]}" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_KEY_DIR")
   POD="the pod"
-  PROJECT=""
   if [ -z "${AGENT_SECRETS_ACCOUNT_TOKEN_FILE:-}" ]; then
     row_fail "$POD: its trade: UNKNOWN: cannot read the introspection: AGENT_SECRETS_ACCOUNT_TOKEN_FILE names no account token the broker lists in BROKER_API_ACCOUNTS"
   else
@@ -365,28 +374,17 @@ if [ "$LIVE" = true ]; then
       AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")
     [ -z "${AGENT_SECRETS_SESSION:-}" ] || trade_env+=(AGENT_SECRETS_SESSION="$AGENT_SECRETS_SESSION")
     trade live-pod-trade "${trade_env[@]}"
-    if [ "$RC" = 0 ] && [ "$(trade_field '.project_scope')" = named ] && [ "$(trade_field '.projects | length')" = 1 ]; then
-      PROJECT="$(trade_field '.projects[0]')"
-      row_pass "$POD: its trade: project scope named, [\"$PROJECT\"]"
-    else
-      row_fail "$POD: its trade: want project scope named with one project; got $(describe_trade)"
-    fi
+    # Exactly the project the run was given: a pod whose entry names another project, or more
+    # than one, fails here even when the broker then grants it the secret.
+    expect_trade "$POD" named "$(jq -cn --arg project "$LIVE_PROJECT" '[$project]')"
   fi
   capture live-pod-request env -i "${pod_env[@]}" agent-secrets request "$PRIV_SECRET" --json
   expect_granted "$POD" "$PRIV_SECRET"
-  OPERATOR="the operator's machine session listing ${PROJECT:-the project of the pod}"
-  if [ -z "$PROJECT" ]; then
-    row_fail "$OPERATOR: $PRIV_SECRET: UNKNOWN: no project to list, since the pod's introspection was not read"
-  else
-    capture live-operator-request env -i "${live_env[@]}" AGENT_SECRETS_HELPER_SOCK="$AGENT_SECRETS_HELPER_SOCK" \
-      AGENT_SECRETS_KEY_DIR="$WORK_DIR/no-keys" AGENT_SECRETS_PROJECTS="$PROJECT" \
-      agent-secrets register --wait "$REGISTER_WAIT" --exec -- agent-secrets request "$PRIV_SECRET" --json
-    if grep -qF -- "$F_ENROLL_REFUSAL" "$ERR"; then
-      expect_f_refusal "$OPERATOR" "$PRIV_SECRET"
-    else
-      expect_granted "$OPERATOR" "$PRIV_SECRET" "(before F's check)"
-    fi
-  fi
+  # The row the probe would be blind without: a secret that carries no tag of the project is
+  # granted to this pod, and the row fails naming it.
+  capture live-public-request env -i "${live_env[@]}" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_PUBLIC_KEY_DIR" \
+    agent-secrets request "$PRIV_SECRET" --json
+  expect_not_named "a public pod, whose credential names no private project" "$PRIV_SECRET"
   finish "$LIVE_ROWS"
 fi
 

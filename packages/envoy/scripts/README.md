@@ -412,21 +412,31 @@ nothing):
 LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
 ```
 
-Live mode runs the session half against a deployment and writes nothing:
+Live mode checks one secret of one private project against a deployment and writes
+nothing. A deployment's check runs it after each apply of the broker, once for each
+private project it declares and each of that project's secrets:
 
 ```bash
-bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME> --project <KEY>
 ```
 
-Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
-the pod's enrolled key directory (`AGENT_SECRETS_KEY_DIR`), the operator's helper with
-its machine login (`AGENT_SECRETS_HELPER_SOCK`), and an account token the broker lists
+Its environment names the exchange token of a pod of the project
+(`AGENT_SECRETS_MACHINE_TOKEN_FILE`), that pod's enrolled key directory
+(`AGENT_SECRETS_KEY_DIR`), the enrolled key directory of a pod whose credential names no
+private project (`AGENT_SECRETS_PUBLIC_KEY_DIR`), and an account token the broker lists
 in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller the
 broker lets read a token's introspection. A missing one of the first three exits 2; a
-missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
-names the project), the pod's request for the secret, and the operator's session
-listing that project, which reads F's check as the stack's row does. It takes no
-Dispatch URL, since nothing of the session half reads one.
+missing account token fails the trade line as `UNKNOWN`. It runs three rows:
+
+| Caller | What passes |
+| --- | --- |
+| The project's pod, its trade | project scope `named` with exactly `[KEY]` |
+| The project's pod, its request | the secret granted |
+| The public pod, its request | the secret denied `project-not-named` |
+
+A secret that carries no tag of the project is granted to the public pod, so the third
+row fails naming that pod, for the reason the probe would be blind. Live mode needs no
+person's sign-in and takes no Dispatch URL, since nothing it runs reads one.
 
 Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
 switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
@@ -443,8 +453,9 @@ before any row with the route the write stands in for.
 `scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
 `dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and
 `sleep`: each row passes on the right answer and fails naming its caller and secret on
-a wrong one, the control fails, a run whose rows matched nothing fails, and live mode
-refuses half its options. It needs bash and jq and takes a few seconds. The driver
+a wrong one, the control fails, a run whose rows matched nothing fails, live mode
+refuses a part of its options, and live mode's public pod row fails on a secret with no
+project tag. It needs bash and jq and takes a few seconds. The driver
 needs what `dev-stack.sh` needs (Docker included, for the airlock's stands), `bun` with
 this repository's packages installed, and a few minutes.
 
