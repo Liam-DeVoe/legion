@@ -162,7 +162,10 @@ export interface ListMarks {
  *   its words and named as the option's `aria-keyshortcuts`, and a foot line draws the list's keys.
  * - On a coarse pointer (a phone) opening focuses no text box, so no on-screen keyboard covers the
  *   choices: the list takes the focus, and a tap on the box gives the box the focus. The panel is
- *   tall enough for a menu's choices, each 44 px high, under the box and over the foot line.
+ *   tall enough for a menu's choices, each 44 px high, under the box and over the foot line: there
+ *   it takes no height cap of its own, only the room the window leaves it beside its trigger, and
+ *   the foot line follows the choices rather than standing over them, so each choice the panel
+ *   shows takes a tap where it is drawn - the status's eight among them - and the rest scroll in.
  * - While the host's write is out (`ariaDisabled`), a digit, Enter or a press of a choice writes
  *   nothing and the list stays open, and the closed trigger opens on nothing, a press included.
  */
@@ -435,8 +438,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
-  // The panel's sticky text box at its top, and its sticky foot at its bottom while one is drawn
-  // - a multi-select's Clear, a menu's line of keys: the rows scroll under both.
+  // The panel's sticky text box at its top, and its foot while one is drawn - a multi-select's
+  // Clear, a menu's line of keys - sticky at its bottom, but for a menu's on a coarse pointer, which
+  // follows the rows (`ListMenu`): the rows scroll under the sticky ones.
   const headRef = useRef<HTMLDivElement>(null);
   const footRef = useRef<HTMLDivElement>(null);
   // What an open reads of this render: the value it starts on, and the options a move key that
@@ -581,13 +585,16 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // match highlighted as typing into the box highlights it, or the row a move key steps to
   // (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
   // it in itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list
-  // rather than to the box. Closing gives the focus back - to the trigger, or where a menu's goes
-  // - when the close left it nowhere - the list that held it is gone - and leaves a focus that is
-  // somewhere. Whether it is nowhere is the page's one check for a lost focus (`focusLost`, whose
-  // doc says where each engine leaves the focus of an element taken away), so a Tab out of the
-  // text box the close took away puts the reader back rather than leave the focus to fall onto
-  // the page. A press outside moves the focus after this runs, so the focus ends where that press
-  // put it.
+  // rather than to the box, with no scroll: the layout effect below alone decides where the panel
+  // stands scrolled. The engine's own scroll of the list box it focuses centred that box in the
+  // panel, which put the status's first choice under the text box and its last under the foot line
+  // on a phone (the tester's round 16). Closing gives the focus back - to the trigger, or where a
+  // menu's goes - when the close left it nowhere - the list that held it is gone - and leaves a
+  // focus that is somewhere. Whether it is nowhere is the page's one check for a lost focus
+  // (`focusLost`, whose doc says where each engine leaves the focus of an element taken away), so
+  // a Tab out of the text box the close took away puts the reader back rather than leave the focus
+  // to fall onto the page. A press outside moves the focus after this runs, so the focus ends where
+  // that press put it.
   useEffect(() => {
     if (open) {
       const by = openedBy.current;
@@ -600,7 +607,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             ? undefined
             : stepTo(by.key, opensWith.current, opensOn.current)
       );
-      if (opensBare.current) listboxRef.current?.focus();
+      if (opensBare.current) listboxRef.current?.focus({ preventScroll: true });
     } else if (wasOpen.current) {
       if (focusLost()) handBackNow.current();
       returnTo.current = null;
@@ -613,18 +620,21 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // search - since the panel holds about five rows and the highlight is drawn on the row alone:
   // End, Page Down or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter
   // then picks unseen. The panel scrolls the least that shows the row whole between the sticky
-  // text box and the sticky foot, so a row already whole scrolls nothing. Only the panel's own box
-  // scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which scrolls the window
-  // too. Laid out before the browser paints, so the row is never drawn out of sight first.
+  // text box and the foot - the sticky foot, or the panel's own bottom where the foot follows the
+  // rows (a menu on a coarse pointer) - so a row already whole scrolls nothing. Only the panel's
+  // own box scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which scrolls the
+  // window too. Laid out before the browser paints, so the row is never drawn out of sight first.
   useLayoutEffect(() => {
     const row = activeId === undefined ? null : document.getElementById(activeId);
     const head = headRef.current;
     const box = head?.parentElement ?? null;
     if (row === null || head === null || box === null) return;
     const shownTop = head.getBoundingClientRect().bottom;
-    const shownBottom =
-      footRef.current?.getBoundingClientRect().top ??
-      box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
+    const boxBottom = box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
+    const shownBottom = Math.min(
+      footRef.current?.getBoundingClientRect().top ?? boxBottom,
+      boxBottom
+    );
     const { bottom, top } = row.getBoundingClientRect();
     if (top < shownTop) box.scrollTop -= shownTop - top;
     else if (bottom > shownBottom) box.scrollTop += bottom - shownBottom;
@@ -900,9 +910,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         <ControlKeyHint keys={shortcutKeys} />
       </button>
       {open ? (
+        // A menu on a coarse pointer takes no height cap of its own: `AnchoredPanel` cuts it to the
+        // room the window leaves beside its trigger, so a list as long as the status's stands whole
+        // under its text box wherever that room holds it, which the 384 px cap did not (`ListMenu`).
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`${menu === undefined ? "max-h-72" : "max-h-96"} w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          className={`${menu === undefined ? "max-h-72" : bare ? "max-h-none" : "max-h-96"} w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           focusOnOpen={focusOnOpen && !bare}
           id={panelId}
           onDismiss={(how) => {
@@ -1047,10 +1060,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           )}
           {menu === undefined ? null : (
             // The list's keys, for the eye: each choice's digit is named to assistive technology
-            // as its own `aria-keyshortcuts`.
+            // as its own `aria-keyshortcuts`. On a coarse pointer the line follows the choices
+            // rather than standing over the last of them, so a panel the window's room cuts still
+            // draws each choice it shows where a tap reaches it, and the line scrolls in after.
             <div
               aria-hidden="true"
-              className={`sticky bottom-0 border-t px-3 py-1.5 text-xs ${tooltips ? `${card} ${textMutedOnSurface}` : `${ON_PAGE.panel} ${ON_PAGE.detail}`}`}
+              className={`${bare ? "" : "sticky bottom-0 "}border-t px-3 py-1.5 text-xs ${tooltips ? `${card} ${textMutedOnSurface}` : `${ON_PAGE.panel} ${ON_PAGE.detail}`}`}
               ref={footRef}
             >
               ↑ ↓ Home End to move · Enter{menuDigits === "" ? "" : ` or ${menuDigits}`} to choose ·

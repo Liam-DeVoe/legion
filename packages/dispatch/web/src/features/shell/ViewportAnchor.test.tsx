@@ -349,6 +349,38 @@ test("the focus in a menu a row's control opened keeps that row the current one,
   }
 });
 
+// The tester's round 16 (R15): on a phone, right after a tap on P1 held the picked card in its
+// band under the focus, a tap on another card's Snooze opened nothing. The tap's `mousedown` moves
+// the focus off the held card, whose row lets the card go as the focus leaves it (the Inbox's
+// `onRelease`), and React commits that inside the focus's move, while the focus is on no element
+// and the finger has left the screen: the anchor fell back to the row at the list's centre - the
+// very card the commit moved up its group - and the window followed it, so the tap's `mouseup`
+// landed on another element. The focus on its way to an element is already that element's: the
+// row it goes to is the reader's hand, and it stays where it stood.
+test("a commit while the focus moves from one row to another keeps the row the focus goes to in place, not the row at the centre", () => {
+  const view = render(<List rows={ids(12)} />);
+  const leaving = document.querySelector<HTMLElement>('[data-row="r8"] button');
+  const going = document.querySelector<HTMLElement>('[data-row="r10"] button');
+  if (leaving === null || going === null) throw new Error("r8 or r10 button missing");
+  // r8, the row at the centre, goes to the top of its group as the focus leaves it.
+  const moveUp = () =>
+    view.rerender(<List rows={["r8", ...ids(12).filter((id) => id !== "r8")]} />);
+  try {
+    setScrollY(200);
+    leaving.focus();
+    expect(chosen()).toEqual({ id: "r8", via: "focus" });
+    const goingTop = viewportTop("r10");
+    leaving.addEventListener("focusout", moveUp, { once: true });
+    going.focus();
+    expect(viewportTop("r10"), "the row the focus went to stands where it stood").toBe(goingTop);
+    expect(window.scrollY).toBe(200);
+    expect(going).toHaveFocus();
+    expect(chosen()).toEqual({ id: "r10", via: "focus" });
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a disabled anchor measures nothing and leaves the scroll alone", () => {
   const view = render(<List enabled={() => false} rows={ids(12)} />);
   try {

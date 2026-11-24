@@ -1874,7 +1874,19 @@ const LABELS: Readonly<Record<MenuKind, string>> = {
 
 function optionsOf(kind: MenuKind, snoozed: boolean): string[] {
   if (kind === "priority") return ["Unset", "P0", "P1", "P2", "P3"];
-  if (kind === "status") return ["Todo", "In progress", "Done"];
+  // An open issue's: every status but Done, as the issue page passes them.
+  if (kind === "status") {
+    return [
+      "Triage",
+      "Icebox",
+      "Backlog",
+      "Todo",
+      "In progress",
+      "Testing",
+      "Needs review",
+      "Retro",
+    ];
+  }
   return ["later", "tomorrow", "next-week", "clear", ...(snoozed ? ["unsnooze"] : [])];
 }
 
@@ -2094,11 +2106,15 @@ test("a tap on the box focuses it", async () => {
 // happy-dom lays nothing out, so the row reads what places the panel and sizes its rows: the
 // panel's left edge, which `AnchoredPanel` keeps 8 px inside a 390 px window for a trigger at its
 // right edge, and its 256 px width (`w-64`, no wider than the window less 1rem); each row's
-// 44 px floor (`min-h-11`) with no breakpoint's class over it; and a panel tall enough to hold
-// every choice with the text box above them and the foot line below them, so no choice is
-// scrolled out of it. The text box's row is its 44 px box inside `p-2` over a 1 px rule, 61 px;
-// the foot line is a 16 px line of `text-xs` inside `py-1.5` under a 1 px rule, 29 px. The
-// browser check k-phone measures the same rectangles in a phone's window.
+// 44 px floor (`min-h-11`) with no breakpoint's class over it; and what draws each choice the
+// panel shows where a tap reaches it (`ListMenu`). The panel takes no height cap of its own
+// (`max-h-none`), only the room `AnchoredPanel` leaves it beside its trigger; the foot line
+// follows the choices rather than sticking over the last of them; and the list takes the focus
+// with no scroll, so where the panel stands scrolled is the highlight's alone. Under the 384 px
+// cap the status's eight choices did not fit with the text box's 61 px row and the foot line's
+// two lines, and the engine's scroll of the focused list put Triage under the box and Retro under
+// the foot line (the tester's round 16). The browser check k-phone measures the same rectangles
+// in a phone's window, and taps the centre of each of the status's choices.
 test("on a phone every choice is inside the viewport and 44 px high", async () => {
   const user = userEvent.setup();
   const restore = onCoarsePointer();
@@ -2107,13 +2123,17 @@ test("on a phone every choice is inside the viewport and 44 px high", async () =
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 664 });
   const view = render(<MenuHost snoozed />);
+  const focus = spyOn(HTMLElement.prototype, "focus");
   try {
-    for (const kind of ["snooze", "priority"] as const) {
-      view.rerender(
-        <MenuHost kind={kind} snoozed value={kind === "priority" ? "P2" : undefined} />
-      );
+    for (const [kind, value, count] of [
+      ["snooze", undefined, 5],
+      ["priority", "P2", 5],
+      ["status", "Todo", 8],
+    ] as const) {
+      view.rerender(<MenuHost kind={kind} snoozed value={value} />);
       const trigger = menuTrigger(kind);
       trigger.getBoundingClientRect = () => new DOMRect(330, 300, 52, 44);
+      const from = focus.mock.calls.length;
       await tap(user, trigger);
       const panel = panelOf(trigger);
       const left = Number.parseFloat(panel.style.left);
@@ -2123,7 +2143,7 @@ test("on a phone every choice is inside the viewport and 44 px high", async () =
         expect.arrayContaining(["w-64", "max-w-[calc(100vw-1rem)]"])
       );
       const options = screen.getAllByRole("option");
-      expect(options).toHaveLength(5);
+      expect(options).toHaveLength(count);
       for (const option of options) {
         const classes = option.className.split(" ");
         expect(classes, `${kind}: ${option.textContent}`).toEqual(
@@ -2131,14 +2151,27 @@ test("on a phone every choice is inside the viewport and 44 px high", async () =
         );
         expect(classes.filter((token) => /^[\w-]+:(?:min-)?h-/.test(token))).toEqual([]);
       }
-      const cap = /(?:^| )max-h-(\d+)(?: |$)/.exec(panel.className)?.[1];
-      expect(Number(cap) * 4, `${kind}: the panel's height cap`).toBeGreaterThanOrEqual(
-        options.length * 44 + 61 + 29
+      expect(
+        panel.className.split(" ").filter((token) => token.startsWith("max-h-")),
+        `${kind}: the panel's height cap`
+      ).toEqual(["max-h-none"]);
+      const foot = within(panel).getByText(/to choose · Esc to close$/);
+      expect(foot.className.split(" "), `${kind}: the foot line follows the choices`).not.toContain(
+        "sticky"
       );
+      const list = within(panel).getByRole("listbox");
+      expect(list).toHaveFocus();
+      const listFocus = focus.mock.calls.flatMap(([options], index) =>
+        index >= from && focus.mock.contexts[index] === list ? [options] : []
+      );
+      expect(listFocus, `${kind}: the list takes the focus with no scroll`).toEqual([
+        { preventScroll: true },
+      ]);
       await user.keyboard("{Escape}");
     }
     expect(handed()).toBe("");
   } finally {
+    focus.mockRestore();
     view.unmount();
     restore();
     for (const [name, descriptor] of [
@@ -2643,7 +2676,7 @@ test("the list shows its keys", async () => {
       [{ kind: "snooze" }, "1–4", { "Later today": "1", Tomorrow: "2", "Until I clear it": "4" }],
       [{ kind: "snooze", snoozed: true }, "0–4", { "Un-snooze": "0", "Next week": "3" }],
       [{ kind: "priority", value: "P2" }, "0–3", { P0: "0", P3: "3", Unset: undefined }],
-      [{ kind: "status", value: "Todo" }, undefined, { Done: undefined, Todo: undefined }],
+      [{ kind: "status", value: "Todo" }, undefined, { Retro: undefined, Todo: undefined }],
     ] as const) {
       view.rerender(<MenuHost {...props} />);
       await user.click(menuTrigger(props.kind));

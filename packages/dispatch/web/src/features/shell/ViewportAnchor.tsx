@@ -158,7 +158,8 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * doing and sits outside the list only because it is `fixed`. So does the focus in a menu or a
  * list a control of a row opened - the priority's menu, the hand-on's list - which the page
  * portals out of the list and which hands the focus back into the row as it closes: while it is
- * open the focus is the hand on that row (`openerOf`).
+ * open the focus is the hand on that row (`openerOf`). And the focus on its way from one element
+ * to another is already the hand on the row it goes to (`focusGoingTo`).
  *
  * One shift is not compensated: a row that a press of the reader's takes away from above the
  * current row (`leaving`: a Dismiss, or a snooze that moves its rows into another group), with
@@ -248,6 +249,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   /** The frame request that gives the box its scroll anchoring back once a rendering update has
    *  run with it off (`releaseAfterRendering`). Null while none is pending. */
   private releaseFrame: number | null = null;
+  /** Where the focus is going while it moves: the `relatedTarget` of the `focusout` that leaves an
+   *  element, until the `focusin` on the element it lands on. A commit made inside that move - one
+   *  a row's own `blur` asks for, as the Inbox's does as the focus leaves the row it holds - finds
+   *  the focus on no element, the body, and the hand is where the focus is going. On a phone a
+   *  tap's `mousedown` moves the focus, and its `mouseup` and `click` follow on whatever then
+   *  stands under the finger, which has left the screen: right after a tap on P1 held the picked
+   *  card in its band, a tap on another card's Snooze let that card go inside the move, the commit
+   *  kept the row at the list's centre - the very card it moved up its group - and the window
+   *  followed it 1,700 px up, so the tap opened nothing (the tester's round 16). */
+  private focusGoingTo: Element | null = null;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -435,14 +446,28 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     this.restampHeld(held.id, top, top);
   };
 
+  private readonly focusLeaving = (event: FocusEvent): void => {
+    this.focusGoingTo = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+  };
+
+  private readonly focusArrived = (): void => {
+    this.focusGoingTo = null;
+  };
+
   componentDidMount(): void {
     // Capture, because `scroll` does not bubble: one listener catches the window's and the
-    // named box's alike, and the handler reads a rect only for the box this anchor owns.
+    // named box's alike, and the handler reads a rect only for the box this anchor owns. The
+    // focus's move is read at the document's capture phase too, before a row's own `blur`
+    // handler asks for the commit that reads it (`focusGoingTo`).
     window.addEventListener("scroll", this.viewScrolled, true);
+    document.addEventListener("focusout", this.focusLeaving, true);
+    document.addEventListener("focusin", this.focusArrived, true);
   }
 
   componentWillUnmount(): void {
     window.removeEventListener("scroll", this.viewScrolled, true);
+    document.removeEventListener("focusout", this.focusLeaving, true);
+    document.removeEventListener("focusin", this.focusArrived, true);
     this.contentSize?.disconnect();
     this.contentSize = null;
     this.releaseNativeAnchoring();
@@ -505,13 +530,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   };
 
   /** The row the reader's hand is on: focus within a row, or within a menu or a list a control
-   *  of a row opened (`openerOf`), else the pointer resting on one. No layout reads, so a parent
-   *  may call it on every render. */
+   *  of a row opened (`openerOf`), else the pointer resting on one. While the focus moves, and is
+   *  on no element but the body, it is on the element it is going to (`focusGoingTo`), while that
+   *  element is still on the page. No layout reads, so a parent may call it on every render. */
   interacted(): (AnchorRow & { row: HTMLElement }) | null {
     const root = this.root;
     if (root === null) return null;
     const selector = `[${this.props.item}]`;
-    const active = document.activeElement;
+    const going = this.focusGoingTo;
+    const inTransit =
+      going?.isConnected === true &&
+      (document.activeElement === null || document.activeElement === document.body);
+    const active = inTransit ? going : document.activeElement;
     const focused =
       rowWithin(root, selector, active) ??
       (active === null ? null : rowWithin(root, selector, openerOf(active)));
