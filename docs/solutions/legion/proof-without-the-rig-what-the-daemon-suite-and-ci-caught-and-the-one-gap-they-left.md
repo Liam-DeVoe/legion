@@ -32,7 +32,7 @@ LEGION-93's spec had a fifth acceptance line: a fake shim on the smoke rig drive
 retire → relaunch → `worker-died`, and the rig's Envoy listener records the notice on the architect
 topic. Sami's 2026-09-13 shutdown of the smoke rig ("Please shutdown the goddamn legion smoke.
 It's pointless and it has led to destructive actions twice now", relayed in
-https://github.com/cybermonklabs/legion/pull/1075) landed mid-tree and withdrew it; the plan's
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) landed mid-tree and withdrew it; the plan's
 Task 4 (a `swallow-prompts` stand-in for the rig's launch prefix) and Task 6 (the rig run) were
 dropped. The proof surface
 became the daemon's own suite plus CI on the pull request — and the E2E line said exactly that,

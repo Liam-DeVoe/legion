@@ -36,8 +36,8 @@ symptoms:
 ## Which order applies
 
 On 2026-09-13 Sami had the Legion smoke rig shut down ("Please shutdown the goddamn legion smoke.
-It's pointless and it has led to destructive actions twice now.", quoted in
-https://github.com/cybermonklabs/legion/pull/1075), and the operator then withdrew every rig; the
+It's pointless and it has led to destructive actions twice now.", relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and the operator then withdrew every rig; the
 2026-09-14 19:41Z correction (LEGION-25 spec v21,
 recorded in
 [`../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md`](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md))

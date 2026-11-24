@@ -25,7 +25,7 @@ symptoms:
 
 ## Sami's 2026-09-13 smoke shutdown, and what the root architect ruled it permits
 
-Sami (2026-09-13, 19:00Z, relayed in https://github.com/cybermonklabs/legion/pull/1075): "Please
+Sami (2026-09-13, 19:00Z, relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554): "Please
 shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice
 now." The LEGION-19 root architect read it as no smoke scripts, no stand-in or scratch daemon, no
 kind cluster, no message-bus container, no scratch tmux server, and ruled the same day that one

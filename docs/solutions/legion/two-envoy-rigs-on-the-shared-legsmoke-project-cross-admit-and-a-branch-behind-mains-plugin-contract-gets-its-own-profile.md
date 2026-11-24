@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (quoted in https://github.com/cybermonklabs/legion/pull/1075) The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Two envoy-mode rigs on the shared LEGSMOKE project cross-admit each other's issues; a branch behind main's plugin contract runs its rig on a dedicated OMP profile built from the branch"
@@ -67,9 +67,7 @@ The daemon refuses to start unless the installed `@sjawhar/pi-legion-envoy` mani
 (`verifyLegionPluginContract`; see
 `docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md`). When main bumps the contract
 under a long-lived branch, the `legion` profile's plugin is ahead of the branch, and a rebase to catch
-up is not done without a merge conflict: Sami, 2026-09-11, "Please don't do unnecessary rebases (i.e.
-unless there are merge conflicts)." (relayed verbatim in
-https://github.com/cybermonklabs/legion/blob/d07086e1ee952fb7b93fd86396b73f05e068a64b/skills/legion-worker/SKILL.md#L232).
+up is not done without a merge conflict.
 
 The attempted remediation built a dedicated OMP profile with the plugin from the branch. That exact
 profile-building procedure is suspended because it existed only to launch the retired rig. The

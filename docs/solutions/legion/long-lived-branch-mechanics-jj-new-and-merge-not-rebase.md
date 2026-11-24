@@ -62,9 +62,7 @@ habit for any other untracked content.
 
 ## 2. `main` moved twice; a merge commit each time, and the conflict was the same bullet list
 
-Sami's request "Please don't do unnecessary rebases (i.e. unless there are merge conflicts)"
-(2026-09-11, relayed verbatim in
-https://github.com/cybermonklabs/legion/blob/d07086e1ee952fb7b93fd86396b73f05e068a64b/skills/legion-worker/SKILL.md#L232)
+The rule against unnecessary rebases (there is no rebase without a merge conflict)
 does not apply to a genuine conflict, but a merge commit (`jj new <branch head> main@origin`,
 resolve, describe) is still the better resolution:
 the reviewed commits keep their SHAs, the reviewer's approval and the tester's evidence stay

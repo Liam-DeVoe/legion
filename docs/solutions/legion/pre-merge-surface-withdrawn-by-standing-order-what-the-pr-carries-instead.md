@@ -50,7 +50,7 @@ sjawhar/legion#1083 carry five things, and a reviewer verified each against GitH
 
 1. **The surface, named, and why it is unreachable pre-merge** — the installed plugin's delivery
    pump under a live listener, with no pre-merge smoke run (LEGION-109 acceptance 5) after Sami had
-   the smoke rig shut down on 2026-09-13 (https://github.com/cybermonklabs/legion/pull/1075). Not
+   the smoke rig shut down on 2026-09-13 (https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554). Not
    "n/a", not a unit suite described as the surface.
 2. **The unit proof as red/green, not as a count** — the exact `bun test … -t '…'` selection, the
    recorded call sequences it observed, and that the same selection was **5 fail / 0 pass on the

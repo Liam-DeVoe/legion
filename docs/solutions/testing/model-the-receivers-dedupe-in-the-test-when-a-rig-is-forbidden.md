@@ -39,7 +39,7 @@ applies_when:
 
 LEGION-107's acceptance line 6 originally named a smoke-rig run. Sami had the smoke rig shut down
 ("Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions
-twice now", 2026-09-13, quoted in https://github.com/cybermonklabs/legion/pull/1075), and the spec
+twice now", 2026-09-13, relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and the spec
 was rewritten so line 6 is an integration test:
 with the fake runtime, fake worker client, and injected clock, a stream of `delivery_failed`
 exceptions for one message against an alive architect produces at most three re-publishes, each
@@ -170,7 +170,7 @@ cannot show that the real listener stamps the body's `dedupe_key` onto the envel
 installed plugin's dedupe actually drops the copy — those are LEGION-108's Go tests and
 LEGION-109's plugin tests, and, end to end, LEGION-101's production hour (`envoy_inbox` on three
 busy architects, no payload twice). Say so in the PR's E2E line, cite Sami's 2026-09-13 shutdown
-of the smoke rig (https://github.com/cybermonklabs/legion/pull/1075), and name where the remaining
+of the smoke rig (https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and name where the remaining
 proof lives; do not describe the unit suite as production-like.
 
 ## Related
