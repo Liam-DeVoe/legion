@@ -1390,6 +1390,57 @@ delete from components c
 where not exists (select 1 from architecture_sources s where s.project_key = c.project_key);
 ```
 
+### Backfilling the graph store
+
+After a rollout whose release notes ask for it, run the graph-store backfill once, where the
+server runs, as you run its census:
+
+```sh
+DATABASE_URL='<your database URL>' envoy-dispatch backfill-graph-store
+```
+
+It writes the store's record of every row an earlier version wrote without one, and the project
+of every comment and document block that an earlier version recorded with none. It works in
+batches, one transaction each, and it is safe to stop and run again: a second run starts where
+the first stopped.
+
+The run throttles itself, so that the searches and pages people load keep the database's CPU
+they need. Each pass reads and writes batches of 100 rows and, after each batch, pauses until
+that batch has taken a fifth of a second, so it reads at most 500 rows a second. Two flags, each
+with a setting the Kubernetes Job that runs the backfill can set instead, change that; a flag
+wins over its setting:
+
+- `--batch-rows` (`DISPATCH_GRAPH_BACKFILL_BATCH_ROWS`, default `100`): the rows each batch reads
+  and each transaction writes, 1 to 1000.
+- `--rows-per-second` (`DISPATCH_GRAPH_BACKFILL_ROWS_PER_SECOND`, default `500`): the most rows a
+  second each pass reads. `0` sets no bound and pauses nowhere. Use it only on a database nobody
+  is using, such as a copy or a test database: it is never the default.
+
+A value that is not a whole number, a batch outside 1 to 1000 and a rate below 0 stop the command
+with exit 2 before it opens the database.
+
+The defaults come from production's first run of the backfill, on 2026-11-24, which had no pause
+and batches of 200 rows. It wrote 2,676,178 document blocks in 31 minutes, about 1,400 rows a
+second. The database's CPU went from 37-48% before the run to 52, 69, 75 and 66% during it, and
+18.2% of searches failed with a statement timeout, against 0.8% before it. At 500 rows a second
+the run's connection is busy about a third of the time (500 of 1,400), so it adds about a third
+of that CPU, and a batch of 100 rows holds its locks half as long. A pass over 2.7 million rows
+then takes about 90 minutes.
+
+The first line of the run names its throttle, such as
+`backfill-graph-store: throttle batch=100 rows_per_second=500`. While a pass runs, it prints a
+line every 30 seconds, and once more when it ends:
+
+```text
+backfill-graph-store: pace kind=block rows=15000 batches=150 seconds=30.2 rate=497.2 paused=14.7 done=false
+```
+
+`rate` is the rows a second since the pass began, and `paused` the seconds it has spent in its
+pauses. A `rate` near the limit with `paused` above 0 is the throttle at work; `paused=0.0` with
+a lower `rate` means the batches themselves take longer than their share, and the database is
+already the bound. Each pass then prints a `kind=` line with what it wrote, and the command exits
+1 when it left a row undone.
+
 ## The HTTP API
 
 `GET /api/v1` lists, to any signed-in person or agent credential, every API route with its
