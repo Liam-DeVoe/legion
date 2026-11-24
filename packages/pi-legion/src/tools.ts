@@ -566,7 +566,7 @@ export function createLegionTool(deps: {
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
         "gate and its line, as any task does before its first step), unless a step of it names a role the deployment no longer " +
-        "defines, whose stop stands; retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "defines, whose stop stands; retry_or_escalate does not start it again (TASK_HALTED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
