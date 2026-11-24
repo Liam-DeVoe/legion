@@ -101,6 +101,14 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 // it once the launch returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
 	t.Helper()
+	return launchLiveRoot(ctx, t, cfg, log, burstableLiveSpec)
+}
+
+// launchLiveRoot is launchBurstableLiveRoot with the root's launch built by spec, from the project
+// token, the issue, the claim, its boot token and its role prompt's path.
+func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger,
+	spec func(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec) *corev1.Pod {
+	t.Helper()
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -141,7 +149,7 @@ func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Confi
 	if err := os.WriteFile(prompt, []byte("You are the architect.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loc, err := rt.Spawn(ctx, burstableLiveSpec(project, issue, token, bootToken, prompt))
+	loc, err := rt.Spawn(ctx, spec(project, issue, token, bootToken, prompt))
 	if err != nil {
 		t.Fatalf("Spawn %s: %v", token, err)
 	}

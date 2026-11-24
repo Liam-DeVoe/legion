@@ -169,10 +169,16 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 // burstableLiveSpec is the root architect's launch of issue as the proof makes it, on
 // burstableLiveRepository, with prompt as its role prompt.
 func burstableLiveSpec(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec {
+	return liveRootSpec(project, issue, token, bootToken, prompt, burstableLiveRepository, "master")
+}
+
+// liveRootSpec is the root architect's launch of issue on repo, whose default branch is
+// defaultBranch, with prompt as its role prompt: burstableLiveSpec on another public repository.
+func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt string, repo ghrepo.Repository, defaultBranch string) runtime.SpawnSpec {
 	return runtime.SpawnSpec{
 		Claim: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1, BootToken: bootToken,
 		Secrets: map[string]string{"ENVOY_TOKEN": "placeholder-envoy-token"},
-		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: burstableLiveRepository, DefaultBranch: "master",
+		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: repo, DefaultBranch: defaultBranch,
 	}
 }
 

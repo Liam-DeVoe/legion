@@ -191,6 +191,16 @@
       "timeout_minutes": 20,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
+    },
+    {
+      "script": "shared-clone-kind.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "SHARED_CLONE_EVIDENCE_DIR",
+      "timeout_minutes": 60,
+      "why_hosted": "Run it from a checkout on an amd64 Linux host with docker, go, kubectl, curl, jq, zstd, a tar that supports --zstd and kind, all on a GitHub-hosted ubuntu-24.04 runner, as bash scripts/e2e/shared-clone-kind.sh; it makes its own kind cluster with gVisor, which a GKE Autopilot cluster cannot (autogke-disallow-privilege refuses its privileged node container), and runs the worker image ghcr.io/cybermonklabs/legion-worker publishes for the checkout's own commit (sha-<12 hex of HEAD>), which needs no secret",
+      "jj": false
     }
   ],
   "elsewhere": [
