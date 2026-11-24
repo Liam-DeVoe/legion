@@ -457,8 +457,8 @@ def dispatch_api_types(step):
     place: git ignores that module, and the job's own `bun install` renders it (the root
     package.json's postinstall runs packages/contracts/scripts/gen-api.ts over the OpenAPI
     document), so a change to either file changes what `step` compiles, and no change carries the
-    module itself. ci_ts_listing.py lists the same two files for the module (ci_ts_programs.py,
-    RENDERED), so check-ts-filters.sh holds the gate's filter to them."""
+    module itself. ci_ts_listing.py's RENDERED lists the same two files in the module's place, so
+    check-ts-filters.sh holds the gate's filter to them."""
     return reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
          f"{step} compiles packages/contracts/src/dispatch-api.generated.ts, which the job's bun install renders "
