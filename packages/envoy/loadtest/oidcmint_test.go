@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -224,15 +224,22 @@ func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 // a verifier that takes anything.
 func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T) {
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Every read below - the discovery, each verify, the refusals - carries the shared wait's
+	// context, so none has a span of its own: a loaded machine that slows the `sh serve.sh`
+	// issuer this test starts no longer decides the row.
+	ctx := testwait.Context(t)
 
 	// Built as cmd/listener builds it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE
-	// (oidc.NewLazyVerifier), with the discovery its background run makes done here first.
+	// (oidc.NewLazyVerifier), with the discovery its background run makes done here first. The
+	// verifier bounds each attempt itself, at the production span (internal/oidc:
+	// discoveryAttemptTimeout, 10 s, and no second attempt within discoveryRetrySpacing, 5 s), so
+	// an attempt that a loaded machine ends is no verdict: the wait asks again until the issuer
+	// the test started is discovered, or the test binary's deadline ends it.
 	verifier := oidc.NewLazyVerifier(issuer, testMintAudience)
-	if err := verifier.Discover(ctx); err != nil {
-		t.Fatalf("the listener's verifier could not discover the copy's issuer: %v", err)
-	}
+	testwait.Until(t, "the listener's verifier to discover the copy's issuer", func() (error, bool) {
+		err := verifier.Discover(ctx)
+		return err, err == nil
+	})
 	for _, subject := range []string{testDispatchSubject, testRunnerSubject} {
 		claims, err := verifier.Verify(ctx, run.tokens[subject])
 		if err != nil {
