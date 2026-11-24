@@ -1231,9 +1231,9 @@ const (
 // MergeForwardPhases is the phases a merge forward is asked in: implementing, testing, reviewing,
 // step, accepting, retro and merging — every phase a step runs as but planning, then the retro and
 // the merge, which the issue keeps while the agent asked merges (dispatch://INFRA-4374 R1): the
-// agent of the task's last step of the type implementation before its place, the owner where that
-// step's key is owner, and the implementer for a run with no plan rows. Step is where a role the
-// deployment or the plan defines runs. A step
+// agent of the task's last step of the type implementation at or before its place, else the
+// task's last such step, the owner where that step's key is owner, and the implementer for a run
+// with no plan rows. Step is where a role the deployment or the plan defines runs. A step
 // that stands in one of them before any step opened the pull request has none to merge forward,
 // so nothing is asked there. An issue that stands in none of them is asked nothing: out of the
 // workflow, at admitted, and in planning, which in the default steps comes before the pull request
