@@ -8,7 +8,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/airlock-k7-inputs.XXXXXX")"
 approve_stand=""
 # One EXIT trap for the whole test: it stops the approval page's stand-in, where one was started,
 # by its PID and waits for it, then removes the work directory.
-trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null; }; rm -rf "$work"' EXIT
+trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
