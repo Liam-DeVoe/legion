@@ -62,10 +62,6 @@ const (
 	// searchSplitRunsEnv is how many runs of each statement a side takes: 5 on the seeded database
 	// when unset, and 3 on production, which the production run sets.
 	searchSplitRunsEnv = "DISPATCH_SEARCH_SPLIT_RUNS"
-	// searchSplitTimeoutEnv is the statement_timeout each run is explained under, unset on the
-	// seeded database and 120s on production: a measurement reads what a statement costs, so it
-	// does not run under the server's 15 s bound, and production still bounds what it may cost.
-	searchSplitTimeoutEnv = "DISPATCH_SEARCH_SPLIT_STATEMENT_TIMEOUT"
 	// searchSplitDefaultRuns is the seeded database's number of runs a side.
 	searchSplitDefaultRuns = 5
 )
@@ -235,10 +231,6 @@ func searchSplitPrepared(side, shape string, rankFree bool) string {
 	return name
 }
 
-// searchSplitTimeout is what DISPATCH_SEARCH_SPLIT_STATEMENT_TIMEOUT may hold: a whole number of
-// milliseconds, seconds or minutes, which the script writes into a `set local` as it is.
-var searchSplitTimeout = regexp.MustCompile(`^[0-9]+(ms|s|min)$`)
-
 // TestSearchReadSplitScript writes the split's psql scripts into the directory
 // DISPATCH_SEARCH_SPLIT_OUT names (steps 1 and 3 at the top of this file).
 //
@@ -252,9 +244,10 @@ var searchSplitTimeout = regexp.MustCompile(`^[0-9]+(ms|s|min)$`)
 // its rank-free run. Each run is `explain (analyze, buffers, verbose, format json) execute` of the
 // prepared statement with its literals, in a read-only transaction that is rolled back, under
 // `plan_cache_mode = force_custom_plan`, as production's first runs of a statement plan it, and
-// searchMeaningScan's settings without its bound (the reason TestStatementTimings gives), with
-// DISPATCH_SEARCH_SPLIT_STATEMENT_TIMEOUT as statement_timeout where it is set. psql writes each
-// plan under plans/ by the name split.json gives it.
+// searchMeaningScan's settings without its bound (the reason TestStatementTimings gives). Each run
+// carries no statement bound of its own. The seeded database bounds nothing. On production the
+// read login holds every statement to 30 s and refuses a `SET` of `statement_timeout`
+// (dispatch://INFRA-4863, R1). psql writes each plan under plans/ by the name split.json gives it.
 //
 // On the seeded database, where DISPATCH_BENCH_DATABASE_URL names it too, the subjects are read
 // with benchtime.Open as well, and subjects.json must name the same ones: that is what holds
@@ -307,12 +300,6 @@ func TestSearchReadSplitScript(t *testing.T) {
 	settings := []string{"set local plan_cache_mode = force_custom_plan"}
 	settings = append(settings, slices.DeleteFunc(slices.Clone(searchMeaningScan),
 		func(setting string) bool { return setting == searchStatementBoundSetting })...)
-	if timeout := os.Getenv(searchSplitTimeoutEnv); timeout != "" {
-		if !searchSplitTimeout.MatchString(timeout) {
-			t.Fatalf("%s=%q; want a duration such as 120s", searchSplitTimeoutEnv, timeout)
-		}
-		settings = append(settings, "set local statement_timeout = '"+timeout+"'")
-	}
 
 	statements := searchSplitStatements(t)
 	shapes := map[string]string{searchSplitKeyword: searchShapeKeyword}

@@ -1621,11 +1621,15 @@ says otherwise, alternating `main`'s side and the head's, and each run is follow
 the constant rank. The 240 plans of 5 runs at `--scale 0.01` took one minute in the pod.
 
 On production, run steps 2 and 4 through the read login's command (dispatch://INFRA-4863), and
-leave `DISPATCH_BENCH_DATABASE_URL` out of step 3. Set `DISPATCH_SEARCH_SPLIT_RUNS=3` and
-`DISPATCH_SEARCH_SPLIT_STATEMENT_TIMEOUT=120s` for step 3. A word that this public repository may
-not name (a person, a customer, a company, a repository or a host) is passed over for the next
-word by the same rule: give step 2 `-v pass_over='{word,...}'`. split.sql writes each plan to the
-absolute path of `$OUT` where step 3 ran, so run psql where that path is writable.
+leave `DISPATCH_BENCH_DATABASE_URL` out of step 3. Set `DISPATCH_SEARCH_SPLIT_RUNS=3` for step 3.
+A word that this public repository may not name (a person, a customer, a company, a repository
+or a host) is passed over for the next word by the same rule: give step 2
+`-v pass_over='{word,...}'`. split.sql writes each plan to the absolute path of `$OUT` where step 3
+ran, so run psql where that path is writable. On production every statement runs under the read
+login's 30 s bound, which refuses a `SET` of `statement_timeout`. When step 4 stops at a statement
+with psql's `canceling statement due to statement timeout`, run step 4 again at once, so the
+second run reads warm caches. A statement that stops again has no result, and the run reports it
+rather than measure it another way, since an `explain` without `analyze` reads no buffers.
 
 The report prints each run's parts with their shared hit and read blocks, and their sum beside
 the run's total. Then it prints each part's median and spread (the largest run less the smallest)
