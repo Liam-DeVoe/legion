@@ -1384,10 +1384,11 @@ test("a failed step's completion names the step its task returns to", () => {
 // Contract 219: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
-// Contract 235: a task that runs carries `running`, the act it stands at once the version is taken
-// and the role whose agent works it; a task that does not run carries none. No plugin code reads a
-// field of the answer, so the reader takes each as optional and refuses only a value of the wrong
-// type; the `legion` tool hands the agent what this schema keeps, so `running` must be kept.
+// Contract 235: a task that runs carries `running`, the list of each of its steps that runs or
+// waits once the version is taken, each with the role whose agent works it; a task that does not
+// run carries none. No plugin code reads a field of the answer, so the reader takes each as
+// optional and refuses only a value of the wrong type; the `legion` tool hands the agent what this
+// schema keeps, so `running` must be kept, every step of it.
 test("register_plan answers each task of the plan it took with its steps and the act it runs", () => {
   expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
     plan: {
@@ -1396,18 +1397,35 @@ test("register_plan answers each task of the plan it took with its steps and the
         {
           id: "a",
           steps: ["implementer", "reviewer"],
-          running: { kind: "step", place: 1, role: "implementer" },
+          running: [{ kind: "step", place: 1, role: "implementer" }],
         },
       ],
     },
   });
   const none = { plan: { version: 1, tasks: [{ id: "a", steps: [] }] } };
   expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
+  const two = {
+    plan: {
+      version: 2,
+      tasks: [
+        {
+          id: "a",
+          steps: ["implementer", "reviewer"],
+          running: [
+            { kind: "step", place: 1, role: "implementer" },
+            { kind: "step", place: 2, role: "reviewer" },
+          ],
+        },
+      ],
+    },
+  };
+  expect(LegionPlanRegisterResponse.parse(two)).toEqual(two);
   for (const task of [
     { id: "a", steps: null },
     { id: "", steps: [] },
-    { id: "a", steps: [], running: { kind: "step", place: -1, role: "implementer" } },
-    { id: "a", steps: [], running: { kind: "", place: 1, role: "implementer" } },
+    { id: "a", steps: [], running: [{ kind: "step", place: -1, role: "implementer" }] },
+    { id: "a", steps: [], running: [{ kind: "", place: 1, role: "implementer" }] },
+    { id: "a", steps: [], running: { kind: "step", place: 1, role: "implementer" } },
   ]) {
     expect(
       LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success

@@ -396,8 +396,8 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
  * takes as a re-registration of the same document and tells no one again), `register_plan` (its
  * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
- * same fact and takes the plan once; its answer names the same plan, and `running` as the record
- * holds it at the repeat, which can be a later step), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * same fact and takes the plan once; its answer names the same plan, and each step of `running`
+ * as the record holds it at the repeat, which can be a later step), `stop_task` (a repeat finds the task stopped and changes nothing)
  * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive

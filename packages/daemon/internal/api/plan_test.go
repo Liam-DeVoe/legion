@@ -169,6 +169,28 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
+// register_plan's answer names each step of a task that runs or waits (contract 235), as a list in
+// the order the workflow read them (record.StoredPlan.Running): both steps of task a, the first
+// first. A task with none, b, carries no `running` key at all, rather than an empty or a null list.
+func TestRegisterPlanNamesEachStepThatRunsOrWaits(t *testing.T) {
+	running := []record.RunningStep{
+		{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer},
+		{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: claim.RoleReviewer},
+	}
+	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 3, Tasks: []plan.Task{
+		{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}, {ID: "b"}}}, running)}
+	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, runningStepContract, runningStepContract)
+	encoded, err := json.Marshal(shaped)
+	if err != nil {
+		t.Fatalf("marshal the answer: %v", err)
+	}
+	const want = `{"plan":{"version":3,"tasks":[{"id":"a","steps":["implementer","reviewer"],"running":[` +
+		`{"kind":"step","place":1,"role":"implementer"},{"kind":"step","place":2,"role":"reviewer"}]},{"id":"b","steps":[]}]}}`
+	if string(encoded) != want {
+		t.Errorf("register_plan answers %s,\nwant %s: each step of task a that runs or waits, in its order, and no `running` on task b", encoded, want)
+	}
+}
+
 // servedVersion is version 1 of the document artifactID as the real client
 // (dispatch.HTTPClient.PlanDocument) reads it from a Dispatch that answers with status and the
 // fixture name, an answer under packages/contracts/fixtures/dispatch-version-blocks that a real

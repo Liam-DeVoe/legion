@@ -35553,9 +35553,10 @@
       "plan.tasks.*",
       "plan.tasks.*.id",
       "plan.tasks.*.running",
-      "plan.tasks.*.running.kind",
-      "plan.tasks.*.running.place",
-      "plan.tasks.*.running.role",
+      "plan.tasks.*.running.*",
+      "plan.tasks.*.running.*.kind",
+      "plan.tasks.*.running.*.place",
+      "plan.tasks.*.running.*.role",
       "plan.tasks.*.steps",
       "plan.tasks.*.steps.*",
       "plan.version"

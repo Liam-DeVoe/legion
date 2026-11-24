@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,17 +68,17 @@ func holdsText(t *testing.T, who, task, want, was string) {
 	}
 }
 
-// runningAct is a running task's act as register_plan's answer names it (`running`), decoded here
-// rather than as api.RunningStep, so this file builds on a daemon that answers none.
+// runningAct is one step of a running task as register_plan's answer names it (`running`), decoded
+// here rather than as api.RunningStep, so this file builds on a daemon that answers none.
 type runningAct struct {
 	Kind  string `json:"kind"`
 	Place int    `json:"place"`
 	Role  string `json:"role"`
 }
 
-// registeredRunning is register_plan's answer of artifact at version, which must be 200, and the
-// act each task of it runs, by task.
-func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[string]*runningAct {
+// registeredRunning is register_plan's answer of artifact at version, which must be 200, and each
+// step that runs or waits of each task of it, in their order, by task: nil for a task with none.
+func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[string][]runningAct {
 	r.t.Helper()
 	status, body := r.registerPlan(artifact, version)
 	if status != http.StatusOK {
@@ -86,15 +87,15 @@ func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[stri
 	var taken struct {
 		Plan struct {
 			Tasks []struct {
-				ID      string      `json:"id"`
-				Running *runningAct `json:"running"`
+				ID      string       `json:"id"`
+				Running []runningAct `json:"running"`
 			} `json:"tasks"`
 		} `json:"plan"`
 	}
 	if err := json.Unmarshal([]byte(body), &taken); err != nil {
 		r.t.Fatalf("decode register_plan's answer %s: %v", body, err)
 	}
-	running := map[string]*runningAct{}
+	running := map[string][]runningAct{}
 	for _, task := range taken.Plan.Tasks {
 		running[task.ID] = task.Running
 	}
@@ -185,8 +186,8 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 
 	r.editPlan(plan, map[string]any{"op": "replace", "find": one, "with": two}, 2)
 	running := r.registeredRunning(plan, 2)
-	if got := running["a"]; got == nil || *got != (runningAct{Kind: "step", Place: 1, Role: string(claim.RoleImplementer)}) {
-		t.Fatalf("register_plan of version 2 names task a running at %+v, want step 1, the implementer", got)
+	if got, want := running["a"], []runningAct{{Kind: "step", Place: 1, Role: string(claim.RoleImplementer)}}; !slices.Equal(got, want) {
+		t.Fatalf("register_plan of version 2 names task a running at %+v, want %+v: step 1, the implementer", got, want)
 	}
 	if after := r.taskRow("a"); after != before {
 		t.Fatalf("task a after version 2 is %s, want it as it was: %s", after, before)
@@ -272,8 +273,8 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 	planner := r.worker(claim.RolePlanner)
 	takeText(planner)
 	defaults := r.document("plan.md", textPlan("default", "", three))
-	if got := r.registeredRunning(defaults, 1)["default"]; got == nil || got.Kind != "step" || got.Place != 1 || got.Role != string(claim.RolePlanner) {
-		t.Fatalf("register_plan of %s's default block names it running at %+v, want step 1, the planner", r.key, got)
+	if got, want := r.registeredRunning(defaults, 1)["default"], []runningAct{{Kind: "step", Place: 1, Role: string(claim.RolePlanner)}}; !slices.Equal(got, want) {
+		t.Fatalf("register_plan of %s's default block names it running at %+v, want %+v: step 1, the planner", r.key, got, want)
 	}
 	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
 	task := takeText(r.worker(claim.RoleImplementer))

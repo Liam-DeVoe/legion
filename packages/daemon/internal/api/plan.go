@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -44,16 +43,16 @@ type RegisteredPlan struct {
 // each as the plan writes them (`role` or `role:key`). A task whose block names none has no step
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
 // work starts, so the answer names none rather than guessing what the project will run then.
-// Running is where the task stands once the version is taken, where it runs (RunningStep), and is
-// left out for a task that does not run: one that waits, is stopped or is done. It arrived at
-// runningStepContract.
+// Running is each step of the task that runs or waits once the version is taken (RunningStep), in
+// the order the record gives them, and is left out for a task that does not run: one that waits,
+// is stopped or is done. It arrived at runningStepContract.
 type RegisteredTask struct {
-	ID      string       `json:"id"`
-	Steps   []string     `json:"steps"`
-	Running *RunningStep `json:"running,omitempty"`
+	ID      string        `json:"id"`
+	Steps   []string      `json:"steps"`
+	Running []RunningStep `json:"running,omitempty"`
 }
 
-// RunningStep is the act a running task stands at once register_plan took the version, read in
+// RunningStep is one act a running task stands at once register_plan took the version, read in
 // the transaction that took it (record.StoredPlan.Running): its kind, `step`, `retro` or `merge`,
 // its place, from 1 for a step of the task and 0 for the retro and the merge, and the role whose
 // agent works it. A later version takes a running task whose text alone it changes, and the agent
@@ -359,15 +358,16 @@ func documentReference(issue string, approval dispatch.Approval) string {
 	return "dispatch://" + issue + "/artifact/" + approval.Slug
 }
 
-// registeredPlan is given as register_plan answers it, each task that runs with the act it stands
-// at (running, record.StoredPlan.Running).
+// registeredPlan is given as register_plan answers it, each task that runs with each step of it
+// that runs or waits, in the order of running (record.StoredPlan.Running).
 func registeredPlan(given plan.Plan, running []record.RunningStep) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
 		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps)}
-		if at := slices.IndexFunc(running, func(step record.RunningStep) bool { return step.Task == task.ID }); at >= 0 {
-			step := running[at]
-			tasks[i].Running = &RunningStep{Kind: step.Place.Kind, Place: step.Place.Position, Role: string(step.Role)}
+		for _, step := range running {
+			if step.Task == task.ID {
+				tasks[i].Running = append(tasks[i].Running, RunningStep{Kind: step.Place.Kind, Place: step.Place.Position, Role: string(step.Role)})
+			}
 		}
 	}
 	return RegisteredPlan{Version: given.Version, Tasks: tasks}
