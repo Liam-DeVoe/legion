@@ -188,6 +188,16 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				return planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, widget(t))
 			},
 			[]delivery{{true, nil}, {false, nil}, {false, nil}}},
+		{"a plan taken before its tree began to linger",
+			func(t *testing.T, pool *pgxpool.Pool, engine *Engine) (string, intake.PlanGiven) {
+				root := stepRoot(t, pool, phase.Implementing)
+				member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+				id, given := planID(member.Key, member.Generation, 1), ownersPlan(t, member.Key, member.Generation, 1, widget(t))
+				mustTake(t, "version 1", applyFacts(t, pool, engine)(id, given))
+				leaveAs(t, pool, engine, root.Key, "done")
+				return id, given
+			},
+			[]delivery{{false, lingeringPlan()}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -205,23 +215,6 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("a plan taken before its tree began to linger", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Implementing)
-		member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
-		id, given := planID(member.Key, member.Generation, 1), ownersPlan(t, member.Key, member.Generation, 1, widget(t))
-		mustTake(t, "version 1", applyFacts(t, pool, engine)(id, given))
-		leaveAs(t, pool, engine, root.Key, "done")
-		before := settledRows(t, pool, engine)
-		if result := applyFacts(t, pool, engine)(id, given); !reflect.DeepEqual(result.Refusal, lingeringPlan()) {
-			t.Errorf("the second delivery = %+v, want the refusal %+v: the plan runs no more", result, lingeringPlan())
-		}
-		if changed := changedTables(before, databaseRows(t, pool)); len(changed) != 0 {
-			t.Errorf("the refused delivery changed the rows of %q, want no table changed", changed)
-		}
-	})
 }
 
 // lingeringPlan is the refusal of version 1 of the plan of LEGION-209 while its tree LEGION-208

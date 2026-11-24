@@ -314,41 +314,23 @@ func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 	})
 }
 
-// A plan given at generation 0 is the route's registration for an issue it found unrecorded. Where
-// the daemon records the issue, and draws it into the group that runs the project's default steps,
-// before the fact applies, the plan is answered PLAN_NOT_TAKEN and nothing is stored: it would
-// otherwise wait at generation 0 for a first step that passes it over. The registration stays
-// unspent, as every refusal of a plan.
-func TestAPlanGivenAtGenerationZeroForARecordedIssueOfTheGroupDefaultIsNotTaken(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Admitted)
-	drawnInto(t, pool, root.Key, "planning", "b", "default")
-	before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-	id := planID(root.Key, 0, 1)
-	given := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
-
-	assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, given), planNotTakenOfB(root.Key), before)
-	if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
-		t.Fatalf("the plan rows of %s = %v, want none: a plan given at generation 0 for an issue of the group is stored nowhere", root.Key, got)
-	}
-}
-
-// A plan given at generation 0 for an issue the daemon recorded since, in the group that runs the
-// project's default steps, is answered by what the issue's run holds. Where the run holds no plan
-// but one no giver of which owns the issue now (an earlier owner's, record.GivenByOwner), the
-// issue's first step would pass that plan over and take the plan of generation 0, so the plan given
-// is of the run, and answered PLAN_NOT_TAKEN. Where the run holds a plan one of whose givers owns
-// the issue, the run went on without the plan of generation 0, which is answered
-// PLAN_STALE_GENERATION. Neither stores anything. The plan of the run is written as the store keeps
-// it, given by the architect of LEGION-300's tree, which owns nothing of LEGION-208, or by
+// A plan given at generation 0 is the route's registration for an issue it found unrecorded. Given
+// for an issue the daemon recorded since, in the group that runs the project's default steps, it
+// is answered by what the issue's run holds. Where the run holds no plan but one no giver of which
+// owns the issue now (an earlier owner's, record.GivenByEarlierOwners), the issue's first step
+// would pass that plan over and take the plan of generation 0, so the plan given is of the run, and
+// answered PLAN_NOT_TAKEN. Where the run holds a plan one of whose givers owns the issue, the run
+// went on without the plan of generation 0, which is answered PLAN_STALE_GENERATION. Where the run
+// holds no plan, the plan given would wait at generation 0 for a first step that passes it over,
+// and is answered PLAN_NOT_TAKEN. None stores anything. The plan of the run is written as the store
+// keeps it, given by the architect of LEGION-300's tree, which owns nothing of LEGION-208, or by
 // LEGION-208's own architect.
 //
 // The faults it catches: a run holding an earlier owner's plan read as having taken it (its
-// control: waitsAtZero keeping every plan of an owner's source, its owners judged by no giver,
-// under which the first row answers PLAN_STALE_GENERATION), and a run holding its owner's plan
-// read as still waiting (its control: waitsAtZero reading no row of the run, under which the
-// second row answers PLAN_NOT_TAKEN).
+// control: waitsAtZero keeping every plan of the run, whoever gave it, under which the first row
+// answers PLAN_STALE_GENERATION), and a run holding its owner's plan read as still waiting (its
+// control: waitsAtZero reading no row of the run, under which the second row answers
+// PLAN_NOT_TAKEN).
 func TestAPlanGivenAtGenerationZeroForAnIssueOfTheGroupDefaultIsJudgedByItsRunsPlan(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -361,18 +343,22 @@ func TestAPlanGivenAtGenerationZeroForAnIssueOfTheGroupDefaultIsJudgedByItsRunsP
 			func(root record.Issue) *intake.Refusal {
 				return intake.PlanStaleGeneration(root.Key, 0, root.Generation)
 			}},
+		{"the run holds no plan", "",
+			func(root record.Issue) *intake.Refusal { return planNotTakenOfB(root.Key) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
 			drawnInto(t, pool, root.Key, "planning", "b", "default")
-			at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
-			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().PutPlan(t.Context(), tx, record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 1,
-					ArtifactID: planArtifact, Source: record.PlanSourceOwner, GivenBy: claim.Token(treeRoleToken(t, tc.giver, claim.RoleArchitect)), GivenAt: at},
-					[]record.PlanTask{{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}}, nil)
-			})
+			if tc.giver != "" {
+				at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().PutPlan(t.Context(), tx, record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 1,
+						ArtifactID: planArtifact, Source: record.PlanSourceOwner, GivenBy: claim.Token(treeRoleToken(t, tc.giver, claim.RoleArchitect)), GivenAt: at},
+						[]record.PlanTask{{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}}, nil)
+				})
+			}
 			before := planStandingOf(t, pool, engine, root.Key, root.Generation)
 			id := planID(root.Key, 0, 1)
 			given := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
