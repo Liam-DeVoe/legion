@@ -175,7 +175,7 @@ const (
 	// unadmittedConnections is how many of the request pool's connections are left to the users
 	// admission does not count, the ones outside.go lists, and so OutsideLimit.
 	unadmittedConnections = 8
-	MaxAdmittedUnits      = store.SharedPoolSize - unadmittedConnections
+	MaxAdmittedUnits      = store.SharedPoolSize - unadmittedConnections - 32 // NEGATIVE CONTROL (INFRA-592 c-scale): planted at 8; never deploy this build
 	ReservedReadUnits     = 22
 	readsPerCPU           = 14
 	writesPerCPU          = 12
