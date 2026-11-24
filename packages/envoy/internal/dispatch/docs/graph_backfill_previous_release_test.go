@@ -384,18 +384,49 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // It was re-recorded once more when the digest came to fold each statement's whitespace and to
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes. Rule 2's was re-recorded with it, the
-// fence of rule 2 writing stated_version and stated_rule beside store_version. Rule 1's digest
-// below holds that change and the supertag read above together: the statements are the folded
-// ones with that read added before the node write of refs.CommentWrite.Queue, and nothing else.
+// fence of rule 2 writing stated_version and stated_rule beside store_version. The digest of rule
+// 1 recorded then on this change, 2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb,
+// holds that change and the supertag read above together: the statements are the folded ones with
+// that read added before the node write of refs.CommentWrite.Queue, and nothing else.
+//
+// A change of words that keeps every statement's rows keeps the rule, and records its digest in
+// place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main, from
+// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on #4173's branch, whose
+// statements also read the project columns above, and from the digest above on this change, whose
+// statements also hold the supertag read: the backfill's block selection
+// (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`, a planner
+// hint that runs them once per batch, which changes the statement's plan and not its rows
+// (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a seed
+// with the word and without it, under both plan-cache modes, and holds the two to the same rows).
+// The documents a pass of rule 1 marks are the same, so a build of either text beside the other
+// reads rule 1's cursors, horizons and marks as its own rightly. The digest below holds the word
+// and the supertag read together: the statements are the ones of the digest above with the word
+// added, which are #4173's branch's with the word,
+// c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3, with the supertag read added,
+// and nothing else.
 //
 // Rule 2's statements are this branch's: a pass records the rule and the version it stated a
 // document by (stated_rule, stated_version), and the backfill and the tick mark a document no
 // pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
 // of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
 // standing. Rule 1's entry is the sibling branch's, as it records it.
+//
+// Rule 2's digest moved twice by changes of words that keep every statement's rows, from
+// 58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4. The head projection
+// (graphstore.QueueHeads) moved the statements refs.CommentWrite.Queue sends: the node insert, the
+// node update and the tuple append each carry graphstore's keptHeadRows,
+// `(select set_config('dispatch.head_rows', 'kept', true)) is not null`, in the WHERE of the rows
+// they write, which is true of every row, since set_config answers the value it sets, so each
+// writes the rows it wrote before; and the write sends one statement more, the head rows of the
+// comment's node, which writes issue_head_nodes alone. Neither marks a document, writes another
+// comment or moves the revision fence. And #4790's `caused as materialized (` in
+// graphcensus.BlockRowsStatement, above, changes its plan and not its rows. With the word taken
+// out the statements give 12211e11e636debb9207fa401899ed8f2b0b773b78fec3e24718a19f725ecd04, and with
+// the head projection's predicates and statement taken out as well, the digest recorded before.
 var markingStatementDigests = map[int]string{
-	1: "2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb",
-	2: "58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4",
+	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
+	2: "3ddf78835ff68e4647d98580cbd6b7ff370c1369234f8eb0996b9bee56a064b1",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

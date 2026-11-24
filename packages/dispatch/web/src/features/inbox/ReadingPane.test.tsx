@@ -952,11 +952,20 @@ test("an approval draws the ask card of a question block in the version it shows
 // The approver reads the decided ask in the pane before approving, so the card draws the answer
 // from the server's read of the ask, as the document page's version view does
 // (`ProofDocument.decisions.test.tsx`, "a saved version of an answered ask draws who answered and
-// the answer").
-test("an approval draws the answer of an answered ask in a version this build wrote", async () => {
+// the answer"). A line elsewhere in the version that quotes the block's opener in fenced code is
+// the document's own text, not a record of the answer, and changes nothing of that.
+const answeredVersion =
+  '# Plan\n\n:::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n';
+test.each([
+  { markdown: answeredVersion, suffix: "" },
+  {
+    markdown: `${answeredVersion}\nAn opener, quoted:\n\n\`\`\`\n:::ask{#b-1 state="open"}\n\`\`\`\n`,
+    suffix: ", beside a fenced code block that quotes its opener",
+  },
+])("an approval draws the answer of an answered ask in a version this build wrote$suffix", async ({
+  markdown: latest,
+}) => {
   await warmMarkdownRenderer();
-  const latest =
-    '# Plan\n\n:::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n';
   const answered: Ask = {
     anchor: null,
     answer: {

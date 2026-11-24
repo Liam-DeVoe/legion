@@ -175,15 +175,10 @@ func backfillVersions(ctx context.Context, database *store.Store) (KindBackfill,
 	return done, nil
 }
 
-// readVersionBatch reads the next batch of versions with no node after after, in the order of
-// artifact_versions' unique key.
+// readVersionBatch reads the next batch of versions with no node after after
+// (missingVersionKeysStatement).
 func readVersionBatch(ctx context.Context, database *store.Store, after versionKey) ([]versionKey, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select v.artifact_id::text, a.ref_key, v.number `+missingVersionsSQL+`
-		  and (v.artifact_id, v.number) > ($1::uuid, $2)
-		order by v.artifact_id, v.number
-		limit $3
-	`, after.artifactID, after.number, backfillBatch)
+	rows, err := database.Pool.Query(ctx, missingVersionKeysStatement, after.artifactID, after.number, backfillBatch)
 	if err != nil {
 		return nil, fmt.Errorf("read the versions with no node: %w", err)
 	}
@@ -193,6 +188,17 @@ func readVersionBatch(ctx context.Context, database *store.Store, after versionK
 		return key, err
 	})
 }
+
+// missingVersionKeysStatement is backfillVersions' selection: at most $3 of the versions whose node
+// the store does not hold present (missingVersionsSQL), past the key ($1, $2), in the order of
+// artifact_versions' unique key, each with its document's ref_key. Each batch reads
+// artifact_versions_artifact_id_number_key from the key on, so a run reads each row once however
+// many batches it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var missingVersionKeysStatement = `
+	select v.artifact_id::text, a.ref_key, v.number ` + missingVersionsSQL + `
+	  and (v.artifact_id, v.number) > ($1::uuid, $2)
+	order by v.artifact_id, v.number
+	limit $3`
 
 // writeVersionBatch writes one batch's version nodes in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner locks the batch's documents stand under

@@ -9875,6 +9875,35 @@ describe("executeDispatchTool", () => {
       expect(posts).toEqual([]);
     });
 
+    // Only a real opening line records a block's state: a fenced quote of an open opener is the
+    // document's own text. Beside a block the version records answered, and a copy it records with
+    // its source answered, it opens no block, read from a Dispatch of the release before, which
+    // sends no asks and is judged by the stored lines.
+    test("a fenced quote of an open opener opens no block beside the answered ones", async () => {
+      const source =
+        'copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"';
+      const fenced = [
+        "```markdown",
+        ':::ask{#b-1 urgency="med" multiple="false" state="open"}',
+        "```",
+        "~~~",
+        `:::ask{#b-2 urgency="med" multiple="false" state="open" ${source}}`,
+        "~~~",
+      ].join("\n");
+      const { outcome, posts } = await requestOver(
+        ["b-1", "b-2"],
+        [
+          fenced,
+          opening("b-1", "answered"),
+          `:::ask{#b-2 urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected="[]" answer="eu-west-1" ${source}}\nQuestion of b-2?\n:::`,
+        ],
+        [blockAsk("b-1", "answered")]
+      );
+
+      expect((await outcome).text).toStartWith("Approval requested for spec.md");
+      expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+    });
+
     test("requests approval once the named version holds every block answered or resolved", async () => {
       const { outcome, posts } = await requestOver(
         ["b-1", "b-2"],

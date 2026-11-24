@@ -101,12 +101,7 @@ func backfillAnchoredIn(ctx context.Context, database *store.Store) (KindBackfil
 	done := KindBackfill{Kind: anchorProjectionKind}
 	after := zeroUUID
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select c.id::text, coalesce(c.issue_key, ''), coalesce(c.artifact_id::text, '') `+owedAnchoredIn+`
-			  and c.id > $1::uuid
-			order by c.id
-			limit $2
-		`, after, backfillBatch)
+		rows, err := database.Pool.Query(ctx, owedAnchorRowsStatement, after, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the comments whose anchor block their node does not state: %w", err)
 		}
@@ -138,6 +133,17 @@ func backfillAnchoredIn(ctx context.Context, database *store.Store) (KindBackfil
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
+
+// owedAnchorRowsStatement is backfillAnchoredIn's selection: at most $2 of the comments whose node
+// does not state the anchored_in their row states (owedAnchoredIn), past the comment $1, in id
+// order, each with its issue or its project document. Each batch reads comments_pkey from the id
+// on, so a run reads each comment once however many batches it takes
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var owedAnchorRowsStatement = `
+	select c.id::text, coalesce(c.issue_key, ''), coalesce(c.artifact_id::text, '') ` + owedAnchoredIn + `
+	  and c.id > $1::uuid
+	order by c.id
+	limit $2`
 
 // writeAnchorBatch levels one batch's anchored_in in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's comments stand under

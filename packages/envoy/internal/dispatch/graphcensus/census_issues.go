@@ -72,12 +72,7 @@ func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfil
 	done := KindBackfill{Kind: "issue_link"}
 	var afterIssue, afterTarget string
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select issue_key, target_key, created_at from issue_links
-			where kind = 'blocked_by' and node_kind is null and (issue_key, target_key) > ($1, $2)
-			order by issue_key, target_key
-			limit $3
-		`, afterIssue, afterTarget, backfillBatch)
+		rows, err := database.Pool.Query(ctx, issueLinkRowsStatement, afterIssue, afterTarget, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the issue links naming no node: %w", err)
 		}
@@ -111,6 +106,16 @@ func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfil
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
+
+// issueLinkRowsStatement is backfillIssueLinks' selection: at most $3 of the issue_links rows of
+// kind blocked_by naming no node, past the key ($1, $2), in key order. Each batch reads
+// issue_links_pkey from the key on, so a run reads each row once however many batches it takes
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+const issueLinkRowsStatement = `
+	select issue_key, target_key, created_at from issue_links
+	where kind = 'blocked_by' and node_kind is null and (issue_key, target_key) > ($1, $2)
+	order by issue_key, target_key
+	limit $3`
 
 // writeIssueLinkBatch states one batch's needs tuples and names their issue's node on each row,
 // in one transaction and in the store's lock order (api/inbox_read.go's markInboxReadThreads):

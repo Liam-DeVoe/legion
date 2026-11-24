@@ -52,9 +52,11 @@ var typeMigrations = []string{
 // legion-envoy-v34.11.8, every release before legion-envoy-v34.12.0, which carries that migration,
 // holds 20261121060636_search_document_text as its newest migration and none after it, so a
 // deployment may have run the backfill over a store at this version. Those releases do not hold
-// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill). Every type
-// migration of typeMigrations is numbered below it; one numbered above it runs over graph_nodes
-// and graph_tuples the backfill may have filled.
+// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill), the backfill's
+// four indexes (20261119020700 to 20261119021000) among them, which came with a later release: the
+// runner applies every version it has not recorded, so this tree's MigrateThrough builds them here
+// too (openAtTheBackfill). Every type migration of typeMigrations is numbered below it; one
+// numbered above it runs over graph_nodes and graph_tuples the backfill may have filled.
 const backfillVersion = 20261121060636
 
 // unreleasedVersionsBelowTheBackfill is every version this tree numbers below backfillVersion that
@@ -79,15 +81,17 @@ const backfillVersion = 20261121060636
 // graph_nodes (writesGraphNodes) is a type migration such a store meets after its backfill, and
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges it as it judges the type migrations
 // numbered above backfillVersion. The list holds the versions of every branch this tree merges that
-// no release holds yet: the node store's, cybermonklabs/legion#4193's (20261116081010 to
+// no release holds yet: the node store's, main's four backfill indexes the node store merged
+// (20261119020700 to 20261119021000), cybermonklabs/legion#4193's (20261116081010 to
 // 20261117042519 of its own) and the issue tree's (each named <timestamp>_issue_tree_<what>, with
 // 20261120131444, 20261120204136 and 20261121043859).
 var unreleasedVersionsBelowTheBackfill = []int{
 	20261116015042, 20261116015056, 20261116081010, 20261116092210, 20261116094058, 20261116094059,
 	20261116094100, 20261116094101, 20261116172615, 20261116184707, 20261117002006, 20261117002045,
 	20261117020856, 20261117042519, 20261117045607, 20261117093337, 20261117140000, 20261118023219,
-	20261118161237, 20261118165901, 20261118230000, 20261119100000, 20261120130000, 20261120131444,
-	20261120204136, 20261120220000, 20261120220100, 20261121034242, 20261121043859, 20261121060000,
+	20261118161237, 20261118165901, 20261118230000, 20261119020700, 20261119020800, 20261119020900,
+	20261119021000, 20261119100000, 20261120130000, 20261120131444, 20261120204136, 20261120220000,
+	20261120220100, 20261121034242, 20261121043859, 20261121060000,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -96,7 +100,9 @@ const releasedThroughTheBackfill = 290
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:
 // the store a deployment of those releases holds before it runs the backfill, and the store the type
-// migrations before the backfill left.
+// migrations before the backfill left, with the backfill's four indexes beside it. Those are
+// indexes alone, so they change no row this test writes or reads, and the backfill this test runs
+// is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {

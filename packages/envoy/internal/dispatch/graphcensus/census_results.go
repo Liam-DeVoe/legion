@@ -210,15 +210,31 @@ type resultKey struct {
 	id, issue string
 }
 
-// readResultKeys reads the next batch of ids after after, of the rows shape names with key the
-// id column of the rows, and the check's issue beside each, in id order.
-func readResultKeys(ctx context.Context, database *store.Store, shape, key, after string) ([]resultKey, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select `+key+`::text, r.check_issue_key `+shape+`
-		  and `+key+` > $1::uuid
-		order by `+key+`
-		limit $2
-	`, after, backfillBatch)
+// resultKeysStatement is the selection of a result pass's walk: at most $2 ids past the id $1, of
+// the rows shape names with key the id column of the rows, and the check's issue beside each, in
+// id order. Each batch reads the primary key key is the column of from the id on, so a run reads
+// each row once however many batches it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+func resultKeysStatement(shape, key string) string {
+	return `
+		select ` + key + `::text, r.check_issue_key ` + shape + `
+		  and ` + key + ` > $1::uuid
+		order by ` + key + `
+		limit $2`
+}
+
+// missingResultKeysStatement is backfillResults' walk (resultKeysStatement) over the results whose
+// node the store does not hold (missingResults), through check_results_pkey, and
+// owedRetractionKeysStatement backfillResultRetractions' over the retractions their results do not
+// state (owedRetractions), through check_result_retractions_pkey.
+var (
+	missingResultKeysStatement  = resultKeysStatement(missingResults, "r.id")
+	owedRetractionKeysStatement = resultKeysStatement(owedRetractions, "x.result_id")
+)
+
+// readResultKeys reads the next batch of ids after after by statement, a walk of
+// resultKeysStatement.
+func readResultKeys(ctx context.Context, database *store.Store, statement, after string) ([]resultKey, error) {
+	rows, err := database.Pool.Query(ctx, statement, after, backfillBatch)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +270,7 @@ func backfillResults(ctx context.Context, database *store.Store) (KindBackfill, 
 	done := KindBackfill{Kind: resultProjectionKind}
 	after := zeroUUID
 	for {
-		batch, err := readResultKeys(ctx, database, missingResults, "r.id", after)
+		batch, err := readResultKeys(ctx, database, missingResultKeysStatement, after)
 		if err != nil {
 			return done, fmt.Errorf("read the results with no node: %w", err)
 		}
@@ -402,7 +418,7 @@ func backfillResultRetractions(ctx context.Context, database *store.Store) (Kind
 	done := KindBackfill{Kind: resultRetractionProjectionKind}
 	after := zeroUUID
 	for {
-		batch, err := readResultKeys(ctx, database, owedRetractions, "x.result_id", after)
+		batch, err := readResultKeys(ctx, database, owedRetractionKeysStatement, after)
 		if err != nil {
 			return done, fmt.Errorf("read the retractions their results do not state: %w", err)
 		}

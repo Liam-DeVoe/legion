@@ -39,12 +39,25 @@ const HeadFillBatch = 20
 // release before starts (TestTheFillHoldsTheHeadFillLockAgainstAWriteOfTheReleaseBefore).
 var headFillLocked func(key string)
 
-// unmarkedIssuesStatement is up to $1 issues no mark names, in key order.
+// unmarkedIssuesStatement is up to $1 issues no mark names, in key order: the tick's list, from the
+// first issue each time (FillIssueHeads).
 const unmarkedIssuesStatement = `
 	select i.key from issues i
 	where not exists (select 1 from issue_head_marks mark where mark.issue_key = i.key)
 	order by i.key collate "C"
 	limit $1`
+
+// unmarkedIssuesAfterStatement is up to $2 issues no mark names past the key $1, in the order of
+// issues' primary key: the backfill's walk (backfillIssueHeadNodes). Each batch reads issues_pkey
+// from the last batch's key on and probes issue_head_marks_pkey for each issue it reads, so a run
+// reads each issue once however many batches it takes. Listed from the first issue each time, as the
+// tick lists them, the n-th batch read every issue the batches before it had marked
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+const unmarkedIssuesAfterStatement = `
+	select i.key from issues i
+	where i.key > $1 and not exists (select 1 from issue_head_marks mark where mark.issue_key = i.key)
+	order by i.key
+	limit $2`
 
 // headFillNodesStatement is every node the tree of the issue $1 can hold, whose rows its fill writes
 // (graphstore.QueueHeads also writes the rows of each under another issue): the issue's own node;
@@ -127,13 +140,21 @@ func FillIssueHeads(ctx context.Context, database *store.Store, limit int) (fill
 	if len(keys) > limit {
 		keys, more = keys[:limit], true
 	}
+	filled, err = fillEachIssueHeads(ctx, database, keys)
+	return filled, more, err
+}
+
+// fillEachIssueHeads fills each issue of keys (fillIssueHeads), each in a transaction of its own,
+// and answers how many it filled.
+func fillEachIssueHeads(ctx context.Context, database *store.Store, keys []string) (int, error) {
+	filled := 0
 	for _, key := range keys {
 		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error { return fillIssueHeads(ctx, tx, key) }); err != nil {
-			return filled, more, fmt.Errorf("fill the head rows of %s: %w", key, err)
+			return filled, fmt.Errorf("fill the head rows of %s: %w", key, err)
 		}
 		filled++
 	}
-	return filled, more, nil
+	return filled, nil
 }
 
 // fillIssueHeads writes in tx every row of the issue key's tree from what the store holds there
@@ -180,23 +201,44 @@ func fillIssueHeads(ctx context.Context, tx pgx.Tx, key string) error {
 	return nil
 }
 
-// backfillIssueHeadNodes fills every issue no mark names (FillIssueHeads), a batch of them at a
-// time, until none is left: the issues a store of the release before holds, whose writers kept no
-// head rows, and each issue a write of such a release unmarked since. It reports the issues it
-// filled as its rows, and none remaining once it has listed no unmarked issue.
+// backfillIssueHeadNodes fills every issue no mark names (fillEachIssueHeads), walking the issues a
+// batch at a time in their primary key's order (unmarkedIssuesAfterStatement): the issues a store
+// of the release before holds, whose writers kept no head rows, and each issue a write of such a
+// release unmarked before the walk passed it. It reports the issues it filled as its rows, and as
+// remaining the issues no mark names once the walk has ended: one a write of such a release
+// unmarked behind the walk, which the block index's tick fills again (FillIssueHeads).
 func backfillIssueHeadNodes(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: headKind}
+	after := ""
 	for {
-		filled, more, err := FillIssueHeads(ctx, database, backfillBatch)
+		rows, err := database.Pool.Query(ctx, unmarkedIssuesAfterStatement, after, backfillBatch)
+		if err != nil {
+			return done, fmt.Errorf("list the issues no head mark names: %w", err)
+		}
+		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return done, fmt.Errorf("list the issues no head mark names: %w", err)
+		}
+		if len(keys) == 0 {
+			break
+		}
+		after = keys[len(keys)-1]
+		filled, err := fillEachIssueHeads(ctx, database, keys)
 		done.Rows += int64(filled)
 		if err != nil {
 			return done, err
 		}
-		if !more {
-			done.Complete = true
-			return done, nil
+		if len(keys) < backfillBatch {
+			break
 		}
 	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from issues i where not exists (select 1 from issue_head_marks mark where mark.issue_key = i.key)
+	`).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the issues no head mark names: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
 }
 
 // headDigest is the md5 of every column of a head row but its key, read off the relation alias,

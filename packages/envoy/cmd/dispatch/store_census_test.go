@@ -22,6 +22,7 @@ package main
 // and everything else in this file is what it drives.
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -1603,9 +1604,24 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // ───── the old read beside the new read ───────────────────────────────────
 
 // compareTheOldReadWithTheNew runs the older build's answer beside this build's, over the same
-// database, for each read this child touched, and compares the two field for field. Store-to-
-// projection equality says nothing about this: both sides can agree and the answer a reader gets
-// still change.
+// database, for each read this child touched, and compares the two field for field
+// (reflect.DeepEqual of the two decoded answers). Store-to-projection equality says nothing about
+// this: both sides can agree and the answer a reader gets still change.
+//
+// Beside `as_of`, which decodeRead drops from both answers (withoutTheMomentOfTheRead), and the
+// members and elements the two rules below name, four fields are removed from this build's answer
+// before the comparison, and no other: the state and the visibility of each graph node
+// (model.GraphNode), and the address and the kind of each closure member (model.ReferenceMember).
+// This build answers them beside the fields the older build answers (the model marks each
+// `required:"false"`, for the release before), and the older build answers none of them, so each
+// would be a difference of every read that answers a node or a member. They are removed only where
+// the answer's shape places a node or a member (addedFields; of these reads
+// GET /api/v1/issues/{key}/references alone answers either), never a field of one of those names
+// elsewhere, such as a document's kind, a link's via kind or an ask's state. Each must stand where
+// the shape places it and hold the value this build's rule gives (withoutTheAddedFields): one
+// absent, or holding another value, fails the run naming the read, its path and what was found
+// there. Each read logs how many of each field it removed. Every other difference fails, printing
+// both answers.
 //
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
@@ -1640,13 +1656,15 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 	// what the read lists; a read that names none lists its own items, or is one object. added
 	// names the members this build adds to the read's answer, and unlisted the elements of its
 	// list answer that only this build writes and lists nowhere: the issue's needs, duplicate_of
-	// and filed_from, a document's room and fragment, a reference member's kind and address, and the
-	// state and visibility of the node of each of an issue's links, and the tree artifacts and
-	// decisions queries of the issues this build creates.
+	// and filed_from, a document's room and fragment, and the tree artifacts and decisions queries
+	// of the issues this build creates. fields is where the answer places the fields this build
+	// adds to a graph node and to a closure member (addedFields), the zero value for an answer that
+	// holds no graph node and no closure member.
 	reads := []struct {
 		path     string
 		lists    []string
 		added    []censusAddedMember
+		fields   addedFields
 		unlisted []string
 	}{
 		{path: "/api/v1/issues/" + seeded.issue, added: append([]censusAddedMember{
@@ -1654,7 +1672,7 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 		}, censusArtifactMembers("artifacts[].")...)},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
 		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"},
-			added: slices.Concat(censusReferenceMembers("members[]."), censusArtifactMembers("members[].artifact."), censusNodeMembers("links[].node."))},
+			added: censusArtifactMembers("members[].artifact."), fields: issueReferencesAdded},
 		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
 		{path: "/api/v1/issues?project=" + seeded.project, added: []censusAddedMember{censusNeeds("[].")}},
 		{path: "/api/v1/artifacts/" + seeded.artifact, added: censusArtifactMembers("")},
@@ -1679,10 +1697,15 @@ func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, datab
 			compared++
 		}
 		held := holdTheAddedMembers(t, read.path, was, is, read.added)
+		removed, problems := withoutTheAddedFields(is, read.fields)
+		for _, problem := range problems {
+			t.Errorf("GET %s: this build's answer: %s", read.path, problem)
+		}
+		logTheAddedFieldsRemoved(t, read.path, read.fields, removed)
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
-				read.path, mustEncode(t, was), mustEncode(t, is))
+				read.path, foundText(was), foundText(is))
 			continue
 		}
 		t.Logf("GET %s answers field for field on both builds, over %d element(s), %d member(s) this build adds held to the value the older build's answer implies and %d element(s) only this build writes left out of the older build's list",
@@ -1727,41 +1750,6 @@ func censusArtifactMembers(at string) []censusAddedMember {
 	}
 }
 
-// censusReferenceMembers are the members this build adds to a member of an issue's reference
-// closure at at (model.ReferenceMember's Kind and Address): a citation of a document the older
-// build wrote reaches that document, so the member is an artifact at the document's address, as
-// refs.ArtifactRef writes it from the fields the older build answers for the document.
-func censusReferenceMembers(at string) []censusAddedMember {
-	return []censusAddedMember{
-		{path: at + "kind", want: func(map[string]any) any { return graphstore.KindArtifact }},
-		{path: at + "address", want: func(was map[string]any) any {
-			document, _ := was["artifact"].(map[string]any)
-			text := func(name string) string {
-				value, _ := document[name].(string)
-				return value
-			}
-			optional := func(name string) *string {
-				if value, held := document[name].(string); held {
-					return &value
-				}
-				return nil
-			}
-			primary, _ := document["primary"].(bool)
-			return refs.ArtifactRef(optional("issue_key"), text("project"), optional("session_id"), text("slug"), text("kind"), primary)
-		}},
-	}
-}
-
-// censusNodeMembers are the members this build adds to a node of the graph at at (model.GraphNode's
-// State and Visibility): a node the older build wrote stands and everyone in its project reads it,
-// which the older build's answer implies by answering it at all.
-func censusNodeMembers(at string) []censusAddedMember {
-	return []censusAddedMember{
-		{path: at + "state", want: func(map[string]any) any { return graphstore.StateLive }},
-		{path: at + "visibility", want: func(map[string]any) any { return graphstore.VisibilityProject }},
-	}
-}
-
 // holdTheAddedMembers holds each member added names, at each place its path reaches in both
 // answers, to the value its want derives from the older build's object there, and takes it out of
 // this build's answer is, so that the comparison after it reads the rest. A place where the older
@@ -1785,7 +1773,7 @@ func holdTheAddedMembers(t *testing.T, read string, was, is any, added []censusA
 			}
 			if want := member.want(old); !reflect.DeepEqual(value, want) {
 				t.Errorf("GET %s answers %s = %s on this build, want %s, as the older build's answer there implies",
-					read, place, mustEncode(t, value), mustEncode(t, want))
+					read, place, foundText(value), foundText(want))
 			}
 			delete(now, name)
 			held++
@@ -1930,7 +1918,9 @@ func decodeRead(t *testing.T, body []byte) any {
 
 // withoutTheMomentOfTheRead drops `as_of` wherever an answer carries it. It is the clock of the
 // read and no answer about the data: two reads of one database a millisecond apart carry
-// different ones, and nothing of this child moves it. Every other field is compared.
+// different ones, and nothing of this child moves it. Every other field is compared, but the
+// members holdTheAddedMembers takes out and the four that withoutTheAddedFields removes from this
+// build's answer.
 func withoutTheMomentOfTheRead(answer any) any {
 	switch held := answer.(type) {
 	case map[string]any:
@@ -1949,11 +1939,174 @@ func withoutTheMomentOfTheRead(answer any) any {
 	}
 }
 
-func mustEncode(t *testing.T, answer any) string {
+// addedFields is where one read's answer places what this build adds beside the older
+// build's answer: nodes are the paths of its graph nodes (model.GraphNode), each of which this
+// build answers with state and visibility, and members the paths of its closure members
+// (model.ReferenceMember), each of which it answers with address and kind. A path names a field of
+// an object by its JSON name and every item of a list by `[]`, so `links[].node` is the node of
+// each item of links. The zero value places neither, and nothing is removed from its answer.
+type addedFields struct {
+	nodes, members []string
+}
+
+// issueReferencesAdded is addedFields of GET /api/v1/issues/{key}/references
+// (model.IssueReferences): its nodes are the node of each link out and of each link in
+// (model.ReferenceLink), and it has no node of its own; its members are the items of members. It
+// is the one read of compareTheOldReadWithTheNew that answers either: the shapes the other reads
+// answer hold no model.GraphNode and no model.ReferenceMember.
+var issueReferencesAdded = addedFields{
+	nodes:   []string{"links[].node", "linked_from[].node"},
+	members: []string{"members[]"},
+}
+
+// withoutTheAddedFields removes from answer, this build's decoded answer to one read, the four
+// fields this build adds beside the older build's answer, at the positions shape places
+// them and nowhere else: the state and the visibility of each node, and the address and the kind
+// of each member. It answers how many of each it removed, by the field's name, and a problem for
+// each of them absent where shape places it, for each holding another value than this build's
+// rule gives, and for each step of a path the answer does not hold.
+//
+// The rule is the census rows': every node these reads answer over them is live and reaches the
+// project (graphstore.StateLive, graphstore.VisibilityProject), since the census moves the state of
+// none of those nodes and reserves none for its author. A member is what refs.Closure makes of the
+// document node a link out reaches, which Links lists too: its address is that node's ref and its
+// kind that node's kind, artifact (getIssueReferences). So a member is held to the artifact node
+// of the answer whose id is its artifact's id. The census moves no document's address to a lens,
+// so a member of kind lens, or of no such node, is another value.
+func withoutTheAddedFields(answer any, shape addedFields) (map[string]int, []string) {
+	removed := map[string]int{}
+	var problems []string
+	// remove deletes field from at's object, counted, and answers what it held; one the object
+	// does not hold is a problem.
+	remove := func(at placedObject, field string) (any, bool) {
+		value, held := at.object[field]
+		if !held {
+			problems = append(problems, fmt.Sprintf("%s holds no %q", at.path, field))
+			return nil, false
+		}
+		delete(at.object, field)
+		removed[field]++
+		return value, true
+	}
+	hold := func(at placedObject, field, want string) {
+		if value, held := remove(at, field); held && value != want {
+			problems = append(problems, fmt.Sprintf("%s.%s holds %s, where this build's rule gives %s",
+				at.path, field, foundText(value), foundText(want)))
+		}
+	}
+	documents := map[string]placedObject{}
+	for _, path := range shape.nodes {
+		nodes, missing := objectsAt(answer, path)
+		problems = append(problems, missing...)
+		for _, node := range nodes {
+			hold(node, "state", graphstore.StateLive)
+			hold(node, "visibility", graphstore.VisibilityProject)
+			if id, named := node.object["id"].(string); named && node.object["kind"] == graphstore.KindArtifact {
+				documents[id] = node
+			}
+		}
+	}
+	for _, path := range shape.members {
+		members, missing := objectsAt(answer, path)
+		problems = append(problems, missing...)
+		for _, member := range members {
+			artifact, _ := member.object["artifact"].(map[string]any)
+			id, _ := artifact["id"].(string)
+			document, found := documents[id]
+			if !found {
+				problems = append(problems, fmt.Sprintf("%s stands for the document %s, and the answer places no artifact node of that id, so its address and its kind have no node to be held to",
+					member.path, foundText(artifact["id"])))
+				remove(member, "address")
+				remove(member, "kind")
+				continue
+			}
+			address, _ := document.object["ref"].(string)
+			if !strings.HasPrefix(address, "dispatch://") {
+				problems = append(problems, fmt.Sprintf("%s, the node %s stands for, holds the ref %s, which is no dispatch:// address",
+					document.path, member.path, foundText(document.object["ref"])))
+			}
+			hold(member, "address", address)
+			hold(member, "kind", graphstore.KindArtifact)
+		}
+	}
+	return removed, problems
+}
+
+// placedObject is one object of an answer and its path there, a list's item at its index
+// (`links[0].node`).
+type placedObject struct {
+	path   string
+	object map[string]any
+}
+
+// objectsAt answers each object of answer at path (addedFields), each with its own path, and a
+// problem for each step of the path the answer does not hold: a value it steps into or ends at
+// that is not an object, a field absent, or a value at `[]` that is not a list.
+func objectsAt(answer any, path string) ([]placedObject, []string) {
+	type placedValue struct {
+		path  string
+		value any
+	}
+	var problems []string
+	objects := func(values []placedValue) []placedObject {
+		held := make([]placedObject, 0, len(values))
+		for _, at := range values {
+			object, ok := at.value.(map[string]any)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("%s holds %s, not an object", cmp.Or(at.path, "the answer"), foundText(at.value)))
+				continue
+			}
+			held = append(held, placedObject{at.path, object})
+		}
+		return held
+	}
+	at := []placedValue{{value: answer}}
+	for _, step := range strings.Split(path, ".") {
+		name, list := strings.CutSuffix(step, "[]")
+		var next []placedValue
+		for _, parent := range objects(at) {
+			named := name
+			if parent.path != "" {
+				named = parent.path + "." + name
+			}
+			value, found := parent.object[name]
+			switch items, isList := value.([]any); {
+			case !found:
+				problems = append(problems, named+" is absent")
+			case !list:
+				next = append(next, placedValue{named, value})
+			case !isList:
+				problems = append(problems, fmt.Sprintf("%s holds %s, not a list", named, foundText(value)))
+			default:
+				for index, item := range items {
+					next = append(next, placedValue{fmt.Sprintf("%s[%d]", named, index), item})
+				}
+			}
+		}
+		at = next
+	}
+	return objects(at), problems
+}
+
+// logTheAddedFieldsRemoved logs how many of each of the four added fields withoutTheAddedFields
+// removed from this build's answer to the read at path (removed, by name), and where shape placed
+// them.
+func logTheAddedFieldsRemoved(t *testing.T, path string, shape addedFields, removed map[string]int) {
 	t.Helper()
-	encoded, err := json.Marshal(answer)
+	if len(shape.nodes)+len(shape.members) == 0 {
+		t.Logf("GET %s: removed none of the four added fields from this build's answer, which places no graph node and no closure member", path)
+		return
+	}
+	t.Logf("GET %s: removed from this build's answer %d \"state\" and %d \"visibility\" field(s) of its nodes (%s), and %d \"address\" and %d \"kind\" field(s) of its members (%s)",
+		path, removed["state"], removed["visibility"], strings.Join(shape.nodes, ", "),
+		removed["address"], removed["kind"], strings.Join(shape.members, ", "))
+}
+
+// foundText is value as JSON, as a problem names what it found.
+func foundText(value any) string {
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("encode a read's answer: %v", err)
+		return fmt.Sprintf("%v", value)
 	}
 	return string(encoded)
 }
