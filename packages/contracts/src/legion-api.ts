@@ -1002,6 +1002,58 @@ const legionHeldIssue = z.object({
   heldBy: z.array(issueKey).optional(),
 });
 
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who changed
+ * the admission cap (contract 244): the controller, with the session it acted from, or the
+ * operator, who acts from none. The daemon's store holds these two shapes and no other
+ * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
+ * `20261115194357_project_pause`, `project_admission_cap_changes_by_session` in
+ * `20261124040825_admission_cap`), so a controller's entry always names its session, and the
+ * reader requires it: the controller's `read_state` summary names the session of each controller
+ * it prints (LEGION_ANSWER_READS). */
+const legionPauseActor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
+  z.object({ kind: z.literal("operator") }),
+]);
+
+/** `api.AdmissionCapOverride` — the admission cap the controller or the operator set while the
+ * daemon runs and that stands (contract 244, dispatch://INFRA-5616): `cap`, the cap set, which may
+ * stand above `ceiling` where a later configuration lowered the ceiling; `setBy`, who set it;
+ * `setAt`, when; `reason`, why; and `tickId`, the regulator tick that set it, absent where no tick
+ * did. The controller's `read_state` summary prints every field (LEGION_ANSWER_READS), so each is
+ * required but `tickId`, which the daemon leaves off a change no tick made. */
+const legionAdmissionCapOverride = z.object({
+  cap: z.number().int().positive(),
+  setBy: legionPauseActor,
+  setAt: timestamp,
+  reason: nonEmptyString,
+  tickId: nonEmptyString.optional(),
+});
+
+/** `api.AdmissionCapChangeView` — one change of the admission cap as the state's
+ * `admission.capChanges` lists it, newest first, the newest 50 (contract 244). These names are the
+ * history a regulator's readings are compared with (dispatch://INFRA-979/spec#b-r39), and the
+ * daemon holds them as they stand: `id`, the change's own, rising; `cap`, the cap it set, absent
+ * for a clear, which returns the project to the deployment's cap; `capBefore` and `capAfter`, the
+ * caps the daemon admitted under before the change and from it on; `ceiling`, the deployment's cap
+ * then; `setBy`, who made it; `setAt`, when; `reason`, why; and `tickId`, the regulator tick that
+ * made it, absent for a person's change through the controller and for the operator's. A set of
+ * the cap that stands and a clear where none stands change nothing and are no entry. No plugin code
+ * reads a change, so every field is optional (LEGION_ANSWER_READS); `setBy` is the actor view, whose
+ * discriminator is required as every union's is, and whose `kind` and controller's `session` the
+ * read set names here as at the override, since the census matches a read by the field's name under
+ * its parent. */
+const legionAdmissionCapChange = z.object({
+  id: z.number().int().positive().optional(),
+  cap: z.number().int().positive().optional(),
+  capBefore: z.number().int().nonnegative().optional(),
+  capAfter: z.number().int().nonnegative().optional(),
+  ceiling: z.number().int().positive().optional(),
+  setBy: legionPauseActor.optional(),
+  setAt: timestamp.optional(),
+  reason: nonEmptyString.optional(),
+  tickId: nonEmptyString.optional(),
+});
+
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
@@ -1045,7 +1097,15 @@ const legionHeldIssue = z.object({
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
- * finds it absent has been served that stripped body and learns nothing about what is held. */
+ * finds it absent has been served that stripped body and learns nothing about what is held.
+ * `cap` is the cap the admission passes admit under: since contract 244 the smaller of the cap
+ * the controller or the operator set while the daemon runs and `ceiling`, the deployment's cap
+ * (legion.yaml's `admission_cap`, else `LEGION_ADMISSION_CAP`), or `ceiling` where none is set.
+ * `override` is that cap with who set it, when, why and at which tick, absent where none stands,
+ * and `capChanges` the newest changes of it (`legionAdmissionCapChange`). A daemon at contract 244
+ * writes `ceiling` and `capChanges` on every state, the list empty rather than null, and the three
+ * keys are optional here for the one reason `trees` is: the route strips them for a caller below
+ * 244 (`api.stateFor`, `withoutAdmissionCap`). */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
   active: z.array(nonEmptyString).optional(),
@@ -1054,6 +1114,9 @@ const legionAdmission = z.object({
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
   free: z.number().int().nonnegative().optional(),
+  ceiling: z.number().int().positive().optional(),
+  override: legionAdmissionCapOverride.optional(),
+  capChanges: z.array(legionAdmissionCapChange).optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1208,17 +1271,6 @@ const legionConsumerLag = z.object({
   stalled: z.boolean().optional(),
   unavailable: nonEmptyString.optional(),
 });
-
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 178): the
- * controller, with the session it acted from, or the operator, who acts from none. The daemon's
- * store holds these two shapes and no other (`project_pauses_by_session` and
- * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
- * controller's entry always names its session, and the reader requires it: the controller's
- * `read_state` summary names the session of each controller it prints (LEGION_ANSWER_READS). */
-const legionPauseActor = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
-  z.object({ kind: z.literal("operator") }),
-]);
 
 /** What every view of a pause carries: its id, when it began, who paused, and why. Each is
  * required: the controller's `read_state` summary names all four of the state's pauses
