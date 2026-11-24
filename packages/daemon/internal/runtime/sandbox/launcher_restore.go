@@ -159,9 +159,11 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 const keptVolumeHoldsLine = "launcher bundle: this pod's kept volume holds the workspace the saved workspace copy came off, so the copy is dropped and the pod is sent nothing of it"
 
 // keptVolumeDropFailedLine is the warning a drop of the copies a pod's kept volume holds that
-// failed is logged with (restoreWorkspace). The pod is sent nothing, and every copy stays as it
-// was for the issue's next start, which asks again.
-const keptVolumeDropFailedLine = "launcher bundle: the saved workspace copies that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and every copy stays for the next start"
+// failed is logged with (restoreWorkspace). The pod is sent nothing, and the next start of the
+// issue asks again. A drop that did not commit left every copy as it was; a drop whose outcome is
+// unknown (store.ErrCommitOutcomeUnknown) may have dropped them, which loses no work, since the
+// pod's kept volume holds it.
+const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspace copies that this pod's kept volume may hold failed, so the pod is sent nothing and the next start asks again"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
 // launcher: the bundle the issue's last idle release saved, and the copy the daemon took while
@@ -224,7 +226,9 @@ const keptVolumeDropFailedLine = "launcher bundle: the saved workspace copies th
 // closed copy is. A drop that deletes no copy leaves the take to run as for any pod: a copy taken
 // before the Sandbox was created came off an earlier volume, which a reset or a change of the
 // disk's shape replaced, and the take restores it. A drop that fails is logged and the pod is
-// sent nothing, as a take that fails: the rows are as they were, and the next start asks again.
+// sent nothing, as a take that fails, and the next start asks again: a failure that did not
+// commit left the rows as they were, and one whose outcome is unknown may have dropped the copies
+// the volume holds.
 // The drop runs at a role's start, after the pod's launcher connected, and that launcher runs
 // after both init containers of the pod. So a kept volume whose init failed never drops the copy
 // its reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the
@@ -276,7 +280,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	}
 	restore, err := d.saved(restoring, issue, podUID)
 	if err != nil {
-		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so the pod starts on what was pushed and every copy is left as it was",
+		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so the pod starts on what was pushed; where the take's outcome is unknown it may have recorded an attempt to this pod, which no pod is sent again once a role of this pod registers, and the work stays in the daemon's database",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}

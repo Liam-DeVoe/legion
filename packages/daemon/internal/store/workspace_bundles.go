@@ -285,7 +285,7 @@ func (s *Store) DropHeldWorkspaceCopies(ctx context.Context, project, issue, pod
 	case keptSince.IsZero():
 		return runtime.WorkspaceRestore{}, fmt.Errorf("the drop of the saved workspace copies of %s that a kept volume holds needs when the Sandbox of the pod %s was created", issue, podUID)
 	}
-	dropped, err := s.askWorkspaceCopies(ctx, project, issue, podUID, func(_ pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error) {
+	dropped, err := s.askWorkspaceCopies(ctx, project, issue, podUID, func(_ context.Context, _ pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error) {
 		bundleTake, runningTake, ask.Offered = runtime.DecideKeptVolumeDrop(bundle, running, podUID, keptSince)
 		return bundleTake, runningTake, nil
 	})

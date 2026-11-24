@@ -107,7 +107,7 @@ func requireSentOnce(t *testing.T, st *store.Store, g *rig, spec runtime.SpawnSp
 	g.r.launchers.restoreWorkspace(g.ctx, spec.Claim, string(g.pod(SandboxName(spec.Claim)).UID))
 	for _, frame := range g.sent(spec.Claim)[before:] {
 		if slice, ok := frame.(shimwire.LauncherBundle); ok {
-			t.Fatalf("a second hop was sent slice %d of %d, want nothing: the bundle had its one restore", slice.Index, slice.Count)
+			t.Fatalf("a second hop was sent slice %d of %d, want nothing: the restore was reported and the bundle's row is gone", slice.Index, slice.Count)
 		}
 	}
 }
@@ -148,10 +148,13 @@ func TestABundleTakeWhoseOutcomeIsUnknownIsSentOnceTheStoreAnswers(t *testing.T)
 	requireSentOnce(t, st, g, spec, saved)
 }
 
-// A take whose outcome stays unknown past its caller's bound says that the bundle's one restore
-// attempt may be spent. The run committed, so the row records the attempt, and a later take by the
-// same pod answers nothing, as after a send that failed halfway; the work stays in the database.
-func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.T) {
+// A take whose outcome stays unknown past its caller's bound says that the attempt and this pod's
+// first ask may be recorded. The run committed, so the row records the attempt to the pod. No role
+// of that pod has registered, so the copy is unspent: a later take by the same pod, which is what
+// its restarted container asks, is sent the same copy under the same restore id. Once a role of the
+// pod registers, the copy is spent and a take by the pod answers nothing, while the work stays in
+// the database.
+func TestABundleTakeWhoseOutcomeStaysUnknownLeavesTheCopyUnspentUntilARoleRegisters(t *testing.T) {
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
@@ -162,8 +165,8 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	defer cancel()
 	take, err := faulted.TakeWorkspaceCopyForRestore(ctx, testProject, testTree, podUID)
 	testdb.Met(t, fired)
-	if !errors.Is(err, store.ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "may be spent") {
-		t.Fatalf("the take whose outcome stayed unknown = %+v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the attempt may be spent", take, err)
+	if !errors.Is(err, store.ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "may be recorded") {
+		t.Fatalf("the take whose outcome stayed unknown = %+v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the attempt may be recorded", take, err)
 	}
 	fault.Refuse(false)
 	var attempt *string
@@ -173,9 +176,18 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	if attempt == nil || *attempt != podUID {
 		t.Fatalf("the bundle's attempt names %v, want %s: the run committed", attempt, podUID)
 	}
-	if again, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID); err != nil ||
-		again.ReleaseBundle.Take != runtime.WorkspaceBundleNone || again.Running.Take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a later take by the same pod = %+v, %v; want nothing: the attempt is spent", again, err)
+	again, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID)
+	if err != nil || again.ReleaseBundle.Take != runtime.WorkspaceBundleSend ||
+		!bytes.Equal(again.ReleaseBundle.Bundle.Bundle, saved.Bundle) || again.ReleaseBundle.Bundle.Release != saved.Release {
+		t.Fatalf("a later take by the same pod before any role of it registered = %+v, %v; want the copy sent again under restore id %d", again.ReleaseBundle, err, saved.Release)
+	}
+	if err := st.RecordPodRegistration(context.Background(), testTree, podUID); err != nil {
+		t.Fatalf("record the registration of a role of %s: %v", podUID, err)
+	}
+	if spent, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID); err != nil ||
+		spent.ReleaseBundle.Take != runtime.WorkspaceBundleNone || len(spent.ReleaseBundle.Bundle.Bundle) != 0 ||
+		spent.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("a take by the same pod after a role of it registered = %+v, %v; want nothing: the copy is spent", spent, err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || !held {
 		t.Fatalf("the store holds the bundle = %t (%v), want the work kept", held, err)
@@ -211,6 +223,41 @@ func TestARestoredBundleKeepWhoseReplyIsLostKeepsIt(t *testing.T) {
 	var source string
 	if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid from workspace_running_copies where issue = $1`, testTree).Scan(&source); err != nil || source != podUID {
 		t.Fatalf("the running copy's source = %q (%v), want %s: the work stays as the restoring pod's own copy", source, err, podUID)
+	}
+}
+
+// The restored running copy's confirmation runs on the same one report, so a confirmation whose
+// outcome was unknown waits for the store's answer too: the copy becomes the restoring pod's own,
+// under a new restore id, with no attempt left on it.
+func TestARestoredRunningCopyKeepWhoseReplyIsLostKeepsIt(t *testing.T) {
+	st := bundleStore(t)
+	saveRunningCopy(t, st, runningWorkspaceCopy("pod-the-running-copy-came-off"))
+	const podUID = "pod-that-restored-the-running-copy"
+	take, err := st.TakeWorkspaceCopyForRestore(context.Background(), testProject, testTree, podUID)
+	if err != nil || take.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the take of the running copy for %s = %+v, %v; want it sent", podUID, take, err)
+	}
+	restoreID := take.Running.Bundle.Release
+	faulted, fault := faultedBundleStore(t, st)
+	fired := fault.Cut("update workspace_running_copies", testdb.CutAfterCommitRefusing)
+	met := releaseAfter(fault, fired)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := faulted.KeepRestoredRunningWorkspaceCopy(ctx, testTree, podUID, restoreID); err != nil {
+		t.Fatalf("the restored running copy's confirmation = %v, want nil", err)
+	}
+	if !met.Load() {
+		t.Fatal("the armed fault met no COMMIT of the confirmation")
+	}
+	var source string
+	var id int64
+	var attempt *string
+	if err := st.Pool().QueryRow(context.Background(), `select source_pod_uid, restore_id, attempt_pod_uid from workspace_running_copies where issue = $1`, testTree).
+		Scan(&source, &id, &attempt); err != nil {
+		t.Fatalf("read the running copy: %v", err)
+	}
+	if source != podUID || id == restoreID || attempt != nil {
+		t.Fatalf("the running copy's source = %q, restore id %d (sent as %d), attempt %v; want %s, a new id and no attempt: the work stays as the restoring pod's own copy", source, id, restoreID, attempt, podUID)
 	}
 }
 

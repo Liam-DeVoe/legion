@@ -452,7 +452,7 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 	if podUID == "" {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs the pod it is sent to", issue)
 	}
-	restore, err := s.askWorkspaceCopies(ctx, project, issue, podUID, func(tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error) {
+	restore, err := s.askWorkspaceCopies(ctx, project, issue, podUID, func(ctx context.Context, tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error) {
 		// Nothing was released and no copy was taken, or every copy has been restored and
 		// dropped: the pod starts on what its fetch provisioned, having spent nothing.
 		if !bundle.Held() && !running.Held() {
@@ -465,7 +465,7 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 		return bundleTake, runningTake, nil
 	})
 	if errors.Is(err, ErrCommitOutcomeUnknown) {
-		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: their one restore attempt may be spent, and their work stays in the database", issue, podUID, err)
+		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: the attempt of each copy to this pod and the pod's first ask may be recorded, and the work stays in the database", issue, podUID, err)
 	}
 	if err != nil {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s to restore: %w", issue, podUID, err)
@@ -482,16 +482,21 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 // pod's first ask included. Otherwise it records the pod's first ask if this is it
 // (firstRestoreAsk), reads both copies for update (heldCopy), and has decide answer what the ask
 // does to each. decide fills the rest of the answer itself — the kind of the copy offered, or of
-// the newer copy — and may read more of tx, as the take reads the issue's newest push. The walk
-// then records each copy's take against the pod: nothing for WorkspaceBundleNone, the copy's two
-// times alone for WorkspaceBundleLeftForNextPod, the delete of a copy the pod's kept volume holds
-// (dropCopy), and the take of every other (takeCopy). A failure anywhere leaves every row as it
-// was, the first ask's included, and is answered unwrapped, so the caller names the act that
-// failed. It runs until one run commits (transactUntilCommitted): a run whose commit reply was
-// lost may have spent the copies' attempts, and a second run would find them spent and answer the
-// pod nothing.
+// the newer copy — and may read more of tx on the transaction's ctx, as the take reads the issue's
+// newest push. The walk then records each copy's take against the pod: nothing for
+// WorkspaceBundleNone, the copy's two times alone for WorkspaceBundleLeftForNextPod, the delete of
+// a copy the pod's kept volume holds (dropCopy), and the take of every other (takeCopy). A failure
+// that did not commit leaves every row as it was, the first ask's included, and is answered
+// unwrapped, so the caller names the act that failed. It runs until one run commits
+// (transactUntilCommitted): a rerun after a commit whose reply was lost reads the attempt that run
+// recorded, and sends the copy again while no role of the pod has registered (heldCopy). A run
+// whose outcome stays unknown (ErrCommitOutcomeUnknown) may have recorded the attempt and the
+// pod's first ask. The copy then stays unspent until a role of the pod registers, so a start of
+// the pod's roles before that asks again and is sent it; after it no pod is sent the copy, and its
+// work stays in the database. Only a committed refusal, supersession or drop answers a pod nothing
+// at once.
 func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID string,
-	decide func(tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
+	decide func(ctx context.Context, tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
 ) (runtime.WorkspaceRestore, error) {
 	var ask runtime.WorkspaceRestore
 	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -516,7 +521,7 @@ func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID s
 		if err != nil {
 			return err
 		}
-		bundleTake, runningTake, err := decide(tx, &ask, bundle, running)
+		bundleTake, runningTake, err := decide(ctx, tx, &ask, bundle, running)
 		if err != nil {
 			return err
 		}

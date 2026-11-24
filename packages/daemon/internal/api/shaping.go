@@ -1030,8 +1030,8 @@ const cachesSourceContract = 213
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
+// change's own number, and it is a number of answers.go's SupportedContracts, which names the
+// constant rather than its number for that reason.
 const assignmentPlanContract = 220
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

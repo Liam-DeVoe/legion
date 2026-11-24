@@ -533,7 +533,7 @@ Then:
   The key lands only with a `daemonImage` and a worker image that both carry this release:
   a daemon of an earlier release refuses at boot a key it does not know (`unknown key runtime.kubernetes.test_postgres_disk`), and an older image's launcher refuses the `--test-postgres-disk` flag and has no reset.
   A change that moves either pin back below this release takes the key out first.
-  This release raises the daemon API contract to 240 (`DaemonAPIVersion`, `packages/daemon/internal/api/version.go`) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
+  This release raises the daemon API contract to 241 (`DaemonAPIVersion`, `packages/daemon/internal/api/version.go`) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
   A pod whose key is off gets no such flag, and runs as it did before this release.
   Setting the key opens no update round, because the shape a pod records (`legion.dev/pod-shape`) does not hold it:
   a running pod keeps its `emptyDir` until it is replaced, and the pod that replaces it gets the disk.

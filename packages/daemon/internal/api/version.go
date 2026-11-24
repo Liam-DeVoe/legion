@@ -3395,11 +3395,11 @@ package api
 // that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
 // open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
 // pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
-// From this entry the last number of answers.go's SupportedContracts is
-// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
-// open pull request again at the next merge rather than from this line.)
+// `api.assignmentPlanContract`, after `OwnerPlanContract`, is a number of answers.go's
+// SupportedContracts, which names the constant rather than its number. Read the base's own number
+// and every open pull request again at the next merge rather than from this line.)
 //
-// 240: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 241: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -3421,11 +3421,14 @@ package api
 // (internal/claim/wire.go): the same 409 and opening sentence as StalePluginContract, with a
 // remedy that names the held stop rather than a relaunch. A plugin of any release stops on that
 // 409 as on the other, so the second remedy raises nothing.
+// From this entry the last number of answers.go's SupportedContracts is this change's own, after
+// `api.assignmentPlanContract`.
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, 510 of them, taken between 2026-11-23T23:54:49Z and 2026-11-24T00:07:08Z, read
-// main's 220, which its experiment group's entry took, above this change's 218, and every number
-// from 221 to 239 declared by another open head. So 240 is the lowest number above main's that no
-// other open head declared, and this entry takes it. It stood at 204, 207, 212, 216 and 218 before,
-// each the number it took at an earlier census. Read main's own number and every open pull
-// request's again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 240
+// this repository, 517 of them, taken between 2026-11-24T00:51:05Z and 01:10:32Z, read main's 220,
+// which its experiment group's entry took, above this change's 240, and every number from 221 to
+// 239 declared by another open head, and 240 declared by #4596 and #5271 as well. So 241 is the
+// lowest number above main's that no other open head declared, and this entry takes it. It stood at
+// 204, 207, 212, 216, 218 and 240 before, each the number it took at an earlier census. Read main's
+// own number and every open pull request's again at the next forward merge rather than from this
+// line.)
+const DaemonAPIVersion = 241
