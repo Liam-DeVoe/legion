@@ -367,6 +367,7 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) []string {
 // change read at 2 s and 6 s, without a wait, so it learnt of the grant from a read made after it,
 // which fails the row whatever the timing.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (runWaiting, buildRecordingBackoff, t.Setenv).
 	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, false, grantAfter)
@@ -399,6 +400,7 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 // time either process was held up (requireClientStep), in 2 status reads. A loop that slept its 2 s
 // backoff after every pending answer, a held one too, asks for that sleep.
 func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (runWaiting, buildRecordingBackoff, t.Setenv).
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
 	backoffs := runWaiting(t, b, key)
@@ -421,6 +423,7 @@ func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 // held read, which the exec form reads as a failed read and answers with its backoff, so R1's
 // second would become up to ten.
 func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
+	t.Parallel()
 	timeout := newClient(cipheraddr.New("http://broker.invalid")).http.Timeout
 	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; timeout <= limit {
 		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under the client's whole-call timeout (%s)", limit, timeout)
@@ -436,6 +439,7 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // learns of the grant from its second read: a run with no sleep fails only when it read more than
 // twice.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (runWaiting, buildRecordingBackoff, t.Setenv).
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
 	backoffs := runWaiting(t, b, key)

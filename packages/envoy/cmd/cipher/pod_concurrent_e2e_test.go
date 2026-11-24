@@ -44,6 +44,7 @@ import (
 // concurrently against one broker. Both must succeed and keep working: each ends up with a
 // launcher credential of its own, and the enrollment each made is live under its own key.
 func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	rig := ciphertest.NewRig(t)
 	// The schema of the release after #2777's, which is where each pod of a ServiceAccount holds
 	// a launcher credential of its own. Until then one pod's login takes the other's key over
@@ -140,6 +141,7 @@ func TestTwoPodsOfOneAccountEnrolThemselvesAtOnce(t *testing.T) {
 // renewal is a different proof (the session key's, not the login key's) that the real verifier
 // checks.
 func TestAPodEnrolsItselfAgainstTheRealBroker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	podUID := uuid.NewString()

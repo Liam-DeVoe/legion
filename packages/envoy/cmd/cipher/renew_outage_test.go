@@ -147,6 +147,7 @@ func (r *outageRig) after(cancel context.CancelFunc, t *testing.T) func(time.Dur
 // takes is asserted instant by instant against the model config.Load refuses by, so the two can
 // never say different things about the same renewer.
 func TestRenewLoopOutlivesAnOutageOnlyAtTheLeaseBound(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (renewalSession, t.Setenv); it signals the whole test process or changes its signal handling (renewalSession, sessionContext, chainSessionContext, buildChainSigner, selectSigner, signerChain, machineChainSource, registerMachine, registerMachineSession, Token, runGcloud, runRecorded, stop, signal.Stop).
 	const sweep = 10 * time.Second
 	model := leasetime.Production()
 	floor := model.ShortestFor(leasetime.RenewerAgentSecrets, sweep)

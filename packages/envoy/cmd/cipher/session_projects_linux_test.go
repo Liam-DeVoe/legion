@@ -58,6 +58,7 @@ func recordingHelper(t *testing.T) (string, func() []helper.Request) {
 // to the helper from AGENT_SECRETS_PROJECTS, sorted, and --projects overrides the variable; a list
 // that is no list is refused before the helper is asked.
 func TestRegisterReadsAgentSecretsProjects(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (stubLauncher, nearestLauncher =).
 	stubLauncher(t, 0, errNoLauncher)
 	sock, requests := recordingHelper(t)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)

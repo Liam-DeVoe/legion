@@ -38,6 +38,7 @@ import (
 // an account the profile does not name is refused 400 TARGET_REFUSED, nothing runs, and GitHub is
 // asked for no token.
 func TestTheExecFormReleasesAGitHubProfileNarrowedByItsTarget(t *testing.T) {
+	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
 	var asked []tokenRequest

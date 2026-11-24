@@ -37,6 +37,7 @@ func useRigSession(t *testing.T, rig *ciphertest.Rig) {
 // TestSecretCreateIsServedByTheBrokerAtOnce drives a create end to end: the CLI writes to (fake)
 // AWS and the broker serves the secret on its very next read, no reload.
 func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (cmdSecret, run, signal.Notify); it sets the package variable awsClients, which the package's other tests read (awsClients =).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -61,6 +62,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 // moment the CLI deletes it, and serves it again the moment the CLI restores it, each on the
 // CLI's own reread; a retag the broker would refuse is reported, and exits 1.
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable awsClients, which the package's other tests read (useAWS, awsClients =).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -94,6 +96,7 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 // rereads the name after that answer and serves the new secret, with no reload. The line it
 // prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
 func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	withNoBrokerIdentity(t)

@@ -20,6 +20,7 @@ import (
 // would trade and enroll again. The machine source refuses that before any trade, naming the
 // identity it found.
 func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (buildSigner, buildChainSigner, selectSigner, signerChain, machineChainSource, registerMachine, registerMachineSession, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable passwdHome, which the package's other tests read (passwdHome =).
 	isolateChain(t)
 	original := passwdHome
 	passwdHome = func() string { return "" }
@@ -47,6 +48,7 @@ func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
 // directory but the lock that orders them. keepFirst takes no hard link, so a home on a file system
 // without them keeps an audience too.
 func TestKeepFirstKeepsTheFirstOfManyWriters(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, googleAudienceFile)
 	const writers = 16

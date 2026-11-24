@@ -53,6 +53,7 @@ func (e echoingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 // permission and a message with no permission in it are the controls: the check sees the store's
 // answer.
 func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (useLentGCPAccessToken, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable awsClients, which the package's other tests read (useAWS, awsClients =).
 	planted := "hunter2pw-" + "storeecho-" + "4b1f"
 	const arn = "arn:aws:iam::111122223333:user/"
 	hex64 := strings.Repeat("a1b2c3d4", 4) + strings.Repeat("e5f6a7b8", 4)
@@ -152,6 +153,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 // repeat the credential in any of them. Control: from a clean address each field prints, so the
 // check sees the field.
 func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (runSecret, cmdSecret, run, loadClientConfig, clientConfig =).
 	planted := "hunter2pw-" + "settings-" + "0d3a"
 	for _, row := range []struct {
 		name     string
@@ -197,6 +199,7 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 // AGENT_SECRETS_URL that carries a credential neither prints: the write's lines name them as
 // cipheraddr.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
 func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	planted := "hunter2pw-" + "reread-" + "7e5b"
 	for _, row := range []struct {
 		name   string

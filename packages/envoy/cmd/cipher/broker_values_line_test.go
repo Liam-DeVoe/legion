@@ -113,6 +113,7 @@ func reachedAs(t *testing.T, srv *httptest.Server, host string) string {
 // approver it waits on, a session's enrollment, kind and operator and its grants' ids, Go-quoted
 // where the broker's answer holds a control character.
 func TestTheRequestFormsPrintTheBrokersValuesOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forgedBroker, t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	t.Run("request, pending", func(t *testing.T) {
 		forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{
 			"request_id": forged, "state": "pending", "approver": forged, "approve_url": "https://broker.example/approve/r-1", "detail": forged,
@@ -200,6 +201,7 @@ func TestTheRequestFormsPrintTheBrokersValuesOnOneLine(t *testing.T) {
 // broker's value as it came where it holds no control character, and Go-quoted where it holds
 // one, a tab among them, which would split the cell.
 func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
+	t.Parallel()
 	slot := forged
 	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	plain := OperatorGrant{GrantID: "grant-1", Granted: "approved", Names: []string{"A", "B"},
@@ -237,6 +239,7 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 // value, each prints as cipheraddr.WordsNotPrinted. Control: beside a clean address the same
 // values print, so the check sees them.
 func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	planted := "hunter2pw-" + "brokervalue-" + "51c7"
 	credentialed := func(t *testing.T, srv *httptest.Server) {
 		t.Setenv("AGENT_SECRETS_URL", strings.Replace(srv.URL, "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
@@ -300,6 +303,7 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 // broker made, prints as it came where it holds no control character and Go-quoted where it holds
 // one. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for register.
 func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (login, Token, runGcloud, runRecorded, stop, signal.Stop).
 	t.Run("enroll", func(t *testing.T) {
 		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"enroll-session-key": {OK: true, EnrollmentID: forged}})
 		t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -379,6 +383,7 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 // shape, 32 hex digits among them, is not printed, and the hint says so in place of a command
 // that would not run.
 func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	const shaped = "0f3b6c2e-5a1d-4e7f-9b80-2c4d6e8f0a1b"
 	const hex32 = "0123456789abcdef0123456789abcdef"
 	planted := "hunter2pw-" + "execid-" + "4c2d"
@@ -426,6 +431,7 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 // with an underscore, where the tables print a grant's id by the same rule as self; beside those
 // two, a UUID the address's path holds prints as Words in both tables.
 func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	uuidPassword := "3f1c9a2b" + "-7d4e-4a6b-9c21-" + "0e8f5d7a6b42"
 	hexPassword := "9b2e41c0" + "7d5f8a3e6b10" + "29c4d7e0f5a8"
 	dashed := func(pw string) string {

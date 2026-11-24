@@ -17,6 +17,7 @@ import (
 // answers every denial) decodes as nil rather than as an empty sentence no line could tell from a
 // real one.
 func TestTheClientDecodesARefusalsDetail(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (renewalSession, t.Setenv); it signals the whole test process or changes its signal handling (renewalSession, sessionContext, chainSessionContext, buildChainSigner, selectSigner, signerChain, machineChainSource, registerMachine, registerMachineSession, Token, runGcloud, runRecorded, stop, signal.Stop).
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	c, signer, _, _ := renewalSession(t, broker.URL)
@@ -49,6 +50,7 @@ func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 // of those lines is then exactly the line it was, with no empty detail line and no dangling
 // colon. Every case drives the one built binary, since a build costs more than all of them.
 func TestEveryLineAboutARefusalNamesTheSecretAndTheRule(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()

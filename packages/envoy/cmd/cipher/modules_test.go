@@ -185,6 +185,7 @@ var brokerModules = []string{
 // for each GOOS the release builds it for, as the release builds it, and holds the modules the
 // binary links to agentSecretsModules.
 func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
+	t.Parallel()
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos)})
@@ -197,6 +198,7 @@ func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 // not ship and the README says build without the value prompt, a value piped in standing for it:
 // Windows, FreeBSD, and a 32-bit Linux architecture.
 func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
+	t.Parallel()
 	for _, target := range []struct{ goos, goarch string }{{"windows", "amd64"}, {"freebsd", "amd64"}, {"linux", "386"}} {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
 			cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+target.goos, "GOARCH="+target.goarch)})
@@ -207,6 +209,7 @@ func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
 // TestTheBrokerBinaryLinksItsListedModules builds the broker, ../cipherd, for linux as its
 // image builds it, and holds the modules the binary links to brokerModules.
 func TestTheBrokerBinaryLinksItsListedModules(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "broker", Dir: filepath.Join("..", "cipherd"), Target: ".", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")})
 	requireModules(t, binary, brokerModules)
 }

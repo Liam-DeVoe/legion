@@ -85,6 +85,7 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 // before the proxy carried HTTP/2. The process is the command's own so the SDK's proxy and root
 // certificate caches, each read once per process, read this row's environment.
 func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv).
 	binary := buildAgentSecrets(t)
 
 	// Secret Manager: the fake, behind TLS with a certificate for its real name.

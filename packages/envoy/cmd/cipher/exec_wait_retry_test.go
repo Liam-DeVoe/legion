@@ -126,6 +126,7 @@ func flakyBroker(t *testing.T, polls []pollAnswer) (*httptest.Server, *atomic.In
 // naming the request, the last failure and the command that still collects the grant. A refusal
 // no retry changes (an unknown request's 404) still ends the wait at once.
 func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	reset, pending, granted := resetPoll, statePoll("pending"), statePoll("granted")
@@ -221,6 +222,7 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 // status poll: a transport failure, or a 429, 502, 503 or 504 with the broker's envelope or
 // without it, is polled again; every other refusal, and a call never sent, is not.
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
+	t.Parallel()
 	const base = "http://broker.example"
 	reset := unreachable(cipheraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
 	for _, row := range []struct {

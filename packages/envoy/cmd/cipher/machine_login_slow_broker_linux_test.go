@@ -28,6 +28,7 @@ import (
 // overlay, and a 12 s broker times the client out before the helper answers — the command exits
 // 1 with a transport timeout, the bug this client wait closes.
 func TestMachineLoginPrintsItsCodeAgainstASlowBroker(t *testing.T) {
+	t.Parallel()
 	const (
 		brokerDelay = 12 * time.Second
 		userCode    = "ABCD-EFGH"

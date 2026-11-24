@@ -29,6 +29,7 @@ import (
 //   - exits non-zero naming the status where the broker refuses the reread, so a person does not
 //     read a refusal as the reread done.
 func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable awsClients, which the package's other tests read (useAWS, awsClients =).
 	t.Run("the retag prints the command", func(t *testing.T) {
 		local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		broker := startSecretBroker(t, servedBy(local))

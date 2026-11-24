@@ -17,6 +17,7 @@ import (
 )
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
+	t.Parallel()
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("started-in-background=%t", background), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -49,6 +50,7 @@ func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
 // A stop the prompt takes while it waits in the background, before its label,
 // discards nothing: nothing has been typed for it yet.
 func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
@@ -75,6 +77,7 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 // never be brought to the foreground: it refuses, naming the pipe, rather than waiting forever,
 // and shows no label over the shell's line.
 func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	// Without job control a background command's standard input is /dev/null, so
 	// the subshell names the terminal for it.
@@ -105,6 +108,7 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 // that signal at once, without fg: the terminal is the shell's then, and a restore from the
 // background would stop the job until fg.
 func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ signal, report string }{{"TERM", "Terminated"}, {"HUP", "Hangup"}} {
 		t.Run(tc.signal, func(t *testing.T) {
 			s := newPromptShell(t)
@@ -148,6 +152,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 // no write of its own (a bracketed-paste-off mark would land on that shell's line, and its line
 // editor would read its next paste unbracketed).
 func TestPromptJobOrphanedByItsShellsExitLeavesTheTerminalAlone(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.reset() // the outer shell's prompt is no sign the inner one is up
 	s.send("bash --norc --noprofile -i\r")
@@ -175,6 +180,7 @@ func TestPromptJobOrphanedByItsShellsExitLeavesTheTerminalAlone(t *testing.T) {
 }
 
 func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
+	t.Parallel()
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("bg-before-fg=%t", background), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -211,6 +217,7 @@ func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
 }
 
 func TestPromptJobControlByteDrainsBeforeReturningToShell(t *testing.T) {
+	t.Parallel()
 	for _, control := range []string{"\t", "\x1b[D", "\x00"} {
 		t.Run(fmt.Sprintf("%x", control), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -228,6 +235,7 @@ func TestPromptJobControlByteDrainsBeforeReturningToShell(t *testing.T) {
 }
 
 func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_ANNOUNCE_IGNORED_STOP=1 "
 	s.start(true, false)
@@ -245,6 +253,7 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 }
 
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
+	t.Parallel()
 	for _, control := range []string{"\x00", "\t", "\x01", "\x7f"} {
 		controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond,
 			"\x1b[200~prefix"+control, "private-tail\n\x1b[201~")
@@ -258,6 +267,7 @@ func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
 }
 
 func TestPromptJobStopDuringQuietWindowDoesNotHang(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	// The helper holds the quiet window open until the Ctrl-Z comes, so the stop lands inside it
 	// however slowly this test runs; the window after the resume is not held.
@@ -276,6 +286,7 @@ func TestPromptJobStopDuringQuietWindowDoesNotHang(t *testing.T) {
 }
 
 func TestPromptJobStopDiscardsQueuedInputWithoutLeaking(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.start(false, false)
 	// A single write exercises the prompt's input flush without a scheduling gap.
@@ -299,6 +310,7 @@ func TestPromptJobStopDiscardsQueuedInputWithoutLeaking(t *testing.T) {
 // Ctrl-Z discards whatever follows it in the same write, as a fast typist's or a paste's keys
 // arrive: the prompt stops with the entry refused, and none of it reaches the shell.
 func TestPromptJobStopKeyDiscardsWhatFollowsIt(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.start(false, false)
 	s.send("partone\x1aparttwo\r")
@@ -317,6 +329,7 @@ func TestPromptJobStopKeyDiscardsWhatFollowsIt(t *testing.T) {
 // control byte and discards the paste through its end, in one write or with the rest arriving in a
 // later read, so none of the paste reaches the shell.
 func TestPromptJobSignalKeyInsideAPasteDrainsThroughItsEnd(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"\x03", "\x1a", "\x1c"} {
 		for _, later := range []bool{false, true} {
 			name := fmt.Sprintf("%x/one-write", key)
@@ -355,6 +368,7 @@ func TestPromptJobSignalKeyInsideAPasteDrainsThroughItsEnd(t *testing.T) {
 // the paste starts inside the quiet window, and its rest inside the paste's bound, however slowly
 // this test runs.
 func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"\x03", "\x1c", "\x1a", ""} {
 		name := fmt.Sprintf("%x", key)
 		if key == "" {
@@ -384,6 +398,7 @@ func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
 // rest, arriving in a later read, is discarded rather than run by the shell. The entry is refused
 // as more than one line.
 func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"\x03", "\x1c", "\x1a", ""} {
 		name := fmt.Sprintf("%x", key)
 		if key == "" {
@@ -417,6 +432,7 @@ func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
 // content run by the shell. The helper shortens the paste bound so the refusal does not wait the
 // full bound for a close mark that never comes.
 func TestPromptJobSplitPasteMarkAfterTheLineIsRead(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_HOLD_QUIET=1 AGENT_SECRETS_JOB_PASTE_BOUND=1s "
 	s.start(false, false)
@@ -436,6 +452,7 @@ func TestPromptJobSplitPasteMarkAfterTheLineIsRead(t *testing.T) {
 // helper shortens the paste bound so the refusal does not wait the full bound for a close mark
 // that never comes.
 func TestPromptJobSplitPasteMarkRestAfterTheQuietWindowIsRead(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_PASTE_BOUND=1s "
 	release := s.holdReads()
@@ -455,6 +472,7 @@ func TestPromptJobSplitPasteMarkRestAfterTheQuietWindowIsRead(t *testing.T) {
 // other: the prompt keeps reading, so its rest, arriving in a later read, is discarded rather than
 // run by the shell, and the pasted line is refused as more than one line.
 func TestPromptJobSecondPasteInThePastedLinesCloseIsRead(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	release := s.holdReads()
 	s.start(false, false)
@@ -471,6 +489,7 @@ func TestPromptJobSecondPasteInThePastedLinesCloseIsRead(t *testing.T) {
 // given up once it has fallen quiet for the whole bound without closing: the prompt ends, refusing
 // the entry, though the signal keys pressed meanwhile are pasted text. The helper shortens the bound.
 func TestPromptJobPasteThatNeverEndsIsGivenUp(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"\x03", "\x1c", "\x1a"} {
 		t.Run(fmt.Sprintf("%x", key), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -489,6 +508,7 @@ func TestPromptJobPasteThatNeverEndsIsGivenUp(t *testing.T) {
 // waits for it with the whole bound again, held until the line comes, and the lines keep coming for
 // longer than the bound in all; once they stop, the bound runs out and the paste is given up.
 func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_PASTE_BOUND=1s "
 	release := s.holdReads()
@@ -514,6 +534,7 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 // running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
 // deletes nothing.
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
+	t.Parallel()
 	for _, after := range []bool{false, true} {
 		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
 			stallRetries(t, func(s *promptShell) bool {
@@ -563,6 +584,7 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 // Ctrl-C leaves the entry open until Enter. (The paste case is
 // TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd.)
 func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T) {
+	t.Parallel()
 	const notice, live, end = "The value deadline passed with an entry under way", "Ctrl-C deletes it now", "Then run agent-secrets secret set DEMO_KEY again"
 	t.Run("the interrupt key live", func(t *testing.T) {
 		stallRetries(t, func(s *promptShell) bool {
@@ -611,6 +633,7 @@ func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T)
 // rather than waiting for fg past the time the broker holds a create's secret for: it ends with the
 // timeout, having shown no label and never taken the terminal.
 func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s "
 	s.start(false, true)
@@ -625,6 +648,7 @@ func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) 
 // would in a read of its own, so the pasted value is not stored. Ctrl-C and Ctrl-\ end the
 // process by their signals; Ctrl-Z stops it, and after fg the entry is refused.
 func TestPromptJobKeyAfterAPasteInOneWriteActs(t *testing.T) {
+	t.Parallel()
 	paste := "\x1b[200~pastevalue\r\x1b[201~"
 	for _, tc := range []struct{ key, status string }{{"\x03", "130"}, {"\x1c", "131"}} {
 		t.Run(fmt.Sprintf("%x", tc.key), func(t *testing.T) {
@@ -663,6 +687,7 @@ func TestPromptJobKeyAfterAPasteInOneWriteActs(t *testing.T) {
 // signal that comes during the prompt to the prompt, so the cleanup runs once, and only once the
 // prompt has restored the terminal.
 func TestPromptJobSignalRunsTheDeathCleanupFirst(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, key string
 		sig       syscall.Signal
@@ -699,6 +724,7 @@ func TestPromptJobSignalRunsTheDeathCleanupFirst(t *testing.T) {
 // has restored the terminal, and prints create's line for it first: Ctrl-C at the prompt, then a
 // termination, and the shell reports the termination's status.
 func TestPromptJobSecondSignalEndsAWaitingCleanupAtOnce(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_DEATH_HOOK=hang "
 	s.start(false, false)
@@ -721,6 +747,7 @@ func TestPromptJobSecondSignalEndsAWaitingCleanupAtOnce(t *testing.T) {
 // terminal stays open: it refuses, naming the pipe, rather than showing its label to nobody and
 // reading a value there.
 func TestPromptJobShellGoneRefuses(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.start(false, true)
 	s.send("exit\r")
@@ -735,6 +762,7 @@ func TestPromptJobShellGoneRefuses(t *testing.T) {
 // terminal that is no longer its controlling one: it refuses as when the shell exits under it,
 // rather than take the terminal for one job control never applied to.
 func TestPromptJobShellGoneBeforeThePromptStartsRefuses(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_AFTER_SHELL_EXIT=1 "
 	s.start(false, true)
@@ -750,6 +778,7 @@ func TestPromptJobShellGoneBeforeThePromptStartsRefuses(t *testing.T) {
 // echo on, while the job is stopped. After fg the prompt puts its own mode back before it reads
 // again, so the rest of the value stays hidden.
 func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.start(false, false)
 	s.send("head")
@@ -771,6 +800,7 @@ func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
 }
 
 func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
+	t.Parallel()
 	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGABRT} {
 		t.Run(sig.String(), func(t *testing.T) {
 			controller, terminal := openPTY(t)
@@ -866,6 +896,7 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 // to keep it from the shell, and when that discard fails the refused entry says so. discardInput has
 // never failed on a held terminal in practice; the helper makes it fail.
 func TestPromptJobStopDiscardFailureIsReported(t *testing.T) {
+	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_FAIL_DISCARD=1 "
 	s.start(false, false)

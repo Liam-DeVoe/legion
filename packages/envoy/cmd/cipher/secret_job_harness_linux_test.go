@@ -342,6 +342,7 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 }
 
 func TestPromptJobHelper(t *testing.T) {
+	// Not parallel: it signals the whole test process or changes its signal handling (watchCreateSignals, signal.Notify); it sets the package variable maxPasteDrain, which the package's other tests read (maxPasteDrain =).
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

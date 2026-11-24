@@ -26,6 +26,7 @@ import (
 // request naming 16 is granted at once. A broker with no such client takes either
 // (requests.TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects).
 func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *testing.T) {
+	t.Parallel()
 	dispatch := projectaccesstest.NewServer(t, nil, nil)
 	rig := ciphertest.NewRig(t, ciphertest.WithProjectAccess(projectaccess.New(dispatch.URL, dispatch.Account, nil)))
 	binary := buildAgentSecrets(t)

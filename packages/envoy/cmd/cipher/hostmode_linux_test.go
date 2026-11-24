@@ -75,6 +75,7 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan pe
 // pins is the very pid the command runs as — and that is unchanged by the launcher ancestor the
 // other forms now name.
 func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
+	t.Parallel()
 	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
 	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
@@ -129,6 +130,7 @@ func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 // from an unregistered process is. nocredential_linux_test.go covers identity inside a
 // registered session.
 func TestIdentityAsksARealHelperWithoutRegistering(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	env := append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
@@ -162,6 +164,7 @@ type launcherReport struct {
 // `identity` as its own children, reports both, and stays alive until its parent closes its
 // stdin, so the parent can read the helper's sessions while the launcher is still there.
 func TestRegisterLauncherHelper(t *testing.T) {
+	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
 	if os.Getenv("AGENT_SECRETS_LAUNCHER_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -192,6 +195,7 @@ func TestRegisterLauncherHelper(t *testing.T) {
 // command itself, which had already exited, and identity answered NOT_A_SESSION while register
 // had printed `enrolled` and exited 0.
 func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -277,6 +281,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 // root is the command's own process, with `enrolled` printed for it. The register request does
 // reach the helper: the name, which the verification's check k1 runs, now means no registration.
 func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
@@ -302,6 +307,7 @@ func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
 // it, so the register prints the session-scoped runtime id and `enrolled` and exits 0, and
 // identity from the same tree exits 0. `sh` stands for `claude` here.
 func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -464,6 +470,7 @@ func fixedLauncher(t *testing.T) int {
 // TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
 // --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
 func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -483,6 +490,7 @@ func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 // checks for the other forms that print an enrollment. It is here because register without
 // --exec takes the helper's answer only for a root above this process, which only Linux can check.
 func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelperByOp(t, map[string]helper.Response{"register": {OK: true, RuntimeID: forged, EnrollmentID: forged, State: forged, RootPID: launcher}})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -496,6 +504,7 @@ func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
 // TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero: with no positive --wait, a confirmed root
 // whose session is still enrolling is printed as that state, and the command exits 0.
 func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -510,6 +519,7 @@ func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
 // never pin its own process, which ends with the command) and names the session launcher it found
 // above itself as the root to pin. The fields go on the wire as attach and root_pid.
 func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -535,6 +545,7 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 // already (one `register --exec -- claude` started, say). Its answer for that session, rooted
 // above this process, is printed, and the command exits 0.
 func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (stubLauncher, nearestLauncher =).
 	stubLauncher(t, 0, errNoLauncher)
 	root := os.Getppid()
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: root})
@@ -568,6 +579,7 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 // the directories it makes go when this test ends, even when a stall kills it before its own
 // cleanup runs.
 func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
+	// Not parallel: it signals the whole test process or changes its signal handling (syscall.Kill(-).
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -651,6 +663,7 @@ type rootAboveReport struct {
 // test above builds: it names its parent the launcher, has the helper answer the launcher's
 // parent as the session's root, runs register, and prints a rootAboveReport line.
 func TestRegisterAcceptsARootAboveTheLauncherHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	if os.Getenv("AGENT_SECRETS_ROOT_ABOVE_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -671,6 +684,7 @@ func TestRegisterAcceptsARootAboveTheLauncherHelper(t *testing.T) {
 // which ends with the command, and says nothing about the root it pinned. Its `enrolled` is
 // never printed as success: the command refuses, naming the helper and the relaunch.
 func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -688,6 +702,7 @@ func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
 // above this command — the command's own process, which ends with it, or a child of it — is not
 // this session's root, so its `enrolled` is never printed.
 func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	fixedLauncher(t)
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
@@ -716,6 +731,7 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 // TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
 // and state isn't enrolled": the state is printed, and stderr says it is not enrolled yet and why.
 func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -731,6 +747,7 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 // register prints the session's line and exits 1 naming the refusal, whether it was asked to wait
 // or not: there is no enrollment to wait for.
 func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
 	for _, args := range [][]string{nil, {"--wait", "5"}} {
 		t.Run(strings.Join(append([]string{"register"}, args...), " "), func(t *testing.T) {
@@ -752,6 +769,7 @@ func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
 // (403 RESTRICTED_MEMBER_ENROLLS_NOTHING), the command still runs, and stderr says the broker
 // refuses the session, the helper asks no more, and the session launches with no secrets access.
 func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
+	t.Parallel()
 	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "refused", Error: refusal})
@@ -774,6 +792,7 @@ func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
 // up by starting the helper with no settings registers its sessions without exporting the variable.
 func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestLauncher, which the package's other tests read (fixedLauncher, stubLauncher, nearestLauncher =).
 	launcher := fixedLauncher(t)
 	runtimeDir := shortTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)

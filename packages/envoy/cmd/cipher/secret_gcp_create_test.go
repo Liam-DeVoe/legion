@@ -71,6 +71,7 @@ func count(calls []string, method string) int {
 // namespace - the create ends before it reads the value, piped or at the prompt, exiting 1 with the
 // store's refusal and the sign-in it refused, having written nothing and asked for no reread.
 func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable readHidden, which the package's other tests read (useTerminal, readHidden =).
 	for _, terminal := range []bool{false, true} {
 		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -107,6 +108,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 // exits as that failure does, says the empty secret it made is deleted and nothing stays, and
 // asks the broker to reread the name once.
 func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	for _, row := range []struct {
 		name   string
 		stdin  string
@@ -166,6 +168,7 @@ func requireNothingLeft(t *testing.T, fake *fakeSecretManager, broker *secretBro
 // that a late add may still land, and asks the broker to reread too; where the list is refused it
 // says which state is unknown. Each names the command that settles it and exits 1.
 func TestGCPSecretCreateWhoseStoreAnswerIsAmbiguousNeverDeletesTheValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	for _, row := range []struct {
 		name          string
 		refuse, after map[string]codes.Code
@@ -226,6 +229,7 @@ func TestGCPSecretCreateWhoseStoreAnswerIsAmbiguousNeverDeletesTheValue(t *testi
 // the store - and the command that clears it, and exits 1 even where the value's own refusal is a
 // usage error, since the store now holds something it did not hold before.
 func TestGCPSecretCreateWhoseEmptySecretCannotBeDeletedNamesIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	for _, row := range []struct {
 		name, stdin string
 		refuse      []string
@@ -279,6 +283,7 @@ func TestGCPSecretCreateWhoseEmptySecretCannotBeDeletedNamesIt(t *testing.T) {
 // UpdateSecret, as IAM refuses a teammate without secretmanager.secrets.update, and the create
 // still succeeds, making no such call: a create needs that permission nowhere.
 func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable gcpUserinfo, which the package's other tests read (useGCPIdentity, gcpUserinfo =).
 	fake := newFakeSecretManager()
 	fake.refuseMethods = map[string]codes.Code{"UpdateSecret": codes.PermissionDenied}
 	startFakeSecretManager(t, fake)
@@ -342,6 +347,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 // exits 1, never reads the value, and asks the broker to reread only a name whose secret it
 // deleted or left holding a version.
 func TestGCPSecretCreateWhoseCreateAnswerIsAmbiguousSettlesWhatItMade(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (refuseValueReads, secretStdin =).
 	otherCreate := map[string]string{createLabel: "0000000000000000ffffffffffffffff"}
 	describe := "`gcloud secrets describe agent-secrets-new-test --project " + testGCPProject + "`"
 	for _, row := range []struct {
@@ -448,6 +454,7 @@ var createLabelValue = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // having stored nothing; where the store refuses that delete too, it says so on stderr, naming the
 // secret that stays and the command that clears it. Once the create returns, nothing is left set.
 func TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable gcpUserinfo, which the package's other tests read (useGCPIdentity, gcpUserinfo =).
 	for _, refuseDelete := range []bool{false, true} {
 		t.Run(fmt.Sprintf("delete refused=%t", refuseDelete), func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -490,6 +497,7 @@ func TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret(t *testin
 // Installing the watcher before begin must not let an interrupt delete a secret this create
 // never made, even if the requested name already exists.
 func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (openSession, openSecretBackend, newGCPBackend, signIn, signInWithGcloud, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable gcpUserinfo, which the package's other tests read (useGCPIdentity, gcpUserinfo =).
 	fake := newFakeSecretManager()
 	fake.secrets[newTestID] = &fakeSecret{secret: &secretmanagerpb.Secret{Name: newTestID}}
 	startFakeSecretManager(t, fake)
@@ -513,6 +521,7 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 // Refusing this create's input must not delete a value another writer added while the prompt
 // was open, or a replacement secret that now holds the name.
 func TestGCPSecretCreateDiscardPreservesConcurrentWriters(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable gcpUserinfo, which the package's other tests read (useGCPIdentity, gcpUserinfo =).
 	for _, replace := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replace=%t", replace), func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -551,6 +560,7 @@ func TestGCPSecretCreateDiscardPreservesConcurrentWriters(t *testing.T) {
 // Recovery from a lost initial answer can delete a container the broker saw while it waited.
 // That deletion must invalidate the broker just like a discard after the value prompt does.
 func TestGCPSecretCreateLostAnswerCleanupRereadsBroker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (refuseValueReads, secretStdin =).
 	fake := newFakeSecretManager()
 	fake.answerAfter = map[string]codes.Code{"CreateSecret": codes.Unavailable}
 	startFakeSecretManager(t, fake)
@@ -565,6 +575,7 @@ func TestGCPSecretCreateLostAnswerCleanupRereadsBroker(t *testing.T) {
 }
 
 func TestGCPSecretCreateDiscardRejectsReplacementDuringDelete(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	fake := newFakeSecretManager()
 	fake.beforeCall = func(method string) {
 		if method == "DeleteSecret" {
@@ -600,6 +611,7 @@ func (blockedStdin) Read([]byte) (int, error) { select {} }
 // exits 1 naming the window and the command to run again, with nothing stored. The create is
 // timed against its window, less the time this process was held up (endsByItsDeadline).
 func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable valueReadWindow, which the package's other tests read (valueReadWindow =).
 	if valueReadWindow != policy.PendingValueWindow || policy.PendingValueWindow != 10*time.Minute {
 		t.Fatalf("the create reads its value for %s and the broker holds it pending for %s; want both ten minutes", valueReadWindow, policy.PendingValueWindow)
 	}
@@ -639,6 +651,7 @@ func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 // name, and exits 1 naming the permission and the sign-in, never reading the value. Where IAM
 // cannot be asked, the create goes on to the prompt, and the add itself is the check.
 func TestGCPSecretCreateWithoutTheRightToAddAValueAsksForNone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	t.Run("withheld", func(t *testing.T) {
 		fake := newFakeSecretManager()
 		fake.withheld = []string{"secretmanager.versions.add"}
@@ -678,6 +691,7 @@ func TestGCPSecretCreateWithoutTheRightToAddAValueAsksForNone(t *testing.T) {
 // values of their own, so neither can take the other's secret for its own when it settles a lost
 // answer.
 func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -711,6 +725,7 @@ func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
 // same identity for gcloud (the key file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login as
 // CLOUDSDK_CORE_ACCOUNT, the configuration as CLOUDSDK_ACTIVE_CONFIG_NAME) and names it.
 func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (signIn, signInWithGcloud, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	for _, mode := range []struct {
 		name   string
 		signIn func(t *testing.T)
@@ -787,6 +802,7 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 // never outruns, is the one to print it: the failure, with what it left, prints once, by the
 // signal's cleanup.
 func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (openSession, openSecretBackend, newGCPBackend, signIn, signInWithGcloud, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable gcpUserinfo, which the package's other tests read (useGCPIdentity, gcpUserinfo =).
 	fake := newFakeSecretManager()
 	fake.answerAfter = map[string]codes.Code{"CreateSecret": codes.Unavailable}
 	startFakeSecretManager(t, fake)
@@ -831,6 +847,7 @@ func (w *signalAtFirstWrite) Write(p []byte) (int, error) {
 // is over, so a signal that comes as it prints finds no cleanup set and prints nothing more: one
 // line, whether the begin left nothing or left the empty secret it could not delete.
 func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (refuseValueReads, secretStdin =).
 	for _, row := range []struct {
 		name   string
 		refuse map[string]codes.Code
@@ -866,6 +883,7 @@ func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 // `versions: none`; a read back that fails says the store may still hold it, with the commands that
 // tell and clear it, and never that it stays.
 func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	const (
 		readBackFails   = "the read back refused"
 		versionAdded    = "another writer's version added"
@@ -957,6 +975,7 @@ func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) 
 // no such key, ending the process; inside an open paste, where Ctrl-C is pasted text, finishing the
 // paste first. The prompt is stubbed to give that notice, then end as the entry's Enter does.
 func TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable readHidden, which the package's other tests read (readHidden =).
 	for _, row := range []struct {
 		name      string
 		notice    valueDeadlineNotice

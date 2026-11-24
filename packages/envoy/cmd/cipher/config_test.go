@@ -42,6 +42,7 @@ func unsetenv(t *testing.T, name string) {
 }
 
 func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (unsetenv, t.Setenv); it sets the package variable clientConfig, which the package's other tests read (writeClientConfig, clientConfig =).
 	path := writeClientConfig(t, "# the secrets broker\nAGENT_SECRETS_URL=https://secrets.example/\n\nAGENT_SECRETS_SIGNIN_CLIENT_ID = device-client\n")
 	unsetenv(t, "AGENT_SECRETS_URL")
 	unsetenv(t, "AGENT_SECRETS_SIGNIN_CLIENT_ID")
@@ -60,6 +61,7 @@ func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 }
 
 func TestAVariableWinsOverTheConfigFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable clientConfig, which the package's other tests read (writeClientConfig, clientConfig =).
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "https://from-the-environment.example")
 	if err := loadClientConfig(); err != nil {
@@ -71,6 +73,7 @@ func TestAVariableWinsOverTheConfigFile(t *testing.T) {
 }
 
 func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable clientConfig, which the package's other tests read (writeClientConfig, clientConfig =).
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "")
 	if err := loadClientConfig(); err != nil {
@@ -82,6 +85,7 @@ func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
 }
 
 func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (writeClientConfig, t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (writeClientConfig, clientConfig =).
 	for name, line := range map[string]string{
 		"a key the file does not take": "AWS_PROFILE=operator",
 		"a shell export":               "export AGENT_SECRETS_URL=https://secrets.example",
@@ -105,6 +109,7 @@ func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
 // identity to and the identity it proves, so a file its group or others can write is a usage error
 // naming the file and the fix, and nothing in it is read. A file others can only read is taken.
 func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (unsetenv, t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (writeClientConfig, clientConfig =).
 	for name, mode := range map[string]os.FileMode{"its group can write it": 0o620, "anyone can write it": 0o602} {
 		t.Run(name, func(t *testing.T) {
 			path := writeClientConfig(t, "AGENT_SECRETS_URL=https://secrets.example\n")
@@ -142,6 +147,7 @@ func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 // owner whatever its mode, so it is a usage error naming the file and its owner, and nothing in it
 // is read. A file root owns is taken, as OpenSSH takes one: root can change any file anyway.
 func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (unsetenv, t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable fileOwner, which the package's other tests read (fileOwner =).
 	owner := func(t *testing.T, uid int) {
 		t.Helper()
 		original := fileOwner
@@ -174,6 +180,7 @@ func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
 }
 
 func TestNoConfigFileIsNoError(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (clientConfig =).
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_SECRETS_URL", "https://secrets.example")
 	t.Cleanup(func() { clientConfig = nil })

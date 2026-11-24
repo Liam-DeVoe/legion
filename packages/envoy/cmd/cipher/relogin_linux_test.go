@@ -35,6 +35,7 @@ import (
 // grant values. Once the broker refuses that credential, login-status exits 1 saying so, and a
 // re-login denied while the helper holds no credential reads denied and exits 1.
 func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	srv, sock := serveRealHelper(t, rig.URL, rig.Operator)

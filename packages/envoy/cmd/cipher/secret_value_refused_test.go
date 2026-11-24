@@ -35,6 +35,7 @@ import (
 // `secret set` stores a value the decoder reads, the reread it asks for writes one
 // ServableMessage line, both series are gone, and a release of the secret mints.
 func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv); it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	var tokensAsked atomic.Int32

@@ -154,6 +154,7 @@ func liveIDs(rows []brokerEnrollment) []string {
 // before the exit is judged, and every failure names the exit, both streams and those rows, so a
 // failure shows whether the broker made an enrollment the client was not told about.
 func TestEnrollThroughTheHelperAnswersTheBrokersOutcomeWhenTheBrokerIsSlow(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	slow := &slowEnrollments{base: http.DefaultTransport, hold: 8 * time.Second}

@@ -48,6 +48,7 @@ func recordBrokerCalls(t *testing.T) func() []string {
 // for its settings and for a reread and for nothing else: no request (POST /v1/requests) and no
 // grant route, which is how a credential leaves the broker.
 func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (onEachStore, useAWS, t.Setenv); it signals the whole test process or changes its signal handling (onEachStore, useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		calls := recordBrokerCalls(t)
