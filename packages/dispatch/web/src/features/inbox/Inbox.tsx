@@ -1593,9 +1593,9 @@ function InboxBody({
             return `${you ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`;
           }}
           optionDetailLabel={(value) => {
-            const you = value === viewer;
-            if (!threads.answered) return you ? "you" : undefined;
-            return `${you ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
+            // While the thread read is out, the detail as drawn names the row: "you" or none.
+            if (!threads.answered) return undefined;
+            return `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
           }}
           optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
           options={assigneeOptions}

@@ -580,7 +580,7 @@ function inSight(element: Element, boxes: Iterable<Element>, moved?: MovedUp): b
 }
 
 /** The overflow values that clip what overflows a box. */
-const CLIPPING_OVERFLOW: Record<string, true> = {
+export const CLIPPING_OVERFLOW: Record<string, true> = {
   auto: true,
   clip: true,
   hidden: true,
@@ -745,9 +745,9 @@ const LONE_MODIFIERS: Readonly<Record<string, true>> = {
  *  caused from one an update made under them (`causedByReader`, `pressOnRowMark`), and what the
  *  reader could see of the focused element while it was armed (`outOfSight`). */
 interface ArmedPress {
-  /** Adds `root` to the roots the press was armed at (`roots`), and the controls held in it now
-   *  (`HELD`) to those held before the press (`holds`): the same press heard at a component's
-   *  root inside another's is armed at both. */
+  /** Adds `root` to the roots the press was armed at (`roots`), and, where no root already added
+   *  holds it in the page, the controls held in it now (`HELD`) to those held before the press
+   *  (`holds`): the same press heard at a component's root inside another's is armed at both. */
   readonly addRoot: (root: Element) => void;
   /** The holds on what answers the press, begun while it is armed, that are still on
    *  (`holdHandOff`). */
@@ -762,11 +762,11 @@ interface ArmedPress {
   readonly end: () => void;
   /** Whether `pressed` is, or is inside, a control the press holds now by a hold that began after
    *  it (`HELD`): its own control, held where it was not as the press was made, or a control in a
-   *  root it was armed at that was not held as that root was added - the Inbox bar's Snooze
-   *  selected asks, held while the snooze its pick in the open list sent is out. A press there
-   *  takes nothing but the hold, and leaves this press the cause (`armHandOff`). It needs neither
-   *  the press's control nor the list it was made in still in the page: the pick takes both
-   *  away. */
+   *  root it was armed at that was not held when the press first read a root around it
+   *  (`addRoot`) - the Inbox bar's Snooze selected asks, held while the snooze its pick in the
+   *  open list sent is out. A press there takes nothing but the hold, and leaves this press the
+   *  cause (`armHandOff`). It needs neither the press's control nor the list it was made in still
+   *  in the page: the pick takes both away. */
   readonly holds: (pressed: Element) => boolean;
   /** The focused element and the dialog, panel or selection bar around it (`PRESS_REGION`), read
    *  at the arm and at every focus while the press is armed, which `pressRegionOf` reads for an
@@ -927,12 +927,20 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   const madeIn = control.closest(PRESS_REGION) ?? control.closest("main");
   const roots = new Set<Element>();
   /** The controls of `roots` already held as each root was added (`addRoot`): their holds began
-   *  before the press, so a press on one is the reader's next act (`holds`). */
+   *  before the press, so a press on one is the reader's next act (`holds`). A root that a root
+   *  already added holds in the page adds none: within the press that armed both, the outer
+   *  root's read already took what is held in it, and a root first heard after the arm - the
+   *  project List's table body, reached by a press on its Start next that the selection bar's
+   *  Take out of epic holds - would count a control held since the arm as held before it. A
+   *  portal's root first heard after the arm, which no root added holds in the page, still adds
+   *  the controls held in it as it is heard. */
   const heldAtArm = new Set<Element>();
   const addRoot = (added: Element) => {
     if (roots.has(added)) return;
+    let covered = false;
+    for (const each of roots) covered ||= each.contains(added);
     roots.add(added);
-    for (const held of added.querySelectorAll(HELD)) heldAtArm.add(held);
+    if (!covered) for (const held of added.querySelectorAll(HELD)) heldAtArm.add(held);
   };
   if (root !== undefined) addRoot(root);
   const holds = (pressed: Element) => {
@@ -1106,25 +1114,39 @@ function pressPlaces(element: Element): Element[] {
 /**
  * Whether the reader caused the loss of `element`'s focus: the armed press (`armHandOff`) is
  * still live, and one of `element`'s places (`pressPlaces`) - the element, any row it was in, or
- * the dialog, panel or selection bar it was lost from - is the press's control or holds it, or
- * holds a root the press was armed at (`ArmedPress`'s `roots`), as a pick in a list portalled out
- * of the selection bar is a press in the bar. A loss the reader caused keeps the hand-off that
- * pulls the focus to the control now at the lost one's place; one they did not - a live update
- * taking a row away, a refetch emptying a bar - and every loss with nothing armed leaves the focus
- * on the body, and scrolls nothing. Every component hand-off that can move the focus to another
- * row reads this one rule; a hand-off to the lost control's own row, as AskCard's is, is no move
- * to another row.
+ * the dialog, panel or selection bar it was lost from - holds the press (`pressMadeIn`), as a pick
+ * in a list portalled out of the selection bar is a press in the bar. A loss the reader caused
+ * keeps the hand-off that pulls the focus to the control now at the lost one's place; one they did
+ * not - a live update taking a row away, a refetch emptying a bar - and every loss with nothing
+ * armed leaves the focus on the body, and scrolls nothing. Every component hand-off that can move
+ * the focus to another row reads this one rule; a hand-off to the lost control's own row, as
+ * AskCard's is, is no move to another row.
  */
 export function causedByReader(element: Element): boolean {
+  return armed !== null && pressPlaces(element).some((place) => pressMadeIn(place));
+}
+
+/** Whether the armed press (`armHandOff`) is live and was made inside `place`: `place` is the
+ *  press's control or holds it, or holds a root the press was armed at (`ArmedPress`'s `roots`).
+ *  It reads `place` alone, never the places around it: where no focused element says where a
+ *  press was - WebKit leaves the focus on the body after a click on a button - a component asks
+ *  it of its own element, as the Inbox's anchor does of the page's control row
+ *  (`ViewportAnchor`'s `pressedRow`). */
+export function pressMadeIn(place: Element): boolean {
   const press = armed;
   if (press === null) return false;
-  return pressPlaces(element).some((place) => {
-    if (place.contains(press.control)) return true;
-    for (const root of press.roots) {
-      if (place.contains(root)) return true;
-    }
-    return false;
-  });
+  if (place.contains(press.control)) return true;
+  for (const root of press.roots) {
+    if (place.contains(root)) return true;
+  }
+  return false;
+}
+
+/** Whether a press is armed (`armHandOff`): with none, no place holds a press (`pressMadeIn`),
+ *  so a component asks this before it searches the page for the place to ask that of
+ *  (`ViewportAnchor`'s `pressedRow`). */
+export function pressArmed(): boolean {
+  return armed !== null;
 }
 
 /** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the

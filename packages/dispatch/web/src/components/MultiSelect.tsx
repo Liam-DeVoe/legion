@@ -36,7 +36,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
+import { AnchoredPanel, type PanelDismissal, scrollToShow, shownSpan } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
@@ -622,22 +622,17 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // then picks unseen. The panel scrolls the least that shows the row whole between the sticky
   // text box and the foot - the sticky foot, or the panel's own bottom where the foot follows the
   // rows (a menu on a coarse pointer) - so a row already whole scrolls nothing. Only the panel's
-  // own box scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which scrolls the
-  // window too. Laid out before the browser paints, so the row is never drawn out of sight first.
+  // own box scrolls, never the window (`scrollToShow`). Laid out before the browser paints, so the
+  // row is never drawn out of sight first.
   useLayoutEffect(() => {
     const row = activeId === undefined ? null : document.getElementById(activeId);
     const head = headRef.current;
     const box = head?.parentElement ?? null;
     if (row === null || head === null || box === null) return;
-    const shownTop = head.getBoundingClientRect().bottom;
-    const boxBottom = box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
-    const shownBottom = Math.min(
-      footRef.current?.getBoundingClientRect().top ?? boxBottom,
-      boxBottom
-    );
-    const { bottom, top } = row.getBoundingClientRect();
-    if (top < shownTop) box.scrollTop -= shownTop - top;
-    else if (bottom > shownBottom) box.scrollTop += bottom - shownBottom;
+    const top = head.getBoundingClientRect().bottom;
+    const boxBottom = shownSpan(box).bottom;
+    const bottom = Math.min(footRef.current?.getBoundingClientRect().top ?? boxBottom, boxBottom);
+    scrollToShow(box, row.getBoundingClientRect(), { bottom, top });
   }, [activeId]);
 
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:

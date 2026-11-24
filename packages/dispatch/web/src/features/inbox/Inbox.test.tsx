@@ -24,6 +24,7 @@ import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import {
   highlightedRow,
   rows as listRows,
+  optionNames,
   optionOf,
   panelOf,
   pickNamed,
@@ -2523,16 +2524,12 @@ test("text typed that hides a row leaves that row counted in the Filter panel", 
 });
 
 /** Each row of one filter field's own listbox (`label`, as `DIMENSION_LABELS` names it), by the
- *  name it is read out as: its `aria-label` where it has one, else its text, as a row with no
- *  count beside it is named by its label alone. Escape closes the list again, so the next read
- *  opens its own. */
+ *  name it is read out as (`optionNames`). Escape closes the list again, so the next read opens
+ *  its own. */
 async function fieldOptionNames(user: UserEvent, label: string): Promise<string[]> {
   await openFilterFields(user);
   await user.click(screen.getByRole("button", { name: `Filter by ${label.toLowerCase()}` }));
-  const listbox = await screen.findByRole("listbox", { name: `${label} options` });
-  const names = within(listbox)
-    .getAllByRole("option")
-    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+  const names = optionNames(await screen.findByRole("listbox", { name: `${label} options` }));
   await user.keyboard("{Escape}");
   return names;
 }
