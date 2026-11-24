@@ -33,11 +33,8 @@ import (
 // budget, against 2.01 s in a shared pod. The plan shows which form the statement takes on any
 // machine.
 //
-// The statement is the one the server builds and binds: refs.Closure runs through
-// explaintest.RecordedTx, in a transaction the test rolls back, as the acting reader of the
-// route's test request (X-Dispatch-User: alice, resolved by the server's actingReader), and the in
-// statement is the one statement it sent that holds `targets (kind, id)`. Both plans are printed
-// in text form.
+// The statement is the one the server builds and binds (referencesInStatement). Both plans are
+// printed in text form.
 //
 // Negative control: with main's array put back in oneRowPerNode, `where not (row(f.node_kind,
 // f.node_id) = any(array(select row(x.kind, x.id) from ` + own + ` x)))`, the plan holds no

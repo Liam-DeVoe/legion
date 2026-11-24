@@ -33,15 +33,15 @@ const (
 // lists each of the 500 documents that hold those blocks once.
 //
 // The seed stands for production, where 17 issues never got a 200 from the route and 57 of its 65
-// statement timeouts were in its in statement (refs' linksInQuery). The issue holds 40 documents of
-// 50 blocks, so its own targets are 2,041 - the issue, its 40 documents and their 2,000 blocks - as
-// are those of the issue measured on a copy of a dispatch:local database seeded at production's
-// size (block_refs 876,018 rows). There the in statement read 5,000 links into it in 3.44-3.48 s
-// while it left the issue's own targets out by a test against an array, and in 0.27-0.36 s by the
-// anti-join it reads now (refs' oneRowPerNode). Here 500 documents of 20 blocks link into the
-// issue's documents, each block mentioning one of their 2,000 blocks: 10,000 links, 5 into each
-// block. The server's sessions run with JIT off, as production's Cloud SQL runs every statement:
-// it does not support PostgreSQL's LLVM JIT.
+// statement timeouts were in its in statement (refs' linksInQuery). The issue holds its spec and
+// 40 documents of 50 blocks, so its own targets are 2,042 - the issue, its 41 documents and their
+// 2,000 blocks - one more than the 2,041 of the issue measured on a copy of a dispatch:local
+// database seeded at production's size (block_refs 876,018 rows). There the in statement read
+// 5,000 links into it in 3.44-3.48 s while it left the issue's own targets out by a test against
+// an array, and in 0.27-0.36 s by the anti-join it reads now (refs' oneRowPerNode). Here 500
+// documents of 20 blocks link into the issue's documents, each block mentioning one of their 2,000
+// blocks: 10,000 links, 5 into each block. The server's sessions run with JIT off, as production's
+// Cloud SQL runs every statement: it does not support PostgreSQL's LLVM JIT.
 //
 // seedLinkedInto writes the seed. One document of each side is written through the API, and the
 // rest are copies of its rows written in SQL (seedDocumentCopies), so the rows the read reads are
@@ -102,10 +102,10 @@ type linkedIntoSeed struct {
 
 // seedLinkedInto writes the seed TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks
 // describes, which TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin reads too,
-// on a database of its own whose server reads it with JIT off: an issue whose 40 documents hold 50
-// blocks each, and 500 other documents of 20 blocks, each block mentioning one of the issue's
-// 2,000. It fails t unless the issue's documents hold 2,000 blocks and 10,000 block links reach
-// them.
+// on a database of its own whose server reads it with JIT off: an issue whose 40 documents beside
+// its spec hold 50 blocks each, and 500 other documents of 20 blocks, each block mentioning one of
+// the issue's 2,000. It fails t unless the issue's documents hold 2,000 blocks and 10,000 block
+// links reach them.
 func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	t.Helper()
 	ctx := context.Background()
