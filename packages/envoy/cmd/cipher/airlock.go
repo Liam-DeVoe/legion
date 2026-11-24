@@ -232,13 +232,13 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 	// Each file is written under the build directory and names the paths the command will read,
 	// which are the ones under dir: the wgetrc carries the bundle's path to wget, and a path
 	// under the build directory would be gone by the time the command read it.
-	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), trustBundle(environ, release.CACertificate), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), trustBundle(environ, release.CACertificate)); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the trust bundle: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(build, "wgetrc"), wgetrcFor(environ, files.bundle), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "wgetrc"), wgetrcFor(environ, files.bundle)); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the wgetrc: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(build, "expires"), []byte(expiresText(expiresAt)), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(build, "expires"), []byte(expiresText(expiresAt))); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the airlock expiry: %w", err)
 	}
 	if err := os.Rename(build, dir); err != nil {
