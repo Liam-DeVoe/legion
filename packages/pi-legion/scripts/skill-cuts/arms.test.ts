@@ -14,6 +14,7 @@ import {
   type ArmName,
   autoloadedText,
   buildArm,
+  caseNameCopy,
   type DispatchAnswer,
   dispatchOf,
   InjectionRefused,
@@ -540,7 +541,8 @@ test("old holds the profile's skills; ours holds them with ours in place of thei
 // stays readable at another path, or ours listed twice.
 test("the ours arm leaves out every copy of their skill's source, a namespaced one too, and lists ours once under its own name", () => {
   const [alpha, beta] = f1Case.profile.skills;
-  // Another repository's alpha, listed as tools/alpha: it stays as the profile has it.
+  // Another repository's alpha, listed as tools/alpha: once their copies are gone, the arm lists
+  // it under the bare name, as none does.
   const tools = {
     repo: "acme/tools",
     commit: "0123456789abcdef",
@@ -561,19 +563,129 @@ test("the ours arm leaves out every copy of their skill's source, a namespaced o
     tools
   );
   const ours = withOurs(copies, "ours", RENAMED);
-  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, tools]);
+  const toolsBare = { repo: tools.repo, commit: tools.commit, path: tools.path, name: "alpha" };
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, toolsBare]);
   expect(ours.ours?.replacedOwn).toBe(false);
-  // A read of theirs is answered with the names Oh My Pi lists, ours once under its own name.
-  expect(unknownSkill(ours, "alpha").text).toBe(
-    "Unknown skill: alpha\nAvailable: alpha-ours, beta, tools/alpha"
+  // A read of a skill the arm lacks is answered with the names Oh My Pi lists, ours once under
+  // its own name.
+  expect(unknownSkill(ours, "gamma").text).toBe(
+    "Unknown skill: gamma\nAvailable: alpha-ours, beta, alpha"
   );
 
   // A profile that lists a skill of another source under our name keeps it, the --ours text in
   // its place, and no copy of theirs.
   copies.profile.skills.push(INCUMBENT);
   const bundled = withOurs(copies, "ours", RENAMED);
-  expect(bundled.profileSkills).toEqual([beta, tools, INCUMBENT]);
+  expect(bundled.profileSkills).toEqual([beta, toolsBare, INCUMBENT]);
   expect(bundled.ours?.replacedOwn).toBe(true);
+  expect(f1Case).toEqual(original);
+});
+
+// Catches: the arm of ours keeping another source's copy of their skill's name as
+// `<namespace>/<name>`, which Oh My Pi lists bare once their copies are gone, so a capture refused
+// the body; a `skill://<theirs>` read in ours answered as a skill Oh My Pi does not have, though
+// it resolves to that copy; or a namespaced copy of our name listed bare beside ours.
+test("the ours arm lists a copy of another source that shares their skill's name under the bare name, as none does, records it, and answers a skill:// read of their name from it; a namespaced copy of our name keeps its namespace; a case with no such copy gives the arm it gave before", () => {
+  const [alpha, beta] = f1Case.profile.skills;
+  const pack = {
+    repo: "acme/skills",
+    commit: "fedcba9876543210",
+    path: "skills/alpha",
+    name: "alpha",
+    namespace: "pack",
+  };
+  const tools = {
+    repo: "acme/tools",
+    commit: "0123456789abcdef",
+    path: "skills/alpha",
+    name: "alpha",
+    namespace: "tools",
+  };
+  const toolsBare = { repo: tools.repo, commit: tools.commit, path: tools.path, name: "alpha" };
+  const relisting = structuredClone(f1Case);
+  relisting.profile.skills.push(pack, tools);
+  const ours = withOurs(relisting, "ours", RENAMED);
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, toolsBare]);
+  expect(ours.relisted).toEqual(["tools/alpha"]);
+  expect(caseNameCopy(ours)).toEqual(toolsBare);
+  // A skill://alpha read is answered from acme/tools' installed copy, at the directory beside
+  // ours, as none answers it.
+  const copies = [
+    { name: "alpha", dir: skillDir("cache-tools-alpha-ours", { "SKILL.md": TOOLS_ALPHA_MD }) },
+  ];
+  const shown = path.join(path.dirname(INSTALLED), "alpha");
+  const fromTools = {
+    skill: "alpha",
+    file: "SKILL.md",
+    by: "skill" as const,
+    from: "copy" as const,
+    text: `[Skill file: ${shown}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
+    isError: false,
+  };
+  expect(otherSkillRead(ours, copies, "skill://alpha")).toEqual(fromTools);
+  expect(otherSkillRead(withOurs(relisting, "none", RENAMED), copies, "skill://alpha")).toEqual(
+    fromTools
+  );
+  expect(otherSkillRead(ours, copies, "skill://alpha/references/x.md")).toMatchObject({
+    from: "copy",
+    text: `File not found: ${shown}/references/x.md`,
+    isError: true,
+  });
+  // A read of ours is still the arm's own, from our directory.
+  expect(otherSkillRead(ours, copies, "skill://alpha-ours")).toBeUndefined();
+  expect(skillFile(ours, "SKILL.md").text).toStartWith(
+    `[Skill file: ${OURS_INSTALLED}/SKILL.md]\n`
+  );
+  // The history is as it is without that copy: each read of theirs became a read of ours.
+  const withoutTools = structuredClone(f1Case);
+  withoutTools.profile.skills.push(pack);
+  expect(ours.messages).toEqual(withOurs(withoutTools, "ours", RENAMED).messages);
+
+  // A profile that lists a skill of another source under our name: the same, beside it.
+  const holding = structuredClone(relisting);
+  holding.profile.skills.push(INCUMBENT);
+  const bundled = withOurs(holding, "ours", RENAMED);
+  expect(bundled.profileSkills).toEqual([beta, toolsBare, INCUMBENT]);
+  expect(bundled.relisted).toEqual(["tools/alpha"]);
+  expect(otherSkillRead(bundled, copies, "skill://alpha")).toEqual(fromTools);
+
+  // Ours under their skill's own name holds that name bare in skills/, which Oh My Pi reads
+  // first, so tools/alpha keeps its namespace and a read of alpha is the arm's own.
+  const same = withOurs(relisting, "ours", { dir: renamedDir, name: "alpha" });
+  expect(same.profileSkills).toEqual([alpha, beta, tools]);
+  expect(same.relisted).toBeUndefined();
+  expect(caseNameCopy(same)).toBeUndefined();
+  expect(otherSkillRead(same, copies, "skill://alpha")).toBeUndefined();
+  // So does ours under a name a copy of another source holds under a namespace.
+  const kit = {
+    repo: "acme/kit",
+    commit: "0123456789abcdef",
+    path: "skills/alpha-ours",
+    name: "alpha-ours",
+    namespace: "kit",
+  };
+  const sharing = structuredClone(f1Case);
+  sharing.profile.skills.push(kit);
+  const shared = withOurs(sharing, "ours", RENAMED);
+  expect(shared.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, kit]);
+  expect(shared.relisted).toBeUndefined();
+  expect(shared.ours?.replacedOwn).toBe(false);
+
+  // With no copy of another source under their name, the arm is the one it was: no record, the
+  // same profile, byte for byte, and a read of theirs is a skill the arm does not install.
+  for (const c of [f1Case, withoutTools]) {
+    const plain = withOurs(c, "ours", RENAMED);
+    expect(Object.hasOwn(plain, "relisted")).toBe(false);
+    expect(JSON.stringify(plain.profileSkills)).toBe(
+      JSON.stringify([{ ...alpha, name: "alpha-ours" }, beta])
+    );
+    expect(caseNameCopy(plain)).toBeUndefined();
+    expect(otherSkillRead(plain, copies, "skill://alpha")).toMatchObject({
+      from: "absent",
+      text: "Unknown skill: alpha\nAvailable: alpha-ours, beta",
+      isError: true,
+    });
+  }
   expect(f1Case).toEqual(original);
 });
 

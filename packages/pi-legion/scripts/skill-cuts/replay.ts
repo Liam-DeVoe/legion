@@ -22,8 +22,9 @@
  * for the path as read). In `none`, a `skill://` read of the case's skill is answered from the
  * copy of another source the profile lists under the skill's name instead, where it lists one
  * (arms.ts's `caseNameCopy`), as a read of another skill is. In the arm of ours, whose skill is
- * ours under its own name, a read of the case's skill is answered with Oh My Pi's unknown-skill
- * text (arms.ts's `unknownSkill`), since that arm does not install it, and a read by path of the
+ * ours under its own name, a read of the case's skill is answered so from such a copy too, where
+ * the arm lists one once their copies are gone, and else with Oh My Pi's unknown-skill text
+ * (arms.ts's `unknownSkill`), since that arm does not install theirs; a read by path of the
  * cut's own copy is answered from our file at that path. Each read of another skill is answered
  * from that skill's installed copy (`ReplayOptions.copies`, context.ts's `installedCopies` of the
  * arm's capture's record), the same text in every arm, and a read of a skill the arm does not
@@ -94,6 +95,7 @@ import { z } from "zod";
 import {
   type Arm,
   type ArmName,
+  caseNameCopy,
   type InstalledCopy,
   newReadRows,
   otherSkillRead,
@@ -214,10 +216,10 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
  *  name a `skill://` URL gives a skill the profile does not list), the file inside its directory,
  *  how it was read (`skill` for a `skill://` URL, `path` for a whole read by path), where the
  *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy, or
- *  in `none` the copy of another source listed under the case's skill's name; `absent`, Oh My
- *  Pi's unknown-skill or not-found result where the arm installs no copy of the skill: every
- *  other read of the case's skill in `none`), and whether the answer is an error. A run record
- *  keeps each as it is (cli.ts's runs, load.ts's replies). */
+ *  in `none` and the arm of ours the copy of another source listed under the case's skill's name;
+ *  `absent`, Oh My Pi's unknown-skill or not-found result where the arm installs no copy of the
+ *  skill: every other read of the case's skill in `none` and the arm of ours), and whether the
+ *  answer is an error. A run record keeps each as it is (cli.ts's runs, load.ts's replies). */
 export const AnsweredRead = z.strictObject({
   skill: z.string(),
   file: z.string(),
@@ -342,16 +344,16 @@ export interface SkillRead extends AnsweredCall {
 /** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
  *  (see the file's header). A read with one line range (arms.ts's `readRange`: `:N-M`, `:N+K`,
  *  `:N`) is answered with those lines (`skillFileRange`, arms.ts's `pathFile` and
- *  `otherSkillRead`), one with any other selector not. In an arm with no skill directory whose
- *  profile lists a copy of another source under the case's skill's name (arms.ts's
- *  `caseNameCopy`), a `skill://` read of the case's skill is a read of that copy
- *  (`ownSkillReadFile` gives no file), which `otherSkillRead` answers. A read of a directory of
- *  the arm's skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild;
- *  nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead` does not, nor a
- *  `skill://` range past the end of its file (a range past the end of a file of the cut's copy
- *  read by path gets the pin's notice, `pathFile`). In the arm of ours, a read of the case's
- *  skill (`arm.ours.theirs`) gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does
- *  not install it. */
+ *  `otherSkillRead`), one with any other selector not. In an arm whose profile lists a copy of
+ *  another source under the case's skill's name (arms.ts's `caseNameCopy`: `none`, or the arm of
+ *  ours once their copies are gone), a `skill://` read of the case's skill is a read of that copy,
+ *  which `otherSkillRead` answers (in `none`, `ownSkillReadFile` gives no file). A read of a
+ *  directory of the arm's skill is none: Oh My Pi answers it with a listing, which the arm does
+ *  not rebuild; nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead`
+ *  does not, nor a `skill://` range past the end of its file (a range past the end of a file of
+ *  the cut's copy read by path gets the pin's notice, `pathFile`). In the arm of ours that lists
+ *  no such copy, a read of the case's skill (`arm.ours.theirs`) gets Oh My Pi's unknown-skill
+ *  text (`unknownSkill`): the arm does not install it. */
 function skillRead(
   id: string,
   target: string,
@@ -374,7 +376,7 @@ function skillRead(
     const read = { skill: arm.skill, file, by: "skill", from, isError: answer.isError } as const;
     return { id, text: answer.text, read };
   }
-  const theirs = arm.ours?.theirs;
+  const theirs = caseNameCopy(arm) === undefined ? arm.ours?.theirs : undefined;
   const theirFile = theirs === undefined ? undefined : skillReadFile(theirs, whole);
   if (theirs !== undefined && theirFile !== undefined) {
     if (ranged !== undefined && ranged.range === undefined) return undefined;

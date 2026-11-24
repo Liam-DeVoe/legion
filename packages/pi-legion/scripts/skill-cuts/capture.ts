@@ -110,14 +110,16 @@
  * skill). The arm of ours lists our skill under its own name (`armRecordedPrompt`): the line
  * names ours under our hint in their skill's place, or, where the recording lists a skill of our
  * name already, their line goes and that line holds our hint. An arm that lists a copy under its
- * bare name in place of `<namespace>/<name>` (arms.ts's `Arm.relisted`: `none`, once the tested
- * copy of that name is gone) also leaves out the recorded line of `<namespace>/<name>`, as Oh My
- * Pi lists that copy under the bare name alone; where that name is the case skill's, the case
- * skill's line is that copy's hint, in the recorded line's place, which is where Oh My Pi's
- * listing, sorted by name, puts it. Every other byte is sent as recorded. `--tools` restricts Oh
- * My Pi's tools to the recorded names. The body's system prompt must be those blocks byte for
- * byte, or the capture is refused; a recorded tool the body does not define, or one it defines
- * beyond them, is kept in the record (`tools`).
+ * bare name in place of `<namespace>/<name>` (arms.ts's `Arm.relisted`: `none` or the arm of
+ * ours, once the tested copy of that name is gone) also leaves out the recorded line of
+ * `<namespace>/<name>`, as Oh My Pi lists that copy under the bare name alone; where that name is
+ * the case skill's, the case skill's line is that copy's hint, in the recorded line's place,
+ * which is where Oh My Pi's listing, sorted by name, puts it, and in the arm of ours our skill
+ * gets a line of its own under our hint, where that sorted listing puts it (or the recorded line
+ * of our name holds it). Every other byte is sent as recorded. `--tools` restricts Oh My Pi's
+ * tools to the recorded names. The body's system prompt must be those blocks byte for byte, or
+ * the capture is refused; a recorded tool the body does not define, or one it defines beyond
+ * them, is kept in the record (`tools`).
  *
  * **An injected skill.** A skill that reaches the session other than by its listing line and its
  * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
@@ -786,6 +788,9 @@ export function promptDigest(body: unknown): string {
   return hash.toString(16);
 }
 
+/** A line of a `<skills>` listing, `- <name>: <text>`: the name in group 1, the text in 2. */
+const LISTING_LINE = /^- ([^:\s]+): (.*)$/;
+
 /** The skills the `<skills>` listing of the system prompt blocks `blocks` lists (`- <name>:
  *  <text>`), each with the text it is listed under, in order; a name listed twice keeps its first
  *  line. build.ts reads a recorded prompt's listing with it. */
@@ -794,7 +799,7 @@ export function listingOf(blocks: readonly string[]): Map<string, string> {
   for (const text of blocks) {
     const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
     for (const line of block?.split("\n") ?? []) {
-      const match = /^- ([^:\s]+): (.*)$/.exec(line);
+      const match = LISTING_LINE.exec(line);
       if (match?.[1] !== undefined && match[2] !== undefined && !listing.has(match[1]))
         listing.set(match[1], match[2]);
     }
@@ -810,14 +815,14 @@ export function skillListing(body: unknown): Map<string, string> {
 /** What became of the case skill's line of a recorded skill listing in an arm's prompt. */
 export type ListingLine = "replaced" | "removed" | "not listed";
 
-/** The recorded system prompt `blocks` with the first `<skills>` listing line of `skill`
- *  (`- <skill>: <text>`) put through `change`, which gets the line's text and gives the line to
- *  put in its place, or undefined to leave it out; every other byte as recorded. Undefined when no
- *  block lists a line of `skill`. */
-function changedListingLine(
+/** The recorded system prompt `blocks` with the lines of the first `<skills>` listing that lists
+ *  `skill` (a line `- <skill>: <text>`) put through `change`, which gets those lines and the
+ *  index of that line and gives the lines to put in their place; every other byte as recorded.
+ *  Undefined when no block lists a line of `skill`. */
+function changedListing(
   blocks: readonly string[],
   skill: string,
-  change: (text: string) => string | undefined
+  change: (lines: readonly string[], at: number) => string[]
 ): string[] | undefined {
   const prefix = `- ${skill}: `;
   for (const [index, text] of blocks.entries()) {
@@ -827,13 +832,35 @@ function changedListingLine(
     const lines = section[1].split("\n");
     const at = lines.findIndex((line) => line.startsWith(prefix));
     if (at === -1) continue;
-    const line = change((lines[at] ?? "").slice(prefix.length));
-    if (line === undefined) lines.splice(at, 1);
-    else lines[at] = line;
-    const changed = text.slice(0, start) + lines.join("\n") + text.slice(start + section[1].length);
+    const changed =
+      text.slice(0, start) + change(lines, at).join("\n") + text.slice(start + section[1].length);
     return blocks.map((each, n) => (n === index ? changed : each));
   }
   return undefined;
+}
+
+/** The recorded system prompt `blocks` with the first `<skills>` listing line of `skill`
+ *  (`- <skill>: <text>`) put through `change`, which gets the line's text and gives the line to
+ *  put in its place, or undefined to leave it out; every other byte as recorded. Undefined when no
+ *  block lists a line of `skill`. */
+function changedListingLine(
+  blocks: readonly string[],
+  skill: string,
+  change: (text: string) => string | undefined
+): string[] | undefined {
+  return changedListing(blocks, skill, (lines, at) => {
+    const line = change((lines[at] ?? "").slice(`- ${skill}: `.length));
+    return lines.toSpliced(at, 1, ...(line === undefined ? [] : [line]));
+  });
+}
+
+/** Whether Oh My Pi's skill listing puts the name `a` after `b`. It lists the skills it loads
+ *  sorted by name (packages/coding-agent/src/extensibility/skills.ts's loader, with the
+ *  comparator of discovery/helpers.ts, at the pin): by the names lowercased, then, where those
+ *  are the same, by the names as they are, each by UTF-16 code units. */
+function listedAfter(a: string, b: string): boolean {
+  const [lowerA, lowerB] = [a.toLowerCase(), b.toLowerCase()];
+  return lowerA === lowerB ? a > b : lowerA > lowerB;
 }
 
 /** The recorded system prompt `blocks` as an arm sends them: the first `<skills>` listing line of
@@ -857,14 +884,33 @@ export function armPromptBlocks(
  *  skill). Every arm but `ours` installs the case's skill, and gets `armPromptBlocks`'. The arm of
  *  ours lists our skill under its own name: their skill's line names ours in its place, or, where
  *  the recording lists a skill of our name already, their line goes and that line holds our hint,
- *  so no name is listed twice. */
+ *  so no name is listed twice. Where the arm of ours lists a copy of another source under their
+ *  name (arms.ts's `caseNameCopy`; `Arm.relisted`) under `copyHint`, their line holds that hint
+ *  instead, and ours, unless the recording lists our name already, gets a line of its own in that
+ *  listing where Oh My Pi's, sorted by name, puts it (`listedAfter`). */
 export function armRecordedPrompt(
   blocks: readonly string[],
   skill: string,
   installed: string,
-  hint: string | undefined
+  hint: string | undefined,
+  copyHint?: string
 ): { blocks: string[]; line: ListingLine } {
   if (installed === skill) return armPromptBlocks(blocks, skill, hint);
+  if (copyHint !== undefined) {
+    const theirs = armPromptBlocks(blocks, skill, copyHint);
+    const held = armPromptBlocks(theirs.blocks, installed, hint);
+    if (held.line !== "not listed" || hint === undefined) {
+      return { blocks: held.blocks, line: theirs.line };
+    }
+    // Ours goes before the first listed name Oh My Pi puts after it, else after the last one.
+    const added = changedListing(theirs.blocks, skill, (lines) => {
+      const names = lines.map((line) => LISTING_LINE.exec(line)?.[1]);
+      const after = names.findIndex((name) => name !== undefined && listedAfter(name, installed));
+      const at = after === -1 ? names.findLastIndex((name) => name !== undefined) + 1 : after;
+      return lines.toSpliced(at, 0, `- ${installed}: ${hint}`);
+    });
+    return { blocks: added ?? theirs.blocks, line: theirs.line };
+  }
   const held = armPromptBlocks(blocks, installed, hint);
   if (held.line !== "not listed") {
     return { blocks: armPromptBlocks(held.blocks, skill, undefined).blocks, line: held.line };
@@ -2021,7 +2067,8 @@ export async function captureBody(
       if (learned.length > 0) putDescriptions(database, learned);
     }
     // A recorded prompt: its blocks with the case skill's listing line as this arm lists it, less
-    // the line of each name the arm lists under its bare name in place of the recorded one.
+    // the line of each name the arm lists under its bare name in place of the recorded one. In
+    // the arm of ours, a copy of another source it lists under their name keeps their line.
     const recorded =
       c.profile.systemPrompt === undefined
         ? undefined
@@ -2029,7 +2076,8 @@ export async function captureBody(
             withoutListingLines(c.profile.systemPrompt, arm.relisted ?? []),
             c.skill,
             arm.skill,
-            listedText(hints.find((entry) => entry.skill.name === arm.skill))
+            listedText(hints.find((entry) => entry.skill.name === arm.skill)),
+            listedText(hints.find((entry) => entry.skill.name === c.skill))
           );
     if (recorded !== undefined) {
       promptFile = path.join(root, `system-prompt.${arm.name}.json`);

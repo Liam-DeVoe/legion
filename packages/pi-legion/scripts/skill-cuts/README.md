@@ -332,13 +332,13 @@ then `[<n> more lines in file. Use :<next> to continue]` when lines are left (`s
 `pathRangeAnswer`); where the pin widens a range of a code file to the brackets of the blocks it
 cuts, the lines alone. A read with another selector (`:raw`, a list, `:-N`) is no skill read. The
 arm's skill is answered from the
-arm (in the arm of ours, our skill; a read of their skill there gets the unknown-skill text, "The
-arm of ours" below); another listed skill from the copy its capture installed
-(`<cache-dir>/skills/<key>`), the same text in every arm; in `none`, a `skill://` read of the
-case's skill from the copy of another source that `none` lists under the skill's name (below),
-where it lists one, as another listed skill's; a skill the arm does not install (the case's skill
-in `none` otherwise, or a skill the profile does not list) with Oh My Pi's `Unknown skill:
-<name>` text, and the run goes on. The judged step is each answered round's read calls, without
+arm (in the arm of ours, our skill; "The arm of ours" below); another listed skill from the copy
+its capture installed (`<cache-dir>/skills/<key>`), the same text in every arm; in `none`, and in
+the arm of ours, a `skill://` read of the case's skill from the copy of another source that the
+arm lists under the skill's name (below), where it lists one, as another listed skill's; a skill
+the arm does not install (the case's skill in `none` and the arm of ours otherwise, or a skill
+the profile does not list) with Oh My Pi's `Unknown skill: <name>` text, and the run goes on.
+The judged step is each answered round's read calls, without
 their results, then the first reply that holds another call or none, so a case whose line governs
 a read of a file of the skill is judged on that read. A reply after round 3 that still only reads
 skill files gets no verdict and is run again, as any run with no verdict is. Each report counts
@@ -531,11 +531,15 @@ call not read-only.
 the case's skill (`arms.ts`). Its profile is the case's less every copy of their skill's source
 (the repository and path of the copy listed under their name, at any commit, under any
 namespace), as the arm with no skill leaves them out, with ours under our own name and
-description in place of the copy listed under theirs; a copy of another source that shares their
-skill's name stays as the profile has it. Where the profile already lists a skill of another
-source under our name, it keeps that entry, replaced by the `--ours` text, and adds no copy of
-theirs, so no name is installed twice (the context refuses a name installed twice), and the stage
-records that it replaced it (`ours.replacedOwn`). Each read of a file of their skill
+description in place of the copy listed under theirs. Where the profile already lists a skill of
+another source under our name, it keeps that entry, replaced by the `--ours` text, and adds no
+copy of theirs, so no name is installed twice (the context refuses a name installed twice), and
+the stage records that it replaced it (`ours.replacedOwn`). The arm then lists each name as the
+arm with no skill does (below, `relisted`): a copy of another source listed as
+`<namespace>/<their name>` is listed under their bare name where no copy left holds it bare, and
+a namespaced copy of our name keeps its namespace, since ours holds that name bare in the
+directory Oh My Pi reads first; every other copy of another source stays as the profile has it.
+Each read of a file of their skill
 in the history becomes a read of `skill://<ours>/<the same path inside the skill>`, answered from
 our directory at our installed directory (theirs, with our name as its last part); where ours
 has no such file, the read call and its result are removed as the arm with no skill removes them,
@@ -544,15 +548,19 @@ path (a case's `pathCopy`) is treated the same way: our file at that path, in Oh
 form, or the call and its result removed (and the path recorded) where ours has no such file. So a
 renamed unchanged copy of their skill gives old's texts but for the name. In a reply, a read of
 `skill://<ours>/…` is answered from our directory, a read of the copy by its path from our file at
-that path (or as not found where ours has none), and a read of their skill gets Oh My Pi's
-`Unknown skill: <theirs>` text (recorded as answered by no copy); each is a skill read, answered
-in its round as above, not judged as the step. A block of their skill that reaches
+that path (or as not found where ours has none), and a read of `skill://<theirs>/…` from the copy
+of another source the arm lists under their name (recorded as answered by that copy), or, where
+it lists none, with Oh My Pi's `Unknown skill: <theirs>` text (recorded as answered by no copy);
+each is a skill read, answered in its round as above, not judged as the step. A block of their
+skill that reaches
 the session beside its listing and its reads ("A skill can reach a session other than by its
 listing line" below) carries our text in its place: the Envoy plugin's dispatch-first block is the
 plugin's function of our SKILL.md, and an autoloaded block is rebuilt from our SKILL.md under the
 recorded path with our name as its skill directory's last part, its details naming our skill and
 that path. The capture lists our skill under its own name and description, and a subagent's
-recorded listing names ours in their skill's line. Its captures are kept under
+recorded listing names ours in their skill's line, or, where the arm lists another source's copy
+under their name, keeps their line under that copy's hint and adds our line where Oh My Pi's
+listing, sorted by name, puts it. Its captures are kept under
 `<out>/captures/ours-<digest of our directory>/`.
 
 #### The judge reads no skill name
@@ -1618,16 +1626,19 @@ was composed at another commit than that evidence names now, naming both; a reco
 The arms and the load test tell the copies of the tested skill apart by their source, not their
 name (cases.ts's `testedCopy`: the repository and path of the copy listed under the skill's own
 name, at any commit, under any namespace). Each arm installs its own text in every copy of that
-source, and `none` leaves out every one, so no arm keeps the old text readable at another path; a
-copy of another source that shares the name (listed as `<namespace>/<name>`) stays as the profile
-has it in every arm but `none`. Oh My Pi 18.18.6 lists a copy under its bare name once it finds no
-other copy of that name, so for each name that no copy left in `none` holds bare and some copy
-holds under a namespace, `none` lists under the bare name the copy whose namespace's skills
-directory Oh My Pi reads first (a capture gives Oh My Pi `skills/` first, then each namespace's
-directory in the order of its first copy in the profile); every other copy keeps its namespace.
-The arm records the name the profile lists each such copy under (`relisted`). A `skill://<name>`
-read in `none` is then answered from that copy, and a subagent's recorded prompt in `none` sends
-the `<name>` line under that copy's hint and leaves out the `<namespace>/<name>` line. A load
+source, and `none` and the arm of ours (which installs ours under our name in their place) leave
+out every one, so no arm keeps the old text readable at another path; a copy of another source
+that shares the name (listed as `<namespace>/<name>`) stays as the profile has it in every arm but
+those two. Oh My Pi 18.18.6 lists a copy under its bare name once it finds no other copy of that
+name, so for each name that no copy left in `none` or the arm of ours (ours included) holds bare
+and some copy holds under a namespace, the arm lists under the bare name the copy whose
+namespace's skills directory Oh My Pi reads first (a capture gives Oh My Pi `skills/` first, then
+each namespace's directory in the order of its first copy in the profile); every other copy keeps
+its namespace. The arm records the name the profile lists each such copy under (`relisted`). A
+`skill://<name>` read in `none`, or of their name in the arm of ours, is then answered from that
+copy, and a subagent's recorded prompt in that arm sends the `<name>` line under that copy's hint
+and leaves out the `<namespace>/<name>` line (the arm of ours adds our line where Oh My Pi's
+sorted listing puts it, "The arm of ours" above). A load
 task's profile leaves out every copy of the tested source, which the load test installs once under
 `--name`, and keeps the other sources' copies; load reads a namespaced skill as
 `<namespace>/<name>` in every name check, and refuses one on Claude Code, whose layout places

@@ -178,6 +178,43 @@ function f1Case(id: string): Case {
   };
 }
 
+/** acme/tools' alpha, a copy of another source that shares the case skill's name. */
+const TOOLS_ALPHA_SKILL =
+  "---\nname: alpha\ndescription: Use for the tools' own alpha list of the made-up project.\n---\n\n# Alpha of tools\n\nOne line.\n";
+
+/** A subagent's case of alpha, with id `id`, whose profile also holds acme/tools' alpha, listed as
+ *  tools/alpha, and whose recording lists tools/alpha after beta, as Oh My Pi sorts a listing by
+ *  name. Writes acme/tools' alpha into the made-up repositories. */
+function relistingCase(id: string): Case {
+  writeTree(path.join(dir, "repos/acme/tools", COMMIT), {
+    "skills/alpha/SKILL.md": TOOLS_ALPHA_SKILL,
+  });
+  const toolsLine = "- tools/alpha: Use for the tools' own alpha list, as recorded.";
+  const base = f1Case(id);
+  return {
+    ...base,
+    context: "subagent:task",
+    profile: {
+      ...base.profile,
+      skills: [
+        ...base.profile.skills,
+        {
+          repo: "acme/tools",
+          commit: COMMIT,
+          path: "skills/alpha",
+          name: "alpha",
+          namespace: "tools",
+        },
+      ],
+      contextFiles: [],
+      systemPrompt: SUBAGENT_PROMPT.map((block) =>
+        block.replace(/^(- beta: .*)$/m, `$1\n${toolsLine}`)
+      ),
+      tools: SUBAGENT_TOOLS,
+    },
+  };
+}
+
 /** The made-up session the captures stand for: its working directory, the reminder Oh My Pi
  *  journaled for its first user turn (F1's first message), and the dev box's Claude Code config
  *  directory, as a store and a configuration would give them. */
@@ -461,6 +498,59 @@ test("the ours arm lists our skill under its own name and description", async ()
       armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint)
     );
   }
+});
+
+// Catches: a recorded listing in the arm of ours that names ours in their skill's line where the
+// arm lists another source's copy under their name, so the line Oh My Pi lists for that copy goes
+// missing; or our line put where Oh My Pi's listing, sorted by name, does not put it.
+test("in the arm of ours, a recording whose arm lists another source's copy under their name keeps their line under that copy's hint, and lists ours where Oh My Pi's listing, sorted by name, puts it", () => {
+  const beta = listingOf(SUBAGENT_PROMPT).get("beta") ?? "";
+  const ours = "Use for our alpha.";
+  const copy = "Use for the tools' own alpha list.";
+  const both = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", ours, copy);
+  expect(both.line).toBe("replaced");
+  expect([...listingOf(both.blocks)]).toEqual([
+    ["alpha", copy],
+    ["alpha-ours", ours],
+    ["beta", beta],
+  ]);
+  // Every other byte as recorded.
+  expect(withoutListingLine(withoutListingLine(both.blocks, "alpha-ours"), "alpha")).toEqual(
+    withoutListingLine(SUBAGENT_PROMPT, "alpha")
+  );
+  // Oh My Pi sorts by the names lowercased, then as they are: Beta-ours after beta, though "B"
+  // comes before "a"; a name after every listed one goes after the last line.
+  for (const [name, order] of [
+    ["Beta-ours", ["alpha", "beta", "Beta-ours"]],
+    ["zeta-ours", ["alpha", "beta", "zeta-ours"]],
+    ["aardvark", ["aardvark", "alpha", "beta"]],
+  ] as const) {
+    const sorted = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", name, ours, copy);
+    expect([...listingOf(sorted.blocks).keys()]).toEqual([...order]);
+  }
+  // A recording that lists a skill of our name already: that line holds our hint, once.
+  const twice = renamedListingBlocks(SUBAGENT_PROMPT, "beta", "alpha-ours");
+  const held = armRecordedPrompt(twice, "alpha", "alpha-ours", ours, copy);
+  expect([...listingOf(held.blocks)]).toEqual([
+    ["alpha", copy],
+    ["alpha-ours", ours],
+  ]);
+  expect(held.blocks.join("\n").split("\n- alpha-ours: ")).toHaveLength(2);
+  // Our skill hidden (no hint): their line alone, under that copy's hint.
+  const hidden = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", undefined, copy);
+  expect(hidden.line).toBe("replaced");
+  expect([...listingOf(hidden.blocks)]).toEqual([
+    ["alpha", copy],
+    ["beta", beta],
+  ]);
+  // With no such copy the arm of ours sends what it sent before; every other arm, whose skill
+  // is the case's, gets armPromptBlocks'.
+  expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", ours, undefined)).toEqual(
+    armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", ours)
+  );
+  expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha", ours, copy)).toEqual(
+    armPromptBlocks(SUBAGENT_PROMPT, "alpha", ours)
+  );
 });
 
 /** The texts of a body's `system` blocks, in order. */
@@ -1141,37 +1231,12 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
     "a subagent case whose recording lists the skill and another source's copy of its name as <namespace>/<name> sends one line of the name in none, under that copy's hint, and no <namespace>/<name> line",
     async () => {
       await captures();
-      writeTree(path.join(dir, "repos/acme/tools", COMMIT), {
-        "skills/alpha/SKILL.md":
-          "---\nname: alpha\ndescription: Use for the tools' own alpha list of the made-up project.\n---\n\n# Alpha of tools\n\nOne line.\n",
-      });
-      // The recording lists tools/alpha after beta, as Oh My Pi sorts a listing by name.
-      const toolsLine = "- tools/alpha: Use for the tools' own alpha list, as recorded.";
-      const recorded = SUBAGENT_PROMPT.map((block) =>
-        block.replace(/^(- beta: .*)$/m, `$1\n${toolsLine}`)
-      );
-      expect([...listingOf(recorded).keys()]).toEqual(["alpha", "beta", "tools/alpha"]);
-      const base = f1Case("subagent-relisted");
-      const c: Case = {
-        ...base,
-        context: "subagent:task",
-        profile: {
-          ...base.profile,
-          skills: [
-            ...base.profile.skills,
-            {
-              repo: "acme/tools",
-              commit: COMMIT,
-              path: "skills/alpha",
-              name: "alpha",
-              namespace: "tools",
-            },
-          ],
-          contextFiles: [],
-          systemPrompt: recorded,
-          tools: SUBAGENT_TOOLS,
-        },
-      };
+      const c = relistingCase("subagent-relisted");
+      expect([...listingOf(c.profile.systemPrompt ?? []).keys()]).toEqual([
+        "alpha",
+        "beta",
+        "tools/alpha",
+      ]);
       const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
       const none = buildArm(c, "none", dirs, path.join(dir, "arms-relisted"));
       const { body, record } = await captureBody(c, none, {
@@ -1197,6 +1262,57 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         .filter((line) => /^- (tools\/)?alpha: /.test(line));
       expect(alphaLines).toEqual([`- alpha: ${hint}`]);
       expect(sent).toEqual(armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint).blocks);
+      expect(record.recordedPrompt?.line).toBe("replaced");
+      expect(record.extensionErrors).toEqual([]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: an ours capture of a recording that lists their skill and another source's copy of
+  // its name as <namespace>/<name>, where Oh My Pi lists that copy bare once their copies are
+  // gone: the capture named ours in their line and sent no line of that copy, or sent its
+  // <namespace>/<name> line.
+  test(
+    "a subagent case whose recording lists their skill and another source's copy of its name as <namespace>/<name> sends in ours one line of their name under that copy's hint, ours under our hint, and no <namespace>/<name> line",
+    async () => {
+      await captures();
+      const c = relistingCase("subagent-relisted-ours");
+      const ours = { dir: path.join(dir, "alpha-ours"), name: "alpha-ours" };
+      writeTree(ours.dir, { "SKILL.md": OURS_SKILL, "references/x.md": X });
+      const dirs = { old: path.join(dir, "old"), ours };
+      const arm = buildArm(c, "ours", dirs, path.join(dir, "arms-relisted-ours"));
+      const { body, record } = await captureBody(c, arm, {
+        omp: binary(),
+        outDir: path.join(dir, "out"),
+        scratchDir: path.join(dir, "scratch"),
+        cacheDir: path.join(dir, "cache"),
+        source: localSource(path.join(dir, "repos")),
+        models: path.join(dir, "models.yml"),
+        hints,
+        session: SESSION,
+      });
+      // acme/tools' alpha is listed under their name, beside ours under our name.
+      expect(arm.relisted).toEqual(["tools/alpha"]);
+      expect(record.context.skills.map((skill) => skill.name)).toEqual([
+        "alpha-ours",
+        "beta",
+        "delta",
+        "alpha",
+      ]);
+      const toolsHint = record.hints.find((each) => each.skill === "alpha")?.hint;
+      const oursHint = record.hints.find((each) => each.skill === "alpha-ours")?.hint;
+      expect(toolsHint).toStartWith("Use for the alpha work, stand-in hint ");
+      expect(oursHint).toStartWith("Use for the alpha-ours work, stand-in hint ");
+      // Their line holds that copy's hint where the recording's line was, ours follows it as Oh My
+      // Pi sorts the listing, and no tools/alpha line goes.
+      const sent = systemBlocks(body);
+      const alphaLines = sent
+        .flatMap((block) => block.split("\n"))
+        .filter((line) => /^- (tools\/)?alpha(-ours)?: /.test(line));
+      expect(alphaLines).toEqual([`- alpha: ${toolsHint}`, `- alpha-ours: ${oursHint}`]);
+      expect(sent).toEqual(
+        armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", oursHint, toolsHint).blocks
+      );
       expect(record.recordedPrompt?.line).toBe("replaced");
       expect(record.extensionErrors).toEqual([]);
     },

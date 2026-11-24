@@ -1451,6 +1451,57 @@ test("in ours, a reply's read of skill://<ours> is answered from our directory a
   expect(JSON.stringify(bodies)).not.toContain(ours.skillDir);
 });
 
+// Catches: a reply in the arm of ours whose read of their skill's URL gets Oh My Pi's
+// unknown-skill text where the arm lists another source's copy under their name, which Oh My Pi
+// reads instead.
+test("in ours, a reply's skill:// read of their skill is answered from the copy of another source the arm lists under their name, and a read of ours from our directory", async () => {
+  const tools = installedCopy("alpha", TOOLS_ALPHA_MD);
+  const copies = [installedCopy("beta", BETA_MD), tools];
+  const oursSkill = SKILL_MD.replace("name: alpha\n", "name: alpha-ours\n");
+  const oursInstalled = path.join(path.dirname(INSTALLED), "alpha-ours");
+  const ours: Arm = {
+    ...armWith("ours", { "SKILL.md": oursSkill }),
+    skill: "alpha-ours",
+    installedDir: oursInstalled,
+    profileSkills: [
+      ...PROFILE_SKILLS.map((skill) =>
+        skill.name === "alpha" ? { ...skill, name: "alpha-ours" } : skill
+      ),
+      { repo: "acme/tools", commit: "0123456789abcdef", path: "skills/alpha", name: "alpha" },
+    ],
+    relisted: ["tools/alpha"],
+    ours: { theirs: "alpha", replacedOwn: false, removedReads: [] },
+  };
+  const theirs = readCall("toolu_theirs", "skill://alpha");
+  const own = readCall("toolu_ours", "skill://alpha-ours");
+  const { gateway, bodies } = scripted([[theirs, own], [ACT]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, ours, gateway, { copies });
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_theirs",
+        `[Skill file: ${INSTALLED}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
+        false
+      ),
+      toolResult(
+        "toolu_ours",
+        `[Skill file: ${oursInstalled}/SKILL.md]\n${oursSkill.replace(/\n$/, "")}`,
+        false
+      ),
+    ],
+  });
+  expect(replayed.reads).toEqual([
+    [
+      { skill: "alpha", file: "SKILL.md", by: "skill", from: "copy", isError: false },
+      { skill: "alpha-ours", file: "SKILL.md", by: "skill", from: "arm", isError: false },
+    ],
+  ]);
+  expect(replayed.step.message.content).toEqual([theirs, own, ACT]);
+  expect(JSON.stringify(bodies)).not.toContain(tools.dir);
+  expect(JSON.stringify(bodies)).not.toContain(ours.skillDir);
+});
+
 // Catches: a reply in the arm of ours whose whole read by path of the cut's own copy is judged as
 // the step, or answered with their text where ours has the file.
 test("in ours, a reply's whole read by path of the cut's own copy is answered from our file at that path, or as not found where ours lacks it", async () => {
