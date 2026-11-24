@@ -346,9 +346,7 @@ func currentTuple(alias string) string {
 // It is keyed as the view's join is, over the node's own primary key, so the count and the
 // view cannot read one tuple differently.
 func liveVisibleNode(kind, address string) string {
-	return `exists (select 1 from graph_nodes live
-		where live.kind = '` + kind + `' and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and ` + VisibleKindRow(kind, "live", backlinkSeen) + `)`
+	return liveNode(`'`+kind+`'`, address, VisibleKindRow(kind, "live", backlinkSeen))
 }
 
 // liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr: the
@@ -357,9 +355,16 @@ func liveVisibleNode(kind, address string) string {
 // sources of kinds the registry holds (storedSQL), so no row of a kind without a predicate reaches
 // it.
 func liveVisibleNodeOf(kindExpr, address string) string {
+	return liveNode(kindExpr, address, VisibleRow("live", backlinkSeen))
+}
+
+// liveNode is the one read of the node's row that liveVisibleNode and liveVisibleNodeOf make: the
+// row of the node kindExpr and address name, aliased live, whose state is not gone and which
+// visible, a predicate over live, holds.
+func liveNode(kindExpr, address, visible string) string {
 	return `exists (select 1 from graph_nodes live
 		where live.kind = ` + kindExpr + ` and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and ` + VisibleRow("live", backlinkSeen) + `)`
+			and ` + visible + `)`
 }
 
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
