@@ -667,14 +667,36 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
       `a device code that lives 0.000000001 s, with a poll interval of 2 s${lapses} its codes live longer than its poll interval`,
     ],
     // A code of 1.0005 s ends 1000 ms on, which no interval reaches, the least being 1 s: only a
-    // longer lifetime helps, whatever interval the broker names, or none.
+    // longer lifetime helps, whatever interval the broker names, or none. It lives longer than 1 s
+    // while its end holds 1 s, so each limit the cure names reads "a millisecond or more longer":
+    // a plain "longer than 1 s" would name a limit it already passes.
     [
       { interval: 2, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with a poll interval of 2 s${lapses} its codes live longer than its poll interval`,
+      `a device code that lives 1.0005 s, with a poll interval of 2 s${lapses} its codes live a millisecond or more longer than its poll interval`,
     ],
     [
       { interval: null, expiresIn: 1.0005 },
-      `a device code that lives 1.0005 s, with no poll interval, so one of 5 s${lapses} its codes live longer than 5 s, or than both 1 s and a poll interval it names`,
+      `a device code that lives 1.0005 s, with no poll interval, so one of 5 s${lapses} its codes live a millisecond or more longer than 5 s, or than both 1 s and a poll interval it names`,
+    ],
+    // The same at the floor, an interval no shorter than such a code and under 1.001 s, and at an
+    // interval of an hour or more, where a shorter interval is needed too.
+    [
+      { interval: 1.0005, expiresIn: 1.0005 },
+      `a device code that lives 1.0005 s, with a poll interval of 1.0005 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+    ],
+    [
+      { interval: 1.0009, expiresIn: 1.0002 },
+      `a device code that lives 1.0002 s, with a poll interval of 1.0009 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
+    ],
+    // Exactly 1.001 s is past the floor: the broker's digits name 1001 ms, though 1.001 * 1000 is
+    // 1000.9999999999999 in floating point, so the cure names that interval, not the floor.
+    [
+      { interval: 1.001, expiresIn: 1.0005 },
+      `a device code that lives 1.0005 s, with a poll interval of 1.001 s${lapses} its codes live a millisecond or more longer than its poll interval`,
+    ],
+    [
+      { interval: 5_000, expiresIn: 1.0005 },
+      `a device code that lives 1.0005 s, with a poll interval of 5000 s${lapses} its poll interval is shorter than an hour and its codes live a millisecond or more longer than it`,
     ],
     // Shorter than the code by half a millisecond, which the code's end, a `Date`, does not hold:
     // the poll would refuse it at once, so it is refused here, before its code is shown. Any
@@ -739,8 +761,13 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
       [4.9995, 5, true],
       [1.0002, 1.0005, false],
       [2, 1.0005, false],
+      // An interval as long as its code, each the 1001 ms the broker's digits name.
+      [1.001, 1.001, false],
       [0.25, 1, false],
       [599, 600, true],
+      // A lifetime past 2^64 nanoseconds, held to the hour here, where the Go helper's OAuth
+      // library wraps it to about 900 s, so that helper refuses a 1000 s interval.
+      [1000, 18446744974, true],
     ] as const) {
       const row = `${interval} s against ${expiresIn} s`;
       const shown = await startDeviceLogin({
