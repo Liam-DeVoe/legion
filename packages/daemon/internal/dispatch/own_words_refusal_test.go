@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/steprecord"
 )
 
 // ownWordsKey is the issue these rows write, and ownWordsProject the project of the gated-steps
@@ -176,7 +177,7 @@ func TestTheRolesAndStepKindsPrintInDispatchsRefusalOfRoleHolderAndStepWrites(t 
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := c.call(refusingDispatch(t, http.StatusBadRequest, "STEP_INPUT", c.said))
+			err := c.call(refusingDispatch(t, http.StatusBadRequest, steprecord.CodeInput, c.said))
 			if err == nil {
 				t.Fatal("the write was answered as taken; want Dispatch's refusal")
 			}
@@ -197,7 +198,7 @@ func TestTheRolesAndStepKindsPrintInDispatchsRefusalOfRoleHolderAndStepWrites(t 
 			roleHoldersWrite{Holders: holders, Actor: actor}, []string{"reviewer"}},
 	} {
 		t.Run("off "+c.name, func(t *testing.T) {
-			requireWords(t, offRouteRefusal(t, c.method, c.path, c.body, http.StatusBadRequest, "STEP_INPUT", c.said), nil, c.redacted)
+			requireWords(t, offRouteRefusal(t, c.method, c.path, c.body, http.StatusBadRequest, steprecord.CodeInput, c.said), nil, c.redacted)
 		})
 	}
 }
