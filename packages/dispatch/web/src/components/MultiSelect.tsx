@@ -40,6 +40,7 @@ import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
+import { MENU_TRIGGER_ATTRIBUTE, typedOnMenuTrigger } from "./key-targets";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";
 
@@ -61,6 +62,10 @@ const MOVE_KEYS: Readonly<Record<string, true>> = {
   PageDown: true,
   PageUp: true,
 };
+
+/** The mark a menu's trigger carries (`MENU_TRIGGER_ATTRIBUTE`), by which the keymap reads a
+ *  character typed on it as the page's key (`typedOnMenuTrigger`). */
+const MENU_TRIGGER_MARK = { [MENU_TRIGGER_ATTRIBUTE]: "" };
 
 /** Where `key` moves the highlight in `rows` from `from`, or undefined for a key that moves
  *  nothing or rows that hold nothing. The arrows wrap at the ends and Home and End go to them, as
@@ -132,11 +137,17 @@ export interface ListMarks {
  *
  * - The list opens highlighted on its first choice or on the value held (`opensOn`), whatever
  *   opened it: a key, a click, a tap, Enter or Space.
+ * - The closed trigger is a menu's button: Enter, Space, ArrowDown and ArrowUp open its list, and
+ *   a character typed on it is the page's key and no text (`typedOnMenuTrigger`), so `b` there
+ *   opens the Snooze menu of the item in hand, `p` the priority menu and `s` the status menu, as
+ *   from the row or the page, each with nothing typed in its box.
  * - ArrowDown, ArrowUp, Home and End move the highlight and write nothing; ArrowLeft and
  *   ArrowRight still move the text box's caret.
  * - A digit writes its own choice at once, whatever the text box has narrowed (`keys`); a digit no
  *   choice has writes nothing, and no digit is typed into the box. A letter narrows the list,
  *   Enter writes the highlighted choice, and a click or a tap writes the choice it hits.
+ * - A held key acts once: its repeats type nothing in the box and write nothing - the repeats of
+ *   the key whose press opened the list among them - while a held arrow walks the highlight.
  * - Escape, Tab, Shift+Tab and a press outside close the list and write nothing, and every close,
  *   a pick's among them, gives the focus back to the element that had it as the list opened: a
  *   key's press of the trigger (a click with no pointer, `detail` 0: the page's binding pressing it
@@ -145,7 +156,8 @@ export interface ListMarks {
  *   element gone from the page since gives it to the trigger. A press outside gives it back in the
  *   panel's capture-phase `pointerdown` that closes the list, before the browser's own focus on
  *   the press, so a press on another control focuses that control; a press on nothing that takes
- *   the focus has it given back again once the press is over (`focusBackOverPress`).
+ *   the focus has it given back again once the press is over (`focusBackOverPress`). The focus a
+ *   press outside gives back scrolls nothing, so the press acts where it was made.
  * - Each choice with a digit draws it, hidden from assistive technology so the option's name stays
  *   its words and named as the option's `aria-keyshortcuts`, and a foot line draws the list's keys.
  * - On a coarse pointer (a phone) opening focuses no text box, so no on-screen keyboard covers the
@@ -305,14 +317,14 @@ interface SingleProps extends SharedProps {
   /** The closed trigger takes the list's keys, as a focused `<select>` does: ArrowDown, ArrowUp,
    *  Home, End, Page Down and Page Up open the list on the value picked and move the highlight by
    *  that key. Without it the arrows open the list as a click does and the other four open
-   *  nothing; a typed character opens any list with that character in the text box. Each is the
-   *  trigger's own (`preventDefault`), so the page's keymap, which skips a handled key, never
-   *  reads it. A host whose value is written the moment it is picked passes it (the assignee, the
-   *  repository, an ask's hand-on), so a key moves only the highlight and only Enter or a click
-   *  writes. Those three are this list rather than native selects (INFRA-2160's R6, and its
-   *  departure D2): a select cannot write nothing on Escape, since Chromium keeps the highlighted
-   *  option when Escape closes its open list, which the keyboard-step rule of the live header's
-   *  selects (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. */
+   *  nothing; a typed character opens any list but a menu's (`menu`) with that character in the
+   *  text box. Each is the trigger's own (`preventDefault`), so the page's keymap, which skips a
+   *  handled key, never reads it. A host whose value is written the moment it is picked passes it
+   *  (the assignee, the repository, an ask's hand-on), so a key moves only the highlight and only
+   *  Enter or a click writes. Those three are this list rather than native selects (INFRA-2160's
+   *  R6, and its departure D2): a select cannot write nothing on Escape, since Chromium keeps the
+   *  highlighted option when Escape closes its open list, which the keyboard-step rule of the
+   *  live header's selects (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. */
   readonly keysOnTrigger?: boolean;
   /** D5's rules, for a pick that stands in a menu's place: every one of them, or, absent, none
    *  (`ListMenu`). A host that passes it passes no `keysOnTrigger`, whose closed-trigger keys are
@@ -356,15 +368,16 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * (`chevron`).
  *
  * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
- * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
- * character, which goes into the text box and narrows the list by it. A single pick that passes
- * `keysOnTrigger` also takes the keys a `<select>` takes there - ArrowDown, ArrowUp, Home, End,
- * Page Down and Page Up open it with the highlight moved by that key - so those keys, too, only
- * move the highlight.
+ * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and, on every list
+ * but a menu's (below), a typed character, which goes into the text box and narrows the list by
+ * it. A single pick that passes `keysOnTrigger` also takes the keys a `<select>` takes there -
+ * ArrowDown, ArrowUp, Home, End, Page Down and Page Up open it with the highlight moved by that
+ * key - so those keys, too, only move the highlight.
  *
  * A single pick that stands in a menu's place - the Inbox's Snooze, the priority, the status -
  * passes `menu`, which carries each rule of dispatch://INFRA-2160's D5 at once (`ListMenu`): it
- * opens on its first choice or on its value, its digits write their choices, every close gives the
+ * opens on its first choice or on its value, its digits write their choices, a character typed on
+ * its closed trigger is the page's key and no text, a held key acts once, every close gives the
  * focus back where it was as the list opened, and on a phone no text box takes the focus.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
@@ -497,11 +510,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     const recorded = menu === undefined ? null : returnTo.current;
     return recorded?.isConnected ? recorded : triggerRef.current;
   };
-  // A focus arriving on the trigger as it is handed back is no arrival (`handingBack`).
-  const handBack = (to: HTMLElement | null = returnTarget()) =>
+  // A focus arriving on the trigger as it is handed back is no arrival (`handingBack`). `options`
+  // are the focus's own; with none, the engine brings the element into view where it is out of
+  // sight, as it does for Escape and Tab.
+  const handBack = (to: HTMLElement | null = returnTarget(), options?: FocusOptions) =>
     focusBack(to, (element) => {
       handingBack.current = true;
-      element.focus();
+      element.focus(options);
       handingBack.current = false;
     });
   // The hand-back of the latest render, for the close's effect below.
@@ -545,10 +560,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
   // A menu's press outside, in the panel's capture-phase `pointerdown` that closes the list
   // (`AnchoredPanel`): the focus goes back at once, and again once the press is over where it
-  // left it on the document (`focusBackOverPress`).
+  // left it on the document (`focusBackOverPress`), each time with no scroll. A scroll then would
+  // move the page under the press between its `mousedown` and its `mouseup`: in card mode the
+  // focus given back to a card far up the page scrolled the cards, so the press on the Later
+  // band's toggle or on another card's Snooze, far down the page, released on another element and
+  // did not act (the tester's round 16).
   const handBackOverPress = () => {
     const to = returnTarget();
-    focusBackOverPress(() => handBack(to));
+    focusBackOverPress(() => handBack(to, { preventScroll: true }));
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
@@ -606,19 +625,22 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
   // ArrowDown and ArrowUp, with Alt or without, open it as a click does, on the value picked, and
   // a typed character opens it with that character in the text box, and the caret after it, so
-  // the options are already narrowed by it. A single pick that takes the list's keys
-  // (`keysOnTrigger`) takes the keys a `<select>` takes there: ArrowDown, ArrowUp, Home, End, Page
-  // Down and Page Up, with no Alt, open it on the row the key moves to from the value picked (R6:
-  // "an arrow key, Home, End, Page Up, Page Down or a typed letter only changes the choice that
-  // the control shows"). The key's own action is cancelled, so the page's keymap, which skips a
-  // handled key, never reads it, and the character is not typed a second time into the text box
-  // the focus moves to. Space is left to the button, which opens the list with an empty search. A
-  // disabled or busy trigger opens on none of these keys; a key held with Ctrl or Meta is the
-  // browser's, and a key that ends or moves an IME composition is the input method's. A menu's
-  // closes give the focus back to the trigger a key on it opened the list from.
+  // the options are already narrowed by it - on every list but a menu's, whose trigger is a menu's
+  // button and leaves a typed character to the page, as its row does (`typedOnMenuTrigger`). A
+  // single pick that takes the list's keys (`keysOnTrigger`) takes the keys a `<select>` takes
+  // there: ArrowDown, ArrowUp, Home, End, Page Down and Page Up, with no Alt, open it on the row
+  // the key moves to from the value picked (R6: "an arrow key, Home, End, Page Up, Page Down or a
+  // typed letter only changes the choice that the control shows"). The key's own action is
+  // cancelled, so the page's keymap, which skips a handled key, never reads it, and the character
+  // is not typed a second time into the text box the focus moves to. Space is left to the button,
+  // which opens the list with an empty search. A disabled or busy trigger opens on none of these
+  // keys; a key held with Ctrl or Meta is the browser's, and a key that ends or moves an IME
+  // composition is the input method's. A menu's closes give the focus back to the trigger a key
+  // on it opened the list from.
   const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
     if (inputMethodKey(event.nativeEvent)) return;
+    if (typedOnMenuTrigger(event.currentTarget, event)) return;
     const typed = !event.altKey && event.key.length === 1 && event.key !== " ";
     const steps = keysOnTrigger && !event.altKey && MOVE_KEYS[event.key] === true;
     if (!typed && !steps && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -692,6 +714,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     // composed text into the box and picks nothing, and Tab leaves the list open.
     if (inputMethodKey(event.nativeEvent)) return;
     const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+    // A menu takes a held key once (R5, R8): the repeats of a key that types a character type
+    // nothing in its box and write nothing. The page's binding opened the list on the press of
+    // its key, `b` or `p`, and that key's repeats reach the box the focus moved to; a digit's
+    // repeats would write again. The arrows' repeats still walk the highlight.
+    if (
+      menu !== undefined &&
+      event.repeat &&
+      event.key.length === 1 &&
+      !event.ctrlKey &&
+      !event.metaKey
+    ) {
+      event.preventDefault();
+      return;
+    }
     // A menu's digit is the list's before the text box takes it: it writes its own choice at
     // once, whatever the box has narrowed, and a digit no choice has writes nothing.
     if (menu !== undefined && plain && isMenuDigit(event.key)) {
@@ -792,6 +828,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         aria-labelledby={namedBy}
         className={trigger}
         data-control={control}
+        {...(menu === undefined ? undefined : MENU_TRIGGER_MARK)}
         {...marks?.trigger}
         disabled={disabled}
         onClick={(event) => {

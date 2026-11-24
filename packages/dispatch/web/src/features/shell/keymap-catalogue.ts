@@ -87,11 +87,18 @@ export interface CatalogueEntry {
   readonly palette: boolean;
   /** Fires while a control that takes typed text has the focus (`KeyBinding.inEditable`). */
   readonly inEditable?: boolean;
-  /** The action writes a record, so the registry runs it once per press: a held key's repeats
-   *  (`KeyboardEvent.repeat`) do nothing (`actionBinding`, `keymap.ts`). A repeat would write
-   *  again: the same review twice, or, once the write hands the reader on to the next item (R8),
-   *  a write on that item, which nobody chose. A palette row runs it as a press does. */
-  readonly writes?: true;
+  /** The action steps, so a held key's repeats run it too (`KeyBinding.repeats`, `keymap.ts`):
+   *  it moves the focus or the selection one row, card, column, turn, agent, component or pull
+   *  request on along what the page lists (`j`, `k`, the arrows, the Board's `h` and `l`),
+   *  scrolls the open document by a page (Space, Shift+Space), or moves a Board card one place
+   *  (Shift+J, Shift+K, Shift+H, Shift+L). Every other action runs once per press, and a held
+   *  key's repeats (`KeyboardEvent.repeat`) do nothing: a repeat of a write would write again -
+   *  the same review twice, or, once the write hands the reader on to the next item (R8), a
+   *  write on that item, which nobody chose - and a repeat of any other action would act where
+   *  the reader pressed once: a held `1` that snoozes an ask would tick the first option of the
+   *  question handed on to, a held `b` would open its menu again. A palette row runs every action
+   *  as a press does. */
+  readonly repeats?: true;
   readonly surface: KeySurface;
 }
 

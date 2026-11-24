@@ -7,12 +7,14 @@ export const ARCHITECTURE_ACTIONS = {
     label: "Next component",
     keys: ["j"],
     palette: false,
+    repeats: true,
     surface: "architecture",
   },
   previous: {
     label: "Previous component",
     keys: ["k"],
     palette: false,
+    repeats: true,
     surface: "architecture",
   },
   arrows: {
@@ -20,6 +22,7 @@ export const ARCHITECTURE_ACTIONS = {
     keys: [],
     fixedKeys: ["ArrowDown", "ArrowUp"],
     palette: false,
+    repeats: true,
     surface: "architecture",
   },
   open: {

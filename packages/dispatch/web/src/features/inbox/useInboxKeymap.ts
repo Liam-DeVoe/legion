@@ -9,6 +9,7 @@ import {
 import { flushSync } from "react-dom";
 
 import { focusLost, openerOf } from "../../components/focus-place";
+import { MENU_TRIGGER_SELECTOR } from "../../components/key-targets";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
@@ -58,6 +59,17 @@ function focusedRow(): HTMLElement | null {
 
 function rowAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, ROW_SELECTOR);
+}
+
+/** The row the keys act on beside no reading column: the row that holds the focus itself, or the
+ *  row whose menu's trigger - its Snooze, its priority - holds it, on which a typed character is
+ *  the page's key, as on the row (`typedOnMenuTrigger`). So `b` on a card's focused Snooze opens
+ *  that card's Snooze menu and `p` there its priority menu. */
+function rowInHand(): HTMLElement | null {
+  const active = document.activeElement;
+  return (
+    focusedRow() ?? (active?.matches(MENU_TRIGGER_SELECTOR) === true ? rowAround(active) : null)
+  );
 }
 
 /** Whether `node` is in the reading column `column`: inside it, or inside a panel a control of
@@ -341,9 +353,9 @@ export function useInboxKeymap({
    *  scrolls, an option list moves - so they move the selection only while the focus is in the
    *  list beside it. */
   const arrowsMove = paneShown ? focusInList : () => focusedRow() !== null;
-  /** The row the keys act on: the one the column is showing, or the one holding the focus. */
+  /** The row the keys act on: the one the column is showing, or the one in hand (`rowInHand`). */
   const handRow = (): InboxListRow | undefined => {
-    const id = paneShown ? paneSelection.id : focusedRow()?.dataset.inboxRow;
+    const id = paneShown ? paneSelection.id : rowInHand()?.dataset.inboxRow;
     return id === undefined ? undefined : rowsById.get(id);
   };
   /** The row `x` marks, by its own `rowId`: asks and threads alike, since the bulk bar now offers
@@ -359,11 +371,11 @@ export function useInboxKeymap({
     return row === undefined ? undefined : dismissRow(row);
   };
   /** Where the Inbox's keys act: the reading column while it is on - its head's Snooze, owner
-   *  link and Copy ref, and the answer form of whatever it is showing - else the row holding
-   *  the focus. Null where there is neither, which is an Inbox with nothing selected (a wide
+   *  link and Copy ref, and the answer form of whatever it is showing - else the row in hand
+   *  (`rowInHand`). Null where there is neither, which is an Inbox with nothing selected (a wide
    *  but empty list, or the commit a snooze of the selected row leaves behind) and a list
    *  nothing in is focused. */
-  const hand = () => (paneShown ? paneRef.current : focusedRow());
+  const hand = () => (paneShown ? paneRef.current : rowInHand());
   /** The control `selector` names in whichever of the two that is, or null for none: every
    *  `when` below tests this against `null`, so the accessor never answers `undefined`. */
   const inHand = (selector: string) => hand()?.querySelector<HTMLElement>(selector) ?? null;

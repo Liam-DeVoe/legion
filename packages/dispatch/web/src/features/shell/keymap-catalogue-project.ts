@@ -15,12 +15,14 @@ export const PROJECT_ACTIONS = {
     label: "Next row",
     keys: ["j"],
     palette: false,
+    repeats: true,
     surface: "project-list",
   },
   previous: {
     label: "Previous row",
     keys: ["k"],
     palette: false,
+    repeats: true,
     surface: "project-list",
   },
   open: {

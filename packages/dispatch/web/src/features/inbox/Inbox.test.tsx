@@ -6321,6 +6321,49 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
   }
 });
 
+// R4, R5 (the tester's round 16, defect 1): a menu's trigger is a menu's button, and a character
+// typed on it is the page's key, as on its row (`typedOnMenuTrigger`). Below the column's width
+// the keys act on the row in hand, which is the row that holds the focus or the row whose Snooze
+// or priority does: `b` or `h` on a card's focused Snooze opens its Snooze menu on its first
+// choice, `p` there the card's priority menu on its value, and `b` on its focused priority the
+// Snooze menu, each with nothing typed in its box; Escape gives the focus back to the control.
+test("in card mode a key typed on a row's focused Snooze or priority opens the menu it names, on its first choice or its value with nothing typed", async () => {
+  const user = userEvent.setup();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 2 })];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByText("Which approach?");
+    const row = rowOf("ask-a");
+    const snooze = within(row).getByLabelText("Snooze CORE-1: Which approach?");
+    const priority = within(row).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    for (const [focused, key, opened, first] of [
+      [snooze, "b", snooze, "Later today"],
+      [snooze, "h", snooze, "Later today"],
+      [snooze, "p", priority, "P2"],
+      [priority, "p", priority, "P2"],
+      [priority, "b", snooze, "Later today"],
+    ] as const) {
+      const step = `${key} on the focused ${focused === snooze ? "Snooze" : "priority"}`;
+      act(() => focused.focus());
+      await user.keyboard(key);
+      const box = within(panelOf(opened)).getByRole("combobox");
+      expect(box, `${step} opens the menu it names`).toHaveFocus();
+      expect(box, `${step} types nothing`).toHaveValue("");
+      expect(highlightedRow(box), `${step} opens on ${first}`).toBe(first);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("listbox"), step).not.toBeInTheDocument();
+      expect(focused, `Escape after ${step} gives the focus back`).toHaveFocus();
+    }
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a priority picked from the column's head keeps the column on its ask, though the pick empties the band the ask was in", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -9860,8 +9903,9 @@ test("a dismiss of the last row beside the column leaves the address naming no r
   }
 });
 
-// `e` dismisses once per press (`CatalogueEntry.writes`). A dismiss hands the reader on to the
-// next row at once (R8), so each repeat of a held `e` would dismiss a row nobody chose.
+// `e` dismisses once per press, as every action that does not step does (`KeyBinding.repeats`). A
+// dismiss hands the reader on to the next row at once (R8), so each repeat of a held `e` would
+// dismiss a row nobody chose.
 test("a held e dismisses the row in hand alone, and its repeats dismiss none of the rows it hands the reader on to", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

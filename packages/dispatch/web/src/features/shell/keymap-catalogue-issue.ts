@@ -24,7 +24,6 @@ export const ISSUE_ACTIONS = {
     keys: [],
     fixedKeys: ["0", "1", "2", "3"],
     palette: false,
-    writes: true,
     surface: "issue-both",
   },
   // On the new page the labels' control is in Details' Labels row, so the key opens Details there
@@ -45,7 +44,6 @@ export const ISSUE_ACTIONS = {
     label: "Pin or unpin the issue",
     keys: ["Shift+P"],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   // The tab chords. The new issue page registers six of them too: the five of its filter row
@@ -129,49 +127,42 @@ export const ISSUE_ACTIONS = {
     label: "Close issue",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   reopen: {
     label: "Reopen issue",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   "set-p0": {
     label: "Set priority P0",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   "set-p1": {
     label: "Set priority P1",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   "set-p2": {
     label: "Set priority P2",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   "set-p3": {
     label: "Set priority P3",
     keys: [],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   approve: {
     label: "Approve",
     keys: ["a"],
     palette: true,
-    writes: true,
     surface: "issue-both",
   },
   "request-changes": {
@@ -184,12 +175,14 @@ export const ISSUE_ACTIONS = {
     label: "Next turn",
     keys: ["j"],
     palette: false,
+    repeats: true,
     surface: "issue",
   },
   "previous-turn": {
     label: "Previous turn",
     keys: ["k"],
     palette: false,
+    repeats: true,
     surface: "issue",
   },
   // Expanding a turn opens no link, so the Conversation tab has no new-tab key.
@@ -238,6 +231,7 @@ export const ISSUE_ACTIONS = {
     keys: ["j"],
     fixedKeys: ["ArrowDown"],
     palette: false,
+    repeats: true,
     surface: "issue-outline",
   },
   "tree-previous": {
@@ -245,6 +239,7 @@ export const ISSUE_ACTIONS = {
     keys: ["k"],
     fixedKeys: ["ArrowUp"],
     palette: false,
+    repeats: true,
     surface: "issue-outline",
   },
   "tree-first": {
@@ -283,7 +278,6 @@ export const ISSUE_ACTIONS = {
     label: "Keep the focused decision",
     keys: ["Shift+K"],
     palette: true,
-    writes: true,
     surface: "issue-outline",
   },
   "tree-change": {

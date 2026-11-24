@@ -1,20 +1,58 @@
 /**
  * What an element is to a key pressed on it or a `change` fired on it: whether it takes typed
- * text, whether its `change` is the commit on blur of that text, and the mark of an open panel.
- * The keymap reads them to leave a control its own keys (`isEditableTarget`,
- * `features/shell/keymap.ts`), and the page's focus hand-offs to tell the reader's press from an
- * edit (`focus-place.ts`'s `isPress`). A module of its own with no import, so the panel and the
- * focus hand-offs read them without loading the keymap. A browser row that imports a control's
- * name from a module that draws a `MultiSelect` (`e2e/issue-page-h.e2e.ts` reads
- * `repoControlName`) loads the keymap all the same, through the trigger's key hint
- * (`ShortcutHelp`); that is safe in Playwright's process, since the keymap reads
- * `import.meta.env` only where it is defined (`appKeymap`).
+ * text, whether its `change` is the commit on blur of that text, the mark of an open panel, and
+ * the mark of a menu's trigger, on which a typed character is the page's key. The keymap reads
+ * them to leave a control its own keys (`isEditableTarget`, `features/shell/keymap.ts`), the
+ * shared list to leave the page its keys (`MultiSelect`), and the page's focus hand-offs to tell
+ * the reader's press from an edit (`focus-place.ts`'s `isPress`). A module of its own with no
+ * import, so the panel and the focus hand-offs read them without loading the keymap. A browser
+ * row that imports a control's name from a module that draws a `MultiSelect`
+ * (`e2e/issue-page-h.e2e.ts` reads `repoControlName`) loads the keymap all the same, through the
+ * trigger's key hint (`ShortcutHelp`); that is safe in Playwright's process, since the keymap
+ * reads `import.meta.env` only where it is defined (`appKeymap`).
  */
 
 /** The attribute every open panel's element carries (`AnchoredPanel` writes it): what tells the
  *  keymap a key was pressed inside one (`isEditableTarget`), and the page's focus hand-offs that
  *  the panel is a region of its own (`focus-place.ts`). */
 export const PANEL_ATTRIBUTE = "data-anchored-panel";
+
+/** The attribute the trigger of a menu carries - a single pick in a menu's place, `MultiSelect`'s
+ *  `menu`: the Inbox's Snooze, the priority and the status - which `MultiSelect` writes: what
+ *  tells the keymap and the Inbox's keys that a key was pressed on one (`typedOnMenuTrigger`). */
+export const MENU_TRIGGER_ATTRIBUTE = "data-list-menu";
+
+/** A menu's trigger (`MENU_TRIGGER_ATTRIBUTE`). */
+export const MENU_TRIGGER_SELECTOR = `[${MENU_TRIGGER_ATTRIBUTE}]`;
+
+/**
+ * Whether `press` is a character typed on a menu's trigger while its menu is closed - one
+ * character other than the space, with no Ctrl or Cmd - which is the page's key and no text
+ * (dispatch://INFRA-2160, R4 and R5): a menu's trigger is the button of a menu, not a select. So
+ * `b` or `h` there opens the Snooze menu of the item in hand, `p` the priority menu and `s` the
+ * status menu, each on its first choice or its value with nothing typed, as the key does from the
+ * row or the page, and every other such key does what it does there. The trigger keeps a button's
+ * keys and the arrows - Enter, Space, ArrowDown and ArrowUp open its menu - and an open menu's
+ * trigger keeps every key. The one rule of both sides: the trigger opens nothing and types nothing
+ * on such a key (`MultiSelect`'s `openFromKey`), and the keymap reads the trigger as no control
+ * that takes the key (`isEditableTarget`, `features/shell/keymap.ts`). The trigger of every other
+ * list - the assignee, the repository, an ask's hand-on, a filter's fields - takes a select's
+ * keys, and a character typed on it opens its list with the character in the box.
+ */
+export function typedOnMenuTrigger(
+  target: EventTarget | null,
+  press: { readonly ctrlKey: boolean; readonly key: string; readonly metaKey: boolean }
+): boolean {
+  return (
+    target instanceof Element &&
+    target.matches(MENU_TRIGGER_SELECTOR) &&
+    target.getAttribute("aria-expanded") !== "true" &&
+    press.key.length === 1 &&
+    press.key !== " " &&
+    !press.ctrlKey &&
+    !press.metaKey
+  );
+}
 
 /** The `<input>` types whose value is typed text alone, so that their `change` is the commit on
  *  blur of what the reader typed, which Chromium fires as an update takes the focused field away.

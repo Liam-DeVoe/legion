@@ -14,6 +14,7 @@ import {
   pickNamed,
   pressesTriggerOn,
 } from "../__tests__/list-picks";
+import { MENU_TRIGGER_SELECTOR } from "./key-targets";
 import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
@@ -1800,6 +1801,41 @@ test("an opener opens the list on its first or current choice", async () => {
   }
 });
 
+// R4, R5 (the tester's round 16): a menu's trigger is a menu's button, not a select. A character
+// typed on it while its menu is closed is the page's key, which the keymap runs as on the row
+// (`typedOnMenuTrigger`): `b` there opens the Snooze menu of the item in hand, on its first choice
+// with nothing typed, and `p` the priority menu on its value. So the trigger opens no list on it,
+// types nothing into its box and leaves the key to the page. Enter, Space, ArrowDown and ArrowUp,
+// with Alt or without, still open its own menu on its value.
+test("a character typed on the closed trigger is the page's key: it opens no list, types nothing and reaches the page, while Enter, Space and the arrows open the list", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost kind="priority" value="P2" />);
+  const page = keysThePageReads();
+  try {
+    const trigger = menuTrigger("priority");
+    for (const key of ["p", "b", "s", "2"]) {
+      act(() => trigger.focus());
+      await user.keyboard(key);
+      expect(screen.queryByRole("listbox"), `${key} opens no list`).not.toBeInTheDocument();
+      expect(trigger, key).toHaveFocus();
+    }
+    expect(page.keys, "every character reached the page").toEqual(["p", "b", "s", "2"]);
+    expect(trigger.matches(MENU_TRIGGER_SELECTOR), "the trigger carries a menu's mark").toBe(true);
+    page.stop();
+    for (const key of ["{Enter}", " ", "{ArrowDown}", "{ArrowUp}", "{Alt>}{ArrowDown}{/Alt}"]) {
+      act(() => trigger.focus());
+      await user.keyboard(key);
+      expect(menuBox(), `${key} opens the list with nothing typed`).toHaveValue("");
+      expect(highlightedRow(menuBox()), `${key} opens it on the value`).toBe("P2");
+      await user.keyboard("{Escape}");
+    }
+    expect(handed()).toBe("");
+  } finally {
+    page.stop();
+    view.unmount();
+  }
+});
+
 test("on a coarse pointer the list opens with no focused box", async () => {
   const user = userEvent.setup();
   const restore = onCoarsePointer();
@@ -1958,6 +1994,32 @@ test("a letter narrows the list", async () => {
     ]);
     expect(menuBox()).toHaveFocus();
     expect(row).not.toHaveFocus();
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R5, R8 (the tester's round 16, the class of T15): a key held down acts once. The page's binding
+// opens the menu on the key's press, and the key's repeats then reach the menu's box, which types
+// none of them: a held `b` opens the Snooze menu with nothing typed and every choice shown. A
+// held letter in the box types it once, and a held arrow still walks the highlight, as a move
+// that writes nothing.
+test("a held key acts once in the list: the opener's repeats type nothing, a held letter types once, and a held arrow walks the highlight", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    const row = screen.getByRole("button", { name: "Row" });
+    act(() => row.focus());
+    await user.keyboard("{b>6}");
+    expect(menuBox()).toHaveFocus();
+    expect(menuBox(), "the held b's repeats type nothing").toHaveValue("");
+    expect(screen.getAllByRole("option"), "the held b shows every choice").toHaveLength(4);
+    expect(highlightedRow(menuBox())).toBe("Later today");
+    await user.keyboard("{ArrowDown>3}");
+    expect(highlightedRow(menuBox()), "a held arrow walks the highlight").toBe("Until I clear it");
+    await user.keyboard("{w>4}");
+    expect(menuBox(), "a held letter types it once").toHaveValue("w");
     expect(handed()).toBe("");
   } finally {
     view.unmount();
@@ -2165,6 +2227,45 @@ test("a press on the page gives the focus back", async () => {
     expect(handed()).toBe("");
     expect(screen.getByTestId("closings").textContent).toBe("press,press,press");
   } finally {
+    view.unmount();
+  }
+});
+
+// Plan v15 D5 and the decision "a press on a text box, a button or a link then focuses that
+// control and acts on one press" (the tester's round 16): the focus a press outside gives back, at
+// its `pointerdown` and again once it is over, comes with no scroll. A scroll then would move the
+// page under the press between its `mousedown` and its `mouseup`, so in card mode a press far down
+// the page, below the card whose `b` opened the list, would release on another element and not
+// act. Escape and Tab give the focus back as the engine focuses, which brings the element into
+// view where it is out of sight.
+test("a press outside gives the focus back with no scroll, and Escape and Tab as the engine focuses", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  const row = screen.getByRole("button", { name: "Row" });
+  const focus = spyOn(row, "focus");
+  // How each focus given to the row since the list opened asked to scroll.
+  const givenBack = async (close: () => Promise<void>) => {
+    await openFromRow(user);
+    const from = focus.mock.calls.length;
+    await close();
+    return focus.mock.calls.slice(from).map(([options]) => options);
+  };
+  try {
+    const noScroll = { preventScroll: true };
+    expect(
+      await givenBack(() => user.click(screen.getByRole("button", { name: "Other" })))
+    ).toEqual([noScroll]);
+    expect(await givenBack(() => user.click(screen.getByText("Words on the page")))).toEqual([
+      noScroll,
+      noScroll,
+    ]);
+    for (const keys of ["{Escape}", "{Tab}"]) {
+      expect(await givenBack(() => user.keyboard(keys)), keys).toEqual([undefined]);
+      expect(row, keys).toHaveFocus();
+    }
+    expect(handed()).toBe("");
+  } finally {
+    focus.mockRestore();
     view.unmount();
   }
 });

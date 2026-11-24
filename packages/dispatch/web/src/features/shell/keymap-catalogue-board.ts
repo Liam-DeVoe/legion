@@ -3,29 +3,34 @@ import type { ScopeTable } from "./keymap-catalogue";
 /** The `board` scope's actions, by id (`keymap-catalogue.ts` names each `board.<id>`): the Board,
  *  `project/IssueBoard.tsx`. */
 export const BOARD_ACTIONS = {
-  // Moving the cursor, by card or by column, is no row, for the Inbox's `j` and `k`'s reason.
+  // Moving the cursor, by card or by column, is no row, for the Inbox's `j` and `k`'s reason. It
+  // steps, as a card's moves below do, so a held key repeats each of them.
   next: {
     label: "Next card",
     keys: ["j"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   previous: {
     label: "Previous card",
     keys: ["k"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   column: {
     label: "Next column",
     keys: ["l"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   "previous-column": {
     label: "Previous column",
     keys: ["h"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   "arrows-vertical": {
@@ -33,6 +38,7 @@ export const BOARD_ACTIONS = {
     keys: [],
     fixedKeys: ["ArrowDown", "ArrowUp"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   "arrows-horizontal": {
@@ -40,30 +46,35 @@ export const BOARD_ACTIONS = {
     keys: [],
     fixedKeys: ["ArrowRight", "ArrowLeft"],
     palette: false,
+    repeats: true,
     surface: "board",
   },
   "move-down": {
     label: "Move card down",
     keys: ["Shift+J"],
     palette: true,
+    repeats: true,
     surface: "board",
   },
   "move-up": {
     label: "Move card up",
     keys: ["Shift+K"],
     palette: true,
+    repeats: true,
     surface: "board",
   },
   "move-next": {
     label: "Move card to the next status",
     keys: ["Shift+L"],
     palette: true,
+    repeats: true,
     surface: "board",
   },
   "move-previous": {
     label: "Move card to the previous status",
     keys: ["Shift+H"],
     palette: true,
+    repeats: true,
     surface: "board",
   },
   open: {

@@ -8,6 +8,7 @@ export const DELIVERY_ACTIONS = {
     keys: [],
     fixedKeys: ["ArrowDown"],
     palette: false,
+    repeats: true,
     surface: "delivery",
   },
   previous: {
@@ -15,6 +16,7 @@ export const DELIVERY_ACTIONS = {
     keys: [],
     fixedKeys: ["ArrowUp"],
     palette: false,
+    repeats: true,
     surface: "delivery",
   },
   open: {

@@ -1,6 +1,6 @@
 import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
-import { PANEL_ATTRIBUTE, takesText } from "../../components/key-targets";
+import { PANEL_ATTRIBUTE, takesText, typedOnMenuTrigger } from "../../components/key-targets";
 
 import { IS_MAC, stepsOf } from "./key-text";
 import {
@@ -50,12 +50,17 @@ export interface KeyBinding {
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, a
    *  contentEditable element, a text-entry `INPUT`, or an option list's trigger
-   *  (`aria-haspopup="listbox"`, `MultiSelect`'s), open or closed - and while the focus is
-   *  anywhere inside an open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control,
-   *  so a binding that belongs to only some of them says which in its `when`: the document's
-   *  `$mod+Alt+m` runs only while its editor has focus and a selection, never from a comment
-   *  composer or any other field. */
+   *  (`aria-haspopup="listbox"`, `MultiSelect`'s), open or closed, but for a character typed on a
+   *  menu's closed trigger, which is the page's key (`typedOnMenuTrigger`) - and while the focus
+   *  is anywhere inside an open panel (`PANEL_ATTRIBUTE`). The key then reaches every such
+   *  control, so a binding that belongs to only some of them says which in its `when`: the
+   *  document's `$mod+Alt+m` runs only while its editor has focus and a selection, never from a
+   *  comment composer or any other field. */
   inEditable?: boolean;
+  /** Whether a held key's repeats run it too: an action that steps (`CatalogueEntry.repeats`),
+   *  as a held `j` walks a list. Every other binding runs once per press, and the registry keeps
+   *  its key's repeats from the page (`Keymap.handleKeyDown`). */
+  repeats?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
    *  key, and a binding with several keys may pick what it does by the key pressed (the arrows,
@@ -342,10 +347,10 @@ const IN_PANEL = `[${PANEL_ATTRIBUTE}]`;
 const LIST_TRIGGER = '[aria-haspopup="listbox"]';
 
 /**
- * Whether a key pressed on `target` is the control's own, so that only the bindings that fire
- * while the reader types (`inEditable`) may take it: a control that takes typed text
- * (`takesText`), a `<select>`, the trigger of an option list, or anything at all inside an open
- * panel.
+ * Whether `event`, a key pressed on its target, is the control's own, so that only the bindings
+ * that fire while the reader types (`inEditable`) may take it: a key on a control that takes
+ * typed text (`takesText`), a `<select>`, the trigger of an option list, or anything at all
+ * inside an open panel.
  *
  * A panel - the display menu, a filter panel and the lists opened from it, a column filter, a
  * control's own list such as Edit labels' - stands over the page, and its keys are its own
@@ -361,9 +366,13 @@ const LIST_TRIGGER = '[aria-haspopup="listbox"]';
  * keys open a closed list is `MultiSelect`'s to say. So a digit on the issue header's Assignee is
  * no priority, and `c` on a Settings project list opens no Create issue. A key the trigger leaves
  * alone, such as a letter on a busy trigger, fires only the bindings that fire while the reader
- * types (`inEditable`).
+ * types (`inEditable`). A menu's trigger - the Snooze, the priority, the status - is a menu's
+ * button and no select: a character typed on it while its menu is closed is the page's key, as
+ * on its row (`typedOnMenuTrigger`), so `b` there opens the Snooze menu and `s` the status menu,
+ * while its Enter, Space and arrows stay its own.
  */
-function isEditableTarget(target: EventTarget | null): boolean {
+function isEditableTarget(event: KeyboardEvent): boolean {
+  const { target } = event;
   if (!(target instanceof HTMLElement)) {
     return false;
   }
@@ -379,8 +388,11 @@ function isEditableTarget(target: EventTarget | null): boolean {
     return false;
   }
   // A `<select>` stays editable: its own keys type-ahead and step through the options. A list's
-  // trigger is read as one.
-  return target.tagName === "SELECT" || target.matches(LIST_TRIGGER);
+  // trigger is read as one, but for a character typed on a menu's closed trigger.
+  return (
+    target.tagName === "SELECT" ||
+    (target.matches(LIST_TRIGGER) && !typedOnMenuTrigger(target, event))
+  );
 }
 
 export interface KeymapOptions {
@@ -696,7 +708,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
         return;
       }
-      const editable = isEditableTarget(event.target);
+      const editable = isEditableTarget(event);
       const press: KeyPress = {
         altKey: event.altKey,
         code: event.code,
@@ -708,6 +720,18 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         metaKey: event.metaKey,
         shiftKey: event.shiftKey,
       };
+      // A held key's repeats are no presses (R5, R8): each is read alone, outside any chord, and
+      // runs only a binding that steps (`KeyBinding.repeats`), as a held `j` walks a list. Any
+      // other binding its key names ran on the press and runs on no repeat - a held `1` that
+      // snoozed an ask ticks no option of the question handed on to, a held `b` opens its menu
+      // once - and the repeats of its key are kept from the page all the same.
+      if (event.repeat) {
+        const { exact, partial } = resolve([press], editable);
+        if (exact === undefined && !partial) return;
+        event.preventDefault();
+        if (exact?.binding.repeats === true) exact.binding.run(event);
+        return;
+      }
       let presses = [...pending, press];
       let resolution = resolve(presses, editable);
       if (resolution.exact === undefined && !resolution.partial && pending.length > 0) {
@@ -809,13 +833,11 @@ export interface UseKeymapOptions {
   readonly outsideGate?: boolean;
 }
 
-/** The whole binding an action stands for, under `personKeys`' keys for it. An action that writes
- *  (`CatalogueEntry.writes`) runs once per press: a held key's repeats run nothing, and the
- *  registry's `preventDefault` keeps them from the page too. A palette row's keydown is no
- *  repeat, so the row runs it. */
+/** The whole binding an action stands for, under `personKeys`' keys for it. An action that steps
+ *  (`CatalogueEntry.repeats`) runs on a held key's repeats too; every other action runs once per
+ *  press (`KeyBinding.repeats`). A palette row's keydown is no repeat, so the row runs it. */
 export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): KeyBinding {
   const entry = catalogueEntry(binding.action);
-  const { run } = binding;
   return {
     catalogueAction: binding.action,
     id: entry.id,
@@ -823,12 +845,8 @@ export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): K
     keys: keysOfAction(binding.action, personKeys),
     label: entry.label,
     palette: entry.palette,
-    run:
-      entry.writes === true
-        ? (event) => {
-            if (!event.repeat) run(event);
-          }
-        : run,
+    repeats: entry.repeats === true,
+    run: binding.run,
     when: binding.when,
   };
 }

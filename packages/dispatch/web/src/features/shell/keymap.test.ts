@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { createElement } from "react";
 
-import { PANEL_ATTRIBUTE } from "../../components/key-targets";
+import { MENU_TRIGGER_ATTRIBUTE, PANEL_ATTRIBUTE } from "../../components/key-targets";
 import { KeymapProvider } from "./KeymapProvider";
 import {
   actionBinding,
   appKeymap,
   ariaKeyshortcuts,
+  CHORD_TIMEOUT_MS,
   createKeymap,
   DIALOG_SCOPE,
   type KeyBinding,
@@ -17,7 +18,7 @@ import {
   useKeymap,
   useKeymapScope,
 } from "./keymap";
-import { NO_PERSON_KEYS } from "./keymap-catalogue";
+import { type KeymapActionId, NO_PERSON_KEYS } from "./keymap-catalogue";
 import { setActionKeys } from "./keymap-keys";
 import { userPreferenceStorageKey } from "./userPreference";
 
@@ -485,6 +486,57 @@ test("a key pressed on an option list's trigger fires only inEditable bindings, 
   }
 });
 
+// dispatch://INFRA-2160, R4 and R5 (the tester's round 16): a menu's trigger - the Snooze, the
+// priority, the status (`MultiSelect`'s `menu`, marked `MENU_TRIGGER_ATTRIBUTE`) - is a menu's
+// button, not a select. A character typed on it while its menu is closed is the page's key, as
+// on the row: `b` there opens the Snooze menu, `p` the priority menu, and a digit is the page's
+// digit (`typedOnMenuTrigger`). Enter, Space and the arrows stay the trigger's, which open its
+// menu, and an open menu's trigger and every other list's trigger keep every key.
+test("a character typed on a menu's closed trigger is the page's key, while its Enter, Space and arrows, an open menu's trigger and another list's trigger keep their own", () => {
+  const { keymap, press } = harness();
+  const snooze = binding("snooze", "b");
+  const digit = binding("digit", "2");
+  const answer = binding("answer", "Enter");
+  const scroll = binding("scroll", "Space");
+  const next = binding("next", ["ArrowDown", "ArrowUp"]);
+  keymap.register("global", [
+    snooze.definition,
+    digit.definition,
+    answer.definition,
+    scroll.definition,
+    next.definition,
+  ]);
+  const trigger = (menu: boolean) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("aria-haspopup", "listbox");
+    button.setAttribute("aria-expanded", "false");
+    if (menu) button.setAttribute(MENU_TRIGGER_ATTRIBUTE, "");
+    return button;
+  };
+  const menu = trigger(true);
+  const list = trigger(false);
+  document.body.append(menu, list);
+  try {
+    expect(press("b", { target: menu }), "b on the menu's trigger").toBe(true);
+    expect(press("2", { target: menu }), "2 on the menu's trigger").toBe(true);
+    expect([snooze.fired(), digit.fired()]).toEqual([1, 1]);
+    for (const key of ["Enter", " ", "ArrowDown", "ArrowUp"]) {
+      expect(press(key, { target: menu }), `${key} on the menu's trigger`).toBe(false);
+      expect(press(key, { altKey: true, target: menu }), `Alt+${key}`).toBe(false);
+    }
+    expect([answer.fired(), scroll.fired(), next.fired()]).toEqual([0, 0, 0]);
+    menu.setAttribute("aria-expanded", "true");
+    expect(press("b", { target: menu }), "b on an open menu's trigger").toBe(false);
+    expect(press("b", { target: list }), "b on another list's trigger").toBe(false);
+    expect(press("2", { target: list }), "2 on another list's trigger").toBe(false);
+    expect([snooze.fired(), digit.fired()]).toEqual([1, 1]);
+  } finally {
+    menu.remove();
+    list.remove();
+  }
+});
+
 test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
@@ -734,32 +786,73 @@ test("a row does nothing once its binding's component has unregistered it", () =
   expect(close.fired()).toBe(0);
 });
 
-// An action that writes runs once per press (`CatalogueEntry.writes`): a held key's repeats would
-// write again, or, once the write hands the reader on (R8), write on an item nobody chose. Every
-// other action runs on each repeat, as a held `j` walks a list. A repeat of either is the
-// registry's, so it reaches no page.
-test("a held key runs an action that writes once and any other action on each repeat, and a row runs the one that writes", () => {
-  const { keymap, press } = harness();
-  let dismissed = 0;
-  let moved = 0;
+// A held key's repeats run only a binding that steps (`KeyBinding.repeats`, which an action takes
+// from `CatalogueEntry.repeats`): a held `j` walks a list, a held Space pages the open document
+// and a held Shift+J moves a Board card on. Every other binding runs once per press, and the
+// repeats of its key reach no page: a write, whose repeat would write again or, once the write
+// hands the reader on (R8), write on an item nobody chose; a digit, whose repeats would tick an
+// option of the question handed on to; a menu's opener, which would open it again; a binding
+// written out whole; and a chord, which a held key's repeat would complete. A palette row runs
+// each as a press does.
+test("a held key's repeats run only a binding that steps, never a write, a digit, a menu's opener, a binding written out whole or a chord, and a row runs each", () => {
+  const { advance, keymap, press } = harness();
+  const ran = new Map<string, number>();
+  const action = (name: KeymapActionId) =>
+    actionBinding(
+      { action: name, run: () => ran.set(name, (ran.get(name) ?? 0) + 1) },
+      NO_PERSON_KEYS
+    );
+  const whole = binding("whole", "w");
+  keymap.register("global", [whole.definition]);
   keymap.register("inbox", [
-    actionBinding({ action: "inbox.dismiss", run: () => (dismissed += 1) }, NO_PERSON_KEYS),
-    actionBinding({ action: "inbox.next", run: () => (moved += 1) }, NO_PERSON_KEYS),
+    action("inbox.dismiss"),
+    action("inbox.option"),
+    action("inbox.snooze"),
+    action("inbox.next"),
+    action("inbox.scroll-down"),
+    action("inbox.scroll-top"),
   ]);
+  keymap.register("board", [action("board.move-down")]);
   keymap.pushScope("inbox");
+  keymap.pushScope("board");
 
-  for (const key of ["e", "j"]) {
-    expect(press(key)).toBe(true);
-    expect(press(key, { repeat: true })).toBe(true);
-    expect(press(key, { repeat: true })).toBe(true);
+  for (const [key, init] of [
+    ["e", {}],
+    ["1", {}],
+    ["b", {}],
+    ["w", {}],
+    ["j", {}],
+    [" ", {}],
+    ["J", { shiftKey: true }],
+  ] as const) {
+    expect(press(key, init), `${key}, pressed`).toBe(true);
+    expect(press(key, { ...init, repeat: true }), `${key}, its first repeat`).toBe(true);
+    expect(press(key, { ...init, repeat: true }), `${key}, its second repeat`).toBe(true);
   }
-  expect(dismissed).toBe(1);
-  expect(moved).toBe(3);
+  expect(Object.fromEntries(ran)).toEqual({
+    "board.move-down": 3,
+    "inbox.dismiss": 1,
+    "inbox.next": 3,
+    "inbox.option": 1,
+    "inbox.scroll-down": 3,
+    "inbox.snooze": 1,
+  });
+  expect(whole.fired(), "the binding written out whole").toBe(1);
 
-  const row = keymap.actions().find((action) => action.id === "dismiss");
-  expect(row).toBeDefined();
-  row?.run();
-  expect(dismissed).toBe(2);
+  // A held `g` is one press of it: its repeats complete no `g g`, which two presses do.
+  press("g");
+  press("g", { repeat: true });
+  press("g", { repeat: true });
+  expect(ran.get("inbox.scroll-top"), "a held g").toBeUndefined();
+  advance(CHORD_TIMEOUT_MS);
+  press("g");
+  press("g");
+  expect(ran.get("inbox.scroll-top"), "g g").toBe(1);
+
+  for (const row of keymap.actions()) {
+    if (row.id === "dismiss" || row.id === "snooze") row.run();
+  }
+  expect([ran.get("inbox.dismiss"), ran.get("inbox.snooze")]).toEqual([2, 2]);
 });
 
 test("rows within a scope read alphabetically, a lowercase word among capitalised ones included", () => {

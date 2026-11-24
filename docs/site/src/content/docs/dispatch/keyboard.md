@@ -16,16 +16,18 @@ it does.
 
 While you type in a text field, or while the focus is in an open menu, list or panel, only
 `Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts, or the keys
-you gave those actions in their place. So single letters never interrupt your typing.
+you gave those actions in their place. So single letters never interrupt your typing. A focused
+**Snooze**, priority or **Status** control is not a text field: a letter or a digit you press on
+it works as it does on the row or the page (see [Menus and lists](#menus-and-lists)).
 
-The keys that approve, dismiss, pin or unpin, set a priority, and keep a decision run once for each
-press. If you hold one of these keys down, it does nothing more. This is also true of the
-palette's actions that save a change, when you give them a key: **Close issue**,
-**Reopen issue**, **Set priority P0** to **P3**, **Assign to me**, **Un-snooze**, **Mark read**,
-**Ask back**, **Ask back instead**, **Answer with it anyway**, and
-**Dismiss, or Move to Inbox, the selected items**. The Board's move keys, `Shift+J`, `Shift+K`,
-`Shift+L` and `Shift+H`, repeat while you hold them down, and each repeat moves the card one more
-time.
+Only the keys that move or scroll repeat while you hold them down: `j`, `k` and the arrow keys
+that go to the next or previous row, card, column, turn, agent, component or pull request, the
+Board's `h` and `l`, `Space` and `Shift+Space` in the Inbox, and the Board's move keys, `Shift+J`,
+`Shift+K`, `Shift+L` and `Shift+H`, where each repeat moves the card one more time. Every other key
+acts once for each press, the digits included. If you hold it down, it does nothing more: a held
+`1` that snoozes an ask picks no option of the ask after it, and a held `b` or `p` opens its menu
+once, with nothing typed in the menu's search box. In a menu's search box, a held letter is typed
+once. This is also true of the palette's actions when you give them a key.
 
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).
@@ -145,6 +147,12 @@ Each control at the head of the right column shows its first key, such as `p` on
 The **Snooze**, priority and **Status** controls each open a menu. The menu is a list of choices
 with a search box above it. A key opens the same menu as a click: `b` or `h` for **Snooze** in the
 Inbox, `p` for the priority, and `s` for the status on the issue page.
+
+On a focused **Snooze**, priority or **Status** control, `Enter`, `Space`, `↓` and `↑` open its
+menu. A letter or a digit is the page's key there, as on the row or the page: `b` or `h` opens the
+snooze menu, `p` the priority menu and `s` the status menu, on the first choice or the current
+value, with nothing typed in the search box. So `p` on a focused **Snooze** opens the priority
+menu, and `s` on the issue page's focused priority opens the status menu.
 
 | Keys | Action |
 | --- | --- |

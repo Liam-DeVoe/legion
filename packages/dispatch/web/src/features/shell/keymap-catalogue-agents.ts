@@ -14,12 +14,14 @@ export const AGENTS_ACTIONS = {
     label: "Next agent",
     keys: ["j"],
     palette: false,
+    repeats: true,
     surface: "agents",
   },
   previous: {
     label: "Previous agent",
     keys: ["k"],
     palette: false,
+    repeats: true,
     surface: "agents",
   },
   compose: {
@@ -39,7 +41,6 @@ export const AGENTS_ACTIONS = {
     label: "Pin or unpin the focused agent",
     keys: ["Shift+P"],
     palette: true,
-    writes: true,
     surface: "agents",
   },
   select: {
