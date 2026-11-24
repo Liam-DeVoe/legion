@@ -58,7 +58,7 @@ body: |-
   read can find its store behind the setting's URL. The first such message since that read began
   holds the read after it, and Dispatch acknowledges the others, keeping the highest sequence it
   so skipped in each store, so a good read that stops short of one still owes a read, and so does
-  a good read that finds another store there that the project still takes messages of. So a project
+  a good read that finds another store there that the project does not drop. So a project
   whose daemon does not answer a read holds 17 messages of the consumer's window of 256.
   A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
   Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which

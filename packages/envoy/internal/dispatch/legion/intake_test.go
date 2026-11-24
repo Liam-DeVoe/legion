@@ -2362,13 +2362,14 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 // and run, as forged messages or a bug's would), and a boot among them that does not follow, make
 // one whole read in the first minute: the first message's, which a good starting read does not
 // hold back. INFRA's daemon answers it late and holds it, and LINUX's messages are delivered and
-// applied while it is in flight. The burst's second message is the first that owes the next read:
-// it goes back to the stream until the read is due, the one message of the durable's window INFRA
-// holds. Each later message of the burst is finished as soon as the cursor records its reason, so
-// none waits on more than that one read and none is applied: 300 reads at the daemon's 200 ms
-// would take a minute, past what rig.settledHolding waits. LINUX's message behind the burst is
-// applied too. A minute on, INFRA's daemon's own next event makes the owed read, logged with both
-// reasons and the first as its reason, and is applied after it: one read more.
+// applied while it is in flight. The first message past stateMaxWaiting since that read began is
+// the first that holds the next read (read-rule-cases row 8.1): it goes back to the stream until
+// the read is due, the one message of the durable's window INFRA holds. Each later message of the
+// burst is finished as soon as the cursor records its reason, so none waits on more than that one
+// read and none is applied: 300 reads at the daemon's 200 ms would take a minute, past what
+// rig.settledHolding waits. LINUX's message behind the burst is applied too. A minute on, INFRA's
+// daemon's own next event makes the owed read, logged with both reasons and the first as its
+// reason, and is applied after it: one read more.
 func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	const burst = 300
 	rig := newIntakeRig(t)
@@ -2383,7 +2384,15 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	release := infra.holds(t)
 	linuxAt := map[int]string{40: "implementing", 120: "testing", 200: "reviewing"}
 	linuxSeq := 20
-	for i := range burst {
+	// The burst's first message makes its read, and the rest are published once that read is in
+	// flight: a message judged beside the runner before the read began would owe the gap that read
+	// is then made for, so the read would clear it, and the boot would come first in the reasons
+	// the read leaves owed.
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	rig.waitFor(20*time.Second, func() bool { return infra.served() >= 2 }, func() string {
+		return fmt.Sprintf("INFRA's daemon was asked for %d reads, want the burst's after the starting one", infra.served())
+	})
+	for i := 1; i < burst; i++ {
 		if i == burst/2 {
 			rig.publish("INFRA", booted(1000, stateSchema, 3))
 		}
@@ -2397,9 +2406,6 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 
 	// INFRA's one read is in flight, held by its daemon: LINUX's messages in the window are applied
 	// meanwhile, and INFRA's daemon is asked for no other read.
-	rig.waitFor(20*time.Second, func() bool { return infra.served() >= 2 }, func() string {
-		return fmt.Sprintf("INFRA's daemon was asked for %d reads, want the burst's after the starting one", infra.served())
-	})
 	var linuxLast int64
 	rig.waitFor(20*time.Second, func() bool {
 		err := rig.database.Pool.QueryRow(t.Context(), `select coalesce(last_seq, 0) from legion_event_cursors where project = 'LINUX'`).Scan(&linuxLast)

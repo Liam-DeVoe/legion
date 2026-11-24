@@ -286,17 +286,17 @@ func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeAfterTheTakeOvers
 	}
 }
 
-// TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLIsUnverified: until a
-// read of the URL a write of the setting names has succeeded, Dispatch cannot know whether that URL
-// names another store or the same store behind a new URL. So, while the cursor holds no store, a
-// message of the store the setting named before calls for the owed read where it is due and no
-// message holds it. The message waits on the project's runner behind a read in flight, as every
-// message does, is finished unapplied, and the project's runner makes the read after it
-// (callRead). At most one such call waits for each project. Once a read has given the cursor
-// another store, such a message calls for no read. In each subtest INFRA's daemon has
-// served a good starting read in the rig's store, and then a write of INFRA's setting names a
-// second URL, which the write's wake reads (repoint).
-func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedReadWhileTheNewURLIsUnverified(t *testing.T) {
+// TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead: until a read of the URL a write of
+// the setting names has succeeded, Dispatch cannot know whether that URL names another store or the
+// same store behind a new URL, and a daemon the cursor follows in another store can be redeployed
+// into the store the setting named before. So, whatever store the cursor holds, a message of that
+// store calls for the owed read where it is due and no message holds it (read-rule-cases row 4.3).
+// The message waits on the project's runner behind a read in flight, as every message does, is
+// finished unapplied, and the project's runner makes the read after it (callRead). At most one
+// such call waits for each project. In each subtest INFRA's daemon has served a good starting read
+// in the rig's store, and then a write of INFRA's setting names a second URL, which the write's
+// wake reads (repoint).
+func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) {
 	const namedRun, namedStore = "7a3d9e2b-4c1f-4b86-9e5a-2f8c6d1b3e74", "5d8b2e6f-1a4c-4f97-b3e0-6c9a2d7f1b58"
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	// repoint starts the rig with INFRA's daemon read whole, writes INFRA's setting naming named,

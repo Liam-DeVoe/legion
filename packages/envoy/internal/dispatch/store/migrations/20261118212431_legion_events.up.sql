@@ -93,9 +93,10 @@
 --   store (legion's outcomeForgotten): R3 applies no message of the daemon the setting named
 --   before. Such a message waits on the project's runner behind a whole read in flight, for one
 --   read's 60 s at the most, as every message does, and is judged against the row that read
---   leaves. It holds no read. While state_id is null, it calls for the owed read where that read
+--   leaves. It holds no read. Whatever state_id holds, it calls for the owed read where that read
 --   is due and no message holds it, and the intake makes the read after it acknowledges the
---   message, at most once a minute; while state_id is another store, it calls for none. A write of
+--   message, at most once a minute, since the setting's own daemon can be redeployed into this
+--   store; it calls for no read of its own. A write of
 --   previous_state_url clears it, and so does a good whole read whose state_id is this store. A
 --   write of the URL the row follows and every other whole read keep it. Null for none.
 -- - previous_state_url is the URL the row followed when the write set previous_state_id: the
@@ -113,9 +114,10 @@
 --   that store out, and every write of the setting that resets the row empties it, since a store
 --   in it is only no daemon that the setting named before the write. The intake treats a message
 --   of a store in it as a message of previous_state_id: it finishes it unapplied while state_id is
---   null or another store, and the message holds no read and calls for none. So a daemon that the
---   setting named, whose reads all failed and which still publishes after the setting named a
---   daemon that a read verified, makes one `store` read at the most, and none after it, unless it
+--   null or another store, and the message holds no read and calls for no read of its own, only
+--   the owed read as above. So a daemon that the setting named, whose reads all failed and which
+--   still publishes after the setting named a daemon that a read verified, makes one `store` read
+--   of its own at the most, and none after it, unless it
 --   boots: a boot of a store in it, or of previous_state_id, while the row follows the setting's
 --   URL in another store a read verified, calls for a `store` read, so a daemon that a redeploy
 --   started behind that URL in such a store is found again. A read that finds the row's store
