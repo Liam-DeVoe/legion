@@ -1999,9 +1999,11 @@ envoy_go_checks:
   - *bun_install
   - 'packages/envoy/**'
   # The scan tests of approve-check's session run scripts/approve/session.ts with Bun, which loads
-  # the TypeScript clients (ci_job_reads.py's envoy_go_checks gate; ci_ts_programs.py's BUNDLES).
+  # the TypeScript clients and the contracts they import (ci_job_reads.py's envoy_go_checks gate;
+  # ci_ts_programs.py's BUNDLES).
   - 'packages/envoy-client/src/**'
   - 'packages/cipher-client/**'
+  - 'packages/contracts/src/**'
 # why: .github/ci-notes/ci.md#text_checks-the-text-checks-of-the-three-go-modules-the-dispatch
 text_checks:
   - *ci_router

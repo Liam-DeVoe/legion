@@ -2364,6 +2364,8 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step of envoy-go-checks that runs approve-check's session (scripts/approve/session.ts).
+SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the
@@ -3663,10 +3665,13 @@ GATES = [
         (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
                                         "reads that row's two sources"),
+        (CONTRACTS_SRC, f"{at('envoy-go-checks', SCAN_TESTS_STEP)}: the envoy-client and cipher-client "
+                        "sources packages/envoy/scripts/approve/session.ts loads import @legion/contracts "
+                        "(contracts exports.bun -> src)"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
       # The scan tests of approve-check's session spawn `bun scripts/approve/session.ts`, which
       # imports envoy-client's broker credential and Dispatch client and cipher-client's DPoP key.
-      + envoy_client_dep(at("envoy-go-checks", "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)")
+      + envoy_client_dep(at("envoy-go-checks", SCAN_TESTS_STEP)
                          + ": packages/envoy/scripts/approve/session.ts imports "
                          "../../../envoy-client/src/broker-credential.ts and dispatch-http.ts")),
 
