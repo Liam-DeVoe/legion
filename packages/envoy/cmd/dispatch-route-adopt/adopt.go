@@ -93,36 +93,33 @@ func (r *adoptReport) print(w io.Writer) {
 
 // adopt resolves the merge in progress in repo (see the package comment).
 func adopt(repo gitRepo) (*adoptReport, error) {
-	mergeHead, err := repo.line("rev-parse", "-q", "--verify", "MERGE_HEAD")
-	if err != nil || mergeHead == "" {
-		return nil, errors.New("no merge is in progress: run this while `git merge origin/main` has stopped")
-	}
-	head, err := repo.line("rev-parse", "HEAD")
+	sides, err := repo.sides()
 	if err != nil {
 		return nil, err
 	}
-	headOld, err := hasOldLayout(gitTree{repo, head})
+	firstOld, err := hasOldLayout(gitTree{repo, sides.first})
 	if err != nil {
-		return nil, fmt.Errorf("read HEAD's %s: %w", tableFile, err)
+		return nil, fmt.Errorf("read %s's %s: %w", sides.firstName, tableFile, err)
 	}
-	mergeOld, err := hasOldLayout(gitTree{repo, mergeHead})
+	secondOld, err := hasOldLayout(gitTree{repo, sides.second})
 	if err != nil {
-		return nil, fmt.Errorf("read MERGE_HEAD's %s: %w", tableFile, err)
+		return nil, fmt.Errorf("read %s's %s: %w", sides.secondName, tableFile, err)
 	}
 	report := &adoptReport{}
+	var oldRev, newRev string
 	switch {
-	case headOld && mergeOld:
-		return nil, errors.New("HEAD and MERGE_HEAD both hold the old route table: neither side has the layout to adopt")
-	case !headOld && !mergeOld:
-		return nil, errors.New("HEAD and MERGE_HEAD both hold the route files already: there is nothing to adopt")
-	case headOld:
-		report.oldSide, report.newSide = "HEAD", "MERGE_HEAD"
+	case firstOld && secondOld:
+		return nil, fmt.Errorf("%s and %s both hold the old route table: neither side has the layout to adopt", sides.firstName, sides.secondName)
+	case !firstOld && !secondOld:
+		return nil, fmt.Errorf("%s and %s both hold the route files already: there is nothing to adopt", sides.firstName, sides.secondName)
+	case firstOld:
+		report.oldSide, report.newSide = sides.firstName, sides.secondName
+		oldRev, newRev = sides.first, sides.second
 	default:
-		report.oldSide, report.newSide = "MERGE_HEAD", "HEAD"
+		report.oldSide, report.newSide = sides.secondName, sides.firstName
+		oldRev, newRev = sides.second, sides.first
 	}
-	revs := map[string]string{"HEAD": head, "MERGE_HEAD": mergeHead}
-	oldRev, newRev := revs[report.oldSide], revs[report.newSide]
-	base, err := repo.line("merge-base", head, mergeHead)
+	base, err := repo.line("merge-base", sides.first, sides.second)
 	if err != nil {
 		return nil, err
 	}
@@ -240,23 +237,14 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		}
 	}
 
-	if len(stage) > 0 {
-		if _, err := repo.run(append([]string{"add", "--"}, prefixed(stage)...)...); err != nil {
-			return nil, err
-		}
-	}
-	if len(remove) > 0 {
-		if _, err := repo.run(append([]string{"rm", "-q", "--"}, prefixed(remove)...)...); err != nil {
-			return nil, err
-		}
-	}
 	if _, err := (gitTree{repo, oldRev}).read(routesFixture); err == nil {
 		if _, err := (gitTree{repo, newRev}).read(routesFixture); err != nil {
-			if _, err := repo.run("rm", "-q", "--ignore-unmatch", "--", path.Join(apiDir, routesFixture)); err != nil {
-				return nil, err
-			}
+			remove = append(remove, routesFixture)
 			report.fixtureRemoved = true
 		}
+	}
+	if err := repo.stage(stage, remove); err != nil {
+		return nil, err
 	}
 
 	if report.unmerged, err = repo.unmerged(); err != nil {
@@ -266,15 +254,6 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		return nil, err
 	}
 	return report, nil
-}
-
-// prefixed names each route file from the repository's root.
-func prefixed(names []string) []string {
-	paths := make([]string, len(names))
-	for index, name := range names {
-		paths[index] = path.Join(apiDir, name)
-	}
-	return paths
 }
 
 // sharedCodeChange is the branch's change to one old-layout file outside the entries the route

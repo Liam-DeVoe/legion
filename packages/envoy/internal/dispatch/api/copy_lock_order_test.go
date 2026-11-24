@@ -191,9 +191,9 @@ type lockGraph struct {
 	named     map[string]*lockFunction
 	// sources are the parsed files the graph was built from, which the route guards read every
 	// route declaration off (keyedRouteHandlers).
-	sources []moduleSource
-	declared  map[*types.Func]*lockFunction
-	literals  map[*ast.FuncLit]*lockFunction
+	sources  []moduleSource
+	declared map[*types.Func]*lockFunction
+	literals map[*ast.FuncLit]*lockFunction
 	// stored are the functions this module assigns to each variable or struct field, which a
 	// call through it runs.
 	stored map[*types.Var][]*lockFunction

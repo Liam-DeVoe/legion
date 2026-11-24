@@ -15,15 +15,33 @@ import (
 // apiDir is package api, from the repository's root.
 const apiDir = "packages/envoy/internal/dispatch/api"
 
-// gitRepo runs git in one checkout.
+// gitRepo is one checkout: a git one, or a jj one, colocated or not. Every read of a commit goes
+// through git, which in a jj checkout is jj's own store (`jj git root`), since jj keeps each of
+// its commits as a git commit there; what differs is how the merge in progress is found, how its
+// conflicts are listed and whether a written file is staged (vcs.go).
 type gitRepo struct {
 	root string
+	// gitDir is the git store jj keeps, set in a jj checkout and empty in a git one, where git
+	// finds its own from root.
+	gitDir string
+	// jj is a checkout jj answers for (`jj root`), which reads no git index: jj takes every file
+	// as the working copy holds it when its next command runs.
+	jj bool
+}
+
+// command is git with args, run at the checkout's root and in jj's store where there is one.
+func (g gitRepo) command(args ...string) *exec.Cmd {
+	if g.gitDir != "" {
+		args = append([]string{"--git-dir", g.gitDir}, args...)
+	}
+	command := exec.Command("git", args...)
+	command.Dir = g.root
+	return command
 }
 
 // run runs git with args and answers its stdout, failing with its stderr.
 func (g gitRepo) run(args ...string) ([]byte, error) {
-	command := exec.Command("git", args...)
-	command.Dir = g.root
+	command := g.command(args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
@@ -38,13 +56,22 @@ func (g gitRepo) line(args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
-// findRepo is the checkout that holds dir.
+// findRepo is the checkout that holds dir: the jj workspace when jj answers for dir, else the git
+// checkout. jj is asked first, since a colocated jj workspace is a git checkout too, whose git
+// HEAD is no merge in progress.
 func findRepo(dir string) (gitRepo, error) {
+	if root, err := jjLine(dir, "root"); err == nil && root != "" {
+		gitDir, err := jjLine(root, "git", "root")
+		if err != nil {
+			return gitRepo{}, fmt.Errorf("%s is a jj workspace whose git store jj does not name: %w", root, err)
+		}
+		return gitRepo{root: root, gitDir: gitDir, jj: true}, nil
+	}
 	command := exec.Command("git", "rev-parse", "--show-toplevel")
 	command.Dir = dir
 	output, err := command.Output()
 	if err != nil {
-		return gitRepo{}, fmt.Errorf("%s is in no git checkout: %w", dir, err)
+		return gitRepo{}, fmt.Errorf("%s is in no git checkout or jj workspace: %w", dir, err)
 	}
 	return gitRepo{root: strings.TrimSpace(string(output))}, nil
 }
@@ -60,8 +87,7 @@ func (t gitTree) read(name string) ([]byte, error) {
 }
 
 func (t gitTree) filesNaming(word string) ([]string, error) {
-	command := exec.Command("git", "grep", "-l", "-w", "-F", "-e", word, t.rev, "--", apiDir+"/")
-	command.Dir = t.repo.root
+	command := t.repo.command("grep", "-l", "-w", "-F", "-e", word, t.rev, "--", apiDir+"/")
 	output, err := command.Output()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(output) == 0 {
@@ -164,9 +190,18 @@ func (g gitRepo) mergeFile(ours, base, theirs []byte, labels [3]string) ([]byte,
 	return nil, false, fmt.Errorf("git merge-file: %w: %s", err, strings.TrimSpace(stderr.String()))
 }
 
-// unmerged is every path git still holds in conflict, sorted.
+// unmerged is every path still in conflict, sorted: what git holds unmerged in its index, or what
+// jj's working-copy commit holds as a conflict.
 func (g gitRepo) unmerged() ([]string, error) {
-	output, err := g.run("diff", "--name-only", "--diff-filter=U")
+	var output []byte
+	var err error
+	if g.jj {
+		var text string
+		text, err = jjOutput(g.root, "file", "list", "-r", "@", "-T", `if(conflict, path ++ "\n")`)
+		output = []byte(text)
+	} else {
+		output, err = g.run("diff", "--name-only", "--diff-filter=U")
+	}
 	if err != nil {
 		return nil, err
 	}

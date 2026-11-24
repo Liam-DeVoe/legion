@@ -9,10 +9,15 @@
 // (routeFileName says how a pattern is written), whose one declaration states every one of those
 // facts, so two branches that add different routes touch no file in common.
 //
-// Usage, from anywhere in the checkout, while `git merge origin/main` (or any merge of a commit
-// with the new layout) has stopped:
+// Usage, from packages/envoy, once a merge of main into the branch holds conflicts:
 //
-//	go run ./cmd/dispatch-route-adopt            (from packages/envoy)
+//	go run ./cmd/dispatch-route-adopt
+//
+// with git, while `git merge origin/main` has stopped (HEAD and MERGE_HEAD are the two sides); with
+// jj, with the merge as the working-copy commit, after `jj new <branch> main@origin` (its two
+// parents are the two sides). A checkout jj answers for (`jj root`) is resolved with jj: commits
+// are read from jj's git store (`jj git root`), nothing is staged, and the conflicts left are the
+// ones `jj file list` reports.
 //
 // One side of the merge holds the old layout and the other the new one. The tool splits the old
 // layout at the merge base and at the old-layout side into one file per route, with the splitter
