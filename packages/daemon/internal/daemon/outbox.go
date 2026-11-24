@@ -3292,7 +3292,7 @@ func (r *outbox) retireUnstartedOfLeftIssue(ctx context.Context, row record.Outb
 		return false, nil
 	}
 	var stands bool
-	err = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	err = store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stands, err = store.StandsInWorkflow(ctx, tx, issue, record.OutOfWorkflow)
 		return err
