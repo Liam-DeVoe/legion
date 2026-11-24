@@ -16,6 +16,16 @@ import type { Subprocess } from "bun"
 
 /** Each row's hang guard, which every file that uses this module sets as its rows' default. */
 export const ROW_GUARD_MS = 120_000
+/**
+ * The hang guard of the files whose rows a loaded host stretches past a sixth of `ROW_GUARD_MS`
+ * (`open-asks-hook.test.ts` and `envoy-channel-mcp.test.ts`, each with its readings): not six
+ * times a reading, which is past what the claude-envoy job leaves one hang, but that room. The
+ * job's `timeout-minutes: 10` less its test step's 285 s and its other steps' 51 s at 82306880
+ * (CI run 45394586867) leaves 264 s, and both files run in that one job, so this room is for one
+ * hang in it, whichever file holds it. A row that uses it states it as its limit and hands it to
+ * each wait here (`untilTheGuard`, `beforeTheGuard`, `exitBeforeTheGuard`).
+ */
+export const JOB_ROOM_GUARD_MS = 240_000
 /** How long before the guard a wait here gives up: room for the row's last steps after it and
  *  for its failure to be printed, where Bun's own timeout line would name nothing. */
 export const NAMED_BEFORE_GUARD_MS = 5_000

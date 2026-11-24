@@ -11,7 +11,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
-import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
+import { collected, exitBeforeTheGuard, JOB_ROOM_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -26,15 +26,14 @@ const DISPATCH_TOKEN = fixtureSecret("dsp")
 // Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at loads of 790 to 960
 // a hook did not exit within them.
 //
-// The guard is the claude-envoy job's, not six times a reading: its rows read up to 59 101 ms
-// over 20 runs at the 80 rung (the resume row, in the Job infra-1580-r27oa-rl5gq of the cluster's
-// `builds` namespace, two CPUs and 8 GiB, 201 busy loops for the 80 rung, row A 39.7 s), and up to
-// 50 694 ms in this file run whole there (infra-1580-r27ow-46ct9, 183 busy loops, row A 36.6 s),
-// both at 82306880, where `row-deadline.ts`'s 120 s was 2.0 times the worst. Six times it is
-// 355 s, past what the job leaves one row's hang: its `timeout-minutes: 10` less its test step's
-// 285 s and its other steps' 51 s at 82306880 (CI run 45394586867) leaves 264 s. So the job
-// decides 240_000, which is 4.1 times the worst.
-const OPEN_ASKS_ROW_GUARD_MS = 240_000
+// The guard is the claude-envoy job's room (`JOB_ROOM_GUARD_MS`, `./row-deadline.ts`), not six
+// times a reading: this file's rows read up to 59 101 ms over 20 runs at the 80 rung (the resume
+// row, in the Job infra-1580-r27oa-rl5gq of the cluster's `builds` namespace, two CPUs and 8 GiB,
+// 201 busy loops for the 80 rung, row A 39.7 s), and up to 50 694 ms in this file run whole there
+// (infra-1580-r27ow-46ct9, 183 busy loops, row A 36.6 s), both at 82306880, where
+// `row-deadline.ts`'s 120 s was 2.0 times the worst. Six times it is 355 s, past that room, so the
+// room decides 240_000, 4.1 times the worst.
+const OPEN_ASKS_ROW_GUARD_MS = JOB_ROOM_GUARD_MS
 beforeEach(rowStarted)
 setDefaultTimeout(OPEN_ASKS_ROW_GUARD_MS)
 
