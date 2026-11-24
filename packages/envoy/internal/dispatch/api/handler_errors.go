@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -106,6 +107,16 @@ type editLostError struct {
 	LostOps      *[]int        `json:"lost_ops,omitempty"`
 	Participants []model.Actor `json:"participants"`
 	Suggestion   *string       `json:"suggestion,omitempty"`
+}
+
+// deletedPostError is the 409 every write that would put text on a post its author withdrew
+// answers, and the one place that names that refusal's code and its words: a reply under the
+// post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
+// of a delivery of it, in either version. kind names the post in the message, as the route's
+// caller met it ("this comment is deleted"). A deleted post keeps its row and its place, so a
+// write that moves no text - a resolve, a reopen - takes it and meets this refusal nowhere.
+func deletedPostError(kind refs.ItemKind) *apiError {
+	return errorf(apicode.PostDeleted, "this %s is deleted", kind)
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {

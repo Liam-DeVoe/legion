@@ -179,9 +179,10 @@ func tourSteps() []tourStep {
 //   - unauthenticated: each step of a route that is not public, sent with no credential, is
 //     answered 401 with the identity layer's code.
 //   - replays: each write step sent twice under one Idempotency-Key is answered the same body the
-//     second time (the same JSON value, for a route whose Replay answers the resource afresh, but
-//     the members its step names as answered as they stand, ReplayMoves), marked a replay, with no
-//     second event; a route whose answer holds a secret answers the repeat 409 KEY_COMMITTED (R8).
+//     second time (the same JSON value, for a route whose Replay or Reread answers the resource
+//     afresh, but the members its step names as answered as they stand, ReplayMoves), marked a
+//     replay, with no second event; a route whose answer holds a secret answers the repeat 409
+//     KEY_COMMITTED (R8).
 func TestV2RouteTour(t *testing.T) {
 	tour := newRouteTour(t)
 	steps := tourSteps()
@@ -348,10 +349,11 @@ func TestV2RouteTour(t *testing.T) {
 				events := tour.eventCount(t, "", "")
 				again := tour.send(t, route, request, key)
 				sameAnswer := again.Body.String() == first.Body.String()
-				if route.Replay != nil {
-					// A route with a Replay answers a repeat with the resource as it stands now
-					// (writeRefreshed), re-encoded, so its members may come back in another order,
-					// and those the step names as moving since may hold what they hold now.
+				if route.Replay != nil || route.Reread != nil {
+					// A route with a Replay or a Reread answers a repeat with the resource as it
+					// stands now (writeRefreshed), re-encoded, so its members may come back in
+					// another order, and those the step names as moving since may hold what they
+					// hold now.
 					sameAnswer = jsonEqual(t, withoutMembers(t, again.Body.Bytes(), step.ReplayMoves),
 						string(withoutMembers(t, first.Body.Bytes(), step.ReplayMoves)))
 				}

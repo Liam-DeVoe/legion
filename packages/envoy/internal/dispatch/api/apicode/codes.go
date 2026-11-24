@@ -191,6 +191,7 @@ var (
 	DatabaseUnavailable                = both("DATABASE_UNAVAILABLE", http.StatusServiceUnavailable)
 	DecisionBlockInBody                = both("DECISION_BLOCK_IN_BODY", http.StatusBadRequest)
 	DecisionChanged                    = both("DECISION_CHANGED", http.StatusConflict)
+	DeleteContended                    = both("DELETE_CONTENDED", http.StatusConflict)
 	DeliveryNotConfigured              = both("DELIVERY_NOT_CONFIGURED", http.StatusNotFound)
 	DeliverySettingsAccess             = both("DELIVERY_SETTINGS_ACCESS", http.StatusConflict)
 	DeliverySettingsInput              = both("DELIVERY_SETTINGS_INPUT", http.StatusBadRequest)
@@ -301,6 +302,7 @@ var (
 	MessageTargetChanged   = both("MESSAGE_TARGET_CHANGED", http.StatusConflict)
 	NearCopyCheckIDInput   = both("NEAR_COPY_CHECK_ID_INPUT", http.StatusBadRequest)
 	NearCopyCheckNotFound  = both("NEAR_COPY_CHECK_NOT_FOUND", http.StatusNotFound)
+	NotAnIssueMessage      = both("NOT_AN_ISSUE_MESSAGE", http.StatusConflict)
 	NotAnswerer            = both("NOT_ANSWERER", http.StatusForbidden)
 	NotAuthor              = both("NOT_AUTHOR", http.StatusForbidden)
 	NotDocument            = both("NOT_DOCUMENT", http.StatusBadRequest)
@@ -326,6 +328,7 @@ var (
 	PausePointInput      = both("PAUSE_POINT_INPUT", http.StatusBadRequest)
 	PlanApprovedByReview = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
 	PossibleDuplicate    = both("POSSIBLE_DUPLICATE", http.StatusConflict)
+	PostDeleted          = both("POST_DELETED", http.StatusConflict)
 	PreconditionFailed   = both("PRECONDITION_FAILED", http.StatusConflict)
 	// PriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (ProjectExists): a second create would write its own history over

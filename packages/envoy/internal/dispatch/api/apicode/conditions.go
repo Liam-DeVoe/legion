@@ -94,6 +94,16 @@ var (
 	DeploymentMemberScoped = Condition{"deployment member written under a project scope"}
 )
 
+// The conditions of who wrote what a request's path names.
+var (
+	// NotTheAuthor is a write only the author of the post or the ask the path names may make,
+	// from a caller that is not that author: the edit and the delete of a comment and of an issue
+	// message (PATCH and DELETE /api/v2/comments/{id} and /api/v2/messages/{id}), and another
+	// session's reword of an ask (PATCH /api/v2/asks/{id}). Whether the caller wrote the post is
+	// read from the post's row, so the handler decides it, after the post is found.
+	NotTheAuthor = Condition{"caller not the author"}
+)
+
 // The conditions of what a deployment configures.
 var (
 	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch

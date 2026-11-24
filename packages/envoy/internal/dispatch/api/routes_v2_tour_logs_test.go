@@ -339,11 +339,13 @@ func TestV2LogPositions(t *testing.T) {
 			entries[entry.Method+" "+entry.Path] = entry
 		}
 		for route, want := range map[string]routeIndexPosition{
-			"GET /api/v2/issues/{key}/events":   {Field: "seq", Type: "integer"},
-			"GET /api/v2/artifacts/{id}/events": {Field: "seq", Type: "integer"},
-			"GET /api/v2/events":                {Field: "id", Type: "integer"},
-			"GET /api/v2/references":            {Field: "source_seq", Type: "integer"},
-			"GET /api/v2/me/threads":            {Field: "dismissed_at,thread_id", Type: "time,id"},
+			"GET /api/v2/issues/{key}/events":       {Field: "seq", Type: "integer"},
+			"GET /api/v2/artifacts/{id}/events":     {Field: "seq", Type: "integer"},
+			"GET /api/v2/events":                    {Field: "id", Type: "integer"},
+			"GET /api/v2/references":                {Field: "source_seq", Type: "integer"},
+			"GET /api/v2/me/threads":                {Field: "dismissed_at,thread_id", Type: "time,id"},
+			"GET /api/v2/comments/{id}/corrections": {Field: "edited_at,id", Type: "time,id"},
+			"GET /api/v2/messages/{id}/corrections": {Field: "edited_at,id", Type: "time,id"},
 		} {
 			entry, listed := entries[route]
 			switch {

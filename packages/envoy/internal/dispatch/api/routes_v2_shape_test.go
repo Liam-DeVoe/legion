@@ -640,14 +640,18 @@ func TestTheV2TableKeepsTheOneShape(t *testing.T) {
 }
 
 // v1ActionWordPaths are the rows of /api/v1 whose path holds an action word, each of which the
-// route map renames (dispatch://INFRA-2946/artifact/route-map-md, section (a)), and the one a
-// merge of main added after it: #4374's dismiss, whose /api/v2 route is the state write
-// PUT /api/v2/credential-requests/{id}/state with {"state": "dismissed"}.
+// route map renames (dispatch://INFRA-2946/artifact/route-map-md, section (a)), and the ones
+// merges of main added after it: #4374's dismiss, whose /api/v2 route is the state write
+// PUT /api/v2/credential-requests/{id}/state with {"state": "dismissed"}, and #3512's two history
+// reads, whose /api/v2 routes are GET /api/v2/comments/{id}/corrections and
+// GET /api/v2/messages/{id}/corrections.
 var v1ActionWordPaths = []string{
 	"DELETE /api/v1/me/asks/{id}/snooze",
+	"GET /api/v1/comments/{id}/history",
 	"GET /api/v1/issues/resolve",
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest",
 	"GET /api/v1/me/documents/{id}/read",
+	"GET /api/v1/messages/{id}/history",
 	"GET /api/v1/priorities/{id}/history",
 	"GET /api/v1/search",
 	"GET /api/v1/search/coverage",

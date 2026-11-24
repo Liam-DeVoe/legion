@@ -127,11 +127,11 @@ func (s *server) v2AskRows() []routeRow {
 			Handler:  s.editAskV2,
 			Resource: "asks", Kind: kindItem, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: editAskV2Input{}},
-			Shape:       routeShape{Status: http.StatusOK, Response: askV2{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: askWriteV2{}},
 			Authorities: []authorityRule{askAskedOfAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
 			IDs:      askIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, askMissing, notAuthorRefusal},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/asks/{id}/followers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -185,7 +185,7 @@ func (s *server) v2AskRows() []routeRow {
 				"retracted": resolveAskStateInput{},
 				"declined":  declineAskStateInput{},
 			}},
-			Shape:       routeShape{Status: http.StatusOK, Response: askV2{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: askWriteV2{}},
 			Authorities: []authorityRule{askAnsweredAuthority, askDeclinedAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathAsk,
 			IDs: askIDs(),
@@ -220,7 +220,7 @@ func (s *server) v2AskRows() []routeRow {
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
 			Shape: routeShape{
-				Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{},
+				Status: http.StatusCreated, Response: askWriteV2{}, Advice: writeAdvice{},
 				OtherAdvice: []any{suggestionsOnlyAdvice{}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
@@ -229,12 +229,16 @@ func (s *server) v2AskRows() []routeRow {
 	}
 }
 
-// askV2 is the one ask row of /api/v2 (the route map's J4 and J24): every read of
-// asks and every write of one answers it. It is the ask as the dashboard reads it (shapedAsk) with
-// what the lists read beside it - its address, its owner, its issue's priority and its newest
-// reply - at top level, and the members include= adds. It is a type of its own, so no /api/v1
-// shape's tags change (dispatch://INFRA-4071/spec R3).
-type askV2 struct {
+// askWriteV2 is the ask a /api/v2 write of one answers - PATCH /api/v2/asks/{id}, PUT
+// /api/v2/asks/{id}/state, the two creates and the ask of an approval request - and the core of
+// every read of one (askV2): the ask as the dashboard reads it (shapedAsk) with what the lists
+// read beside it - its address, its owner, its issue's priority and its newest reply - at top
+// level. A write never answers the members include= adds to a read, its thread and the caller's
+// mark (completeWrittenAskV2), so its type holds neither and the document states what the write
+// answers (dispatch://INFRA-4071/spec R6); so no answer a write's key keeps can hold a reply's
+// block (TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh). It is a type of its own, so no
+// /api/v1 shape's tags change (R3).
+type askWriteV2 struct {
 	shapedAsk
 	// OpenedEventID is the id of the ask's ask.opened event, which every ask has: a value, where
 	// model.Ask's is a pointer the /api/v1 document leaves optional (R6). A read that finds none
@@ -254,6 +258,12 @@ type askV2 struct {
 	// of the source's document this row is the ask of: the block a #id in the source's text names,
 	// which a copy of an ask in another block holds under an id of its own.
 	QuestionBlockID string `json:"question_block_id,omitempty"`
+}
+
+// askV2 is the one ask row of /api/v2's reads (the route map's J4 and J24): the ask as a write
+// answers it (askWriteV2) and the members include= adds.
+type askV2 struct {
+	askWriteV2
 	// Thread is the ask's thread, with include=thread.
 	Thread *askThread `json:"thread,omitempty"`
 	// Mark is the caller's mark on the ask, with include=mark.
@@ -504,16 +514,16 @@ func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []ask
 // read off any transaction of the caller's, and neither fails the answer - an anchor read fails
 // only with the request's context (anchorBlock), and a row with no ask.opened event, which the
 // write itself appended, is the server's fault (finishAsksV2).
-func (s *server) completeWrittenAskV2(ctx context.Context, r *http.Request, rows []askV2) (askV2, error) {
+func (s *server) completeWrittenAskV2(ctx context.Context, r *http.Request, rows []askV2) (askWriteV2, error) {
 	if err := s.anchorAsksV2(ctx, rows); err != nil {
-		return askV2{}, err
+		return askWriteV2{}, err
 	}
 	reader := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
 	if err := finishAsksV2(rows, reader); err != nil {
-		return askV2{}, err
+		return askWriteV2{}, err
 	}
 	reader.resolve()
-	return rows[0], nil
+	return rows[0].askWriteV2, nil
 }
 
 // prepareAsksV2 fills in the identity event, the inbound backlink count and the part ids every
@@ -650,8 +660,8 @@ func (written *writtenAskV2) readBack(ctx context.Context, q queryer, id string)
 	return err
 }
 
-// answer is the ask row the write answers, once the write has committed.
-func (written *writtenAskV2) answer(r *http.Request) (askV2, error) {
+// answer is the ask the write answers, once the write has committed.
+func (written *writtenAskV2) answer(r *http.Request) (askWriteV2, error) {
 	return written.server.completeWrittenAskV2(r.Context(), r, written.rows)
 }
 

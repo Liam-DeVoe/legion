@@ -204,7 +204,8 @@ const (
 	// reference's source_seq.
 	positionInteger positionType = "integer"
 	// positionTimeAndID is a time and an id, `<RFC3339 time>,<id>`, for a log ordered by a time
-	// with an id to break its ties (R1.5): the caller's dismissed threads.
+	// with an id to break its ties (R1.5): the caller's dismissed threads, and a post's
+	// corrections.
 	positionTimeAndID positionType = "time,id"
 )
 
@@ -212,7 +213,7 @@ const (
 // its documentation name.
 type positionField struct {
 	// Field is the field's name as the answer writes it: seq, id, source_seq, or for a
-	// positionTimeAndID both fields, dismissed_at,thread_id.
+	// positionTimeAndID both fields, dismissed_at,thread_id or edited_at,id.
 	Field string
 	Type  positionType
 }
@@ -472,6 +473,10 @@ type routeRow struct {
 	// Replay is how a repeat of a keyed write that commits a recovery point is answered
 	// (keyedReplay): the writes that also deliver to sessions. Nil for every other route.
 	Replay keyedReplay
+	// Reread is how a repeat of a keyed write whose kept answer is one comment or one issue
+	// message is answered (keyedReread): the post read again as it stands now, so an edit or a
+	// delete since is in the answer. Nil for every other route.
+	Reread keyedReread
 	// AnswerHoldsSecret is a route whose answer carries a credential, which an Idempotency-Key
 	// never keeps (keyedWrites).
 	AnswerHoldsSecret bool
@@ -569,6 +574,7 @@ func v1Route(row routeRow, replays map[string]keyedReplay) apiRoute {
 	row.BodyLimit = routeBodyLimit{limit, tooLarge}
 	row.RefusesClosedOwner = name == issueUploadRoute
 	row.Replay = replays[name]
+	row.Reread = keyedRereads[name]
 	row.AnswerHoldsSecret = answerHoldsSecret[name]
 	row.DocumentOwner = documentOwnerOf(row.Pattern)
 	return apiRoute{routeRow: row, Version: apiV1}

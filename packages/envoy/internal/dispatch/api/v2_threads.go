@@ -6,11 +6,12 @@ package api
 // issue's comments, messages and handoffs, a session's conversations and the broadcasts, each an
 // envelope; the state of a comment and of a message's delivery attempt, each a PUT of a body
 // keyed by state; a session's replies to its deliveries as collections (J21); and the creates.
-// Every write runs the work its /api/v1 route runs (writeComment, editCommentAs,
+// Every write runs the work its /api/v1 route runs (writeComment, editCommentAs, deleteCommentAs,
 // reopenCommentAs, commentActionAs, retryCommentMention, answerCommentDelivery,
-// postIssueMessage, sendAgentMessage, retryMessageDelivery, acceptDeliveryAs,
-// answerMessageDelivery, sendBroadcast, recordHandoffInput), each path object checked first and
-// answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// postIssueMessage, editMessageAs, deleteMessageAs, sendAgentMessage, retryMessageDelivery,
+// acceptDeliveryAs, answerMessageDelivery, sendBroadcast, recordHandoffInput), and every read of a
+// post's corrections the read its /api/v1 history runs (postHistory), each path object checked
+// first and answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -53,6 +55,29 @@ var (
 	broadcastMissingRefusal = apicode.Refusal{Condition: apicode.BroadcastMissing, Code: apicode.BroadcastNotFound}
 	handoffMissingRefusal   = apicode.Refusal{Condition: apicode.HandoffMissing, Code: apicode.HandoffNotFound}
 )
+
+// notAuthorRefusal is the refusal of a write only the author of what the path names may make, from
+// a caller who is not that author: one code on every /api/v2 route that refuses one (R1.8, R7).
+var notAuthorRefusal = apicode.Refusal{Condition: apicode.NotTheAuthor, Code: apicode.NotAuthor}
+
+// correctionPosition is the position of a post's corrections (R5): the time of the write that
+// replaced each body and the correction's own id, `<RFC3339 time>,<id>`. Two corrections of one
+// post can carry one edited_at - post_body_history's edited_at is clock_timestamp(), unique in no
+// constraint, and its identity breaks the tie - so a position of the time alone would lose or
+// repeat a correction at a page boundary between two equal times, as the dismissed threads'
+// would (dismissedPosition).
+var correctionPosition = positionField{Field: "edited_at,id", Type: positionTimeAndID}
+
+// postCorrectionsText is what the descriptions of a comment's and a message's corrections say
+// alike: the position, the order, the bounds and the refusals of a position.
+var postCorrectionsText = fmt.Sprintf("Each item is {id, body, edited_by, edited_at}. Position: edited_at,id, "+
+	"each bound <RFC3339 time>,<id>, the edited_at and id of an item a page answered, the id breaking a tie "+
+	"between two corrections written at one time. before keeps the items written before that item and after "+
+	"those written after it, both together a window; the items come newest first, and oldest first from an "+
+	"after. limit 1 to %d (default %d) and offset; {deleted_at, deleted_by, items, total, limit, offset}, total "+
+	"the exact count of the items the window keeps. An after or a before that is no time and id, and an after "+
+	"above the newest item, are 400 POSITION_INVALID naming the parameter and edited_at,id.",
+	contracts.PostHistoryPageLimit, contracts.PostHistoryPageLimit)
 
 // messageThreadText is what every description of a route answering message threads says of the
 // row it answers.
@@ -89,20 +114,65 @@ func (s *server) v2ThreadRows() []routeRow {
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/comments/{id}", Auth: authAny, Versions: onlyV2,
-			Description: "Edit a comment's body {body, base_revision?, blocks?}, which needs the person scope and is the " +
-				"comment's author's alone (403 NOT_AUTHOR otherwise). The dashboard editor also sends blocks ([{id, from}], " +
-				"from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v2/comments/{id}?" +
-				"include=blocks gave, so each block keeps its id; without them the ids follow the text. Answers the comment " +
-				"and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without base_revision, 400 " +
-				"CAP_EXCEEDED past a bound, 409 ISSUE_CLOSED on a closed issue, 404 COMMENT_NOT_FOUND.",
+			Description: "Edit a comment's body {body, base_revision?, blocks?, actor?}: its author alone (403 " +
+				"NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own " +
+				"credential - a browser cookie, or a personal token holding the person scope - is that person and names " +
+				"nothing. The body it replaces is kept and GET /api/v2/comments/{id}/corrections reads it. The dashboard " +
+				"editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, " +
+				"the revision GET /api/v2/comments/{id}?include=blocks gave, so each block keeps its id; without them the " +
+				"ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. " +
+				"Answers the comment and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without " +
+				"base_revision, 400 CAP_EXCEEDED past a bound, 404 COMMENT_NOT_FOUND.",
 			Handler:  s.editCommentV2,
 			Resource: "comments", Kind: kindItem, Key: "{id}",
-			Body:        requestBody{Kind: bodyJSON, Type: editCommentInput{}},
-			Shape:       routeShape{Status: http.StatusOK, Response: shapedComment{}},
-			OAuthScopes: person,
-			Scope:       scopeProject, ProjectOf: projectPathComment,
+			Body:  requestBody{Kind: bodyJSON, Type: editCommentInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: shapedComment{}},
+			Scope: scopeProject, ProjectOf: projectPathComment,
 			IDs:      commentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
+			Reread:   (*server).rereadComment,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal},
+		},
+		{
+			Method: http.MethodDelete, Pattern: "/comments/{id}", Auth: authAny, Versions: onlyV2,
+			Description: "Delete a comment {actor?}: its author alone (403 NOT_AUTHOR). A session names itself in actor " +
+				"where its credential proves none; a person's own credential - a browser cookie, or a personal token " +
+				"holding the person scope - is that person and names nothing. The comment keeps its row and its place in " +
+				"its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, " +
+				"and GET /api/v2/comments/{id}/corrections reads the mark in its place. A suggestion of it still pending " +
+				"is rejected out of the document before the body goes, so an insert suggestion's text leaves the document " +
+				"with it; the suggestion's replacement text goes from the comment with the body, and the document version " +
+				"an accepted suggestion made, which the accept named after the comment's body, is renamed to the change " +
+				"it made (its artifact.version event keeps the name it carried); each block is removed with its excerpt " +
+				"cleared and the text every revision recorded of it cleared too, the margin mark is projected again with " +
+				"no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says " +
+				"nothing of whether its frame had already reached the session. A mention attempt its own sender moves " +
+				"while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send " +
+				"the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. " +
+				"Answers the comment as the delete leaves it and appends comment.deleted. 404 COMMENT_NOT_FOUND.",
+			Handler:  s.deleteCommentV2,
+			Resource: "comments", Kind: kindItem, Key: "{id}",
+			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
+			Shape: routeShape{Status: http.StatusOK, Response: model.Comment{}},
+			Scope: scopeProject, ProjectOf: projectPathComment,
+			IDs:      commentIDs(),
+			Reread:   (*server).rereadDeletedComment,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal, notAuthorRefusal},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/comments/{id}/corrections", Auth: authAny, Versions: onlyV2,
+			Description: "Every body an edit or a delete of this comment replaced, each with the actor that replaced it " +
+				"and the time, beside the comment's own deleted_at and deleted_by, null on " +
+				"a comment that stands. Read by whoever reads the comment, which is any authenticated caller. A comment " +
+				"nobody edited or deleted answers no item; a delete writes an item of its own, so a comment deleted with no " +
+				"edit lists one, and a deleted comment answers every body empty, since no read of a deleted post gives its " +
+				"text. " + postCorrectionsText + " 404 COMMENT_NOT_FOUND for an id no comment has.",
+			Handler:  s.listCommentCorrectionsV2,
+			Resource: "corrections", Kind: kindLog, Position: correctionPosition,
+			Query:    postCorrectionsV2Query{},
+			List:     listBounds{Default: contracts.PostHistoryPageLimit, Max: contracts.PostHistoryPageLimit},
+			Shape:    routeShape{Status: http.StatusOK, Response: postCorrectionsV2{}},
+			IDs:      commentIDs(),
+			Refusals: listRefusals(positionRefusal, commentMissingRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/deliveries", Auth: authAny, Versions: onlyV2,
@@ -145,6 +215,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			},
 			Scope: scopeProject, ProjectOf: projectPathComment,
 			IDs:      commentIDs(),
+			Reread:   (*server).rereadCommentReply,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
 		},
 		{
@@ -181,6 +252,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Authorities: []authorityRule{commentOpenAuthority, commentAcceptedAuthority, commentRejectedAuthority},
 			Scope:       scopeProject, ProjectOf: projectPathComment,
 			IDs:      commentIDs(),
+			Reread:   (*server).rereadComment,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, commentMissingRefusal},
 		},
 		{
@@ -210,7 +282,8 @@ func (s *server) v2ThreadRows() []routeRow {
 				"reply_to, reply_to_block names one part of that ask. mentions [{target}] (at most 10, role:<name> or " +
 				"session:<id>) deliver the comment in delivery's mode (btw, aside or steer, the default), and a suggestion " +
 				"{replace_with} proposes text for its anchored quote. A reply to a resolved thread reopens it, unless the root " +
-				"is a decided suggestion. A closed issue takes a comment but refuses a suggestion, 409 ISSUE_CLOSED. Answers " +
+				"is a decided suggestion. A closed issue takes a comment but refuses a suggestion, 409 ISSUE_CLOSED; a " +
+				"reply to a deleted comment is 409 POST_DELETED, a withdrawn post taking no new text. Answers " +
 				"201 the comment with ask_waiting_on and advice beside it; a repeat under its Idempotency-Key answers the " +
 				"comment as it stands, its owed mentions sent again. 400 INVALID_COMMENT, MENTION_INPUT or TURN_REQUIRES_ASK " +
 				"for a comment it refuses, 400 CAP_EXCEEDED past a bound, 409 ROUTE_CHANGED when the issue's route moves under " +
@@ -243,6 +316,65 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape:    routeShape{Status: http.StatusOK, Response: messageReadV2{}},
 			IDs:      messageIDs(),
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal},
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,
+			Description: "Edit an issue message's body {body, actor?}: its author alone (403 NOT_AUTHOR). A session names " +
+				"itself in actor where its credential proves none; a person's own credential - a browser cookie, or a " +
+				"personal token holding the person scope - is that person and names nothing, as the comment edit reads it. " +
+				"The body it replaces is kept and GET /api/v2/messages/{id}/corrections reads it; the block ids follow the " +
+				"text, since no editor carries them through the edit. A message of a closed issue is edited too. A message " +
+				"of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. " +
+				"Answers the message and appends message.edited. 400 INVALID_MESSAGE for an empty body, 400 CAP_EXCEEDED " +
+				"past a bound, 404 MESSAGE_NOT_FOUND.",
+			Handler:  s.editMessageV2,
+			Resource: "messages", Kind: kindItem, Key: "{id}",
+			Body:  requestBody{Kind: bodyJSON, Type: editMessageInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: model.Message{}},
+			Scope: scopeProject, ProjectOf: projectPathMessage,
+			IDs:      messageIDs(),
+			Reread:   (*server).rereadMessage,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal},
+		},
+		{
+			Method: http.MethodDelete, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,
+			Description: "Delete an issue message {actor?}: its author alone (403 NOT_AUTHOR). A session names itself in " +
+				"actor where its credential proves none; a person's own credential - a browser cookie, or a personal token " +
+				"holding the person scope - is that person and names nothing. The message keeps its row and its place in " +
+				"its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, " +
+				"and GET /api/v2/messages/{id}/corrections reads the mark in its place. Each block is removed with its " +
+				"excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing " +
+				"of whether its frame had already reached the session. A send its own sender moves while the delete is " +
+				"being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete " +
+				"again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 " +
+				"NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED. Answers the message as the delete leaves " +
+				"it and appends message.deleted. 404 MESSAGE_NOT_FOUND.",
+			Handler:  s.deleteMessageV2,
+			Resource: "messages", Kind: kindItem, Key: "{id}",
+			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
+			Shape: routeShape{Status: http.StatusOK, Response: model.Message{}},
+			Scope: scopeProject, ProjectOf: projectPathMessage,
+			IDs:      messageIDs(),
+			Reread:   (*server).rereadMessage,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal, notAuthorRefusal},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/messages/{id}/corrections", Auth: authAny, Versions: onlyV2,
+			Description: "Every body an edit or a delete of this message replaced, each with the actor that replaced it " +
+				"and the time, beside the message's own deleted_at and deleted_by, null on " +
+				"a message that stands. Read under GET /api/v2/messages/{id}'s rule: a credential without the person " +
+				"scope reading a direct message names its session in session= (400 SESSION_REQUIRED, 403 " +
+				"THREAD_FORBIDDEN). A message nobody edited or deleted answers no item; a delete writes an item of its " +
+				"own, so a message deleted with no edit lists one, and a deleted message answers every body empty, since " +
+				"no read of a deleted post gives its text. " + postCorrectionsText + " 404 MESSAGE_NOT_FOUND for an id no " +
+				"message has.",
+			Handler:  s.listMessageCorrectionsV2,
+			Resource: "corrections", Kind: kindLog, Position: correctionPosition,
+			Query:    postCorrectionsV2Query{},
+			List:     listBounds{Default: contracts.PostHistoryPageLimit, Max: contracts.PostHistoryPageLimit},
+			Shape:    routeShape{Status: http.StatusOK, Response: postCorrectionsV2{}},
+			IDs:      messageIDs(),
+			Refusals: listRefusals(positionRefusal, messageMissingRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/messages/{id}/deliveries", Auth: authAny, Versions: onlyV2,
@@ -315,6 +447,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			},
 			Scope:    scopeSession,
 			IDs:      messageIDs(),
+			Reread:   (*server).rereadMessageReply,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, messageMissingRefusal},
 		},
 		{
@@ -334,7 +467,8 @@ func (s *server) v2ThreadRows() []routeRow {
 				"a bearer naming its session in actor: a reply names the message of this issue it answers in in_reply_to and " +
 				"one block of it in in_reply_to_block; target (role:<name> or session:<id>) with delivery (btw, aside or " +
 				"steer) delivers it, and a person's reply that names no target is delivered as its thread was; urgency is " +
-				"low, med, high or blocking. A closed issue takes it. Answers 201 the message once a targeted one's first " +
+				"low, med, high or blocking. A closed issue takes it; a reply to a deleted message is 409 POST_DELETED, a " +
+				"withdrawn post taking no new text. Answers 201 the message once a targeted one's first " +
 				"attempt has settled, with advice beside it; a repeat under its Idempotency-Key answers the message as it " +
 				"stands, its owed attempt sent first. 400 INVALID_MESSAGE or MESSAGE_INPUT for a message it refuses, 404 " +
 				"ISSUE_NOT_FOUND.",
@@ -535,6 +669,34 @@ type messageReadV2 struct {
 	Blocks *model.ItemBlocks `json:"blocks,omitempty"`
 }
 
+// postCorrectionsV2Query is the query of a post's corrections, GET /api/v2/comments/{id}/corrections
+// and GET /api/v2/messages/{id}/corrections: one page of them, by edited_at and id.
+type postCorrectionsV2Query struct {
+	pageQuery
+	// After keeps the corrections written after this position, oldest first, and Before those
+	// written before it: each `<RFC3339 time>,<id>`, read by readCorrectionPosition rather than by
+	// the decoder, so one that is no position is the log's own refusal, POSITION_INVALID, naming
+	// the field (R5).
+	After  *string `query:"after"`
+	Before *string `query:"before"`
+}
+
+// postCorrectionV2 is one item of a post's corrections: a body an edit or a delete replaced
+// (postHistoryEntry), with its own id, which with edited_at is its position.
+type postCorrectionV2 struct {
+	ID int64 `json:"id"`
+	postHistoryEntry
+}
+
+// postCorrectionsV2 is the body a post's corrections answer: the envelope of the bodies its edits
+// and its delete replaced (postHistoryRead's entries), with the delete mark the post carries beside
+// it, as every read of the post carries it.
+type postCorrectionsV2 struct {
+	DeletedAt *time.Time   `json:"deleted_at"`
+	DeletedBy *model.Actor `json:"deleted_by"`
+	page[postCorrectionV2]
+}
+
 // acceptDeliveryStateInput is the accepted arm of PUT /api/v2/messages/{id}/deliveries/{attempt}/state:
 // the session the attempt went to names itself in actor.
 type acceptDeliveryStateInput struct {
@@ -687,16 +849,104 @@ func (s *server) getCommentV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // editCommentV2 answers PATCH /api/v2/comments/{id}: the edit PATCH /api/v1/comments/{id} makes
-// (editCommentAs), by the person the row's scope holds the caller to.
+// (editCommentAs), by the caller correctionActor resolves from the body's actor.
 func (s *server) editCommentV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireCommentV2(w, r, r.PathValue("id")) {
 		return
 	}
-	actor, ok := s.actingPerson(w, r)
+	input := v2Body[editCommentInput](r)
+	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	s.editCommentAs(w, r, actor, v2Body[editCommentInput](r))
+	s.editCommentAs(w, r, actor, input)
+}
+
+// deleteCommentV2 answers DELETE /api/v2/comments/{id}: the delete DELETE /api/v1/comments/{id}
+// makes (deleteCommentAs), by the caller correctionActor resolves from the body's actor, a body
+// the request may leave out.
+func (s *server) deleteCommentV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireCommentV2(w, r, r.PathValue("id")) {
+		return
+	}
+	actor, ok := s.correctionActor(w, r, v2Body[actorInput](r).Actor)
+	if !ok {
+		return
+	}
+	s.deleteCommentAs(w, r, actor)
+}
+
+// listCommentCorrectionsV2 answers GET /api/v2/comments/{id}/corrections: a page of the bodies GET
+// /api/v1/comments/{id}/history reads, read by whoever reads the comment.
+func (s *server) listCommentCorrectionsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireCommentV2(w, r, r.PathValue("id")) {
+		return
+	}
+	s.answerPostCorrectionsV2(w, r, refs.ItemComment)
+}
+
+// answerPostCorrectionsV2 answers one page of the corrections of the post of kind the path's {id}
+// names, which the route has found: the read both versions' history routes make (postHistory),
+// within the window the decoded query's after and before name, counted. A window from an after
+// reads up from it, oldest first, as a log read forward does; every other reads down, newest
+// first, as /api/v1's history does.
+func (s *server) answerPostCorrectionsV2(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
+	query := v2Query[postCorrectionsV2Query](r)
+	window := postHistoryWindow{limit: query.Limit, offset: query.Offset, counted: true}
+	var err error
+	if window.after, err = readCorrectionPosition("after", query.After); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if window.before, err = readCorrectionPosition("before", query.Before); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	window.oldestFirst = window.after != nil
+	read, tally, err := s.postHistory(r.Context(), kind, r.PathValue("id"), window)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if !tally.reached {
+		s.writeHandlerError(w, r, errorf(apicode.PositionInvalid,
+			"after is %q, above this log's last %s: no correction of this %s was written at or after it",
+			*query.After, correctionPosition.Field, kind))
+		return
+	}
+	items := make([]postCorrectionV2, len(read.Entries))
+	for index, entry := range read.Entries {
+		items[index] = postCorrectionV2{ID: entry.id, postHistoryEntry: entry}
+	}
+	WriteJSON(w, http.StatusOK, postCorrectionsV2{
+		DeletedAt: read.DeletedAt, DeletedBy: read.DeletedBy, page: newPage(items, tally.total, query.pageQuery),
+	})
+}
+
+// readCorrectionPosition reads a position of a post's corrections, `<RFC3339 time>,<id>`, that the
+// parameter name gives: the edited_at and id of a correction, as the answer writes them; nil where
+// the parameter gives none. One that is no such position is 400 POSITION_INVALID naming the
+// parameter and the two fields (R5).
+func readCorrectionPosition(name string, raw *string) (*postHistoryPosition, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	refusal := errorf(apicode.PositionInvalid,
+		"%s reads a post's corrections' %s, an RFC3339 time and a correction's id joined by a comma; %q is none",
+		name, correctionPosition.Field, *raw)
+	at, id, found := strings.Cut(*raw, ",")
+	if !found {
+		return nil, refusal
+	}
+	when, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return nil, refusal
+	}
+	number, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || number < 1 {
+		return nil, refusal
+	}
+	return &postHistoryPosition{at: when, id: number}, nil
 }
 
 // createCommentDeliveryV2 answers POST /api/v2/comments/{id}/deliveries: the retry POST
@@ -954,6 +1204,51 @@ func (s *server) getMessageV2(w http.ResponseWriter, r *http.Request) {
 		answer.Blocks = &blocks
 	}
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// editMessageV2 answers PATCH /api/v2/messages/{id}: the edit PATCH /api/v1/messages/{id} makes
+// (editMessageAs), by the caller correctionActor resolves from the body's actor.
+func (s *server) editMessageV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireMessageV2(w, r, r.PathValue("id")) {
+		return
+	}
+	input := v2Body[editMessageInput](r)
+	actor, ok := s.correctionActor(w, r, input.Actor)
+	if !ok {
+		return
+	}
+	s.editMessageAs(w, r, actor, input)
+}
+
+// deleteMessageV2 answers DELETE /api/v2/messages/{id}: the delete DELETE /api/v1/messages/{id}
+// makes (deleteMessageAs), by the caller correctionActor resolves from the body's actor, a body
+// the request may leave out.
+func (s *server) deleteMessageV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireMessageV2(w, r, r.PathValue("id")) {
+		return
+	}
+	actor, ok := s.correctionActor(w, r, v2Body[actorInput](r).Actor)
+	if !ok {
+		return
+	}
+	s.deleteMessageAs(w, r, actor)
+}
+
+// listMessageCorrectionsV2 answers GET /api/v2/messages/{id}/corrections: a page of the bodies GET
+// /api/v1/messages/{id}/history reads, under the read rule of GET /api/v2/messages/{id}
+// (readableThreadAs) with the session the decoded query names.
+func (s *server) listMessageCorrectionsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if !s.requireMessageV2(w, r, id) {
+		return
+	}
+	if _, ok := s.readableThreadAs(w, r, id, requestSession(r)); !ok {
+		return
+	}
+	s.answerPostCorrectionsV2(w, r, refs.ItemMessage)
 }
 
 // createMessageDeliveryV2 answers POST /api/v2/messages/{id}/deliveries: the retry POST

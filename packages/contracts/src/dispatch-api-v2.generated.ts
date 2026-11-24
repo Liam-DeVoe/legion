@@ -265,7 +265,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived, each naming its relation to the session, its author, its words (text, and on declined_your_ask alone dispatch_words, the sentences Dispatch wrote for the asking agent), the ask and its whole question where it has one, whoever asked it, its owner, dispatch:// ref and href. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: answered_your_ask, declined_your_ask and replied_on_your_ask (which outranks mentioned_you) for an owner, answered_an_ask and declined_an_ask for any other session, which reads a reply in an ask's thread by the reason that delivered it. It never lists an agent's or the system's words. from and to window at, RFC3339, from inclusive and to exclusive: from defaults to 72 hours ago, and one older than 7 days or in the future is 400 INVALID_QUERY, as is a to not after from. limit 1 to 200 (default 50) and offset page the window; max_chars (1 to 100000) then stops the page after the item whose words take the running sum past it, counting the UTF-16 units of text and of dispatch_words, while total counts every item in the window. {session_id, from, to, items, total, limit, offset}, to null where the request names none. A session_id that is not a session id is 400 INVALID_SESSION_ID; a session Dispatch holds nothing for answers an empty page. Not an authorization boundary: a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message at its current body (edited_at when edited), a deleted comment or message in its place with deleted_at and deleted_by and an empty text, and each ask a person declined to answer, once however it arrived, each naming its relation to the session, its author, its words (text, and on declined_your_ask alone dispatch_words, the sentences Dispatch wrote for the asking agent), the ask and its whole question where it has one, whoever asked it, its owner, dispatch:// ref and href. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: answered_your_ask, declined_your_ask and replied_on_your_ask (which outranks mentioned_you) for an owner, answered_an_ask and declined_an_ask for any other session, which reads a reply in an ask's thread by the reason that delivered it. It never lists an agent's or the system's words. from and to window at, RFC3339, from inclusive and to exclusive: from defaults to 72 hours ago, and one older than 7 days or in the future is 400 INVALID_QUERY, as is a to not after from. limit 1 to 200 (default 50) and offset page the window; max_chars (1 to 100000) then stops the page after the item whose words take the running sum past it, counting the UTF-16 units of text and of dispatch_words, while total counts every item in the window. {session_id, from, to, items, total, limit, offset}, to null where the request names none. A session_id that is not a session id is 400 INVALID_SESSION_ID; a session Dispatch holds nothing for answers an empty page. Not an authorization boundary: a person may read any session's list. */
     get: operations["getApiV2AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -756,11 +756,29 @@ export interface paths {
     get: operations["getApiV2CommentsById"];
     put?: never;
     post?: never;
+    /** @description Delete a comment {actor?}: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v2/comments/{id}/corrections reads the mark in its place. A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it; the suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its artifact.version event keeps the name it carried); each block is removed with its excerpt cleared and the text every revision recorded of it cleared too, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A mention attempt its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. Answers the comment as the delete leaves it and appends comment.deleted. 404 COMMENT_NOT_FOUND. */
+    delete: operations["deleteApiV2CommentsById"];
+    options?: never;
+    head?: never;
+    /** @description Edit a comment's body {body, base_revision?, blocks?, actor?}: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v2/comments/{id}/corrections reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v2/comments/{id}?include=blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. Answers the comment and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without base_revision, 400 CAP_EXCEEDED past a bound, 404 COMMENT_NOT_FOUND. */
+    patch: operations["patchApiV2CommentsById"];
+    trace?: never;
+  };
+  "/api/v2/comments/{id}/corrections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this comment replaced, each with the actor that replaced it and the time, beside the comment's own deleted_at and deleted_by, null on a comment that stands. Read by whoever reads the comment, which is any authenticated caller. A comment nobody edited or deleted answers no item; a delete writes an item of its own, so a comment deleted with no edit lists one, and a deleted comment answers every body empty, since no read of a deleted post gives its text. Each item is {id, body, edited_by, edited_at}. Position: edited_at,id, each bound <RFC3339 time>,<id>, the edited_at and id of an item a page answered, the id breaking a tie between two corrections written at one time. before keeps the items written before that item and after those written after it, both together a window; the items come newest first, and oldest first from an after. limit 1 to 200 (default 200) and offset; {deleted_at, deleted_by, items, total, limit, offset}, total the exact count of the items the window keeps. An after or a before that is no time and id, and an after above the newest item, are 400 POSITION_INVALID naming the parameter and edited_at,id. 404 COMMENT_NOT_FOUND for an id no comment has. */
+    get: operations["getApiV2CommentsByIdCorrections"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Edit a comment's body {body, base_revision?, blocks?}, which needs the person scope and is the comment's author's alone (403 NOT_AUTHOR otherwise). The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v2/comments/{id}?include=blocks gave, so each block keeps its id; without them the ids follow the text. Answers the comment and appends comment.edited. 400 INVALID_COMMENT for an empty body or blocks without base_revision, 400 CAP_EXCEEDED past a bound, 409 ISSUE_CLOSED on a closed issue, 404 COMMENT_NOT_FOUND. */
-    patch: operations["patchApiV2CommentsById"];
+    patch?: never;
     trace?: never;
   };
   "/api/v2/comments/{id}/deliveries": {
@@ -991,7 +1009,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: twenty of the twenty-one dispatch tools that write, each carried whole - its own name (action), its own description, the arguments it takes (request) with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {"state": "resolved"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. The one tool it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 24 of the 41 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name (action), its own description, the arguments it takes (request) with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {"state": "resolved"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}. */
     get: operations["getApiV2GoingActions"];
     put?: never;
     post?: never;
@@ -1025,7 +1043,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One run's answer as server-sent events, which no envelope can carry: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Its position is the Last-Event-ID header: the stream answers the frames after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
+    /** @description One run's answer as server-sent events, which no envelope can carry: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Its position is the Last-Event-ID header: the stream answers the frames after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE. Once a comment or an issue message whose text the run gave its model is deleted, every read of the stream gives none of the run's frames and only the error ANSWER_WITHDRAWN, under the id of the run's ending, and nothing to a reader that already holds that id. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
     get: operations["getApiV2GoingRequestsByIdStream"];
     put?: never;
     post?: never;
@@ -1186,7 +1204,7 @@ export interface paths {
     /** @description List an issue's comments, oldest first: its own, those anchored in its documents, every reply and every ask thread's comment, each as GET /api/v2/comments/{id} answers its fields, without replies. artifact=<document id> keeps the comments anchored in one document of the issue, which are its root comments and suggestions alone, since a reply carries no anchor. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included, and for every page; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a quote of one of its documents, or an ask {body, anchor?, reply_to?, reply_to_block?, ask_id?, mentions?, delivery?, turn?, suggestion?}, a bearer naming its session in actor: a reply names the comment it answers in reply_to and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. mentions [{target}] (at most 10, role:<name> or session:<id>) deliver the comment in delivery's mode (btw, aside or steer, the default), and a suggestion {replace_with} proposes text for its anchored quote. A reply to a resolved thread reopens it, unless the root is a decided suggestion. A closed issue takes a comment but refuses a suggestion, 409 ISSUE_CLOSED. Answers 201 the comment with ask_waiting_on and advice beside it; a repeat under its Idempotency-Key answers the comment as it stands, its owed mentions sent again. 400 INVALID_COMMENT, MENTION_INPUT or TURN_REQUIRES_ASK for a comment it refuses, 400 CAP_EXCEEDED past a bound, 409 ROUTE_CHANGED when the issue's route moves under the write, 404 ISSUE_NOT_FOUND. */
+    /** @description Comment on an issue, a quote of one of its documents, or an ask {body, anchor?, reply_to?, reply_to_block?, ask_id?, mentions?, delivery?, turn?, suggestion?}, a bearer naming its session in actor: a reply names the comment it answers in reply_to and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. mentions [{target}] (at most 10, role:<name> or session:<id>) deliver the comment in delivery's mode (btw, aside or steer, the default), and a suggestion {replace_with} proposes text for its anchored quote. A reply to a resolved thread reopens it, unless the root is a decided suggestion. A closed issue takes a comment but refuses a suggestion, 409 ISSUE_CLOSED; a reply to a deleted comment is 409 POST_DELETED, a withdrawn post taking no new text. Answers 201 the comment with ask_waiting_on and advice beside it; a repeat under its Idempotency-Key answers the comment as it stands, its owed mentions sent again. 400 INVALID_COMMENT, MENTION_INPUT or TURN_REQUIRES_ASK for a comment it refuses, 400 CAP_EXCEEDED past a bound, 409 ROUTE_CHANGED when the issue's route moves under the write, 404 ISSUE_NOT_FOUND. */
     post: operations["postApiV2IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1290,7 +1308,7 @@ export interface paths {
     /** @description List an issue's message threads, oldest first: every root message of the issue, a targeted one listed like any other. Each thread is one row: its root message's own fields at top level, with the root's delivery attempts in deliveries, and replies, every message replying to it, oldest first, each with its own attempts. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyMessages"];
     put?: never;
-    /** @description Post a message on an issue {body, in_reply_to?, in_reply_to_block?, target?, delivery?, urgency?}, a bearer naming its session in actor: a reply names the message of this issue it answers in in_reply_to and one block of it in in_reply_to_block; target (role:<name> or session:<id>) with delivery (btw, aside or steer) delivers it, and a person's reply that names no target is delivered as its thread was; urgency is low, med, high or blocking. A closed issue takes it. Answers 201 the message once a targeted one's first attempt has settled, with advice beside it; a repeat under its Idempotency-Key answers the message as it stands, its owed attempt sent first. 400 INVALID_MESSAGE or MESSAGE_INPUT for a message it refuses, 404 ISSUE_NOT_FOUND. */
+    /** @description Post a message on an issue {body, in_reply_to?, in_reply_to_block?, target?, delivery?, urgency?}, a bearer naming its session in actor: a reply names the message of this issue it answers in in_reply_to and one block of it in in_reply_to_block; target (role:<name> or session:<id>) with delivery (btw, aside or steer) delivers it, and a person's reply that names no target is delivered as its thread was; urgency is low, med, high or blocking. A closed issue takes it; a reply to a deleted message is 409 POST_DELETED, a withdrawn post taking no new text. Answers 201 the message once a targeted one's first attempt has settled, with advice beside it; a repeat under its Idempotency-Key answers the message as it stands, its owed attempt sent first. 400 INVALID_MESSAGE or MESSAGE_INPUT for a message it refuses, 404 ISSUE_NOT_FOUND. */
     post: operations["postApiV2IssuesByKeyMessages"];
     delete?: never;
     options?: never;
@@ -1722,6 +1740,25 @@ export interface paths {
     get: operations["getApiV2MessagesById"];
     put?: never;
     post?: never;
+    /** @description Delete an issue message {actor?}: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The message keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v2/messages/{id}/corrections reads the mark in its place. Each block is removed with its excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A send its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED. Answers the message as the delete leaves it and appends message.deleted. 404 MESSAGE_NOT_FOUND. */
+    delete: operations["deleteApiV2MessagesById"];
+    options?: never;
+    head?: never;
+    /** @description Edit an issue message's body {body, actor?}: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v2/messages/{id}/corrections reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. Answers the message and appends message.edited. 400 INVALID_MESSAGE for an empty body, 400 CAP_EXCEEDED past a bound, 404 MESSAGE_NOT_FOUND. */
+    patch: operations["patchApiV2MessagesById"];
+    trace?: never;
+  };
+  "/api/v2/messages/{id}/corrections": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this message replaced, each with the actor that replaced it and the time, beside the message's own deleted_at and deleted_by, null on a message that stands. Read under GET /api/v2/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). A message nobody edited or deleted answers no item; a delete writes an item of its own, so a message deleted with no edit lists one, and a deleted message answers every body empty, since no read of a deleted post gives its text. Each item is {id, body, edited_by, edited_at}. Position: edited_at,id, each bound <RFC3339 time>,<id>, the edited_at and id of an item a page answered, the id breaking a tie between two corrections written at one time. before keeps the items written before that item and after those written after it, both together a window; the items come newest first, and oldest first from an after. limit 1 to 200 (default 200) and offset; {deleted_at, deleted_by, items, total, limit, offset}, total the exact count of the items the window keeps. An after or a before that is no time and id, and an after above the newest item, are 400 POSITION_INVALID naming the parameter and edited_at,id. 404 MESSAGE_NOT_FOUND for an id no message has. */
+    get: operations["getApiV2MessagesByIdCorrections"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1803,7 +1840,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The nodes of one person, newest first, read from the node and tuple store across every project: what they wrote and what reached a session of theirs. person=<login> names the person and is required (400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the dashboard path it opens at. project=<key>, repeatable, keeps the rows of each project it names; none keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader may see, a login nobody holds among them, lists no row, so the answer never says whether that person exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers the same rows under rows, and 404 NOT_FOUND where this lists none for another login. */
+    /** @description The nodes of one person, newest first, read from the node and tuple store across every project: what they wrote and what reached a session of theirs. person=<login> names the person and is required (400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the dashboard path it opens at. A comment its author edited carries edited_at, and one its author deleted keeps its row with deleted_at and deleted_by and an empty title. project=<key>, repeatable, keeps the rows of each project it names; none keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader may see, a login nobody holds among them, lists no row, so the answer never says whether that person exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers the same rows under rows, and 404 NOT_FOUND where this lists none for another login. */
     get: operations["getApiV2Nodes"];
     put?: never;
     post?: never;
@@ -2099,7 +2136,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What many dispatch:// references point at, in one read: ref=<dispatch ref> once per reference, at most 256 of them; more than that is 400 CAP_EXCEEDED naming the cap. One member per ref in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read by the block's kind as GET /api/v1/reference-targets reads it. No ref is 400 INVALID_REFERENCE, as is a reference the grammar cannot read, naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; this read refuses no prefix. limit 1 to 256 (default 256, so one read of at most the cap is one page) and offset page the members; {items, total, limit, offset}, total the count of refs named. The answer carries an ETag over the page, each tree and each ambiguous included; If-None-Match answers 304. This answers no edges: GET /api/v2/references reads one node's edges. */
+    /** @description What many dispatch:// references point at, in one read: ref=<dispatch ref> once per reference, at most 256 of them; more than that is 400 CAP_EXCEEDED naming the cap. One member per ref in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is "", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read by the block's kind as GET /api/v1/reference-targets reads it. No ref is 400 INVALID_REFERENCE, as is a reference the grammar cannot read, naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; this read refuses no prefix. limit 1 to 256 (default 256, so one read of at most the cap is one page) and offset page the members; {items, total, limit, offset}, total the count of refs named. The answer carries an ETag over the page, each tree and each ambiguous included; If-None-Match answers 304. This answers no edges: GET /api/v2/references reads one node's edges. */
     get: operations["getApiV2ReferenceTargets"];
     put?: never;
     post?: never;
@@ -2378,6 +2415,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -2480,7 +2520,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -2543,7 +2588,7 @@ export interface components {
     ApprovalRequestV2: {
       approval: components["schemas"]["ArtifactApprovalWithTrees"];
       artifact_id: string;
-      ask: components["schemas"]["AskV2"] | null;
+      ask: components["schemas"]["AskWriteV2"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
       version: number;
@@ -3062,7 +3107,54 @@ export interface components {
       waiting_on?: string;
       waiting_on_person?: string;
     };
-    AskV2WithWriteAdviceOrSuggestionsOnlyAdvice: {
+    AskWriteV2: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      document: components["schemas"]["InboxDocument"] | null;
+      edited_at: null | string;
+      id: string;
+      issue: components["schemas"]["InboxIssue"] | null;
+      issue_key: null | string;
+      kind: string;
+      last_reply: components["schemas"]["AskLastReply"] | null;
+      multiple: boolean;
+      /** Format: int64 */
+      opened_event_id: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      priority: null | number;
+      question: string;
+      question_block_id?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      ref: string;
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      state: string;
+      urgency: string;
+      waiting_on?: string;
+      waiting_on_person?: string;
+    };
+    AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice: {
       advice?:
         | components["schemas"]["WriteAdvice"]
         | components["schemas"]["SuggestionsOnlyAdvice"];
@@ -3090,7 +3182,6 @@ export interface components {
       issue_key: null | string;
       kind: string;
       last_reply: components["schemas"]["AskLastReply"] | null;
-      mark?: components["schemas"]["AskMarkV2"];
       multiple: boolean;
       /** Format: int64 */
       opened_event_id: number;
@@ -3109,7 +3200,6 @@ export interface components {
       resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
-      thread?: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
@@ -3420,6 +3510,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3471,6 +3564,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3517,6 +3613,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3548,6 +3647,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -3580,6 +3682,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4235,6 +4340,7 @@ export interface components {
       token: string;
     };
     EditCommentInput: {
+      actor?: components["schemas"]["Actor"] | null;
       base_revision?: null | number;
       blocks?: components["schemas"]["CarriedBlock"][] | null;
       body: string;
@@ -4245,6 +4351,10 @@ export interface components {
       lost_ops?: number[];
       participants: components["schemas"]["Actor"][] | null;
       suggestion?: string;
+    };
+    EditMessageInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      body: string;
     };
     EditOp: {
       after?: string;
@@ -4379,7 +4489,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -4404,7 +4519,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -5069,6 +5189,24 @@ export interface components {
       service: null | string;
       session: null | string;
     };
+    Message: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlock"] | null;
+      target: null | string;
+    };
     MessageDelivery: {
       accepted_as: null | string;
       /** Format: date-time */
@@ -5104,7 +5242,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5131,8 +5274,13 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
       duplicate?: boolean;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5151,7 +5299,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5171,7 +5324,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5191,7 +5349,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5220,6 +5383,11 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
     };
     MyAnswerRow: {
@@ -5247,6 +5415,9 @@ export interface components {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       first_line: string;
       id: string;
       kind: string;
@@ -5254,8 +5425,13 @@ export interface components {
     MyReplyRow: {
       anchor?: components["schemas"]["Anchor"];
       /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
       dismissed_at?: string;
       document?: components["schemas"]["OpenAskDocument"];
+      /** Format: date-time */
+      edited_at?: string;
       issue?: components["schemas"]["OpenAskIssue"];
       kind: string;
       priority?: number;
@@ -5613,6 +5789,11 @@ export interface components {
     PersonNode: {
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       href: string;
       id: string;
       kind: string;
@@ -5662,6 +5843,23 @@ export interface components {
     PlanTaskInput: {
       id: string;
       steps: string[] | null;
+    };
+    PostCorrectionV2: {
+      body: string;
+      /** Format: date-time */
+      edited_at: string;
+      edited_by: components["schemas"]["Actor"];
+      /** Format: int64 */
+      id: number;
+    };
+    PostCorrectionsV2: {
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      items: components["schemas"]["PostCorrectionV2"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
     };
     PrioritiesV2: {
       empty?: string;
@@ -5844,6 +6042,11 @@ export interface components {
     };
     ReferenceTarget: {
       ambiguous?: boolean;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       gone: boolean;
       kind: string;
       name: string;
@@ -5912,6 +6115,11 @@ export interface components {
     };
     ReplyBlock: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -5919,6 +6127,11 @@ export interface components {
     };
     ReplyBlockWithTrees: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6102,6 +6315,11 @@ export interface components {
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
       block_id?: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       href: string;
       id: string;
       issue?: components["schemas"]["SearchIssue"];
@@ -6134,6 +6352,9 @@ export interface components {
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       dispatch_words?: string;
       /** Format: date-time */
       edited_at?: string;
@@ -7531,7 +7752,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AskV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
+          "application/json": components["schemas"]["AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
         };
       };
       /** @description Bad Request */
@@ -8470,7 +8691,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AskV2"];
+          "application/json": components["schemas"]["AskWriteV2"];
         };
       };
       /** @description Bad Request */
@@ -8629,7 +8850,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AskV2"];
+          "application/json": components["schemas"]["AskWriteV2"];
         };
       };
       /** @description Bad Request */
@@ -8974,6 +9195,55 @@ export interface operations {
       };
     };
   };
+  deleteApiV2CommentsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Comment"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   patchApiV2CommentsById: {
     parameters: {
       query?: {
@@ -8999,6 +9269,55 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV2CommentsByIdCorrections: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        after?: string;
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostCorrectionsV2"];
         };
       };
       /** @description Bad Request */
@@ -10251,7 +10570,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AskV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
+          "application/json": components["schemas"]["AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
         };
       };
       /** @description Bad Request */
@@ -12408,6 +12727,153 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageReadV2"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV2MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV2MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EditMessageInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV2MessagesByIdCorrections: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        after?: string;
+        before?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostCorrectionsV2"];
         };
       };
       /** @description Bad Request */
@@ -14617,8 +15083,9 @@ export type AskResolution = components["schemas"]["AskResolution"];
 export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
 export type AskThread = components["schemas"]["AskThread"];
 export type AskV2 = components["schemas"]["AskV2"];
-export type AskV2WithWriteAdviceOrSuggestionsOnlyAdvice =
-  components["schemas"]["AskV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
+export type AskWriteV2 = components["schemas"]["AskWriteV2"];
+export type AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice =
+  components["schemas"]["AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
@@ -14740,6 +15207,7 @@ export type EditAskV2Input = components["schemas"]["EditAskV2Input"];
 export type EditBlockPrecondition = components["schemas"]["EditBlockPrecondition"];
 export type EditCommentInput = components["schemas"]["EditCommentInput"];
 export type EditLostError = components["schemas"]["EditLostError"];
+export type EditMessageInput = components["schemas"]["EditMessageInput"];
 export type EditOp = components["schemas"]["EditOp"];
 export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
@@ -14824,6 +15292,7 @@ export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInp
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
 export type MarksPatchV2Input = components["schemas"]["MarksPatchV2Input"];
 export type MeV2 = components["schemas"]["MeV2"];
+export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageMarkV2Input = components["schemas"]["MessageMarkV2Input"];
 export type MessageReadV2 = components["schemas"]["MessageReadV2"];
@@ -14896,6 +15365,8 @@ export type PlanRecord = components["schemas"]["PlanRecord"];
 export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
 export type PlanTask = components["schemas"]["PlanTask"];
 export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
+export type PostCorrectionV2 = components["schemas"]["PostCorrectionV2"];
+export type PostCorrectionsV2 = components["schemas"]["PostCorrectionsV2"];
 export type PrioritiesV2 = components["schemas"]["PrioritiesV2"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];

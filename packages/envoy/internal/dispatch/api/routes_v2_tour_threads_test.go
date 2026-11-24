@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -56,6 +59,27 @@ func threadsTourSteps() []tourStep {
 			Setup: on("id", comment, nil, map[string]any{"body": "A toured comment, edited."}, alice), Missing: commentMissing,
 		},
 		{
+			Method: http.MethodDelete, Pattern: "/comments/{id}", Status: http.StatusOK,
+			Setup: on("id", comment, nil, nil, alice), Missing: commentMissing,
+		},
+		{
+			Method: http.MethodGet, Pattern: "/comments/{id}/corrections", Status: http.StatusOK,
+			Setup:   on("id", func(t *testing.T, tour *routeTour) string { return tour.editedComment(t, tour.issue(t)) }, nil, nil, alice),
+			Missing: commentMissing,
+		},
+		{
+			Method: http.MethodGet, Pattern: "/comments/{id}/corrections", Name: "a deleted comment's, from an after", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				id := tour.editedComment(t, tour.issue(t))
+				if deleted := dispatchRequest(t, tour.handler, http.MethodDelete, "/api/v1/comments/"+id, nil, "alice"); deleted.Code != http.StatusOK {
+					t.Fatalf("delete comment: %d %s", deleted.Code, deleted.Body.String())
+				}
+				after := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano) + ",1"
+				return tourRequest{Path: map[string]string{"id": id}, Query: url.Values{"after": {after}, "limit": {"1"}}, As: alice}
+			},
+			Missing: commentMissing,
+		},
+		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/deliveries", Status: http.StatusCreated,
 			Setup: on("id", mentioned, nil, map[string]any{"delivery": "btw"}, alice), Missing: commentMissing,
 		},
@@ -100,6 +124,19 @@ func threadsTourSteps() []tourStep {
 		{
 			Method: http.MethodGet, Pattern: "/messages/{id}", Status: http.StatusOK,
 			Setup: on("id", targeted, nil, nil, alice), Missing: messageMissing,
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/messages/{id}", Status: http.StatusOK,
+			Setup: on("id", targeted, nil, map[string]any{"body": "Is the tour green yet?"}, alice), Missing: messageMissing,
+		},
+		{
+			Method: http.MethodDelete, Pattern: "/messages/{id}", Status: http.StatusOK,
+			Setup: on("id", targeted, nil, nil, alice), Missing: messageMissing,
+		},
+		{
+			Method: http.MethodGet, Pattern: "/messages/{id}/corrections", Status: http.StatusOK,
+			Setup:   on("id", func(t *testing.T, tour *routeTour) string { return tour.editedMessage(t, tour.issue(t)) }, nil, nil, alice),
+			Missing: messageMissing,
 		},
 		{
 			Method: http.MethodGet, Pattern: "/messages/{id}", Name: "a direct conversation read as its session, with the blocks",
@@ -421,5 +458,186 @@ func TestTheIssueCommentListAnswersEachVersionItsOwnShape(t *testing.T) {
 	}
 	if v1Missing := read(t, "v1", "NOPE-9", ""); v1Missing.Code != http.StatusOK || v1Missing.Body.String() != "[]\n" {
 		t.Fatalf("GET /api/v1/issues/NOPE-9/comments answered %d %s, want 200 [] as before", v1Missing.Code, v1Missing.Body.String())
+	}
+}
+
+// editedComment is tour.comment's comment on issue, its body then edited by its author, alice,
+// so its corrections hold one body; it answers the comment's id.
+func (tour *routeTour) editedComment(t *testing.T, issue tourIssue) string {
+	t.Helper()
+	id := tour.comment(t, issue)
+	if edited := dispatchRequest(t, tour.handler, http.MethodPatch, "/api/v1/comments/"+id,
+		map[string]any{"body": "A toured comment, corrected."}, "alice"); edited.Code != http.StatusOK {
+		t.Fatalf("edit comment: %d %s", edited.Code, edited.Body.String())
+	}
+	return id
+}
+
+// editedMessage is tour.targetedMessage's message on issue, its body then edited by its author,
+// alice, so its corrections hold one body; it answers the message's id.
+func (tour *routeTour) editedMessage(t *testing.T, issue tourIssue) string {
+	t.Helper()
+	id := tour.targetedMessage(t, issue)
+	if edited := dispatchRequest(t, tour.handler, http.MethodPatch, "/api/v1/messages/"+id,
+		map[string]any{"body": "Is the tour green yet?"}, "alice"); edited.Code != http.StatusOK {
+		t.Fatalf("edit message: %d %s", edited.Code, edited.Body.String())
+	}
+	return id
+}
+
+// TestV2PostCorrections holds the corrections of a comment and of an issue message, and their
+// edits and deletes, to the architect's rulings of 2026-11-24 on #3512's rows: each corrections
+// read is a log by edited_at,id, its before and after refused 400 POSITION_INVALID where they are
+// no RFC3339 time and correction id and its after where no correction was written at or after it,
+// its envelope answering the post's own deleted_at and deleted_by beside the items; two corrections
+// written at one time are paged across one at a time, neither lost nor repeated; a deleted post's
+// corrections answer deleted_at set and every body empty; an id no post has is the post's own 404;
+// and the edit and the delete of either post refuse a caller that is not its author 403
+// NOT_AUTHOR, a deleted post's edit 409 POST_DELETED.
+func TestV2PostCorrections(t *testing.T) {
+	tour := newRouteTour(t)
+	alice, bob := tourPerson("alice"), tourPerson("bob")
+	type corrections struct {
+		DeletedAt *time.Time `json:"deleted_at"`
+		DeletedBy *struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"deleted_by"`
+		Items []struct {
+			ID       int64     `json:"id"`
+			Body     string    `json:"body"`
+			EditedAt time.Time `json:"edited_at"`
+		} `json:"items"`
+		Total  int `json:"total"`
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	send := func(t *testing.T, method, pattern, id string, query url.Values, body any, as tourCaller) *httptest.ResponseRecorder {
+		t.Helper()
+		route := tour.requireMounted(t, method, pattern)
+		return tour.send(t, route, tourRequest{Path: map[string]string{"id": id}, Query: query, Body: body, As: as}, "")
+	}
+	read := func(t *testing.T, pattern, id string, query url.Values) corrections {
+		t.Helper()
+		response := send(t, http.MethodGet, pattern, id, query, nil, alice)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v2%s %v: %d %s, want 200", strings.Replace(pattern, "{id}", id, 1), query, response.Code, response.Body.String())
+		}
+		return decodeBody[corrections](t, response)
+	}
+	refused := func(t *testing.T, response *httptest.ResponseRecorder, status int, want apicode.Code, names ...string) {
+		t.Helper()
+		code, words := refusalOf(t, response)
+		if response.Code != status || code != want.Name() {
+			t.Fatalf("answered %d %s, want %d %s", response.Code, response.Body.String(), status, want.Name())
+		}
+		for _, name := range names {
+			if !strings.Contains(words, name) {
+				t.Errorf("the refusal %q does not name %s", words, name)
+			}
+		}
+	}
+	at := func(when time.Time, id int64) string {
+		return when.UTC().Format(time.RFC3339Nano) + "," + strconv.FormatInt(id, 10)
+	}
+
+	for _, post := range []struct {
+		kind, pattern, corrections, column string
+		make                               func(*testing.T) string
+		missing                            apicode.Code
+	}{
+		{"comment", "/comments/{id}", "/comments/{id}/corrections", "comment_id", func(t *testing.T) string { return tour.comment(t, tour.issue(t)) }, apicode.CommentNotFound},
+		{"message", "/messages/{id}", "/messages/{id}/corrections", "message_id", func(t *testing.T) string { return tour.targetedMessage(t, tour.issue(t)) }, apicode.MessageNotFound},
+	} {
+		t.Run(post.kind, func(t *testing.T) {
+			id := post.make(t)
+			if fresh := read(t, post.corrections, id, nil); len(fresh.Items) != 0 || fresh.Total != 0 || fresh.DeletedAt != nil {
+				t.Fatalf("a %s nobody corrected: %+v, want no item, total 0 and no delete mark", post.kind, fresh)
+			}
+			refused(t, send(t, http.MethodGet, post.corrections, id, url.Values{"after": {at(time.Now().Add(-time.Hour), 1)}}, nil, alice),
+				http.StatusBadRequest, apicode.PositionInvalid, "after", "edited_at,id")
+
+			refused(t, send(t, http.MethodPatch, post.pattern, id, nil, map[string]any{"body": "Bob's words."}, bob),
+				http.StatusForbidden, apicode.NotAuthor)
+			refused(t, send(t, http.MethodDelete, post.pattern, id, nil, nil, bob), http.StatusForbidden, apicode.NotAuthor)
+			for _, body := range []string{"The first correction.", "The second correction."} {
+				if edited := send(t, http.MethodPatch, post.pattern, id, nil, map[string]any{"body": body}, alice); edited.Code != http.StatusOK {
+					t.Fatalf("PATCH /api/v2%s by its author: %d %s", post.pattern, edited.Code, edited.Body.String())
+				}
+			}
+
+			both := read(t, post.corrections, id, nil)
+			if len(both.Items) != 2 || both.Total != 2 || both.Limit != 200 || both.DeletedAt != nil || both.DeletedBy != nil ||
+				both.Items[0].Body != "The first correction." || !both.Items[1].EditedAt.Before(both.Items[0].EditedAt) {
+				t.Fatalf("two corrections: %+v, want the two bodies they replaced newest first, total 2, limit 200, no delete mark", both)
+			}
+			newer, older := both.Items[0], both.Items[1]
+			if after := read(t, post.corrections, id, url.Values{"after": {at(older.EditedAt, older.ID)}}); len(after.Items) != 1 ||
+				after.Total != 1 || after.Items[0].ID != newer.ID {
+				t.Fatalf("after the older correction: %+v, want the newer alone", after)
+			}
+			if before := read(t, post.corrections, id, url.Values{"before": {at(newer.EditedAt, newer.ID)}}); len(before.Items) != 1 ||
+				before.Total != 1 || before.Items[0].ID != older.ID {
+				t.Fatalf("before the newer correction: %+v, want the older alone", before)
+			}
+			if paged := read(t, post.corrections, id, url.Values{"limit": {"1"}, "offset": {"1"}}); len(paged.Items) != 1 || paged.Total != 2 ||
+				paged.Items[0].ID != older.ID {
+				t.Fatalf("limit 1, offset 1: %+v, want the older alone, total 2", paged)
+			}
+			refused(t, send(t, http.MethodGet, post.corrections, id, url.Values{"before": {"yesterday,1"}}, nil, alice),
+				http.StatusBadRequest, apicode.PositionInvalid, "before", "edited_at,id")
+			refused(t, send(t, http.MethodGet, post.corrections, id, url.Values{"before": {at(newer.EditedAt, 0)}}, nil, alice),
+				http.StatusBadRequest, apicode.PositionInvalid, "before", "edited_at,id")
+			refused(t, send(t, http.MethodGet, post.corrections, id, url.Values{"after": {newer.EditedAt.UTC().Format(time.RFC3339Nano)}}, nil, alice),
+				http.StatusBadRequest, apicode.PositionInvalid, "after", "edited_at,id")
+			refused(t, send(t, http.MethodGet, post.corrections, id, url.Values{"after": {at(newer.EditedAt.Add(time.Minute), newer.ID)}}, nil, alice),
+				http.StatusBadRequest, apicode.PositionInvalid, "after", "edited_at,id")
+
+			// Two corrections written at one time, as two writes of one clock reading would be: a
+			// page of one read down from the newest takes each in turn by its id, and one read up
+			// from the oldest takes them back in the other order, neither lost nor repeated.
+			tied := newer.EditedAt.Add(time.Hour)
+			if _, err := tour.database.Pool.Exec(t.Context(), `
+				insert into post_body_history (`+post.column+`, body, edited_by, edited_at)
+				values ($1, 'tied one', '{"kind":"user","id":"alice"}', $2), ($1, 'tied two', '{"kind":"user","id":"alice"}', $2)
+			`, id, tied); err != nil {
+				t.Fatalf("write two corrections at one time: %v", err)
+			}
+			first := read(t, post.corrections, id, url.Values{"limit": {"1"}})
+			if len(first.Items) != 1 || first.Total != 4 || first.Items[0].Body != "tied two" {
+				t.Fatalf("the newest page of one: %+v, want the later tied correction, total 4", first)
+			}
+			second := read(t, post.corrections, id, url.Values{"limit": {"1"}, "before": {at(first.Items[0].EditedAt, first.Items[0].ID)}})
+			if len(second.Items) != 1 || second.Items[0].Body != "tied one" || !second.Items[0].EditedAt.Equal(first.Items[0].EditedAt) {
+				t.Fatalf("the page of one before the later tied correction: %+v, want the earlier one at the same time", second)
+			}
+			up := read(t, post.corrections, id, url.Values{"limit": {"1"}, "after": {at(newer.EditedAt, newer.ID)}})
+			if len(up.Items) != 1 || up.Total != 2 || up.Items[0].ID != second.Items[0].ID {
+				t.Fatalf("the page of one after the older edits: %+v, want the earlier tied correction, total 2", up)
+			}
+			if next := read(t, post.corrections, id, url.Values{"limit": {"1"}, "after": {at(up.Items[0].EditedAt, up.Items[0].ID)}}); len(next.Items) != 1 ||
+				next.Total != 1 || next.Items[0].ID != first.Items[0].ID {
+				t.Fatalf("the page of one after the earlier tied correction: %+v, want the later one, total 1", next)
+			}
+
+			if deleted := send(t, http.MethodDelete, post.pattern, id, nil, nil, alice); deleted.Code != http.StatusOK {
+				t.Fatalf("DELETE /api/v2%s by its author: %d %s", post.pattern, deleted.Code, deleted.Body.String())
+			}
+			gone := read(t, post.corrections, id, nil)
+			if gone.DeletedAt == nil || gone.DeletedBy == nil || gone.DeletedBy.ID != "alice" || len(gone.Items) != 5 || gone.Total != 5 {
+				t.Fatalf("the deleted %s's corrections: %+v, want its delete mark, alice's, and five items", post.kind, gone)
+			}
+			for _, item := range gone.Items {
+				if item.Body != "" {
+					t.Fatalf("the deleted %s's corrections give the body %q, want every body empty", post.kind, item.Body)
+				}
+			}
+			refused(t, send(t, http.MethodPatch, post.pattern, id, nil, map[string]any{"body": "Back again."}, alice),
+				http.StatusConflict, apicode.PostDeleted)
+
+			missing := uuid.NewString()
+			refused(t, send(t, http.MethodGet, post.corrections, missing, nil, nil, alice), http.StatusNotFound, post.missing)
+			refused(t, send(t, http.MethodDelete, post.pattern, missing, nil, nil, alice), http.StatusNotFound, post.missing)
+		})
 	}
 }

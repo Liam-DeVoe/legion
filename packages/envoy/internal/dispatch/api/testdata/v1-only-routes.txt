@@ -60,11 +60,13 @@ GET /api/v1/broadcasts
 POST /api/v1/broadcasts
 GET /api/v1/broadcasts/{id}
 GET /api/v1/ci-reconcile/passes
+DELETE /api/v1/comments/{id} # #3512, the author of a comment or an issue message can correct or delete it
 GET /api/v1/comments/{id}
 PATCH /api/v1/comments/{id}
 POST /api/v1/comments/{id}/accept
 GET /api/v1/comments/{id}/blocks
 POST /api/v1/comments/{id}/deliveries
+GET /api/v1/comments/{id}/history # #3512, the author of a comment or an issue message can correct or delete it
 POST /api/v1/comments/{id}/reject
 POST /api/v1/comments/{id}/reopen
 POST /api/v1/comments/{id}/reply
@@ -155,10 +157,13 @@ PUT /api/v1/me/issues/{key}/state
 GET /api/v1/me/replies
 GET /api/v1/me/state
 PUT /api/v1/me/threads/{id}/read
+DELETE /api/v1/messages/{id} # #3512, the author of a comment or an issue message can correct or delete it
 GET /api/v1/messages/{id}
+PATCH /api/v1/messages/{id} # #3512, the author of a comment or an issue message can correct or delete it
 GET /api/v1/messages/{id}/blocks
 POST /api/v1/messages/{id}/deliveries
 POST /api/v1/messages/{id}/deliveries/{attempt}/accept
+GET /api/v1/messages/{id}/history # #3512, the author of a comment or an issue message can correct or delete it
 POST /api/v1/messages/{id}/reply
 GET /api/v1/near-copy-checks # #4103, merged after c8a44f97
 GET /api/v1/near-copy-checks/{id} # #4103, merged after c8a44f97

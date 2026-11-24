@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-func createThreadComment(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
+func createThreadComment(t testing.TB, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
 	t.Helper()
 	var response *httptest.ResponseRecorder
 	if login == "" {
@@ -652,15 +652,41 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 	if other.Code != http.StatusForbidden || !strings.Contains(other.Body.String(), `"code":"NOT_AUTHOR"`) {
 		t.Fatalf("edit by another user: status=%d body=%s", other.Code, other.Body.String())
 	}
+	// The route names no person scope since INFRA-1523, so a session reaches it: one that is
+	// not the author is refused for that, and not for what its credential is.
 	bearer := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{
 		"body": "agent edit", "actor": sessionActor(),
 	})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
-		t.Fatalf("the shared token's edit: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+apicode.NotAuthor.V1Name()+`"`) {
+		t.Fatalf("a session edits a person's comment: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.NotAuthor.V1Name())
 	}
 	stored := readThreadComment(t, handler, comment.ID)
 	if stored.Body != "after edit" {
 		t.Fatalf("comment after rejected edits = %q, want %q", stored.Body, "after edit")
+	}
+
+	// The session arms: the authoring session edits its own comment, and a second session of
+	// the one shared credential is refused it.
+	agents := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the session's first body", "actor": sessionActor(),
+	}, "")
+	author := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+agents.ID, map[string]any{
+		"body": "the session's second body", "actor": sessionActor(),
+	})
+	if author.Code != http.StatusOK {
+		t.Fatalf("the authoring session edits its own comment: status=%d body=%s", author.Code, author.Body.String())
+	}
+	if own := decodeBody[model.Comment](t, author); own.Body != "the session's second body" || own.EditedAt == nil {
+		t.Fatalf("the session's edit = %#v, want the new body and edited_at", own)
+	}
+	second := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+agents.ID, map[string]any{
+		"body": "another session's edit", "actor": map[string]any{"kind": "session", "id": "session-fedcba9876543210"},
+	})
+	if second.Code != http.StatusForbidden || !strings.Contains(second.Body.String(), `"code":"NOT_AUTHOR"`) {
+		t.Fatalf("a second session edits it: status=%d body=%s, want 403 NOT_AUTHOR", second.Code, second.Body.String())
+	}
+	if held := readThreadComment(t, handler, agents.ID); held.Body != "the session's second body" {
+		t.Fatalf("the session's comment after the refused edit = %q, want its own second body", held.Body)
 	}
 }
 

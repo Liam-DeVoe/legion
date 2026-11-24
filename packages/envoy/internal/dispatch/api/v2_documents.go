@@ -268,7 +268,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
 			Shape: routeShape{
-				Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{},
+				Status: http.StatusCreated, Response: askWriteV2{}, Advice: writeAdvice{},
 				OtherAdvice: []any{suggestionsOnlyAdvice{}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
@@ -938,8 +938,8 @@ func (s *server) renameArtifactV2(w http.ResponseWriter, r *http.Request) {
 
 // requestArtifactApprovalV2 answers POST /api/v2/artifacts/{id}/approval-requests: the request POST
 // /api/v1/artifacts/{id}/approval-requests makes (requestApproval), answered with the ask as every
-// /api/v2 write of one answers it (askV2), read on the write's transaction (writtenAskV2), so the
-// request's ask carries its opened_event_id (R6).
+// /api/v2 write of one answers it (askWriteV2), read on the write's transaction (writtenAskV2), so
+// the request's ask carries its opened_event_id (R6).
 func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireArtifactV2(w, r, r.PathValue("id")) {
 		return
@@ -970,7 +970,7 @@ func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Reques
 type approvalRequestV2 struct {
 	// Ask is the request's ask, null where nothing is asked: every document it names is approved
 	// at its current version already.
-	Ask        *askV2               `json:"ask"`
+	Ask        *askWriteV2          `json:"ask"`
 	ArtifactID string               `json:"artifact_id"`
 	Version    int                  `json:"version"`
 	Approval   artifactApprovalRead `json:"approval"`

@@ -6,6 +6,7 @@ import {
   uploadStoredName,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { DispatchAnswerNotKeptError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
@@ -48,8 +49,15 @@ export function artifactNameExistsProblem(held: Artifact, owner: string): string
  * through, so that refusal names what to do instead of saying to send the upload again: the
  * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
  * which stores the file and asks this route nothing.
+ *
+ * The round trip writes nothing, so where Dispatch kept no copy of its answer under either of the
+ * two keys the client asks it under (`DispatchAnswerNotKeptError`), nothing was made either: the
+ * refusal says so, and that sending the upload again asks it afresh.
  */
 export function storedTextCheckFailed(error: unknown, name: string): string {
+  if (error instanceof DispatchAnswerNotKeptError) {
+    return `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip wrote nothing, and Dispatch kept no copy of its answer (${error.code}). Send the upload again, which asks it under a new key.`;
+  }
   // A failure whose own message ends its sentence (a transport failure, a gateway's advice) gets no
   // second stop.
   const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error).replace(/\.$/, "")}.`;

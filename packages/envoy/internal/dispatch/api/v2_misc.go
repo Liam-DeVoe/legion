@@ -75,8 +75,10 @@ func (s *server) v2MiscRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/agents/{session_id}/answers", Auth: authAny, Versions: onlyV2,
 			Description: "What people wrote that Dispatch delivered to one session, newest first by at, then by id: " +
 				"each ask's current answer (replaced when it changed an earlier answer), each comment at its current body " +
-				"(edited_at when edited; a resolved comment stays), each message, and each ask a person declined to " +
-				"answer, once however it arrived, each naming its relation to the session, its author, its words (text, " +
+				"(edited_at when edited; a resolved comment stays), each message at its current body (edited_at when " +
+				"edited), a deleted comment or message in its place with deleted_at and deleted_by and an empty text, " +
+				"and each ask a person declined to answer, once however it arrived, each naming its relation to the " +
+				"session, its author, its words (text, " +
 				"and on declined_your_ask alone dispatch_words, the sentences Dispatch wrote for the asking agent), the " +
 				"ask and its whole question where it has one, whoever asked it, its owner, dispatch:// ref and href. A " +
 				"session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its " +
@@ -120,7 +122,10 @@ func (s *server) v2MiscRows() []routeRow {
 				"name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target "+
 				"in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, "+
 				"a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it "+
-				"writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree "+
+				"writes short is resolved, which carries no name. A member naming a comment or a message, or a block of "+
+				"one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its "+
+				"author deleted it: a deleted post's member is not gone and its name is \"\", and a member naming a block "+
+				"of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree "+
 				"on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references "+
 				"kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read "+
 				"by the block's kind as GET /api/v1/reference-targets reads it. No ref is 400 INVALID_REFERENCE, as is a "+
@@ -173,7 +178,9 @@ func (s *server) v2MiscRows() []routeRow {
 				"what they wrote and what reached a session of theirs. person=<login> names the person and is required " +
 				"(400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on " +
 				"the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the " +
-				"dashboard path it opens at. project=<key>, repeatable, keeps the rows of each project it names; none " +
+				"dashboard path it opens at. A comment its author edited carries edited_at, and one its author deleted " +
+				"keeps its row with deleted_at and deleted_by and an empty title. project=<key>, repeatable, keeps the " +
+				"rows of each project it names; none " +
 				"keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, " +
 				"offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader " +
 				"may see, a login nobody holds among them, lists no row, so the answer never says whether that person " +
@@ -205,17 +212,18 @@ func (s *server) v2MiscRows() []routeRow {
 		},
 		{
 			Method: http.MethodGet, Pattern: "/going-actions", Auth: authAny, Versions: onlyV2,
-			Description: "The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: " +
-				"twenty of the twenty-one dispatch tools that write, each carried whole - its own name (action), its own " +
-				"description, the arguments it takes (request) with an example call, the /api/v2 rows it writes in the " +
-				"order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations " +
-				"its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's " +
-				"arguments, such as {\"state\": \"resolved\"} on PUT /api/v2/asks/{id}/state; an argument that picks " +
-				"between two routes of one action (dispatch_claim's release, dispatch_follow's action, " +
-				"dispatch_resolve_ask's kind) is sent to neither. The one tool it leaves out is dispatch_review, on " +
-				"purpose: a review records an approval or a changes request in a person's name, and the loop that " +
-				"proposes operations must never propose one. Every action is on one page unless the request names a " +
-				"limit (any of 1 or more) and an offset; {items, total, limit, offset}.",
+			Description: fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 "+
+				"routes: %d of the %d tool specs agents operate Dispatch with, every one that writes but dispatch_review, "+
+				"each carried whole - its own name (action), its own description, the arguments it takes (request) with "+
+				"an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each "+
+				"{method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of "+
+				"the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT "+
+				"/api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's "+
+				"release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves "+
+				"dispatch_review out on purpose: a review records an approval or a changes request in a person's name, "+
+				"and the loop that proposes operations must never propose one. Every action is on one page unless the "+
+				"request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}.",
+				len(goingToolRoutesV2), len(contracts.DispatchTools)),
 			Handler:  s.listGoingActionsV2,
 			Resource: "going-actions", Kind: kindCollection,
 			Query:    goingActionsV2Query{},
@@ -252,11 +260,14 @@ func (s *server) v2MiscRows() []routeRow {
 				"carries, flushed as it is written, and the stream ends on %s or %s. Its position is the Last-Event-ID "+
 				"header: the stream answers the frames after that sequence, so a reader that drops rereads nothing. Any "+
 				"pod serves it, since the frames are rows: a run past its ends_at that stored no ending is ended by the "+
-				"reader itself, with the error %s. A run the record does not hold, an id that is not a uuid, and a run "+
-				"that is another caller's are one answer, 404 %s, so an id tells a caller nothing it did not already "+
-				"know.", contracts.GoingEventText, contracts.GoingEventItem, contracts.GoingEventCut,
-				contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd, contracts.GoingEventError,
-				contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive,
+				"reader itself, with the error %s. Once a comment or an issue message whose text the run gave its model "+
+				"is deleted, every read of the stream gives none of the run's frames and only the error %s, under the id "+
+				"of the run's ending, and nothing to a reader that already holds that id. A run the record does not "+
+				"hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 %s, so an id "+
+				"tells a caller nothing it did not already know.", contracts.GoingEventText, contracts.GoingEventItem,
+				contracts.GoingEventCut, contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd,
+				contracts.GoingEventError, contracts.GoingEventEnd, contracts.GoingEventError,
+				contracts.GoingErrorAnswerDidNotArrive, contracts.GoingErrorAnswerWithdrawn,
 				apicode.GoingRequestNotFound.Name()),
 			Handler:  s.streamGoingAnswer,
 			Resource: "stream", Kind: kindStream,

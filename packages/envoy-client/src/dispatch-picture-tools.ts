@@ -19,6 +19,7 @@ import {
   type DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
+  DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "./dispatch-http";
 import { parseDispatchRef } from "./dispatch-owner";
@@ -130,15 +131,20 @@ export async function textWithPictures(
           : `; the pictures before it are uploaded (${addresses.join(", ")})`;
       // Only a refusal that says the upload never took effect is "not uploaded": a gateway's page
       // or Dispatch's own 5xx may come after Dispatch stored it, and a transport failure or an
-      // unsettled write may still land. A refusal's own message already ends its sentence.
+      // unsettled write may still land. A write Dispatch says landed with no answer to give
+      // (DispatchWriteLandedError, which the caller may wrap as its cause) was uploaded. A
+      // refusal's own message already ends its sentence.
+      const landed =
+        error instanceof DispatchWriteLandedError ||
+        (error instanceof Error && error.cause instanceof DispatchWriteLandedError);
       const refused =
         error instanceof DispatchGatewayError
           ? !error.mayHaveReachedDispatch
           : error instanceof DispatchServiceError && error.status < 500;
-      if (refused) {
+      if (landed || refused) {
         throw new Error(
-          `images: ${picture.path} was not uploaded: ${messageFor(error).replace(/\.$/, "")}. ` +
-            `Nothing was posted${earlier}.`
+          `images: ${picture.path} ${landed ? "was uploaded" : "was not uploaded"}: ` +
+            `${messageFor(error).replace(/\.$/, "")}. Nothing was posted${earlier}.`
         );
       }
       // An upload that may have landed says so once, in this line's words: what it got leads, in
@@ -196,11 +202,21 @@ export function parseAgentArtifactRef(ref: string): AgentArtifactRef | null {
   return { session, slug, ...(version === undefined ? {} : { version: Number(version) }) };
 }
 
-/** The bodies of a thread's messages or comments, each dated, for the pictures a read shows. */
+/** The bodies of a thread's messages or comments, each dated, for the pictures a read shows. An
+ *  edited post is dated at its edit: the body a read shows is the one the edit wrote, so a
+ *  picture the edit added is as new as that write, and dating it at the send would rank it below
+ *  pictures written before it and leave it unshown in a thread past the cap. */
 export function datedBodies(
-  records: readonly { readonly body: string; readonly created_at: string }[]
+  records: readonly {
+    readonly body: string;
+    readonly created_at: string;
+    readonly edited_at?: string | null;
+  }[]
 ): DatedText[] {
-  return records.map((record) => ({ text: record.body, at: record.created_at }));
+  return records.map((record) => ({
+    text: record.body,
+    at: record.edited_at ?? record.created_at,
+  }));
 }
 
 /** The texts an ask read shows, dated: its question, typed answer, resolution reason and replies. */
@@ -242,8 +258,11 @@ export function eventTexts(event: DispatchEvent): DatedText[] {
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
+    case "message.edited":
       texts = [event.payload.body];
       break;
+    // Every other event is read for no picture, a delete's among them: a delete's own event
+    // carries no body, as every event of a deleted post is read with none.
     default:
       texts = [];
   }
