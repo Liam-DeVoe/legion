@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
-	"github.com/sjawhar/envoy/internal/sqlscan"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // The nodes the reads under test are taken on. probe is one node among tens of thousands, whose
@@ -1292,7 +1292,7 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		// The migrations write their reasoning in comments: one of them spells out `create index
 		// concurrently` in prose, and reading the prose as a declaration would hold the tree to an
 		// index nobody built.
-		body := sqlscan.WithoutComments(readMigration(t, file))
+		body := pgmigrate.WithoutComments(readMigration(t, file))
 		for _, index := range indexesOf(file, body) {
 			declared[index.name] = append(declared[index.name], index)
 		}

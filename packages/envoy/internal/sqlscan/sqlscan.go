@@ -95,60 +95,6 @@ func Path(t testing.TB, root, path string) string {
 	return filepath.ToSlash(relative)
 }
 
-// WithoutComments is text with each -- and /* */ comment blanked out, a block comment nested in
-// another included, and no comment found inside a quoted string or name. A line break stays and
-// every other byte of a comment becomes a space, so an offset into the answer is the same offset
-// into text, and a comment between two words still parts them, as it does for Postgres.
-func WithoutComments(text string) string {
-	out := []byte(text)
-	var quote byte
-	for i := 0; i < len(out); i++ {
-		switch c := out[i]; {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '\'' || c == '"':
-			quote = c
-		case c == '-' && i+1 < len(out) && out[i+1] == '-':
-			for ; i < len(out) && out[i] != '\n'; i++ {
-				out[i] = ' '
-			}
-		case c == '/' && i+1 < len(out) && out[i+1] == '*':
-			for depth := 0; i < len(out); i++ {
-				switch {
-				case out[i] == '/' && i+1 < len(out) && out[i+1] == '*':
-					depth++
-					out[i], out[i+1] = ' ', ' '
-					i++
-				case out[i] == '*' && i+1 < len(out) && out[i+1] == '/':
-					depth--
-					out[i], out[i+1] = ' ', ' '
-					i++
-				case out[i] != '\n':
-					out[i] = ' '
-				}
-				if depth == 0 {
-					break
-				}
-			}
-		}
-	}
-	return string(out)
-}
-
-// Statements splits SQL text into its statements once its comments are gone (WithoutComments),
-// each trimmed and its semicolon dropped; text of no statement answers none.
-func Statements(text string) []string {
-	statements := []string{}
-	for _, statement := range strings.Split(WithoutComments(text), ";") {
-		if trimmed := strings.TrimSpace(statement); trimmed != "" {
-			statements = append(statements, trimmed)
-		}
-	}
-	return statements
-}
-
 // StringLiteral answers a string literal and its text, and false for any other expression. A
 // parsed literal always unquotes; its quoted form is its text if one ever did not.
 func StringLiteral(expression ast.Expr) (*ast.BasicLit, string, bool) {

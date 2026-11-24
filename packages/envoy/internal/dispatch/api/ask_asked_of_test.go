@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/sqlscan"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // The field an ask waits on a person by, and who may write it: PUT /api/v1/asks/{id}/asked-of.
@@ -447,7 +447,7 @@ func TestAskAskedOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", censusPath, err)
 		}
-		statements := sqlscan.Statements(string(censusText))
+		statements := pgmigrate.Statements(string(censusText))
 		if len(statements) != 1 {
 			t.Fatalf("the census holds %d statements (%v), want one", len(statements), statements)
 		}
@@ -463,7 +463,7 @@ func TestAskAskedOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", upPath, err)
 		}
-		up := sqlscan.Statements(string(upText))
+		up := pgmigrate.Statements(string(upText))
 		if len(up) != 1 {
 			t.Fatalf("the up holds %d statements (%v), want the one alter", len(up), up)
 		}

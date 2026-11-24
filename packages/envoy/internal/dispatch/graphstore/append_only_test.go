@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
@@ -84,6 +85,12 @@ func requireTheScanFindsWhatItShould(t *testing.T) {
 		{"insert into graph_tuples (kind) values ('a')", ""},
 		{"update graph_nodes set state = 'gone'", ""},
 		{"-- delete from graph_nodes", ""},
+		// A -- comment ends at a carriage return, as Postgres's scan.l ends it, so the delete after
+		// one is a statement.
+		{"select 1 -- c\rdelete from graph_nodes", "delete from graph_nodes"},
+		// A dollar quote's tag takes bytes 0x80-0xff, so the -- between its two tags is inside its
+		// body and comments out nothing after the closing tag.
+		{"select $é$ -- $é$; delete from graph_tuples", "delete from graph_tuples"},
 		{`delete from "Graph_Nodes"`, ""},
 	} {
 		var clauses []string
@@ -236,7 +243,9 @@ func storeRemovalsIn(value sqlscan.Value) []storeRemoval {
 		starts[i] = length
 		length += len(piece.Text)
 	}
-	statement := sqlscan.WithoutComments(value.Text())
+	// pgmigrate.WithoutComments blanks each comment byte for byte, a line break kept, so an offset
+	// into statement is one into the pieces, and reads a dollar quote's body as SQL too.
+	statement := pgmigrate.WithoutComments(value.Text())
 	var removals []storeRemoval
 	for _, match := range storeRowRemoval.FindAllStringSubmatchIndex(statement, -1) {
 		start, end := match[2], match[3]
