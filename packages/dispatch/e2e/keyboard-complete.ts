@@ -252,10 +252,10 @@ export function snoozedUntil(write: KeyedWrite<unknown> | undefined): number {
   return Date.parse(input.snoozed_until);
 }
 
-/** The two mornings a Snooze menu offers, as the page's own clock and timezone read them at the
+/** The two mornings the Snooze list offers, as the page's own clock and timezone read them at the
  *  call: 9:00 on the next day (Tomorrow), and 9:00 on the next Monday (Next week), a Monday
  *  naming the Monday after. Worked out here rather than read from the app, since the merge base
- *  the rows also run on offers no such menu. */
+ *  the rows also run on offers no such list. */
 export async function returnMornings(page: Page): Promise<{ nextWeek: number; tomorrow: number }> {
   return page.evaluate(() => {
     const now = new Date();

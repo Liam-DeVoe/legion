@@ -16,7 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { pickFromList } from "./filters";
+import { listOf, pickFromList } from "./filters";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -66,8 +66,9 @@ import {
   waitingCount,
   waitingPressInHistory,
 } from "./issue-page-p";
+import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
-import { choiceOf, menuOf, pickFromMenu } from "./menus";
+import { expectHighlight, expectOpenOn } from "./menus";
 import { holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -1109,7 +1110,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 });
 
 // Row (6): a press on the status straight out of the title's editor lands on the status, whose
-// menu opens (dispatch://INFRA-2160).
+// list opens (dispatch://INFRA-2160).
 // SLOW(>=2s): 2,814 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): three typed edits of the
 // title and two picks of the status, each saved through Dispatch and four of them polled there,
 // a pick made behind a title write a route holds, and 500 ms watched for a second write of it.
@@ -1123,17 +1124,18 @@ test("a press on the status straight out of the title's editor lands on the stat
     const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
     const status = badgeValue(page, "Status");
 
-    // The control: with nothing edited, the press out of the editor opens the status's menu on
+    // The control: with nothing edited, the press out of the editor opens the status's list on
     // the status the issue holds, and Escape closes it, giving the focus back to the status.
     await title.click();
     await expect(editor).toBeFocused();
     await status.click();
-    await expect(
-      choiceOf(await menuOf(status), "In progress"),
-      "the press with nothing edited opened no status menu"
-    ).toBeFocused();
+    await expectOpenOn(
+      status,
+      "In progress",
+      "the press with nothing edited opened no status list"
+    );
     await page.keyboard.press("Escape");
-    await expect(status, "Escape left the status menu open").toHaveAttribute(
+    await expect(status, "Escape left the status list open").toHaveAttribute(
       "aria-expanded",
       "false"
     );
@@ -1144,16 +1146,13 @@ test("a press on the status straight out of the title's editor lands on the stat
     await expect(editor).toBeFocused();
     await editor.pressSequentially("edited ");
     await status.click();
-    await expect(
-      choiceOf(await menuOf(status), "In progress"),
-      "the press out of an edited title landed on nothing"
-    ).toBeFocused();
+    await expectOpenOn(status, "In progress", "the press out of an edited title landed on nothing");
     await expect
       .poll(async () => (await getIssue(seeded.key)).title, {
         message: "the title the reader left was not saved",
       })
       .toContain("edited");
-    await choiceOf(await menuOf(status), "Todo").click();
+    await listOf(status).getByRole("option", { exact: true, name: "Todo" }).click();
     await expect
       .poll(async () => (await getIssue(seeded.key)).status, {
         message: "the status picked straight after the title was not written",
@@ -1161,7 +1160,7 @@ test("a press on the status straight out of the title's editor lands on the stat
       .toBe("todo");
 
     // A status picked while the title's write is still out waits behind it in the issue's line:
-    // the menu's trigger draws the pick at once, and it is written once, after the title.
+    // the list's trigger draws the pick at once, and it is written once, after the title.
     // The issue is at `todo` already, so the pick is `testing`, which the trigger shows only if
     // the pick was drawn.
     let statusWrites = 0;
@@ -1186,7 +1185,7 @@ test("a press on the status straight out of the title's editor lands on the stat
     await editor.pressSequentially("held ");
     await status.click();
     await expect.poll(() => holding, { message: "the title's write was not sent" }).toBe(true);
-    await choiceOf(await menuOf(status), "Testing").click();
+    await listOf(status).getByRole("option", { exact: true, name: "Testing" }).click();
     await expect(status, "the status picked while the title saved was not drawn").toHaveText(
       "Testing"
     );
@@ -1278,7 +1277,7 @@ test("the press that ends a title edit reaches the control under it @phone", asy
         ).toHaveURL(decisionsAddress(seeded.key));
 
         // The same press on the status, straight out of an edit of the same title, lands too,
-        // and opens the status's menu (dispatch://INFRA-2160), which Escape closes.
+        // and opens the status's list (dispatch://INFRA-2160), which Escape closes.
         await gotoIssue(page, `/issues/${seeded.key}`);
         await expectHeaderDrawn(page);
         await heading.click();
@@ -1290,7 +1289,7 @@ test("the press that ends a title edit reaches the control under it @phone", asy
           `the press out of a ${lines}-line title's edit at ${width} px did not reach the status`
         ).toHaveAttribute("aria-expanded", "true");
         await page.keyboard.press("Escape");
-        await expect(status, "Escape left the status menu open").toHaveAttribute(
+        await expect(status, "Escape left the status list open").toHaveAttribute(
           "aria-expanded",
           "false"
         );
@@ -1415,34 +1414,32 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       if (request.method() === "PATCH") patched.push(new URL(request.url()).pathname);
     });
 
-    // p and s open their own control's menu on the value it holds (dispatch://INFRA-2160), and
-    // Escape closes it with nothing written, giving the focus to its trigger, since the key was
-    // pressed with the focus on nothing (`ChoiceMenu`).
+    // p and s open their own control's list on the value it holds (dispatch://INFRA-2160), and
+    // Escape closes it with nothing written, giving the focus back to the page the key was
+    // pressed on, since nothing had the focus (D5).
     await page.keyboard.press("p");
-    await expect(
-      choiceOf(await menuOf(priority), "P1"),
-      "p did not open the priority's menu"
-    ).toBeFocused();
+    await expectOpenOn(priority, "P1", "p did not open the priority's list");
     await page.keyboard.press("Escape");
-    await expect(priority, "Escape left the priority's menu open").toHaveAttribute(
+    await expect(priority, "Escape left the priority's list open").toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    await expect(priority).toBeFocused();
+    await expect
+      .poll(() => onBody(page), { message: "Escape did not give the focus back to the page" })
+      .toBe(true);
     await focusThePage(page);
     await page.keyboard.press("s");
-    await expect(
-      choiceOf(await menuOf(status), "In progress"),
-      "s did not open the status's menu"
-    ).toBeFocused();
+    await expectOpenOn(status, "In progress", "s did not open the status's list");
     await page.keyboard.press("Escape");
-    await expect(status, "Escape left the status's menu open").toHaveAttribute(
+    await expect(status, "Escape left the status's list open").toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    await expect(status).toBeFocused();
+    await expect
+      .poll(() => onBody(page), { message: "Escape did not give the focus back to the page" })
+      .toBe(true);
     await focusThePage(page);
-    expect(patched, "a key that opens a menu wrote the issue").toEqual([]);
+    expect(patched, "a key that opens a list wrote the issue").toEqual([]);
 
     // A refused write: the digit and the picker are one write, so the refusal is said once, in
     // the header, with Retry, and the issue keeps its priority.
@@ -1592,7 +1589,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       }
       await route.continue();
     });
-    await pickFromMenu(status, "Todo");
+    await pickFromList(status, "Todo");
     await expect.poll(() => holding, { message: "the status's write was not sent" }).toBe(1);
     await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
     await expect(priority, "the priority is held while the status is saved").not.toHaveAttribute(
@@ -2182,17 +2179,18 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
   });
 });
 
-// On the new page a keyboard pick of the status keeps the focus on the status while it saves
-// (WCAG 2.4.3). The status is a menu (dispatch://INFRA-2160): `s` opens it, an arrow moves its
-// highlight and writes nothing, and Enter writes the highlighted status and gives the focus to
-// the menu's trigger, since `s` was pressed with the focus on nothing. No write holds or disables
-// the trigger, so the focus stays there while the pick saves, and a second pick from it goes
-// behind the first. Each focus is read once, after the pick is drawn. The status's writes are
-// held open with a route, so the save stays in flight while the row reads it.
+// On the new page a keyboard pick of the status leaves the focus where `s` was pressed while the
+// pick saves (WCAG 2.4.3). The status is the shared single pick with D5's rules
+// (dispatch://INFRA-2160): `s` opens its list, an arrow moves its highlight and writes nothing,
+// and Enter writes the highlighted status and gives the focus back to the page, where `s` was
+// pressed with the focus on nothing. No write holds or disables the trigger, so the focus stays
+// there while the pick saves, and a second pick by `s` goes behind the first. Each focus is read
+// once, after the pick is drawn. The status's writes are held open with a route, so the save
+// stays in flight while the row reads it.
 // SLOW(>=2s): 2,085 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,573 and
 // 1,748 ms in the others): one load, the status's writes held open by a route, and keyboard picks
 // each followed by two frames and a read of the focus.
-test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
+test("a keyboard pick of the status gives the focus back to the page while it saves", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -2205,7 +2203,6 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     await focusThePage(page);
     const status = badgeValue(page, "Status");
     await expect(status).toHaveText("In progress");
-    const statusFocused = () => status.evaluate((trigger) => trigger === document.activeElement);
 
     const held: (() => void)[] = [];
     const writes: unknown[] = [];
@@ -2222,26 +2219,21 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     });
 
     await page.keyboard.press("s");
-    const menu = await menuOf(status);
-    await expect(choiceOf(menu, "In progress"), "s did not open the status's menu").toBeFocused();
+    await expectOpenOn(status, "In progress", "s did not open the status's list");
     await page.keyboard.press("ArrowDown");
-    await expect(choiceOf(menu, "Testing")).toBeFocused();
-    expect(writes, "an arrow key in the status's menu wrote the status").toEqual([]);
+    await expectHighlight(listOf(status), "Testing", "ArrowDown did not highlight Testing");
+    expect(writes, "an arrow key in the status's list wrote the status").toEqual([]);
     await page.keyboard.press("Enter");
     await expect(status).toHaveText("Testing");
     await framesDrawn(page, 2);
     expect(
-      await statusFocused(),
-      "a keyboard pick of the status moved the focus off the status"
+      await onBody(page),
+      "a keyboard pick of the status did not give the focus back to the page"
     ).toBe(true);
 
-    // A second pick while the first saves picks again, and the focus stays on the status.
+    // A second pick while the first saves picks again, and the focus goes back to the page again.
     await page.keyboard.press("s");
-    const again = await menuOf(status);
-    await expect(
-      choiceOf(again, "Testing"),
-      "s did not open the status's menu again"
-    ).toBeFocused();
+    await expectOpenOn(status, "Testing", "s did not open the status's list again");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await expect(status, "a second pick while the status saved picked nothing").toHaveText(
@@ -2249,8 +2241,8 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     );
     await framesDrawn(page, 2);
     expect(
-      await statusFocused(),
-      "a second keyboard pick of the status moved the focus off the status"
+      await onBody(page),
+      "a second keyboard pick of the status did not give the focus back to the page"
     ).toBe(true);
 
     // Once the writes are let through, the issue holds the last status picked.
@@ -2602,7 +2594,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
     // On from there to the title's heading and then the Status, each found by its role and name.
     for (const [what, target] of [
       ["the title's heading", header.getByRole("heading", { level: 1 })],
-      ["the Status menu", badgeValue(page, "Status")],
+      ["the Status", badgeValue(page, "Status")],
     ] as const) {
       let reached = false;
       for (let press = 1; press <= 6 && !reached; press += 1) {

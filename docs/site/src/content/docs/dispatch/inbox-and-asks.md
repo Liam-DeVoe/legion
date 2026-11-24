@@ -215,20 +215,25 @@ chip's **×** to remove the filter, or the **↗** beside it to open the agent's
 
 ### Later and snooze
 
-You can put off an ask instead of answering it now. Every ask has a **Snooze** menu with four
-choices, at the head of the right column, or on the ask's own row where there is no second
-column. Choose **Snooze**, or press `b` or `h`, to open it:
+You can put off an ask instead of answering it now. Every ask has a **Snooze** menu: a list of
+four choices with a search box above them. It is at the head of the right column, or on the ask's
+own row where there is no second column. Choose **Snooze**, or press `b` or `h`, to open it:
 
-| Choice | Comes back |
-| --- | --- |
-| Later today | In three hours, but never after the end of your day. |
-| Tomorrow | At 09:00 tomorrow, in your own time zone. |
-| Next week | At 09:00 next Monday, in your own time zone. |
-| Until I clear it | Only when you end the snooze. |
+| Choice | Key | Comes back |
+| --- | --- | --- |
+| Later today | `1` | In three hours, but never after the end of your day. |
+| Tomorrow | `2` | At 09:00 tomorrow, in your own time zone. |
+| Next week | `3` | At 09:00 next Monday, in your own time zone. |
+| Until I clear it | `4` | Only when you end the snooze. |
 
-Click a choice, or move to it with the arrow keys and press `Enter`, or press its digit, `1` to
-`4`. `Escape`, `Tab` and a click outside the menu close it, and nothing changes. On a snoozed ask
-the menu also offers **Un-snooze**, on `0`.
+The menu opens with **Later today** highlighted. Click a choice, or move the highlight with the
+arrow keys, `Home` and `End` and press `Enter`, or press the choice's digit. A digit snoozes the ask
+at once, also when the search box hides that choice. Type a letter to show only the choices that
+match. On a snoozed ask the menu also offers **Un-snooze**, on `0`.
+
+`Escape`, `Tab` and a click outside the menu close it, and nothing changes. When the menu closes,
+the focus goes back to where you pressed the key, or to **Snooze** if you clicked it. See
+[Menus and lists](/legion/dispatch/keyboard/#menus-and-lists) for the keys of every menu.
 
 A snoozed ask moves into the folded **Later** band, which is there whatever you group the list
 by. Open the band to see when each ask comes back and to end a snooze early. A snooze outranks

@@ -39,10 +39,9 @@ declare global {
  *   own (`display: contents`), and in it the band that stays from 761 px up,
  *   `[data-identity-block]`, with `data-condensed` on the header once the page has scrolled more
  *   than 40 px (`IssueHeader.tsx`).
- * - **The properties line** `[data-testid="issue-state-actions"]`: the status, the trigger of
- *   its menu named `Status` and then the status it shows, and the priority and the assignee,
- *   each the shared list's single pick, a button named `Priority of <key>` or `Assignee of <key>`
- *   and then the value it draws (`badgeValue`), the
+ * - **The properties line** `[data-testid="issue-state-actions"]`: the status, the priority and
+ *   the assignee, each the shared list's single pick, a button named `Status`, `Priority of
+ *   <key>` or `Assignee of <key>` and then the value it draws (`badgeValue`), the
  *   children's progress `[data-testid="issue-progress-children"]` and
  *   `[data-testid="issue-progress-subtree"]`, the count `[data-testid="issue-whose-turn"]`, the
  *   approval control, the route's marker `[data-testid="issue-route-unreachable"]`, the labels
@@ -344,10 +343,10 @@ function cssValue(value: string): string {
   return value;
 }
 
-/** The header's control named `label` - the status's menu (dispatch://INFRA-2160), the
- *  priority's and the assignee's single pick of the shared list (`MultiSelect`) - whose words are
- *  the value it shows a reader: its name is `label` and then those words, and the menu's or the
- *  list's own name stands outside it (`listTrigger`). */
+/** The header's control named `label` - the status's, the priority's or the assignee's single
+ *  pick of the shared list (`MultiSelect`, dispatch://INFRA-2160) - whose words are the value it
+ *  shows a reader: its name is `label` and then those words, and the list's own name stands
+ *  outside it (`listTrigger`). */
 export function badgeValue(page: Page, label: string): Locator {
   return listTrigger(issueHeader(page), label);
 }
@@ -427,7 +426,7 @@ export async function holdReviewReads(
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as
  * `text <its words>`. The name is the element's `aria-label`, else the words of the elements its
- * `aria-labelledby` names, as a menu's trigger and the shared list's single pick are named
+ * `aria-labelledby` names, as the shared list's single pick is named
  * (`Status In progress`, `Assignee of <key> alice`), else its own words. Words count as drawn
  * outside them where an element holds a text of its own and no part that holds no other part - a
  * control, the title, a test id around words alone - holds that element: the project, the key
@@ -518,7 +517,7 @@ export function shortControls(page: Page, key: string): Promise<string[]> {
   return issueHeader(page).evaluate(
     (header, { actionWords, key }) => {
       const actions = actionWords.map((source) => new RegExp(source));
-      // A menu's or a single pick's trigger, named `label` and then what it shows: the first
+      // A single pick's trigger, named `label` and then what it shows: the first
       // element its `aria-labelledby` names holds `label`, or, where what it shows is `label`'s
       // own first words, its `aria-label` is `label`.
       const triggerOf = (label: string): Element | null =>

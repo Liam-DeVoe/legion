@@ -5,7 +5,7 @@ import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
-import { listOf, listTrigger, pickFromList } from "./filters";
+import { listTrigger, pickFromList } from "./filters";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   hasReadingPane,
@@ -33,7 +33,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { bulkSnoozeMenu } from "./menus";
+import { expectOpenOn } from "./menus";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -91,9 +91,11 @@ test.describe("inbox selection", () => {
       // h with a selection opens the bulk Snooze list on its first choice; one pick writes every
       // marked ask.
       await page.keyboard.press("h");
-      await expect(
-        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
-      ).toBeFocused();
+      await expectOpenOn(
+        listTrigger(bar, "Snooze selected asks"),
+        "Later today",
+        "h with rows marked opens the bar's Snooze list"
+      );
       const writes = Promise.all([snoozeRequest(page, first), snoozeRequest(page, second)]);
       await page.keyboard.press("Enter");
       for (const request of await writes) {
@@ -267,17 +269,24 @@ test.describe("inbox selection", () => {
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
+      const opener = await page.evaluateHandle(() => document.activeElement);
       await page.keyboard.press("h");
       const picker = listTrigger(bar, "Snooze selected asks");
-      await expect(picker).toHaveAttribute("aria-expanded", "true");
-      await listOf(picker).getByRole("option", { exact: true, name: "Tomorrow" }).click();
+      await expectOpenOn(picker, "Later today", "h opens the bar's Snooze list");
+      await page.keyboard.press("2");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
-      // `h` was pressed with the focus on nothing, so the pick hands the focus back to the bar's
-      // Snooze, which keeps it while the pick is in the air. Both marked rows are leaving for the
-      // snooze, so Escape leaves the Snooze for the bar, and Escape from the bar clears the
-      // selection while the pick is still in the air.
+      // The digit hands the focus back where `h` was pressed (dispatch://INFRA-2160, D5), and the
+      // reader puts it on the bar's Snooze, which keeps it while the pick is in the air. Both
+      // marked rows are leaving for the snooze, so Escape leaves the Snooze for the bar, and
+      // Escape from the bar clears the selection while the pick is still in the air.
+      await expect
+        .poll(() => opener.evaluate((node) => node === document.activeElement), {
+          message: "the digit gives the focus back where h was pressed",
+        })
+        .toBe(true);
+      await picker.focus();
       await expect(picker).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(bar).toBeFocused();
@@ -451,9 +460,12 @@ test.describe("inbox selection", () => {
       );
       await rows.nth(0).focus();
       await page.keyboard.press("h");
-      const picker = listTrigger(bar, "Snooze selected asks");
-      await expect(picker).toHaveAttribute("aria-expanded", "true");
-      await listOf(picker).getByRole("option", { exact: true, name: "Next week" }).click();
+      await expectOpenOn(
+        listTrigger(bar, "Snooze selected asks"),
+        "Later today",
+        "h on the row back from Later opens the bar's Snooze list"
+      );
+      await page.keyboard.press("3");
       await expect(bar).toContainText("Could not snooze 1 of 1: snoozed_until must be a moment.");
 
       // Fold the band again: nothing of the list is rendered, and the bar is all that is left -
@@ -509,12 +521,15 @@ test.describe("inbox selection", () => {
       const byHand = await moment(deferred.id);
 
       // The bar picks a different moment for what is left on the page: with rows marked, `h` is
-      // the bar's Snooze.
+      // the bar's Snooze, and 3 its Next week.
       await page.mouse.move(0, 0);
       await page.keyboard.press("h");
-      await listOf(listTrigger(bar, "Snooze selected asks"))
-        .getByRole("option", { exact: true, name: "Next week" })
-        .click();
+      await expectOpenOn(
+        listTrigger(bar, "Snooze selected asks"),
+        "Later today",
+        "h with a row marked opens the bar's Snooze list"
+      );
+      await page.keyboard.press("3");
       await expect.poll(() => moment(live.id)).toBeTruthy();
 
       expect(await moment(deferred.id)).toBe(byHand);
@@ -544,21 +559,28 @@ test.describe("inbox selection", () => {
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       const picker = listTrigger(bar, "Snooze selected asks");
+      const opener = await page.evaluateHandle(() => document.activeElement);
       await page.keyboard.press("h");
-      await expect(
-        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
-      ).toBeFocused();
+      await expectOpenOn(picker, "Later today", "h opens the bar's Snooze list");
       const writes: string[] = [];
       page.on("request", (request) => {
         if (request.method() === "PUT") writes.push(request.url());
       });
-      await listOf(picker).getByRole("option", { exact: true, name: "Tomorrow" }).click();
+      await page.keyboard.press("2");
 
       // Inert, not taken away: a control that disabled itself would drop a reader who holds its
-      // focus to the document mid-write, and its Escape would have nothing to leave.
+      // focus to the document mid-write, and its Escape would have nothing to leave. The digit
+      // hands the focus back where `h` was pressed (dispatch://INFRA-2160, D5), and the reader
+      // puts it on the held Snooze.
       await expect(bar).toContainText("Snoozing 2…");
       await expect(picker).toBeVisible();
       await expect(picker).toHaveAttribute("aria-disabled", "true");
+      await expect
+        .poll(() => opener.evaluate((node) => node === document.activeElement), {
+          message: "the digit gives the focus back where h was pressed",
+        })
+        .toBe(true);
+      await picker.focus();
       await expect(picker).toBeFocused();
       // A second pick from the keyboard the reader still holds: an arrow on the focused trigger
       // opens its list, and the trigger opens none while the bar's own write is out; nor does a

@@ -17,6 +17,7 @@ import { needsYouCards } from "./editor";
 import { pickFromList } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
+import { firstAttempts } from "./keyboard-complete";
 import { watchWrites } from "./keyed-writes";
 import { statusTrigger } from "./menus";
 import { clearIssueCreator, resetDatabase } from "./seed";
@@ -1034,6 +1035,8 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
     const page = await context.newPage();
     await page.setViewportSize({ height: 900, width: 1280 });
     // Every PATCH of the issue, so a title a stray key wrote is caught even if a later read hid it.
+    // A write is read once by its `Idempotency-Key`, so a resend after a lost answer is the same
+    // write and not a third one (`firstAttempts`).
     const patched = watchWrites(page, "PATCH", `/api/v1/issues/${issue.key}`);
     await page.goto(`/issues/${issue.key}`);
     const header = page.getByTestId("issue-header");
@@ -1089,7 +1092,7 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
     await header.getByText(issue.key, { exact: true }).click();
     await expectClosedOn("Saved by a click outside");
 
-    expect(patched.map(({ input }) => input)).toEqual([
+    expect(firstAttempts(patched).map(({ input }) => input)).toEqual([
       { title: "Saved by Enter" },
       { title: "Saved by a click outside" },
     ]);

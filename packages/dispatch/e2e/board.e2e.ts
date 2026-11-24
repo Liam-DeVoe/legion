@@ -410,8 +410,9 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     expect(navigations).toBe(2);
 
     // `p` opens the focused card's priority list on the value it holds, with the focus in its
-    // text box; a letter typed there is the list's, not a page key; Escape closes the list onto
-    // its trigger, then returns to the card, then out of the board.
+    // text box; a letter typed there is the list's, not a page key; Escape closes the list and
+    // gives the focus back to the card `p` was pressed on (dispatch://INFRA-2160, D5), then
+    // takes it out of the board.
     await alphaCard.focus();
     await page.keyboard.press("p");
     const priority = listTrigger(alphaCard, `Priority of ${alpha.key}`);
@@ -425,8 +426,6 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await expect(typed).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(priority).toHaveAttribute("aria-expanded", "false");
-    await expect(priority).toBeFocused();
-    await page.keyboard.press("Escape");
     await expect(alphaCard).toBeFocused();
     await page.keyboard.press("Escape");
     await expect

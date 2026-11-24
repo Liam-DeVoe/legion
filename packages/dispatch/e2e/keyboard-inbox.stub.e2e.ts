@@ -7,7 +7,7 @@
  *  with the rest (packages/dispatch/README.md, "The stubbed layer"). Every refusal below is the
  *  row's own `page.route`, which replays as readily as it ran.
  */
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
 import { listOf, listTrigger, pickFromList } from "./filters";
@@ -31,13 +31,8 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { bulkSnoozeMenu, choiceOf, menuOf } from "./menus";
+import { expectOpenOn } from "./menus";
 import { stubbed } from "./stub/stub-test";
-
-/** The first choice of the bulk bar's Snooze menu, which `h` with rows marked opens on. */
-function bulkFirstChoice(page: Page): Locator {
-  return bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" });
-}
 
 /** The three asks the marks are made on. */
 const test = stubbed(async () => {
@@ -170,13 +165,13 @@ test.describe("inbox selection", () => {
     await expect(bar).toContainText("2 selected");
 
     // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
-    // opens the bulk Snooze menu with no roving in between.
+    // opens the bulk Snooze list on its first choice with no roving in between.
     await page.keyboard.press("h");
     const picker = listTrigger(bar, "Snooze selected asks");
-    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
+    await expectOpenOn(picker, "Later today", "h from the ticked box opens the bar's Snooze list");
     await page.keyboard.press("Escape");
 
-    // j moves off the ticked row, and h opens the menu from there too. A tick marks its
+    // j moves off the ticked row, and h opens the list from there too. A tick marks its
     // row and moves nothing else, so the reading column is still on the row the Inbox opened
     // on and the step from there is the second row; without the column j roves from the box
     // holding the focus and lands on the third.
@@ -187,10 +182,10 @@ test.describe("inbox selection", () => {
       await expect(rows.nth(2)).toBeFocused();
     }
     await page.keyboard.press("h");
-    await expect(bulkFirstChoice(page)).toBeFocused();
+    await expectOpenOn(picker, "Later today", "h after j opens the bar's Snooze list");
   });
 
-  // Escape is always one level out: a Snooze menu, the row's or the bar's, hands the focus back
+  // Escape is always one level out: a Snooze list, the row's or the bar's, hands the focus back
   // to the row it was opened from.
   test("Escape leaves the bulk picker for the row it was opened from, keeping the marks @pr", async ({
     page,
@@ -203,18 +198,18 @@ test.describe("inbox selection", () => {
     await goToRow(page, 0);
     const rowPicker = await rowSnooze(page, await askIdOf(page, 0));
     await page.keyboard.press("h");
-    await expect(choiceOf(await menuOf(rowPicker), "Later today")).toBeFocused();
+    await expectOpenOn(rowPicker, "Later today", "h opens the row's Snooze list");
     await page.keyboard.press("Escape");
     await expect(rows.nth(0)).toBeFocused();
 
-    // The bulk menu does the same, and leaves the selection alone on the way.
+    // The bulk list does the same, and leaves the selection alone on the way.
     await goToRow(page, 1);
     await page.keyboard.press("x");
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("h");
     const picker = listTrigger(bar, "Snooze selected asks");
-    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
+    await expectOpenOn(picker, "Later today", "h with a row marked opens the bar's Snooze list");
     await page.keyboard.press("Escape");
     await expect(rows.nth(1)).toBeFocused();
     await expect(bar).toContainText("1 selected");
@@ -353,7 +348,7 @@ test.describe("inbox selection", () => {
       const onlyPicker = await rowSnooze(page, await askIdOf(page, 0));
       await goToRow(page, 0);
       await page.keyboard.press("h");
-      await expect(choiceOf(await menuOf(onlyPicker), "Later today")).toBeFocused();
+      await expectOpenOn(onlyPicker, "Later today", "h opens the row's Snooze list");
       expect(wrote).toBe(false);
     }
   );
@@ -441,7 +436,7 @@ test.describe("inbox selection", () => {
     }
   );
 
-  // Reaching the bulk menu with the pointer leaves no `h` behind it, so Escape must not send the
+  // Reaching the bulk list with the pointer leaves no `h` behind it, so Escape must not send the
   // reader to whatever row an earlier `h` happened to be on: it hands the focus back to the
   // Snooze the pointer pressed.
   test("Escape from a pointer-opened bulk picker goes back to its Snooze, not a stale row @pr", async ({

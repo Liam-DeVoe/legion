@@ -125,7 +125,7 @@ import { onBody, openIssue } from "./keyboard-issue";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { machineSession } from "./machines";
 import { commentWithBody } from "./margin-helpers";
-import { priorityTrigger, statusTrigger } from "./menus";
+import { expectHighlight, openList, openTrigger, priorityTrigger, statusTrigger } from "./menus";
 import {
   type ReviewedRoute,
   type ReviewSeed,
@@ -227,7 +227,11 @@ function countOf(writes: readonly (readonly KeyedWrite<unknown>[])[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// The menus' choices.
+// The menus' choices. Snooze, the priority and the status are each the shared single pick
+// (`MultiSelect`) with D5's rules: a text box (`combobox`) over a `listbox` of `option`s, each
+// named by its words, its digit drawn in a `kbd` hidden from assistive tech and named in its
+// `aria-keyshortcuts`, and the highlighted one named by the box's `aria-activedescendant`
+// (`openList`, `expectHighlight` in `e2e/menus.ts`).
 // ---------------------------------------------------------------------------
 
 /** The Snooze menu's choices, in order, each with the digit that writes it. */
@@ -256,28 +260,47 @@ const OPEN_STATUSES = [
   "Retro",
 ] as const;
 
-/** Holds the open Snooze menu `menu` to its choices, each with its number, for the step `step`. */
+/** Holds the option `choice` of an open menu to the digit that writes it, or to none: the digit
+ *  drawn in its `kbd` and named in its `aria-keyshortcuts`, for the step `step`. */
+async function expectDigit(
+  choice: Locator,
+  label: string,
+  digit: string | undefined,
+  step: string
+): Promise<void> {
+  if (digit === undefined) {
+    await expect(choice, `${step}: no digit writes ${label}`).not.toHaveAttribute(
+      "aria-keyshortcuts"
+    );
+    await expect(choice.locator("kbd"), `${step}: ${label} shows no number`).toHaveCount(0);
+    return;
+  }
+  await expect(choice, `${step}: ${label} is pressed with ${digit}`).toHaveAttribute(
+    "aria-keyshortcuts",
+    digit
+  );
+  await expect(choice.locator("kbd"), `${step}: ${label} shows its number`).toHaveText(digit);
+}
+
+/** Holds the open Snooze menu `menu` to its choices, each an `option` with its number, for the
+ *  step `step`. */
 async function expectSnoozeChoices(menu: Locator, step: string, snoozed = false): Promise<void> {
   const expected = snoozed ? [...SNOOZE_CHOICES, UNSNOOZE_CHOICE] : SNOOZE_CHOICES;
-  const choices = menu.getByRole("menuitem");
+  const choices = menu.getByRole("option");
   await expect(choices, `${step}: the menu holds ${expected.length} choices`).toHaveCount(
     expected.length
   );
   for (const [index, [label, digit]] of expected.entries()) {
     const choice = choices.nth(index);
     await expect(choice, `${step}: choice ${index + 1} is ${label}`).toHaveAccessibleName(label);
-    await expect(choice, `${step}: ${label} is pressed with ${digit}`).toHaveAttribute(
-      "aria-keyshortcuts",
-      digit
-    );
-    await expect(choice.locator("kbd"), `${step}: ${label} shows its number`).toHaveText(digit);
+    await expectDigit(choice, label, digit, step);
   }
 }
 
-/** Holds the open priority menu `menu` to Unset and P0 to P3, each a `menuitemradio`, with
- *  `checked` the one checked, for the step `step`. */
-async function expectPriorityChoices(menu: Locator, checked: string, step: string): Promise<void> {
-  const choices = menu.getByRole("menuitemradio");
+/** Holds the open priority menu `menu` to Unset and P0 to P3, each an `option` with its number,
+ *  `current` the one marked as the issue's value (`aria-selected`), for the step `step`. */
+async function expectPriorityChoices(menu: Locator, current: string, step: string): Promise<void> {
+  const choices = menu.getByRole("option");
   await expect(choices, `${step}: the menu holds Unset and P0 to P3`).toHaveCount(
     PRIORITY_CHOICES.length
   );
@@ -286,14 +309,29 @@ async function expectPriorityChoices(menu: Locator, checked: string, step: strin
     await expect(choice, `${step}: choice ${index + 1} is ${label}`).toHaveAccessibleName(label);
     await expect(
       choice,
-      `${step}: ${label} is ${label === checked ? "" : "not "}checked`
-    ).toHaveAttribute("aria-checked", `${label === checked}`);
+      `${step}: ${label} is ${label === current ? "" : "not "}the current value`
+    ).toHaveAttribute("aria-selected", `${label === current}`);
+    await expectDigit(choice, label, label === "Unset" ? undefined : label.slice(1), step);
   }
+}
+
+/** Holds the open menu `menu` to the focus in its text box, for the step `step`: where a key or
+ *  a press on a fine pointer opens it. */
+async function expectFocusInBox(menu: Locator, step: string): Promise<void> {
+  await expect(
+    menu.getByRole("combobox"),
+    `${step}: the focus is in the menu's text box`
+  ).toBeFocused();
 }
 
 // ---------------------------------------------------------------------------
 // k-snooze-menu
 // ---------------------------------------------------------------------------
+
+/** What a pointer's press focuses by the browser's own default: the nearest element at or above
+ *  the press that takes the focus, a control or an element with a `tabindex`. */
+const PRESS_FOCUSABLE =
+  'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]';
 
 /** Every step of k-snooze-menu where `place` draws the Inbox, over four asks of their own. */
 async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
@@ -314,20 +352,30 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const sent = () => countOf(watched);
   const requests = () => requestsSent(watched);
   const step = (text: string) => `k-snooze-menu: ${place}: ${text}`;
-  const menu = page.getByRole("menu");
-  const choice = (name: string) => menu.getByRole("menuitem", { exact: true, name });
+  const menu = openList(page);
+  const leftOpen = async (what: string) => {
+    if (place === "the drawer") {
+      await expect(inbox.scope, step(`${what} leaves the drawer open`)).toBeVisible();
+    }
+  };
 
-  // b on the first ask's row, then the arrows and Escape: nothing is written.
+  // b on the first ask's row, then the arrows, Home, End and Escape: nothing is written.
   await goTo(inbox, first);
   const band = (await rowOf(inbox, first).getAttribute("data-inbox-section")) ?? "";
   await page.keyboard.press("b");
   await expect(menu, step("b shows a menu")).toBeVisible();
   await expectSnoozeChoices(menu, step("b shows a menu"));
-  await expect(choice("Later today"), step("b highlights the first choice")).toBeFocused();
-  const beforeArrowDown = requests();
+  await expectFocusInBox(menu, step("b"));
+  await expectHighlight(menu, "Later today", step("b highlights the first choice"));
+  const beforeKeys = requests();
   await page.keyboard.press("ArrowDown");
-  await expect(choice("Tomorrow"), step("ArrowDown moves the highlight to Tomorrow")).toBeFocused();
-  expect(requests(), step("ArrowDown sends no request")).toBe(beforeArrowDown);
+  await expectHighlight(menu, "Tomorrow", step("ArrowDown moves the highlight to Tomorrow"));
+  await page.keyboard.press("End");
+  await expectHighlight(menu, "Until I clear it", step("End moves the highlight to the last"));
+  await page.keyboard.press("Home");
+  await expectHighlight(menu, "Later today", step("Home moves the highlight to the first"));
+  expect(requests(), step("ArrowDown, End and Home send no request")).toBe(beforeKeys);
+  await expectFocusInBox(menu, step("after ArrowDown, End and Home"));
   const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the menu")).toHaveCount(0);
@@ -337,12 +385,14 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     band
   );
   await expect(rowOf(inbox, first), step("Escape puts the focus back on its row")).toBeFocused();
+  await leftOpen("Escape");
 
   // h opens the same menu, and Enter writes the highlighted Later today.
   await page.keyboard.press("h");
   await expect(menu, step("h opens the same menu")).toBeVisible();
   await expectSnoozeChoices(menu, step("h opens the same menu"));
-  await expect(choice("Later today"), step("h highlights the first choice")).toBeFocused();
+  await expectFocusInBox(menu, step("h"));
+  await expectHighlight(menu, "Later today", step("h highlights the first choice"));
   const laterFrom = Date.now();
   await page.keyboard.press("Enter");
   await expect
@@ -358,10 +408,17 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   );
   await expect(laterBand(inbox, 1), step("Enter puts the ask into Later")).toBeVisible();
 
-  // b on the second ask, then 2: one request, for Tomorrow.
+  // b on the second ask, a narrowing to Next week, then 2: one request, for Tomorrow, which the
+  // narrowing hides.
   await goTo(inbox, second);
   await page.keyboard.press("b");
   await expect(menu, step("b opens the second ask's menu")).toBeVisible();
+  const beforeLetters = requests();
+  await page.keyboard.type("next");
+  await expect(menu.getByRole("option"), step("next narrows the menu to Next week")).toHaveText([
+    /^Next week/,
+  ]);
+  expect(requests(), step("the letters send no request")).toBe(beforeLetters);
   const mornings = await returnMornings(page);
   await page.keyboard.press("2");
   await expect
@@ -370,25 +427,54 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   expect(sent(), step("2 sends one request")).toBe(2);
   expect(
     snoozedUntil(firstAttempts(snoozesOf(second))[0]),
-    step("2 snoozes the ask until Tomorrow")
+    step("2 snoozes the ask until Tomorrow, which the narrowing hides")
   ).toBe(mornings.tomorrow);
 
-  // The third ask's menu from a click on its Snooze control: Tab, and a click outside, close it.
+  // The third ask's menu from a click on its Snooze control: Tab, and a click outside, close it
+  // and give the focus back to that control.
   await goTo(inbox, third);
   const snooze = controlsOf(page, inbox, third).getByRole("button", { name: /^Snooze / });
   await snooze.click();
   await expect(menu, step("a click on the Snooze control opens its menu")).toBeVisible();
+  await expectFocusInBox(menu, step("a click on the Snooze control"));
   const beforeTab = requests();
   await page.keyboard.press("Tab");
   await expect(menu, step("Tab closes the menu")).toHaveCount(0);
   expect(requests(), step("Tab sends no request")).toBe(beforeTab);
   await expect(snooze, step("Tab leaves the focus on the Snooze control")).toBeFocused();
+  await leftOpen("Tab");
   await snooze.click();
   await expect(menu, step("a click on the Snooze control opens its menu again")).toBeVisible();
   const beforeOutside = requests();
   await inbox.outside.click();
   await expect(menu, step("a click outside the menu closes it")).toHaveCount(0);
   expect(requests(), step("a click outside the menu sends no request")).toBe(beforeOutside);
+  // A press outside on an element that takes the focus gives it that element by the press's own
+  // default, as the Inbox page's `main` (`tabindex="-1"`) takes it from a press on its heading;
+  // a press on nothing that takes it, as on the drawer's heading, gives the focus back to the
+  // Snooze control (D5).
+  const pressFocuses = await inbox.outside.evaluate(
+    (node, selector) => node.closest(selector) !== null,
+    PRESS_FOCUSABLE
+  );
+  if (pressFocuses) {
+    await expect
+      .poll(
+        () =>
+          inbox.outside.evaluate(
+            (node, selector) => node.closest(selector) === document.activeElement,
+            PRESS_FOCUSABLE
+          ),
+        { message: step("a click outside the menu leaves the focus where the click put it") }
+      )
+      .toBe(true);
+  } else {
+    await expect(
+      snooze,
+      step("a click outside the menu, on nothing that takes the focus, gives it back to Snooze")
+    ).toBeFocused();
+  }
+  await leftOpen("a click outside the menu");
 
   // The second ask, out in Later, and the third, selected with x: the bar's Snooze opens the
   // same menu, and b then 3 snoozes both until Next week.
@@ -400,20 +486,24 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   }
   const bar = inbox.scope.getByRole("toolbar", { name: "Selected rows" });
   await expect(bar, step("x selects the second and the third ask")).toContainText("2 selected");
-  await bar.getByRole("button", { exact: true, name: "Snooze selected asks" }).click();
-  await expect(menu, step("a click on the bar's Snooze opens the same menu")).toHaveAccessibleName(
-    "Snooze selected asks"
-  );
+  const barSnooze = bar.getByRole("button", { exact: true, name: "Snooze selected asks" });
+  await barSnooze.click();
+  await expect(
+    openTrigger(page),
+    step("a click on the bar's Snooze opens the same menu")
+  ).toHaveAccessibleName("Snooze selected asks");
   await expectSnoozeChoices(menu, step("a click on the bar's Snooze opens the same menu"));
   const beforeBarEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the bar's menu")).toHaveCount(0);
   expect(requests(), step("Escape on the bar's menu sends no request")).toBe(beforeBarEscape);
+  await expect(barSnooze, step("Escape gives the focus back to the bar's Snooze")).toBeFocused();
   await rowOf(inbox, third).focus();
   await page.keyboard.press("b");
-  await expect(menu, step("b with asks selected opens the bar's menu")).toHaveAccessibleName(
-    "Snooze selected asks"
-  );
+  await expect(
+    openTrigger(page),
+    step("b with asks selected opens the bar's menu")
+  ).toHaveAccessibleName("Snooze selected asks");
   const week = await returnMornings(page);
   await page.keyboard.press("3");
   await expect
@@ -438,6 +528,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await page.keyboard.press("b");
   await expect(menu, step("b opens a snoozed ask's menu")).toBeVisible();
   await expectSnoozeChoices(menu, step("a snoozed ask's menu also holds Un-snooze"), true);
+  await expectHighlight(menu, "Later today", step("b highlights a snoozed ask's first choice"));
   await page.keyboard.press("0");
   await expect
     .poll(() => writesSent(unsnoozes), { message: step("0 un-snoozes the ask: one request") })
@@ -536,30 +627,44 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const writes = issueWrites(page, seed.issueKey);
   const requests = () => requestsSent([writes]);
   const step = (text: string) => `k-priority-menu: ${place}: ${text}`;
-  const menu = page.getByRole("menu");
-  const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
+  const menu = openList(page);
 
-  // p on the ask, then ArrowUp and Escape: nothing is written.
+  // p on the ask, then ArrowUp, Home, End and Escape: nothing is written.
   await goTo(inbox, seed.askId);
   const mark = priorityMarkOf(inbox, seed.askId, seed.issueKey);
   const control = priorityTrigger(controlsOf(page, inbox, seed.askId), seed.issueKey);
   await page.keyboard.press("p");
   await expect(menu, step("p shows a menu")).toBeVisible();
   await expectPriorityChoices(menu, "P2", step("p shows a menu"));
-  await expect(radio("P2"), step("p highlights the checked P2")).toBeFocused();
-  const beforeArrowUp = requests();
+  await expectFocusInBox(menu, step("p"));
+  await expectHighlight(menu, "P2", step("p highlights the current P2"));
+  const beforeKeys = requests();
   await page.keyboard.press("ArrowUp");
-  await expect(radio("P1"), step("ArrowUp moves the highlight to P1")).toBeFocused();
-  expect(requests(), step("ArrowUp sends no request")).toBe(beforeArrowUp);
+  await expectHighlight(menu, "P1", step("ArrowUp moves the highlight to P1"));
+  await page.keyboard.press("Home");
+  await expectHighlight(menu, "Unset", step("Home moves the highlight to Unset"));
+  await page.keyboard.press("End");
+  await expectHighlight(menu, "P3", step("End moves the highlight to P3"));
+  expect(requests(), step("ArrowUp, Home and End send no request")).toBe(beforeKeys);
   const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the menu")).toHaveCount(0);
   expect(requests(), step("Escape sends no request")).toBe(beforeEscape);
   await expect(mark, step("after Escape the row's mark still reads P2")).toHaveText("P2");
+  await expectStillOn(inbox, seed.askId, step("after Escape"));
+
+  // p, then Tab: nothing is written, and the focus goes back to the row p was pressed on.
+  await page.keyboard.press("p");
+  await expect(menu, step("p opens the menu again")).toBeVisible();
+  const beforeTab = requests();
+  await page.keyboard.press("Tab");
+  await expect(menu, step("Tab closes the menu")).toHaveCount(0);
+  expect(requests(), step("Tab sends no request")).toBe(beforeTab);
+  await expectStillOn(inbox, seed.askId, step("after Tab"));
 
   // p then 0 writes P0; p, ArrowDown, Enter writes the highlighted P1.
   await page.keyboard.press("p");
-  await expect(menu, step("p opens the menu again")).toBeVisible();
+  await expect(menu, step("p opens the menu a third time")).toBeVisible();
   await page.keyboard.press("0");
   await expect
     .poll(() => writesSent(writes), { message: step("p then 0 sends one write") })
@@ -568,9 +673,9 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(mark, step("after p then 0 the row's mark reads P0")).toHaveText("P0");
   await expectStillOn(inbox, seed.askId, step("after p then 0"));
   await page.keyboard.press("p");
-  await expect(radio("P0"), step("p opens on the checked P0")).toBeFocused();
+  await expectHighlight(menu, "P0", step("p opens on the current P0"));
   await page.keyboard.press("ArrowDown");
-  await expect(radio("P1"), step("ArrowDown moves the highlight to P1")).toBeFocused();
+  await expectHighlight(menu, "P1", step("ArrowDown moves the highlight to P1"));
   await page.keyboard.press("Enter");
   await expect
     .poll(() => writesSent(writes), { message: step("p, ArrowDown, Enter sends one write") })
@@ -591,8 +696,10 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     "P1",
     step("a click on the priority control opens the same menu")
   );
+  await expectFocusInBox(menu, step("a click on the priority control"));
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the clicked menu")).toHaveCount(0);
+  await expect(control, step("Escape gives the focus back to the clicked control")).toBeFocused();
 
   // On the document's ask and on the thread, p opens nothing, and `?` shows the key unavailable.
   for (const [id, what] of [
@@ -638,15 +745,16 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await page.setViewportSize(WIDE);
   const writes = issueWrites(page, issue.key);
   const requests = () => requestsSent([writes]);
-  const menu = page.getByRole("menu");
-  const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
+  const menu = openList(page);
 
-  // Today's issue page: p opens on the checked P2, and 1 writes P1.
+  // Today's issue page: p opens on the current P2, 1 writes P1, and the focus goes back to the
+  // page p was pressed on.
   await openIssue(page, issue.key, title);
   await page.keyboard.press("p");
   await expect(menu, "k-priority-menu: on the issue page p shows a menu").toBeVisible();
   await expectPriorityChoices(menu, "P2", "k-priority-menu: on the issue page p shows a menu");
-  await expect(radio("P2"), "k-priority-menu: on the issue page p highlights P2").toBeFocused();
+  await expectFocusInBox(menu, "k-priority-menu: on the issue page p");
+  await expectHighlight(menu, "P2", "k-priority-menu: on the issue page p highlights P2");
   await page.keyboard.press("1");
   await expect
     .poll(() => writesSent(writes), {
@@ -660,17 +768,25 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
     priorityTrigger(page.getByTestId("issue-header"), issue.key),
     "k-priority-menu: on the issue page the header reads P1"
   ).toHaveText("P1");
+  await expect
+    .poll(() => onBody(page), {
+      message: "k-priority-menu: on the issue page 1 gives the focus back to the page",
+    })
+    .toBe(true);
 
-  // The project Board: p on the focused card opens its menu, and Escape writes nothing.
+  // The project Board: p on the focused card opens its menu, and Escape writes nothing and gives
+  // the focus back to the card.
   await page.goto("/projects/CORE");
   await page.getByRole("button", { exact: true, name: "Board" }).click();
   const card = page.getByRole("article", { name: `${issue.key} ${title}` });
   await card.focus();
   await page.keyboard.press("p");
-  await expect(menu, "k-priority-menu: on the Board p opens the card's menu").toHaveAccessibleName(
-    `Priority of ${issue.key}`
-  );
+  await expect(
+    openTrigger(page),
+    "k-priority-menu: on the Board p opens the card's menu"
+  ).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   await expectPriorityChoices(menu, "P1", "k-priority-menu: on the Board p opens the card's menu");
+  await expectFocusInBox(menu, "k-priority-menu: on the Board p");
   // The count is read just before Escape and again once the menu is closed, so any request
   // between the two fails the step, a resend of any key included (Verification, "A write is one
   // key"). A request the issue page's write sent again before then - one the load of this page
@@ -679,15 +795,20 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the Board Escape closes the menu").toHaveCount(0);
   expect(requests(), "k-priority-menu: on the Board Escape writes nothing").toBe(beforeBoardEscape);
+  await expect(
+    card,
+    "k-priority-menu: on the Board Escape gives the focus back to the card"
+  ).toBeFocused();
 
   // The project List: a click on a row's priority control opens the same menu, and nothing more
   // is written.
   const beforeList = requests();
   await page.getByRole("button", { exact: true, name: "List" }).click();
-  await priorityTrigger(
+  const listControl = priorityTrigger(
     page.getByRole("row", { exact: true, name: `${issue.key} ${title}` }),
     issue.key
-  ).click();
+  );
+  await listControl.click();
   await expect(menu, "k-priority-menu: on the List a click opens the same menu").toBeVisible();
   await expectPriorityChoices(
     menu,
@@ -697,6 +818,10 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the List Escape closes the menu").toHaveCount(0);
   expect(requests(), "k-priority-menu: on the List nothing more is written").toBe(beforeList);
+  await expect(
+    listControl,
+    "k-priority-menu: on the List Escape gives the focus back to the clicked control"
+  ).toBeFocused();
 });
 
 // ---------------------------------------------------------------------------
@@ -714,14 +839,13 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
   await page.setViewportSize(WIDE);
   const writes = issueWrites(page, issue.key);
   const requests = () => requestsSent([writes]);
-  const menu = page.getByRole("menu");
-  const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
   const status = statusTrigger(page);
+  const menu = listOf(status);
 
   await openIssue(page, issue.key, title);
   await page.keyboard.press("s");
-  await expect(menu, "k-status-menu: s shows a menu").toHaveAccessibleName("Status");
-  const choices = menu.getByRole("menuitemradio");
+  await expect(menu, "k-status-menu: s shows a menu").toBeVisible();
+  const choices = menu.getByRole("option");
   await expect(choices, "k-status-menu: the menu holds the issue's statuses").toHaveCount(
     OPEN_STATUSES.length
   );
@@ -731,17 +855,20 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
       `k-status-menu: choice ${index + 1} is ${label}`
     ).toHaveAccessibleName(label);
   }
-  await expect(radio("Todo"), "k-status-menu: Todo is checked").toHaveAttribute(
-    "aria-checked",
-    "true"
-  );
-  await expect(radio("Todo"), "k-status-menu: s highlights the current Todo").toBeFocused();
+  await expect(menu.locator("kbd"), "k-status-menu: no digit writes a status").toHaveCount(0);
+  await expect(
+    menu.getByRole("option", { exact: true, name: "Todo" }),
+    "k-status-menu: Todo is the current value"
+  ).toHaveAttribute("aria-selected", "true");
+  await expectFocusInBox(menu, "k-status-menu: s");
+  await expectHighlight(menu, "Todo", "k-status-menu: s highlights the current Todo");
   const beforeArrowDown = requests();
   await page.keyboard.press("ArrowDown");
-  await expect(
-    radio("In progress"),
+  await expectHighlight(
+    menu,
+    "In progress",
     "k-status-menu: ArrowDown moves the highlight to In progress"
-  ).toBeFocused();
+  );
   expect(requests(), "k-status-menu: ArrowDown sends no request").toBe(beforeArrowDown);
   const beforeEscape = requests();
   await page.keyboard.press("Escape");
@@ -750,9 +877,12 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
   await expect(status, "k-status-menu: after Escape the status still reads Todo").toHaveText(
     "Todo"
   );
+  await expect
+    .poll(() => onBody(page), { message: "k-status-menu: Escape gives the focus back to the page" })
+    .toBe(true);
 
   await page.keyboard.press("s");
-  await expect(radio("Todo"), "k-status-menu: s opens the menu again on Todo").toBeFocused();
+  await expectHighlight(menu, "Todo", "k-status-menu: s opens the menu again on Todo");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect
@@ -765,6 +895,9 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
     "k-status-menu: Enter writes the highlighted In progress"
   ).toEqual({ status: "in_progress" });
   await expect(status, "k-status-menu: the header shows In progress").toHaveText("In progress");
+  await expect
+    .poll(() => onBody(page), { message: "k-status-menu: Enter gives the focus back to the page" })
+    .toBe(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -1171,21 +1304,25 @@ async function expectReadable(target: Locator, what: string, name: string): Prom
     .toBeGreaterThanOrEqual(4.5);
 }
 
-/** Opens a menu with `key` and reads the contrast of each of its choices, the `role` choices
- *  named `names`, failing softly for each pair under 4.5:1 with the theme, the menu and the
- *  choice named. */
+/** Opens a menu with `key` and reads the contrast of each of its choices, the options named
+ *  `names`, and of the digit each draws, failing softly for each pair under 4.5:1 with the theme,
+ *  the menu and the choice named. */
 async function readMenuContrast(
   page: Page,
   key: string,
   what: string,
-  role: "menuitem" | "menuitemradio",
   names: readonly string[]
 ): Promise<void> {
-  const menu = page.getByRole("menu");
+  const menu = openList(page);
   await page.keyboard.press(key);
   await expect(menu, `k-menu-contrast: ${what}: ${key} opens the menu`).toBeVisible();
   for (const name of names) {
-    await expectReadable(menu.getByRole(role, { exact: true, name }), what, name);
+    const choice = menu.getByRole("option", { exact: true, name });
+    await expectReadable(choice, what, name);
+    // The menu draws each choice's digit in the render that drew the choice, read above.
+    if ((await choice.locator("kbd").count()) > 0) {
+      await expectReadable(choice.locator("kbd"), what, `${name}'s digit`);
+    }
   }
   await page.keyboard.press("Escape");
   await expect(menu, `k-menu-contrast: ${what}: Escape closes the menu`).toHaveCount(0);
@@ -1210,27 +1347,14 @@ test("k-menu-contrast: every choice of the snooze, priority and status menus rea
       page,
       "b",
       `${theme}, the Snooze menu`,
-      "menuitem",
       SNOOZE_CHOICES.map(([label]) => label)
     );
-    await readMenuContrast(
-      page,
-      "p",
-      `${theme}, the priority menu`,
-      "menuitemradio",
-      PRIORITY_CHOICES
-    );
+    await readMenuContrast(page, "p", `${theme}, the priority menu`, PRIORITY_CHOICES);
   }
   await openIssue(page, issue.key, title);
   for (const colorScheme of THEMES) {
     await page.emulateMedia({ colorScheme });
-    await readMenuContrast(
-      page,
-      "s",
-      `the ${colorScheme} theme, the status menu`,
-      "menuitemradio",
-      OPEN_STATUSES
-    );
+    await readMenuContrast(page, "s", `the ${colorScheme} theme, the status menu`, OPEN_STATUSES);
   }
 });
 
@@ -1323,22 +1447,38 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
 // k-phone
 // ---------------------------------------------------------------------------
 
-/** Holds each of `choices` to a tap's height, 44 px or more, naming `what` and the choice. */
-async function expectTapHeight(choices: Locator, what: string): Promise<void> {
+/** Holds the list `list`, which a tap opened on a phone, to D5's rules there, naming `what`: the
+ *  list holds the focus and its text box does not, so no on-screen keyboard covers the choices,
+ *  and each choice stands inside the viewport and is 44 px high or more. */
+async function expectPhoneList(page: Page, list: Locator, what: string): Promise<void> {
+  const choices = list.getByRole("option");
   await expect(choices.first(), `k-phone: ${what} has choices`).toBeVisible();
+  await expect(
+    list.getByRole("combobox"),
+    `k-phone: ${what}'s text box does not have the focus`
+  ).not.toBeFocused();
+  await expect(list.getByRole("listbox"), `k-phone: ${what}'s list has the focus`).toBeFocused();
   // A menu draws all its choices in the render that drew the first, waited for above.
-  const heights = await choices.evaluateAll((nodes) =>
-    nodes.map((node) => ({
-      height: node.getBoundingClientRect().height,
-      name: node.textContent ?? "",
-    }))
+  const rects = await choices.evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const words = node.cloneNode(true) as Element;
+      for (const hidden of words.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+      const { bottom, height, left, right, top } = node.getBoundingClientRect();
+      return { bottom, height, left, name: (words.textContent ?? "").trim(), right, top };
+    })
   );
-  expect(heights.length, `k-phone: ${what} has choices`).toBeGreaterThan(0);
-  for (const { height, name } of heights) {
+  const viewport = page.viewportSize();
+  if (viewport === null) throw new Error("k-phone: the phone project sets no viewport");
+  expect(rects.length, `k-phone: ${what} has choices`).toBeGreaterThan(0);
+  for (const { bottom, height, left, name, right, top } of rects) {
     expect(
       height,
       `k-phone: ${what}'s choice ${name} is 44 px high or more`
     ).toBeGreaterThanOrEqual(44);
+    expect(
+      top >= 0 && left >= 0 && bottom <= viewport.height && right <= viewport.width,
+      `k-phone: ${what}'s choice ${name} stands inside the viewport, ${viewport.width} by ${viewport.height}`
+    ).toBe(true);
   }
 }
 
@@ -1376,26 +1516,34 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
     .map((key) => issueWrites(page, key));
   const watched = [...snoozes, priorityWrites, ...otherWrites];
   const sent = () => countOf(watched);
-  const menu = page.getByRole("menu");
 
   const snooze = inboxRow(page, first).getByRole("button", { name: /^Snooze / });
+  const snoozeMenu = listOf(snooze);
   // Waited for here, within `expectTimeout`, where the tap would wait out the action's timeout
   // for a card that draws no such button, so the base fails the row's first step by name.
   await expect(snooze, "k-phone: the first card draws its Snooze menu's trigger").toBeVisible();
   await snooze.tap();
   await expect(
-    menu,
+    snoozeMenu,
     "k-phone: a tap on the first card's Snooze opens the snooze menu"
   ).toBeVisible();
-  await expectTapHeight(menu.getByRole("menuitem"), "the snooze menu");
+  await expectPhoneList(page, snoozeMenu, "the snooze menu");
   const beforeTapOutside = requestsSent(watched);
   await page.getByRole("heading", { exact: true, level: 1, name: "Inbox" }).tap();
-  await expect(menu, "k-phone: a tap outside the menu closes it").toHaveCount(0);
+  await expect(snoozeMenu, "k-phone: a tap outside the menu closes it").toHaveCount(0);
   expect(requestsSent(watched), "k-phone: a tap outside the menu sends no request").toBe(
     beforeTapOutside
   );
   await snooze.tap();
-  await menu.getByRole("menuitem", { exact: true, name: "Tomorrow" }).tap();
+  await expectPhoneList(page, snoozeMenu, "the snooze menu a second tap opens");
+  const snoozeBox = snoozeMenu.getByRole("combobox");
+  await snoozeBox.tap();
+  await expect(snoozeBox, "k-phone: a tap on the menu's text box gives it the focus").toBeFocused();
+  await expect(snoozeMenu, "k-phone: a tap on the text box leaves the menu open").toBeVisible();
+  expect(requestsSent(watched), "k-phone: a tap on the text box sends no request").toBe(
+    beforeTapOutside
+  );
+  await snoozeMenu.getByRole("option", { exact: true, name: "Tomorrow" }).tap();
   await expect
     .poll(() => writesSent(snoozes[0] ?? []), {
       message: "k-phone: a tap on Tomorrow sends one snooze",
@@ -1403,10 +1551,15 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
     .toBe(1);
   expect(sent(), "k-phone: a tap on Tomorrow sends nothing else").toBe(1);
 
-  await priorityTrigger(inboxRow(page, second), secondKey).tap();
-  await expect(menu, "k-phone: a tap on the second card's priority opens its menu").toBeVisible();
-  await expectTapHeight(menu.getByRole("menuitemradio"), "the priority menu");
-  await menu.getByRole("menuitemradio", { exact: true, name: "P1" }).tap();
+  const priority = priorityTrigger(inboxRow(page, second), secondKey);
+  const priorityMenu = listOf(priority);
+  await priority.tap();
+  await expect(
+    priorityMenu,
+    "k-phone: a tap on the second card's priority opens its menu"
+  ).toBeVisible();
+  await expectPhoneList(page, priorityMenu, "the priority menu");
+  await priorityMenu.getByRole("option", { exact: true, name: "P1" }).tap();
   await expect
     .poll(() => writesSent(priorityWrites), { message: "k-phone: a tap on P1 sends one write" })
     .toBe(1);
@@ -4813,7 +4966,7 @@ async function nextItemSnoozeSteps(page: Page, place: InboxPlace): Promise<void>
   const [, b, c, d, e] = seed.asks;
   const [firstThread] = seed.threads;
   const step = (text: string) => `k-next-item: ${place}: ${text}`;
-  const menu = page.getByRole("menu");
+  const menu = openList(page);
 
   // With the Later band folded: B, snoozed with b and 1, hands the reader on to C.
   await putOn(inbox, b);
@@ -4845,7 +4998,7 @@ async function nextItemSnoozeSteps(page: Page, place: InboxPlace): Promise<void>
   const bar = inbox.scope.getByRole("toolbar", { name: "Selected rows" });
   await expect(bar, step("x selects D and E")).toContainText("2 selected");
   await page.keyboard.press("b");
-  await expect(menu, step("b opens the bar's Snooze menu")).toHaveAccessibleName(
+  await expect(openTrigger(page), step("b opens the bar's Snooze menu")).toHaveAccessibleName(
     "Snooze selected asks"
   );
   await page.keyboard.press("1");
@@ -5020,7 +5173,7 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
  *  snooze select, whose Later today is picked as a select's option is. */
 async function snoozeLaterToday(page: Page, step: string): Promise<void> {
   await page.keyboard.press("h");
-  const menu = page.getByRole("menu");
+  const menu = openList(page);
   const select = page.locator("select:focus");
   await expect(
     menu.or(select),
@@ -5370,8 +5523,12 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^Select all$/, { label: "Select all" }],
   [/^Clear selection$/, { key: "Esc", label: "Clear the selection" }],
   // A thread's reply box, which `r` puts the caret in: its Send is Ctrl+Enter there, and its own
-  // controls are reached by Tab from it.
-  [/^(Send|Cancel reply)$/, { key: "r", label: "Reply in the thread of the item in hand" }],
+  // controls are reached by Tab from it. An answered question's reply box under its record
+  // (`AskReplyComposer`) is that box too: its submit is Reply, and Replying… while it is out.
+  [
+    /^(Send|Cancel reply|Reply|Replying…)$/,
+    { key: "r", label: "Reply in the thread of the item in hand" },
+  ],
 ];
 
 /** What marks a turn of the thread an item's card or the pane draws: a message or a reply of its
@@ -6570,7 +6727,7 @@ test("k-remap: a key changed in Settings works at once on the Inbox in another p
     // Snooze shows it as it does.
     const headSnooze = paneHead(inbox).getByRole("button", { name: /^Snooze / });
     await expectKeyHint(headSnooze, "Shift+B", step("the pane head's Snooze shows Shift+B"));
-    const menu = inbox.getByRole("menu");
+    const menu = openList(inbox);
     await row.focus();
     await inbox.keyboard.press("Shift+B");
     await expect(menu, step("on the Inbox Shift+B opens the snooze menu")).toBeVisible();
@@ -8689,7 +8846,8 @@ async function helpKeys(page: Page, scope: string): Promise<string[]> {
 }
 
 /** Holds the open menu `menu` to the keys of the table's menu rows: its foot line shows the keys
- *  that move the highlight, write it and close the menu, and its choices show `digits`. */
+ *  that move the highlight, write it and close the menu, and its choices show `digits`, each in
+ *  the `kbd` its option draws. */
 async function expectMenuKeys(
   menu: Locator,
   digits: readonly string[],
@@ -8738,7 +8896,7 @@ test("k-default-keys: with no key changed, ? lists the Inbox keys of the spec's 
   await page.keyboard.press("Escape");
 
   // The menus of the approval request, and of the snoozed question, show the menu rows' keys.
-  const menu = page.getByRole("menu");
+  const menu = openList(page);
   await expect(paneHead(page)).toBeVisible();
   await page.keyboard.press("b");
   await expectMenuKeys(menu, ["1", "2", "3", "4"], "the Snooze menu");

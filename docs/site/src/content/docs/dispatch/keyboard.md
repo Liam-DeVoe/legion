@@ -142,24 +142,35 @@ Each control at the head of the right column shows its first key, such as `p` on
 
 ## Menus and lists
 
-The **Snooze**, priority and **Status** controls open a menu. A key opens the same menu as a
-click: `b` or `h` for **Snooze** in the Inbox, `p` for the priority, and `s` for the status on the
-issue page.
+The **Snooze**, priority and **Status** controls each open a menu. The menu is a list of choices
+with a search box above it. A key opens the same menu as a click: `b` or `h` for **Snooze** in the
+Inbox, `p` for the priority, and `s` for the status on the issue page.
 
 | Keys | Action |
 | --- | --- |
 | `↓` / `↑`, `Home` / `End` | Move the highlight. Nothing changes yet. |
+| A letter | Type in the search box. The menu shows only the choices that match. Nothing changes yet. |
 | `Enter` | Choose the highlighted choice |
 | `1` – `4` | In the snooze menu: **Later today**, **Tomorrow**, **Next week**, **Until I clear it** |
 | `0` | In the snooze menu of a snoozed ask: **Un-snooze** |
 | `0` – `3` | In the priority menu: **P0** – **P3** |
 | `Escape`, `Tab` | Close the menu. Nothing changes. |
 
+A digit chooses its choice at once, also when the search box hides that choice. The status menu
+has no digits. Each choice that has a digit shows it, and the foot of each menu shows its keys.
+
 The snooze menu opens on its first choice, and the priority and status menus on the current
-value. A click on a choice chooses it. A click outside the menu closes it, and nothing changes.
-When the menu closes, the focus goes back to where it was before the menu opened. If nothing had
-the focus, or you opened the menu with a click, the focus goes to the menu's control. The foot of
-each menu shows its keys.
+value. A click on a choice chooses it. A click outside the menu closes it, and nothing changes. If
+that click is on another control, the focus goes to that control.
+
+When the menu closes, the focus goes back to where it was before the menu opened: the row, the
+card or the page where you pressed the key. If you opened the menu with a click, the focus goes
+back to the menu's control. In the Inbox drawer, `Escape` closes the menu, and the drawer stays
+open.
+
+On a phone, a tap opens the menu but does not put the cursor in the search box, so the phone's
+keyboard does not cover the choices. Tap the search box to type in it. Each choice is at least
+44 px high.
 
 The issue page's assignee and repository controls, and an ask's **Asked of** control, open a list
 with a search box. On one of these controls, an arrow key, `Home`, `End`, `Page Up` or `Page Down`

@@ -93,7 +93,6 @@ import {
   inboxList,
   inboxPane,
   inboxRow,
-  paneScroller,
   selectedRow,
   selectRow,
 } from "./inbox-pane";
@@ -119,7 +118,7 @@ import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
 import { modKey, searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
-import { choiceOf, menuOf } from "./menus";
+import { expectOpenOn } from "./menus";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
@@ -3379,7 +3378,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
 
   // The keys on one question: Enter into its answer, Escape back, `h`, which opens its Snooze
-  // menu on the first choice (dispatch://INFRA-2160) and Escape hands back to the row, `y`, and
+  // list on the first choice (dispatch://INFRA-2160) and Escape hands back to the row, `y`, and
   // `l`, which has no reading pane to go to here.
   const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
   const ask = rowOf(ledger.id);
@@ -3389,12 +3388,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("Escape");
   await expect(ask, "the Escape key, back to the row").toBeFocused();
   await page.keyboard.press("h");
-  await expect(
-    choiceOf(await menuOf(ask.locator("[data-inbox-snooze]")), "Later today"),
-    "the h key"
-  ).toBeFocused();
+  await expectOpenOn(ask.locator("[data-inbox-snooze]"), "Later today", "the h key");
   await page.keyboard.press("Escape");
-  await expect(ask, "the Escape key, out of the row's Snooze menu").toBeFocused();
+  await expect(ask, "the Escape key, out of the row's Snooze list").toBeFocused();
   await page.keyboard.press("y");
   await expect
     .poll(async () => (await copied()).join(" "), { message: "the y key" })
@@ -3408,18 +3404,19 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("1");
   await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
 
-  // `x`, `h` with a row marked, and the three Escapes out: the bulk menu, the row, the marks.
+  // `x`, `h` with a row marked, and the three Escapes out: the bulk list, the row, the marks.
   const bar = control(peek, CONTROL.selectionBar);
   await ask.focus();
   await page.keyboard.press("x");
   await expect(bar, "the x key").toContainText("1 selected");
   await page.keyboard.press("h");
-  await expect(
-    listOf(listTrigger(peek, "Snooze selected asks")).getByRole("combobox"),
+  await expectOpenOn(
+    listTrigger(peek, "Snooze selected asks"),
+    "Later today",
     "the h key, with a row marked"
-  ).toBeFocused();
+  );
   await page.keyboard.press("Escape");
-  await expect(ask, "the Escape key, out of the bulk menu").toBeFocused();
+  await expect(ask, "the Escape key, out of the bulk list").toBeFocused();
   await page.keyboard.press("Escape");
   await expect(ask).not.toBeFocused();
   await page.keyboard.press("Escape");
@@ -6069,10 +6066,15 @@ interface PickList {
   /** The list's value, where a reader reads it: the trigger's words, or - where a pick takes the
    *  trigger away - the chip the pick puts in the row. */
   readonly value: () => Promise<string>;
-  /** A word a reader types into the list's text box, and the options it leaves, in order. */
+  /** A word a reader types into the list's text box, and the options it leaves, in order. An
+   *  option of a list in a menu's place (dispatch://INFRA-2160, D5) draws its digit after its
+   *  words, so its text ends in that digit. */
   readonly word: string;
   readonly left: readonly (string | RegExp)[];
-  /** What `value` reads once Enter has picked the option the word left. */
+  /** The digit that picks the option at once, for a list in a menu's place, whose digit writes
+   *  its own choice whatever the word left (D5): pressed after the word in place of Enter. */
+  readonly digit?: string;
+  /** What `value` reads once Enter, or the digit, has picked the option the word left. */
   readonly picked: RegExp;
   /** Where the pick leaves the focus, where that is not the trigger: the control the panel
    *  hands it to when the pick takes the trigger away, or the message the composer's pick hands
@@ -6376,11 +6378,14 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: new RegExp(`^${sizeOption}$`),
     },
     {
+      // The priority is a list in a menu's place (D5): `P` leaves P0 to P3, and the digit after
+      // it writes its own priority at once.
       name: "the List's Priority of a row",
       trigger: listPriority,
       value: shown(listPriority),
-      word: "p1",
-      left: ["P1"],
+      word: "p",
+      left: [/P0/, /P1/, /P2/, /P3/],
+      digit: "1",
       picked: /^P1$/,
     },
     {
@@ -6391,8 +6396,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       },
       trigger: cardPriority,
       value: shown(cardPriority),
-      word: "p2",
-      left: ["P2"],
+      word: "p",
+      left: [/P0/, /P1/, /P2/, /P3/],
+      digit: "2",
       picked: /^P2$/,
     },
     {
@@ -6422,13 +6428,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       trigger: rowSnooze,
       value: later,
       word: "tom",
-      left: ["Tomorrow"],
+      left: [/^Tomorrow/],
       picked: laterAfter(1),
-      // The pick takes the row away once its write lands. With the reading column the focus goes
-      // to the column's own stop, and without it to the same Snooze in the row that moves up.
-      focusAfterPick: hasReadingPane(page)
-        ? paneScroller(page)
-        : listTrigger(inboxRow(page, snoozed.bulk), /^Snooze /),
+      // The pick takes the row away once its write lands, and hands the reader on to the item
+      // after it (dispatch://INFRA-2160, R8): that item is selected where the reading column is
+      // drawn, and its row takes the focus.
+      focusAfterPick: inboxRow(page, snoozed.bulk),
     },
     {
       name: "the Inbox's Snooze selected asks",
@@ -6438,11 +6443,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       trigger: bulkSnooze,
       value: later,
       word: "week",
-      left: ["Next week"],
+      left: [/^Next week/],
       picked: laterAfter(2),
-      // The bar goes with the row it deferred, and its focus goes to the mark of the row that
-      // moves up into that row's place.
-      focusAfterPick: inboxRow(page, snoozed.after).getByRole("checkbox").first(),
+      // The bar goes with the row it deferred, and R8 hands the focus to the row of the item
+      // after it, the row that moves up into its place.
+      focusAfterPick: inboxRow(page, snoozed.after),
     },
     {
       // The reader's own questions; with the reading column the question is selected first, so
@@ -6455,8 +6460,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       },
       trigger: inboxPriority,
       value: shown(inboxPriority),
-      word: "p0",
-      left: ["P0"],
+      word: "p",
+      left: [/P0/, /P1/, /P2/, /P3/],
+      digit: "0",
       picked: /^P0$/,
     },
     {
@@ -6668,9 +6674,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
-// Color merges by (`DeliveryPage`). One short fixed list is not yet a single pick, and the row
-// does not open it: the issue header's Status, a menu (`ChoiceMenu`) until dispatch://INFRA-2160
-// moves it onto the shared list. At each width each list is
+// Color merges by (`DeliveryPage`). The issue header's Status is a single pick too, with
+// dispatch://INFRA-2160's rules for a pick in a menu's place, which its k-status-menu row reads
+// (`keyboard-complete.e2e.ts`), and this row does not open it. At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
 // 16 px, the size `styles.css` gives every input below 1280 px and under which iOS Safari zooms
 // the page onto the box - the option a typed word leaves is not the value the list starts on, the
@@ -6678,11 +6684,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // the text box (Shift+Tab at the second width) picks nothing and leaves the reader on the
 // trigger, `?` pressed then on the closed trigger opens the list with `?` in its text box and no
 // Keyboard shortcuts, since a character typed on a closed trigger is the list's search
-// (`MultiSelect`), and Enter picks the option the word left - the trigger shows it with the focus
-// back on it, or where the pick takes the trigger away the panel hands the focus on. A Snooze's
-// pick shows in the Inbox's Later band, which holds one more row once the write lands, and the
-// row the pick took away hands the focus on. A list that holds no text box is named and the row
-// goes on, so one run names every such list.
+// (`MultiSelect`), and Enter picks the option the word left - in a list in a menu's place, the
+// priority's, a letter narrows and the digit of the option it left picks it at once
+// (dispatch://INFRA-2160, D5) - the trigger shows it with the focus back on it, or where the pick
+// takes the trigger away the panel hands the focus on. A Snooze's pick shows in the Inbox's Later
+// band, which holds one more row once the write lands, and the reader is handed on to the row of
+// the item after the one the pick took away (R8). A list that holds no text box is named and the
+// row goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
@@ -6837,16 +6845,17 @@ test("every list of options a reader picks from holds a text box that narrows it
         expect(await list.value(), `${at}: ? and Escape changed the list's value`).toBe(before);
       }
 
-      // Enter picks the option the word left.
+      // Enter picks the option the word left, or, in a list in a menu's place, its digit does.
       const entered = await open(list, at);
       if (entered === undefined) continue;
       await page.keyboard.type(list.word);
       await expect(entered, `${at}: "${list.word}" left other options than its own`).toHaveText(
         list.left
       );
-      await page.keyboard.press("Enter");
+      const pick = list.digit ?? "Enter";
+      await page.keyboard.press(pick);
       await expect
-        .poll(list.value, { message: `${at}: Enter did not pick the option "${list.word}" left` })
+        .poll(list.value, { message: `${at}: ${pick} did not pick the option "${list.word}" left` })
         .toMatch(list.picked);
       await expect(
         list.focusAfterPick ?? list.trigger,

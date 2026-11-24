@@ -5,6 +5,7 @@
 // is on screen.
 import type { Page } from "@playwright/test";
 
+import { listOf } from "../../../../packages/dispatch/e2e/filters";
 import { statusTrigger } from "../../../../packages/dispatch/e2e/menus";
 import { expect } from "../harness";
 import {
@@ -133,9 +134,7 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         const status = statusTrigger(page);
         await pointTo(page, status);
         await status.click();
-        const todo = page
-          .getByRole("menu", { name: "Status" })
-          .getByRole("menuitemradio", { exact: true, name: "Todo" });
+        const todo = listOf(status).getByRole("option", { exact: true, name: "Todo" });
         await pointTo(page, todo);
         await todo.click();
         cue("todo");
