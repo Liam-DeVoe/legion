@@ -128,9 +128,13 @@ func (o sessionDeliveryOutcome) relayed() bool {
 	return o.answer != nil && o.answer.Mode == deliveryModeConsumer
 }
 
-// sessionRelay is what the relay of session consumers hears from registrations.
+// sessionRelay is what the relay of session consumers hears from registrations, and, at the edge,
+// from role claims through this listener.
 type sessionRelay interface {
-	// registered reports a registration of sessionID that recorded consumer delivery on its entry.
+	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
+	// or, at the edge, a role claim refresh that wrote the session's record (api.go's roleSetHandler).
+	// Either resumes a paused relay run and starts an ended one; a claim passes epochChanged false
+	// and heard 0.
 	// epochChanged is set when the entry it replaced did not hold consumer delivery with the same
 	// epoch: the plugin connected anew, so the relay restarts the session's consumer at its ack
 	// floor before it relays again, unless the relay's run restarted the consumer after heard,
@@ -141,7 +145,8 @@ type sessionRelay interface {
 // sessionDelivery manages the session consumers (bus.SessionConsumers) for the listener's
 // registrations: it creates each one a registration asks for, keeps its filter on the session's
 // agent subject and stored followed topics as they change, and tells the relay of each
-// registration. A nil sessionDelivery, or one without consumers, refuses every registration with
+// registration, and at the edge of each role claim refresh. A nil sessionDelivery, or one
+// without consumers, refuses every registration with
 // consumer_error; main's listener has neither, since its start ends when the session-consumer
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
@@ -155,13 +160,14 @@ type sessionDelivery struct {
 	// compiles, which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
-	// relay hears each registration that records consumer delivery. A sessionDelivery with
-	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
-	// that relay cannot start), so a registration answered consumer is relayed.
+	// relay hears each registration that records consumer delivery, and at the edge each role claim
+	// refresh. A sessionDelivery with consumers has one (startSessionRelays sets it before /v1 opens,
+	// and main's start ends when that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
 	// admissions is, on an edge listener, the projects of the token each session's latest
-	// registration here was admitted on (subscribeHandler), which the relay holds the session's
-	// frames to (edge_frames.go). Every other listener records none.
+	// registration or role claim here was admitted on (subscribeHandler and the claim's admitHeld,
+	// api.go), which the relay holds the session's frames to (edge_frames.go). Every other listener
+	// records none.
 	admissions edgeAdmissions
 	// marks is the last mark taken (mark).
 	marks atomic.Uint64
@@ -256,7 +262,7 @@ type sessionDelivery struct {
 	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
 	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
+	deletes    inflight
 	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
@@ -280,6 +286,23 @@ func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
 	}
 	if projects, held := heldProjects(r); held {
 		d.admissions.admit(sessionID, projects)
+	}
+}
+
+// resumeHeld, at the edge, resumes sessionID's relay as a registration does: a resume starts this
+// replica's relay run for the session if it had ended for want of an admission, which the entry's
+// change (a relayCheck) does not. It is for the claim refresh that just recorded the session's
+// admission (admitHeld). It does nothing for a request no edge listener admitted (heldProjects),
+// which every listener but an edge one is: on a hub a run ends for want of a consumer or a grant
+// (restartFailed), which a claim cannot cure, and a session the claim moves here has no run, which
+// apply starts on the entry's change (run == nil). It does nothing for a nil delivery or one with
+// no relay either.
+func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
+	if d == nil || d.relay == nil {
+		return
+	}
+	if _, held := heldProjects(r); held {
+		d.relay.registered(sessionID, false, 0)
 	}
 }
 
@@ -622,7 +645,9 @@ func (m *sessionDelivery) mark() uint64 { return m.marks.Add(1) }
 
 // drain drains the session-consumer connection, so the acks the relays sent reach the server,
 // within sessionConsumerDrain or what is left of ctx if that is less; with nothing left of ctx it
-// closes the connection. The relays are stopped first (sessionRelays.stop).
+// closes the connection and says so at WARN, since an ack the connection had not yet sent is then
+// lost and the server delivers its message again. The relays are stopped first
+// (sessionRelays.stop).
 func (m *sessionDelivery) drain(ctx context.Context) {
 	if m == nil || m.consumers == nil {
 		return
@@ -633,6 +658,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	if timeout <= 0 {
 		m.consumers.Close()
+		m.logger.Warn("session consumer connection closed without a drain: the shutdown's HTTP window was spent")
 		return
 	}
 	if err := m.consumers.Drain(timeout); err != nil {
