@@ -289,7 +289,9 @@ const (
 )
 
 // RecordedAct is a destructive act on an issue's pod that the daemon recorded before the runtime
-// made it (internal/daemon's finishReplacements): what it takes, and the uid of its target.
+// made it (internal/daemon's finishReplacements): what it takes, and the uid of its target. A
+// target is taken once, so every act recorded on one target is over once one of them is made
+// (store.Store.FinishPodReplacement).
 type RecordedAct struct {
 	Takes  Takes
 	Target string

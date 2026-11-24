@@ -158,22 +158,25 @@ func (s *supervision) recordedDue(recorded store.PodReplacement, due func(contex
 	}
 }
 
-// forgetReplacement takes away the record recorded of a replacement the runtime did not make. A
-// store that refuses leaves it for the next sweep, which reads the pod running and forgets it there
-// (finishReplacements).
+// forgetReplacement takes away the record recorded of a replacement the runtime did not make
+// (store.Store.ForgetPodReplacement): its last word refused it, or the call found the round's pod
+// replaced by a launch as the round's own replacement, whose record the walk finishes. A store
+// that refuses leaves it for a later sweep, which reads the act (finishReplacements).
 func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodReplacement) {
-	if _, _, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, recorded.Issue, recorded.Operation, nil); err != nil && ctx.Err() == nil {
-		s.log.Error("supervise: forget the record of a replacement its last word refused; it stands, and the next sweep forgets it",
+	if err := s.supervisor.store.ForgetPodReplacement(ctx, s.plan.project, recorded.Issue, recorded.Operation); err != nil && ctx.Err() == nil {
+		s.log.Error("supervise: forget the record of a replacement that took nothing; it stands, and a later sweep reads whether its act was made",
 			"issue", recorded.Issue, "pod", recorded.PodUID, "operation", recorded.Operation, "error", err)
 	}
 }
 
 // finishReplacement finishes the record of operation, a replacement of issue's pod pod, now the
-// act is made: it deletes the record and, in the same transaction, queues reason, where it is not
-// "", as the issue's architect's workspace-taken notice (store.Store.FinishPodReplacement). It
-// answers false where the store refused, and the record then stands for a later sweep
-// (finishReplacements); a record another finish of the same act took is finished already, and
-// nothing is queued for it here. attrs name the replacement on its lines.
+// act is made: it deletes the record, with every other record of an act on the same target, and,
+// in the same transaction, queues reason, where it is not "", as the issue's architect's
+// workspace-taken notice (store.Store.FinishPodReplacement). It answers false where the store
+// refused, and the records then stand for a later sweep (finishReplacements); a record that the
+// finish of another act on its target took, or another finish of the same act, is finished
+// already, and nothing is queued for it here (the Legion reviewer's Important 1 on #5285 at
+// 7da847c0). attrs name the replacement on its lines.
 func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod, reason string, attrs ...any) bool {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
 	var notice *store.IdleReleaseRow
@@ -195,7 +198,8 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		}
 		return false
 	case !finished:
-		s.log.Info("supervise: the record of this replacement of the issue's pod is finished already", attrs...)
+		s.log.Info("supervise: the record of this replacement of the issue's pod is finished already, with the record of another act on the same target or by another finish of it; nothing is queued for it",
+			attrs...)
 	case notice == nil:
 	case !told:
 		s.log.Info("supervise: the issue's architect is not told what a replacement of its pod took: its issue is another project's, whose rows this daemon writes none of",
@@ -328,8 +332,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 
 // readAct is the runtime's read of the act that r records (runtime.ActReader), under the pod's
 // launch turn, where the record is forgotten in the same turn if the act was not made
-// (store.Store.FinishPodReplacement with no notice). A runtime that reads no act answers
-// runtime.ActUncertain.
+// (store.Store.ForgetPodReplacement). A runtime that reads no act answers runtime.ActUncertain.
 func (s *supervision) readAct(ctx context.Context, r store.PodReplacement) (runtime.ActState, error) {
 	reader, ok := s.runtime.(runtime.ActReader)
 	if !ok {
@@ -341,8 +344,7 @@ func (s *supervision) readAct(ctx context.Context, r store.PodReplacement) (runt
 		if read != runtime.ActNotMade {
 			return nil
 		}
-		_, _, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, r.Issue, r.Operation, nil)
-		return err
+		return s.supervisor.store.ForgetPodReplacement(ctx, s.plan.project, r.Issue, r.Operation)
 	})
 	return state, err
 }

@@ -1791,9 +1791,16 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn. It stays the
 	// zero roundEnd, which no bound made, where the runtime returns nil without asking the last
-	// word.
-	var ended roundEnd
-	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(recorded, s.issueReplacementDue(issue, round, read.at, &ended))); err != nil {
+	// word; asked says whether it asked it.
+	var (
+		ended roundEnd
+		asked bool
+	)
+	due := s.issueReplacementDue(issue, round, read.at, &ended)
+	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(recorded, func(ctx context.Context) error {
+		asked = true
+		return due(ctx)
+	})); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -1804,6 +1811,18 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 				"issue", issue, "round", round, "pod", pod, "error", err)
 			s.tellLateRound(ctx, issue, live, round, pod, reasons, failedReplacementReason(err), clock)
 		}
+		return
+	}
+	// A call that asked no last word took nothing: the Sandbox no longer ran the round's pod. Where
+	// a launch replaced that pod as the round's own replacement while the call waited for the
+	// pod's launch turn, the act is the launch's, under its own record, and the walk ends the round
+	// as that replacement (endRoundALaunchReplaced), told from the launcher's read at the launch:
+	// this call's record goes, so the architect is told of the one act once (the Legion
+	// reviewer's Important 1 on #5285 at 7da847c0, trace a).
+	if _, launched := s.launchReplaced(issue, round); !asked && launched {
+		s.forgetReplacement(ctx, recorded)
+		s.log.Info("supervise: a launch replaced the pod of this update round as the round's own replacement while the replacement by issue waited; the replacement by issue took nothing, and the round ends as the launch's",
+			"issue", issue, "round", round, "pod", pod)
 		return
 	}
 	s.roundReplaced(ctx, issue, round, pod, reasons, ended, lost, read, told, recorded)

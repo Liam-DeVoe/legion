@@ -13,11 +13,12 @@ import (
 
 // PodReplacement is the record of a replacement of an issue's pod that may take a disk (R7 of
 // #5285, GPT-6.1 Sol's points 1 and 2 on #5285): the daemon writes it before the
-// runtime acts, and deletes it once the act is made, in the transaction that queues the issue's
-// architect's notice of what the act took, or once the runtime shows the act was not made
-// (FinishPodReplacement). Operation is the act's own identity, which keys the row
-// (pod_replacements): two acts on the same pod are two rows, and no write goes over a row that
-// stands (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). PodUID is the pod the act takes, "" where
+// runtime acts, and deletes it once the act is made, with every other record of the same target,
+// in the transaction that queues the issue's architect's notice of what the act took
+// (FinishPodReplacement), or once the runtime shows the act was not made (ForgetPodReplacement).
+// Operation is the act's own identity, which keys the row (pod_replacements): two acts on the same
+// pod are two rows, and no write goes over a row that stands (GPT-6.1 Sol's point 3 on #5285 at
+// fa9deb04). PodUID is the pod the act takes, "" where
 // the issue's Sandbox ran no pod of its own. Act is what the act takes and the uid of its target
 // (runtime.RecordedAct; GPT-6.1 Sol's point 4), which the daemon has the runtime read to say
 // whether the act was made. Record is the daemon's own encoding of the replacement, which the
@@ -79,20 +80,32 @@ func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodRepla
 	return standing, nil
 }
 
-// FinishPodReplacement deletes the record of operation, a replacement of issue's pod, and, in the
-// same transaction, queues notice, where it is not nil, as the issue's outbox row (insertOutboxRow):
-// the notice is queued exactly when the record goes, so a store that refuses either keeps both as
-// they were, and a second finish of the same record queues nothing. A nil notice deletes the record
-// alone: an act the runtime shows was not made, or one its last word refused. It answers whether it
-// found the record. A notice of an issue of another project than project is queued by no daemon of
-// this one, so the record goes with no row queued, and told says so.
+// FinishPodReplacement finishes the record of operation, a replacement of issue's pod whose act is
+// made: it deletes that record and every other record of an act on the same target (what the act
+// takes and the uid of what it takes), and, in the same transaction, queues notice, where it is
+// not nil, as the issue's outbox row (insertOutboxRow). One target is taken once, so every act
+// recorded on it is over once one of them is made, and the issue's architect is told of it once
+// (the Legion reviewer's Important 1 on #5285 at 7da847c0): two acts on one target each stand
+// recorded under an operation of their own (a replacement by issue and the launch that replaced the
+// round's pod while it waited, a launch that failed and the act after it, a launch that stopped
+// before its delete and the next launch), and the runtime reads each made from the target alone.
+// The notice is queued exactly when the records go, so a store that refuses either keeps both as
+// they were, and a later finish of any of those records finds nothing and queues nothing. A nil
+// notice finishes the records with nothing queued: an act made over a read that found nothing,
+// which is the last read of the target before it was taken. It answers whether it found the record
+// of operation. A notice of an issue of another project than project is queued by no daemon of
+// this one, so the records go with no row queued, and told says so.
 func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, notice *IdleReleaseRow) (finished, told bool, err error) {
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and operation = $2`, project, operation)
+		tag, err := tx.Exec(ctx, `with act as (
+				select issue, takes, target_uid from pod_replacements where project = $1 and issue = $2 and operation = $3)
+			delete from pod_replacements r using act
+			where r.project = $1 and r.issue = act.issue and r.takes = act.takes and r.target_uid = act.target_uid`,
+			project, issue, operation)
 		if err != nil {
 			return err
 		}
-		finished = tag.RowsAffected() == 1
+		finished = tag.RowsAffected() > 0
 		if !finished || notice == nil || !claim.KeyOfProject(project, issue) {
 			return nil
 		}
@@ -106,4 +119,18 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		return false, false, fmt.Errorf("finish the replacement %s of %s's pod: %w", operation, issue, err)
 	}
 	return finished, told, nil
+}
+
+// ForgetPodReplacement deletes the record of operation, a replacement of issue's pod whose act was
+// not made: the runtime shows the target still in use, or the act's last word refused it. It
+// deletes that record alone, since an act not made says nothing of another act on the same
+// target, which the runtime reads of its own.
+func (s *Store) ForgetPodReplacement(ctx context.Context, project, issue, operation string) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = $3`, project, issue, operation)
+		return err
+	}); err != nil {
+		return fmt.Errorf("forget the replacement %s of %s's pod: %w", operation, issue, err)
+	}
+	return nil
 }
