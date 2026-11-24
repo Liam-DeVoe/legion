@@ -363,7 +363,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 		replace = !bound
 		if covered && replace {
-			took, unread = "the pod's launchers are not bound to it", "the pod's launchers are not bound to it, so no launcher of the pod can read the workspace"
+			// One launcher bound wrongly says nothing of the others: a launcher of the pod that
+			// is connected and authenticated for it can still read the workspace (launchTaken,
+			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and the read is unread only where none
+			// can make it.
+			took = "the pod's launchers are not bound to it"
 		}
 	}
 	if !replace {
@@ -392,6 +396,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, unread)
 	if replace {
+		// The daemon records what the replacement is about to take before anything takes it
+		// (Options.LaunchTakes), so a launch, or a daemon, that stops once the disk is taken
+		// still leaves the daemon its word of it (GPT-6.1 Sol's points 1 and 2 on #5285). A
+		// record that cannot be written fails the launch, which then takes nothing.
+		if taken != nil && r.launchTakes != nil {
+			if err := r.launchTakes(bounded, *taken); err != nil {
+				return fail("record what its replacement takes", err)
+			}
+		}
 		switch {
 		case live:
 			suspended, err := r.suspendAnnotating(bounded, s, displacing(pod.UID, kind))
@@ -416,7 +429,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 				return fail("mark its kept volume for the reset", err)
 			}
 		}
-		if taken != nil && r.launchTook != nil {
+		// The suspension takes a disk that dies with its pod; a Sandbox replaced below takes the
+		// volume it owns, and the daemon is told once that delete is made.
+		if taken != nil && r.launchTook != nil && replacement == "" {
 			r.launchTook(ctx, *taken)
 		}
 		old, err := r.awaitPodGone(bounded, s)
@@ -426,6 +441,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		if replacement != "" {
 			if s, err = r.replaceSupersededSandbox(bounded, l, s, replacement); err != nil {
 				return fail("replace its sandbox ("+string(replacement)+")", err)
+			}
+			if taken != nil && r.launchTook != nil {
+				r.launchTook(ctx, *taken)
 			}
 		}
 		if s.Annotations[secretsReleasedAnnotation] != "" {
@@ -537,20 +555,40 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	return loc, nil
 }
 
-// launchTaken is what a launch's own replacement of a pod a round covers takes (R7 of
-// dispatch://INFRA-3271), for the daemon's word of it (Options.LaunchTook), or nil where the launch
-// takes no disk the daemon is to be told of: took is "" (the launch keeps the pod), kind is a
-// round's own replacement (roundReplacement, which the daemon makes and tells of itself), the
-// Sandbox is suspended or holds no pod of its own (a pod already gone took its disk with it), or
-// the launch keeps the issue's volume and keeps its Sandbox (replacement ""), so the replacement
-// deletes no disk. Otherwise the pod's launcher reads the issue's workspace first where it can
-// (launcherWorkspaceWork), under the pod's launch turn, which that read does not take: no turn
-// voids the read, and the launch waits for nothing else. unread is why no read can be made: a pod
-// that is not live, or whose launchers are not bound to it.
+// launchTaken is what a launch's own replacement of an issue pod a round covers takes (R7 of
+// dispatch://INFRA-3271), for the daemon's record and word of it (Options.LaunchTakes,
+// LaunchTook), or nil where the launch takes no disk the daemon is to be told of: took is "" (the
+// launch keeps the pod), or kind is a round's own replacement (roundReplacement, which the daemon
+// makes and tells of itself). Which disk it takes is what decides the rest (GPT-6.1 Sol's point 3
+// on #5285 at 0259f8af):
+//
+//   - A Sandbox that is suspended, or that runs no pod of its own, has no pod for the launch to
+//     take; what it can still hold is a volume it owns, which only a replacement of the Sandbox
+//     deletes (replacement, a change of the disk shape or a kept volume's reset). Such a launch
+//     takes that volume, and no process runs to read it, so it says no read could be made, naming
+//     the last pod known to have used the volume (previousPod), or none. A launch that replaces no
+//     Sandbox, or a Sandbox that owns no volume, takes nothing.
+//   - A pod of the Sandbox's own takes its disk with it, unless the launch keeps the issue's volume
+//     and its Sandbox (keepsVolume, replacement ""). A launcher of the pod reads the issue's
+//     workspace first (launcherWorkspaceWork): any launcher connected and authenticated for that
+//     pod that says it reads a workspace, whatever the bindings of the other roles say. The read
+//     runs under the pod's launch turn, which it does not take: no turn voids it, and the launch
+//     waits for nothing else. A read with no such launcher fails, and the daemon is told so.
+//     unread is why no read can be made where the pod is not live: no process runs in it.
 func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *corev1.Pod, kind replacementKind,
 	replacement sandboxReplacement, took, unread string) *runtime.TakenPod {
-	if took == "" || kind == roundReplacement || s.mode() == modeSuspended || !ownedBy(pod, s.UID) ||
-		(l.keepsVolume() && replacement == "") {
+	if took == "" || kind == roundReplacement {
+		return nil
+	}
+	if s.mode() == modeSuspended || !ownedBy(pod, s.UID) {
+		if replacement == "" || len(s.Spec.VolumeClaimTemplates) == 0 {
+			return nil
+		}
+		return &runtime.TakenPod{Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: previousPod(s, pod),
+			Why: "the launch replaces the issue's Sandbox and the volume it keeps (" + string(replacement) + ")",
+			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
+	}
+	if l.keepsVolume() && replacement == "" {
 		return nil
 	}
 	taken := &runtime.TakenPod{Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took}
@@ -560,6 +598,20 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 	}
 	taken.Work, taken.Err = r.launcherWorkspaceWork(ctx, l.spec.Issue, string(pod.UID))
 	return taken
+}
+
+// previousPod is the last pod known to have used the disk of the issue Sandbox s, which runs no
+// live pod of its own: pod where it is still the Sandbox's own, else the pod the Sandbox names as
+// displaced (displacedAnnotation, which a launch's or a round's suspension writes), else the pod
+// whose end it records (endedPodAnnotation), else "": the runtime does not record which pod it was.
+func previousPod(s *sandbox, pod *corev1.Pod) string {
+	if ownedBy(pod, s.UID) {
+		return string(pod.UID)
+	}
+	if named := s.Annotations[displacedAnnotation]; named != "" {
+		return named
+	}
+	return s.Annotations[endedPodAnnotation]
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
