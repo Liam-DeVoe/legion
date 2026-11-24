@@ -746,7 +746,13 @@ describe("userConfigChain", () => {
     await Bun.write(pidFile, `${child.pid}\n`);
     await reaped(row, pidFile, child.pid);
     expect(pidFiles).not.toContain(pidFile);
-  });
+    // A hang guard: what can hang is the spawn of `true`, its exit, or the reaping `reaped` waits
+    // for, each an event the row waits on with no deadline of its own (`polled` stops only once
+    // the row has ended). It ran at bun's 5 s default, which this package's `bun test` sets no flag
+    // over, and that default ended a correct run at the 240 rung, charged 6 697.61 ms, in the
+    // tester's Job infra-1580-t26-k4-p99sv of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (350 busy loops for the 240 rung, row A 36.6 s), at fe0e876b. 100_000 is 14.9 times that.
+  }, 100_000);
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");

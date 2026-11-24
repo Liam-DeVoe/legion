@@ -6973,7 +6973,12 @@ console.log(JSON.stringify(args));
       // write's create made, rather than creating that name again.
       expect(recordWrites).toEqual({ uploads: 1, appends: 2 });
       await run.shutdown();
-    }, 30_000);
+      // A hang guard: what can hang is a gated call or the record's write, whose model and
+      // Dispatch are stand-ins in this process. Worst measured cost: 6 518 ms in envoy.test.ts run
+      // whole at the 96 rung in the tester's Job infra-1580-t25-wf2-np8hv of the cluster's
+      // `builds` namespace, two CPUs and 8 GiB (216 busy loops, row A 37.6 s), at b5a8b94f. Main's
+      // 30_000 is 4.6 times that, so this takes 60_000, 9.2 times it.
+    }, 60_000);
 
     /** Appends to the session's ledger a gated write the CLI logged as unmarked. */
     const appendUnmarked = () =>
@@ -23592,12 +23597,13 @@ console.log(JSON.stringify(args));
     });
     // A hang guard: what can hang is the import of the row's own instance, or a session's boot or
     // shutdown, each held for at most 10_000 turns of the test's clock. Worst measured cost:
-    // 10 102 ms over 20 runs at the 96 rung in the Job infra-1580-cn-mbxl9 of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (217 busy loops, at which row A's runs took 38.3 s
-    // against the calibration's 31.2 s), at bb5b4535; on the real clock, 5 404 ms over 20 runs in
-    // the Job infra-1580-r26-gd-v7fxf (116 busy loops, row A 39.9 s) at 0fba4c77. 90_000 is 8.9
-    // times the worst.
-  }, 90_000);
+    // 17 999 ms over 20 runs at the 96 rung in the tester's Job infra-1580-t26-k3-7rbtq of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A's runs took
+    // 32.0 s against the calibration's 31.2 s), at fe0e876b; 10 102 ms over 20 runs in the Job
+    // infra-1580-cn-mbxl9 (217 busy loops, row A 38.3 s) at bb5b4535; on the real clock, 5 404 ms
+    // over 20 runs in the Job infra-1580-r26-gd-v7fxf (116 busy loops, row A 39.9 s) at 0fba4c77.
+    // 120_000 is 6.7 times the worst.
+  }, 120_000);
 
   for (const { row, error, shown, withheld } of [
     {
@@ -25444,14 +25450,16 @@ console.log(JSON.stringify(args));
     // import and `session_start`, ahead of `onTestClock`. The row's own cost as it stands, read
     // from bun's junit reporter on this two-CPU pod: 63.57 / 66.97 / 198.97 ms (min/median/max
     // over 5 idle runs), and 707.61 / 1_699.56 / 4_438.23 ms over 20 runs under 96 busy loops, 48
-    // per CPU, this row's acceptance rung. Its worst reading since is 13 383.05 ms, at the 96 rung
-    // in the Job infra-1580-krows-j1-rl89g of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (311 busy loops, at which this row's 5 runs took 35.9 s against the calibration's 31.2 s), so
-    // 90_000 is 6.7 times that. This replaces bun's 5 s default, which the row carried at the base,
-    // having no limit of its own. It stays well inside the pi-envoy job's `timeout-minutes: 15`
-    // (.github/workflows/ci-job-pi-envoy.yaml), so a hang reddens with this test named instead of
-    // cancelling the job, which names nothing.
-  }, 90_000);
+    // per CPU, this row's acceptance rung. Its worst reading since is 17 301 ms, a calibration run
+    // at 140 busy loops in the tester's Job infra-1580-t26-k1-blw8l of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB, whose 5 runs took 44.1 s each against the calibration's
+    // 31.2 s to 40 s, so heavier than the 96 rung; at the 96 rung, 13 383.05 ms in the Job
+    // infra-1580-krows-j1-rl89g (311 busy loops, at which this row's 5 runs took 35.9 s). So
+    // 120_000 is 6.9 times the worst. This replaces bun's 5 s default, which the row carried at the
+    // base, having no limit of its own. It stays well inside the pi-envoy job's
+    // `timeout-minutes: 15` (.github/workflows/ci-job-pi-envoy.yaml), so a hang reddens with this
+    // test named instead of cancelling the job, which names nothing.
+  }, 120_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -27579,7 +27587,7 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         responseWithRegistration(input, init, [])) as typeof fetch;
       natsState.realConnect = true;
-      const requester = await realConnect({
+      const connecting = realConnect({
         ...natsConnectionOptions({
           servers: [server.url],
           name: "pi-envoy-reply-grant-requester",
@@ -27593,8 +27601,15 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
         }),
         reconnect: false,
       });
-      // The requester closes with the row (`rowShutdown`), as the session does below.
-      const closeRequester = rowShutdown(() => requester.close());
+      // The requester closes with the row (`rowShutdown`), as the session does below, and its close
+      // is registered before the connect is awaited: a row its limit abandoned inside the connect
+      // leaves no requester open, since the file's `afterEach` closes it once it has connected. A
+      // connect that fails leaves nothing to close.
+      const closeRequester = rowShutdown(async () =>
+        (await connecting.catch(() => undefined))?.close()
+      );
+      const requester = await connecting;
+      stillOn(ownRow, "connecting the reply-grant requester");
       // A module instance of its own, as every row here takes one: the extension keeps its
       // session's state, so a static import would share it with every other row of the file.
       const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
