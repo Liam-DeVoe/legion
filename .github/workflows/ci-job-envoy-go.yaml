@@ -100,15 +100,17 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
-      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
-      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
-      # gives.
+      # Envoy on, testnats.ClusteredHubImage (nats:2.15.3), which natsgrant's rows that hold a
+      # grant on both servers the deployment runs start beside it, testnats.Image (nats:2.10),
+      # which only the tests of that server itself and of the listener's refusal of it start, and
+      # tests3.Image, pulled first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go ClusteredHubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -254,7 +256,9 @@ jobs:
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
       # runs. natsgrant has one of its own: a Legion daemon's grant held to its projects
       # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
-      # receives no other project's message while today's grant, the control, does. natsgrant and
+      # receives no other project's message while today's grant, the control, does, and its
+      # Dispatch probe's create holds on the VM hub's 2.15.1 and the clustered hub's 2.15.3
+      # (testnats.ClusteredHubImage). natsgrant and
       # cmd/listener have the edge listener's: the server refuses the edge's user a Dispatch event,
       # and the edge listener starts, relays a send and is reached by a role message through a
       # shared listener under its rendered grant, with no violation, and ends its start, naming its

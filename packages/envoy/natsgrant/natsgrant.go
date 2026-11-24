@@ -18,7 +18,10 @@
 // no project, which every service is granted, and grants each project one GitHub consumer,
 // legion-go-<project>-github, on that whole family: a grant could name a consumer per repository
 // only from a list of the repositories, which a Scope does not hold. The daemon drops in its own
-// process the events of a repository it does not work in.
+// process the events of a repository it does not work in. Each project's Dispatch probe,
+// legion-go-<project>-dispatch-probe, is granted its create alone, on the project's issue events:
+// the create's answer counts the project's events stored after a sequence, from which the daemon
+// reads that its Dispatch consumer is idle with no stream-wide read.
 //
 // WithinProjects drops the stream's info and stored-message get, and refuses, naming the entry,
 // any other stored-message read, a create that names no filter, a KV bucket's call,

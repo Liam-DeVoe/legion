@@ -4334,12 +4334,16 @@ those of its projects; and its consumer calls become the calls on its own
 repository's GitHub events (`notifications.github.>`) whole, since a GitHub event is a message of
 no project, and gives each project one GitHub consumer, `legion-go-<project>-github`, on that whole
 family: the grant names no repository, and the daemon drops in its own process the events of a
-repository it does not work in. The held grant drops the stream's info and stored-message get. It
-refuses, naming the entry, any other stored-message read, a create that names no filter, a
-key-value bucket's call, `notifications.>` and any entry it does not know, and it refuses a grant
-whose publish or subscribe list would end empty. It keeps the deny lists. Only a daemon's grant can
-be held so: the listener's, Dispatch's and the measurement job's hold `notifications.>` or a
-bucket.
+repository it does not work in. Each project's Dispatch probe,
+`legion-go-<project>-dispatch-probe`, is granted its create alone, on the project's issue events
+(`notifications.dispatch.issue.<project>.>`): the create's answer counts the project's events
+stored after a sequence, from which the daemon reads that its Dispatch consumer is idle with no
+stream-wide read, and the grant holds no info, pull, acknowledgement or delete of it. The held
+grant drops the stream's info and stored-message get. It refuses, naming the entry, any other
+stored-message read, a create that names no filter, a key-value bucket's call, `notifications.>`
+and any entry it does not know, and it refuses a grant whose publish or subscribe list would end
+empty. It keeps the deny lists. Only a daemon's grant can be held so: the listener's, Dispatch's
+and the measurement job's hold `notifications.>` or a bucket.
 The daemon's `ready` consumer reads the wake lane every daemon shares, where the listener also puts
 every project's role and agent wake reports. So a daemon is held to its projects only once it opens
 its consumers per project, every listener publishes each project's role and agent wakes on that
@@ -4354,7 +4358,11 @@ image behind a stand-in auth callout: `DaemonPermissions` receives another proje
 `_INBOX.>`, the held grant receives none through the consumers it opens with their own filters,
 and its GitHub consumer receives every repository's events, one only another project's issues
 resolve to among them. A pre-existing wide `legion-go-PUB-dispatch` is read whole through the held
-grant, PRIV's events among them, until it is narrowed in place to PUB's lane.
+grant, PRIV's events among them, until it is narrowed in place to PUB's lane. On both servers the
+deployment runs, the VM hub's nats-server 2.15.1 and the clustered hub's 2.15.3, the held grant
+creates PUB's Dispatch probe and is answered PUB's count alone; the server refuses a create whose
+body asks for another filter; and the held grant is refused another project's probe, by name or by
+filter, and the probe's info, pull and delete.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
