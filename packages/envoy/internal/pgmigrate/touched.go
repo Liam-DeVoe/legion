@@ -35,7 +35,12 @@ var touchedTablePatterns = []struct {
 	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0},
 	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0},
 	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable},
-	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows},
+	// A truncate statement's first table is never the keyword on or or. Each follows the truncate
+	// event of a create trigger (create trigger x after truncate on t …, after truncate or insert
+	// on t …), a statement that truncates nothing and whose table the create trigger form below
+	// reads; each is a reserved word, so no unquoted table bears it. Go's regexp has no lookahead,
+	// so the first name is spelled out by its first two characters.
+	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?((?:[^\Wo]|[."]|o\b|o[^\Wnr]|o[nr][\w."])[\w."]*(?:\s*,\s*[\w."]+)*)`), truncatesRows},
 	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0},
 	// drop trigger names its table where create trigger does, and both are counted as touches:
 	// drop trigger takes ACCESS EXCLUSIVE on that table, create trigger SHARE ROW EXCLUSIVE.
