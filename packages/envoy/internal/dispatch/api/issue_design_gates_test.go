@@ -154,6 +154,7 @@ func designGateEditRequest(t *testing.T, artifactID, markdown string) *http.Requ
 // about every other document. The rows below are that whole path, driven over the routes a
 // daemon, a person and an agent each reach, and never over the table itself.
 func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
 	// The deployment serving DGATE gates all three steps, and its rows say nothing of holding
@@ -658,6 +659,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 // answer requires all three. PATCH /api/v2/issues/{key} writes the same set as its design_gates
 // member, each entry the publish's own, so the /api/v2 document says the same of that member.
 func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
+	t.Parallel()
 	for _, written := range []struct {
 		version        apiVersion
 		body, property string
@@ -698,6 +700,7 @@ func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
 // the role-holder publish (issue_role_holders.go), whose acceptance found the mix. Twenty rounds,
 // because one round can pass by the order the two happen to run in.
 func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
 	issue := createAdviceIssue(t, handler, "DGATE", "Racing publishes", nil).Key

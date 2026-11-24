@@ -521,7 +521,9 @@ func (s *server) v2DocumentRows() []routeRow {
 				"max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that " +
 				"name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in " +
 				".md when the stored name has no Markdown extension. A version's author carries proven: true only when the " +
-				"credential of every write that author made to the version proved it. 404 VERSION_NOT_FOUND for a number " +
+				"credential of every write that author made to the version proved it. include=blocks adds to a document " +
+				"version's JSON that version's typed blocks, each under the id its opening line writes, with byte ranges into " +
+				"the markdown of the same answer: the version as this build renders it. 404 VERSION_NOT_FOUND for a number " +
 				"that names no version of it, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.getArtifactVersionV2,
 			Resource: "versions", Kind: kindBytes, Key: "{number}",
@@ -1119,7 +1121,7 @@ func (s *server) listArtifactCommentsV2(w http.ResponseWriter, r *http.Request) 
 	if s.listAnswers.answer(w, kept) {
 		return
 	}
-	listed, err := s.commentPageV2(r.Context(), owner, "", query)
+	listed, err := s.commentPageV2(r.Context(), everyReader, owner, "", query)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1214,7 +1216,7 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 	query := v2Query[artifactReferencesV2Query](r)
 	var items []artifactReferenceV2
 	if query.Direction == "out" {
-		outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, artifact.ID)
+		outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.ID)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -1228,7 +1230,7 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey)
+		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.RefKey)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -1394,6 +1396,8 @@ type artifactVersionV2Query struct {
 	// Download answers a download: Content-Disposition: attachment with the file's name,
 	// Cache-Control: private, no-cache, and a document as its Markdown.
 	Download bool `query:"download"`
+	// Include=blocks adds a document version's own typed blocks, as /api/v1's blocks=true does.
+	Include []string `query:"include,comma" enum:"blocks"`
 }
 
 // getArtifactVersionV2 answers GET /api/v2/artifacts/{id}/versions/{number}: the version the four
@@ -1413,7 +1417,8 @@ func (s *server) getArtifactVersionV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, errorf(apicode.VersionNotFound, "%s has no version %s", artifact.Name, r.PathValue("number")))
 		return
 	}
-	s.serveArtifactVersion(w, r, artifact, number, v2Query[artifactVersionV2Query](r).Download)
+	query := v2Query[artifactVersionV2Query](r)
+	s.serveArtifactVersion(w, r, artifact, number, query.Download, slices.Contains(query.Include, "blocks"))
 }
 
 // artifactChangesV2Query is GET /api/v2/artifacts/{id}/changes's query: the two versions of the

@@ -17,6 +17,7 @@ import (
 // route that answers it, on that row's own scopes or, for the decision a credential request's
 // state sets, on the rule of that state (its Authorities): /api/v2 grants nothing /api/v1 refuses.
 func TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		"POST /api/v1/artifacts/{id}/reviews",
 		"POST /api/v1/artifacts/{id}/versions/{number}/reviews",

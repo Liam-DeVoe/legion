@@ -3983,7 +3983,7 @@
     },
     "/api/v2/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image, of any owner. A document version answers as JSON {markdown, number, named, summary, authors, created_at, size, mime?, sha256}; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. 404 VERSION_NOT_FOUND for a number that names no version of it, 404 ARTIFACT_NOT_FOUND.",
+        "description": "One version of a document, a file or an image, of any owner. A document version answers as JSON {markdown, number, named, summary, authors, created_at, size, mime?, sha256}; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. include=blocks adds to a document version's JSON that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it. 404 VERSION_NOT_FOUND for a number that names no version of it, 404 ARTIFACT_NOT_FOUND.",
         "operationId": "getApiV2ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -4008,6 +4008,20 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "schema": {
+              "items": {
+                "enum": [
+                  "blocks"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "x-comma-list": true
           },
           {
             "name": "session",
@@ -14372,6 +14386,130 @@
         }
       }
     },
+    "/api/v2/nodes": {
+      "get": {
+        "description": "The nodes of one person, newest first, read from the node and tuple store across every project: what they wrote and what reached a session of theirs. person=\u003clogin\u003e names the person and is required (400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the dashboard path it opens at. project=\u003ckey\u003e, repeatable, keeps the rows of each project it names; none keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader may see, a login nobody holds among them, lists no row, so the answer never says whether that person exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers the same rows under rows, and 404 NOT_FOUND where this lists none for another login.",
+        "operationId": "getApiV2Nodes",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOfPersonNode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-list": {
+          "default_limit": 50,
+          "max_limit": 200,
+          "min_limit": 1
+        },
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-refusal-codes": {
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_LIMIT": 400,
+          "INVALID_OFFSET": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OAUTH_SCOPE_REQUIRED": 403,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "QUERY_KEY_UNKNOWN": 400,
+          "READ_ONLY_TOKEN": 403,
+          "SIGNIN_UNAVAILABLE": 503,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        }
+      }
+    },
     "/api/v2/priorities": {
       "get": {
         "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state live, and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the envelope it answers the two faults: work_under_no_priority {count, by_project}, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked {count, by_priority}, the issues that advance one and stand in backlog or icebox; include=fault_issues adds to each its issues, the newest 50 rows, each carrying advances as the issue read does. empty is the sentence saying why the list is empty where no priority is live. A priority belongs to no project, so any authenticated caller reads this; project=\u003ckey\u003e, repeatable, narrows the work counted and both faults to those projects and never the priorities themselves. limit 0 to 200 (default 50) and offset; {items, total, limit, offset}, total every live priority. limit=0 answers no priority and, without include=fault_issues, the two fault counts alone, with no by_project and no by_priority, which is what the navigation rail reads.",
@@ -20767,6 +20905,12 @@
               "array",
               "null"
             ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -32500,6 +32644,36 @@
         ],
         "type": "object"
       },
+      "PageOfPersonNode": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PersonNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PageOfPersonSignInResp": {
         "additionalProperties": false,
         "properties": {
@@ -33130,6 +33304,45 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "PersonNode": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "href": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "relations",
+          "title",
+          "created_at",
+          "href"
+        ],
         "type": "object"
       },
       "PersonSignInResp": {

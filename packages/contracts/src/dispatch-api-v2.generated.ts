@@ -579,7 +579,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image, of any owner. A document version answers as JSON {markdown, number, named, summary, authors, created_at, size, mime?, sha256}; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. 404 VERSION_NOT_FOUND for a number that names no version of it, 404 ARTIFACT_NOT_FOUND. */
+    /** @description One version of a document, a file or an image, of any owner. A document version answers as JSON {markdown, number, named, summary, authors, created_at, size, mime?, sha256}; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. include=blocks adds to a document version's JSON that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it. 404 VERSION_NOT_FOUND for a number that names no version of it, 404 ARTIFACT_NOT_FOUND. */
     get: operations["getApiV2ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1796,6 +1796,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/nodes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The nodes of one person, newest first, read from the node and tuple store across every project: what they wrote and what reached a session of theirs. person=<login> names the person and is required (400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the dashboard path it opens at. project=<key>, repeatable, keeps the rows of each project it names; none keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader may see, a login nobody holds among them, lists no row, so the answer never says whether that person exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers the same rows under rows, and 404 NOT_FOUND where this lists none for another login. */
+    get: operations["getApiV2Nodes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/priorities": {
     parameters: {
       query?: never;
@@ -2819,6 +2836,7 @@ export interface components {
     };
     ArtifactVersionText: {
       authors: components["schemas"]["Actor"][] | null;
+      blocks?: components["schemas"]["ArtifactBlock"][];
       /** Format: date-time */
       created_at: string;
       markdown: string;
@@ -5401,6 +5419,12 @@ export interface components {
       offset: number;
       total: number;
     };
+    PageOfPersonNode: {
+      items: components["schemas"]["PersonNode"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     PageOfPersonSignInResp: {
       items: components["schemas"]["PersonSignInResp"][] | null;
       limit: number;
@@ -5525,6 +5549,15 @@ export interface components {
       default_assignee?: null | string;
       default_repository?: string | null;
       gated_steps?: null | ("decisions" | "criteria" | "spec")[];
+    };
+    PersonNode: {
+      /** Format: date-time */
+      created_at: string;
+      href: string;
+      id: string;
+      kind: string;
+      relations: string[] | null;
+      title: string;
     };
     PersonSignInResp: {
       /** Format: date-time */
@@ -8206,6 +8239,7 @@ export interface operations {
     parameters: {
       query?: {
         download?: boolean;
+        include?: "blocks"[];
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12545,6 +12579,53 @@ export interface operations {
       };
     };
   };
+  getApiV2Nodes: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        person?: string;
+        project?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PageOfPersonNode"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV2Priorities: {
     parameters: {
       query?: {
@@ -14725,6 +14806,7 @@ export type PageOfMyAnswerRow = components["schemas"]["PageOfMyAnswerRow"];
 export type PageOfNearCopyCheck = components["schemas"]["PageOfNearCopyCheck"];
 export type PageOfPassRecord = components["schemas"]["PageOfPassRecord"];
 export type PageOfPendingEntry = components["schemas"]["PageOfPendingEntry"];
+export type PageOfPersonNode = components["schemas"]["PageOfPersonNode"];
 export type PageOfPersonSignInResp = components["schemas"]["PageOfPersonSignInResp"];
 export type PageOfPriorityAct = components["schemas"]["PageOfPriorityAct"];
 export type PageOfProjectV2 = components["schemas"]["PageOfProjectV2"];
@@ -14741,6 +14823,7 @@ export type PassRecord = components["schemas"]["PassRecord"];
 export type PatchIssueV2Input = components["schemas"]["PatchIssueV2Input"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PatchProjectV2Input = components["schemas"]["PatchProjectV2Input"];
+export type PersonNode = components["schemas"]["PersonNode"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PlanRating = components["schemas"]["PlanRating"];
 export type PlanRecord = components["schemas"]["PlanRecord"];

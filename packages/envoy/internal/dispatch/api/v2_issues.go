@@ -784,8 +784,8 @@ func loadReferenceRowsV2(ctx context.Context, q queryer, ids []string) (map[stri
 // document, which are the documents /api/v1 answers as members. Each list is in the order of the
 // node's kind, then its id. The route has answered a key no issue carries 404 before this runs
 // (requireIssueV2).
-func (s *server) issueReferenceRowsV2(ctx context.Context, key, relation string) ([]model.ReferenceLink, error) {
-	closure, err := s.issueClosure(ctx, key)
+func (s *server) issueReferenceRowsV2(ctx context.Context, who model.Actor, key, relation string) ([]model.ReferenceLink, error) {
+	closure, err := s.issueClosure(ctx, who, key)
 	if err != nil {
 		return nil, err
 	}
@@ -1010,7 +1010,7 @@ func (s *server) getIssueV2(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	include := v2Query[issueReadV2Query](r).Include
 	wants := func(member string) bool { return slices.Contains(include, member) }
-	parts, err := s.readIssueParts(r.Context(), key, issueReadParts{
+	parts, err := s.readIssueParts(r.Context(), s.requestReader(r), key, issueReadParts{
 		children: wants("children"), designGates: wants("design_gates"), referencedByCount: wants("referenced_by_count"),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1175,7 +1175,7 @@ func (s *server) getIssueCoverageV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, key, trees)
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, s.requestReader(r), key, trees)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1202,7 +1202,7 @@ func (s *server) listIssueDecisionsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	document, decisions, err := s.issueDecisionsOf(r.Context(), key, spec, specFound, reader)
+	document, decisions, err := s.issueDecisionsOf(r.Context(), s.requestReader(r), key, spec, specFound, reader)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1250,7 +1250,7 @@ func (s *server) putDecisionStateV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apicode.BlockNotFound, fmt.Sprintf("issue %s has no decisions document holding a decision %q", key, blockID))
 		return
 	}
-	decision, err := s.keptDecision(r.Context(), document, blockID)
+	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1305,7 +1305,7 @@ func (s *server) listIssueReferencesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[issueReferencesV2Query](r)
-	links, err := s.issueReferenceRowsV2(r.Context(), key, query.Relation)
+	links, err := s.issueReferenceRowsV2(r.Context(), s.requestReader(r), key, query.Relation)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

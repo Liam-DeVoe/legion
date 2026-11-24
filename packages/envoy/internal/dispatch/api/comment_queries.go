@@ -71,7 +71,10 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if s.listAnswers.answer(w, key) {
 		return
 	}
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
+	// The answer is kept and handed to every reader whose request names this owner and ETag
+	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
+	// author must never be the answer kept for the next.
+	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -134,14 +137,14 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 }
 
 // loadOwnerComments is every comment of owner, oldest first, with what hydrateCommentSideTables
-// adds to each (mentions, delivery attempts, the block a reply answers), as /api/v1's lists answer
-// them whole.
-func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
+// adds to each (mentions, delivery attempts, the block a reply answers) as who may see it, as
+// /api/v1's lists answer them whole.
+func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Actor, owner owner, artifactFilter string) ([]model.Comment, error) {
 	comments, err := readOwnerComments(ctx, q, owner, artifactFilter)
 	if err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, comments)
+	return s.hydrateCommentSideTables(ctx, q, who, comments)
 }
 
 // readOwnerComments is every comment of owner, oldest first, its rows alone: a /api/v2 list
@@ -199,7 +202,11 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
-	read, err := s.readCommentThread(r.Context(), r.PathValue("id"), wantsDisplayTrees(r))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	read, err := s.readCommentThread(r.Context(), who, r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -208,14 +215,15 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // readCommentThread is the comment id names with its mentions, its delivery attempts and its
-// anchor's block position, and every comment replying to it, as GET /api/v1/comments/{id} and GET
-// /api/v2/comments/{id} both read it; a comment that does not exist is pgx.ErrNoRows.
-func (s *server) readCommentThread(ctx context.Context, id string, trees bool) (commentRead, error) {
+// anchor's block position, and every comment replying to it, as who may see them, as GET
+// /api/v1/comments/{id} and GET /api/v2/comments/{id} both read it; a comment that does not exist
+// is pgx.ErrNoRows.
+func (s *server) readCommentThread(ctx context.Context, who model.Actor, id string, trees bool) (commentRead, error) {
 	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
 	if err != nil {
 		return commentRead{}, err
 	}
-	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, who, []model.Comment{comment})
 	if err != nil {
 		return commentRead{}, err
 	}
@@ -223,7 +231,7 @@ func (s *server) readCommentThread(ctx context.Context, id string, trees bool) (
 	if err != nil {
 		return commentRead{}, err
 	}
-	replies, err := s.loadReplyChain(ctx, s.deps.Store.Pool, "reply_to", comment.ID)
+	replies, err := s.loadReplyChain(ctx, s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		return commentRead{}, err
 	}
@@ -269,12 +277,12 @@ const inboxAskReplyChainsQuery = `
 		order by thread_id, created_at, id`
 
 // loadReplyChain returns every comment transitively replying to the row(s)
-// matching "<seedColumn> = seedValue", ordered oldest first. seedColumn
-// selects the thread root: "reply_to" for a comment's own replies, "ask_id"
+// matching "<seedColumn> = seedValue", ordered oldest first, each reply's block read for who.
+// seedColumn selects the thread root: "reply_to" for a comment's own replies, "ask_id"
 // for an ask's directly-replying comments (plus, either way, every comment
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
-func (s *server) loadReplyChain(ctx context.Context, q queryer, seedColumn, seedValue string) ([]model.Comment, error) {
+func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
 	rows, err := q.Query(ctx, fmt.Sprintf(replyChainQuery, seedColumn), seedValue)
 	if err != nil {
 		return nil, err
@@ -291,7 +299,7 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, seedColumn, seed
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, replies)
+	return s.hydrateCommentSideTables(ctx, q, who, replies)
 }
 
 // withReply is replies, a chain loadReplyChain read, with reply, a reply to the chain's root this
@@ -389,7 +397,7 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 // hydrateCommentSideTables loads mentions, delivery attempts and the block each reply answers once
 // per comment page, avoiding a per-comment query while keeping all reads of a Comment's visible
 // delivery state consistent.
-func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, comments []model.Comment) ([]model.Comment, error) {
+func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) ([]model.Comment, error) {
 	ids := make([]string, len(comments))
 	replies := make([]*model.Comment, len(comments))
 	for index := range comments {
@@ -404,7 +412,7 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateCommentReplyBlocks(ctx, q, replies...); err != nil {
+	if err := hydrateCommentReplyBlocks(ctx, q, who, replies...); err != nil {
 		return nil, err
 	}
 	for index := range comments {

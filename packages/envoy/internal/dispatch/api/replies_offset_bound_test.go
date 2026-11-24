@@ -15,6 +15,7 @@ import (
 // each answer 200 for it), or refuse it as a client error, and never 500. The control is an offset
 // of 0, and an offset of 3000000000, whose sum with the limit does not wrap.
 func TestAnOffsetNearTheLargestIntIsNoFaultOfTheRepliesRoute(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// GET /api/v2/me/threads reads the same rows by the same read (readMyReplies), so it takes the
 	// same offsets and answers each the same way.

@@ -80,6 +80,7 @@ func eachOpenAPIVersion(t *testing.T, check func(t *testing.T, version apiVersio
 // write the same bytes: a map walked in its own order would make every run a diff, and no reader
 // could tell a real change from the walk.
 func TestOpenAPIDocumentIsTheSameBytesEveryRun(t *testing.T) {
+	t.Parallel()
 	first, err := RenderOpenAPI()
 	if err != nil {
 		t.Fatalf("RenderOpenAPI: %v", err)
@@ -106,6 +107,7 @@ func TestOpenAPIDocumentIsTheSameBytesEveryRun(t *testing.T) {
 // it: a route with no operation is a route a client is given no type for, and an operation that
 // is no route is a route nothing serves (openAPIRoutes).
 func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		_, document := readOpenAPI(t, version)
 		described := map[string]bool{}
@@ -138,6 +140,7 @@ func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
 // generator renders as `unknown` or refuses outright, and nothing else in the pipeline would say
 // which reference it was.
 func TestOpenAPIDocumentDeclaresEverySchemaItReferences(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		tree, document := readOpenAPITreeOf(t, version)
 		references := map[string]bool{}
@@ -208,6 +211,7 @@ func walkOpenAPI(node any, path string, visit func(path string, m map[string]any
 // its mark would be offered as an ordinary route. Each version serves the 15 hooks, /api/v2 at
 // /api/v2/_test/....
 func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		_, document := readOpenAPI(t, version)
 		marked := map[string]bool{}
@@ -241,6 +245,7 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 // so such a status must name the plain body itself, beside the rich one, and must not require a
 // body to match exactly one of them, since the rich body carries code and error as well.
 func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
+	t.Parallel()
 	tree, _ := readOpenAPITree(t)
 	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
 	plain := openAPISchemaPrefix + "ErrorBody"
@@ -290,6 +295,7 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 // has moved on fails `go test` as well as `envoy-dispatch openapi --check`: nobody has to remember
 // to run the command.
 func TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		if !bytes.Equal(committedOpenAPIOf(t, version), renderOpenAPI(t, version)) {
 			t.Fatalf("%s is stale: run `go run ./cmd/dispatch openapi` in packages/envoy and commit the result",
@@ -326,6 +332,7 @@ func committedOpenAPIOf(t testing.TB, version apiVersion) []byte {
 // sets are read apart here - one from the document the emitter writes, one from the Go fields by
 // reflection - and held equal, and neither can drift from the other without this failing.
 func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		_, document := readOpenAPI(t, version)
 		bodies, bothDirections := openAPIRequestBodyTypes(openAPIRoutes(version))
@@ -373,6 +380,7 @@ func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
 // since the emitter moves a query parameter's enum (queryParameters) and a nested object's by
 // the same call, and an enum left on an array there reads the same way to a client.
 func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		tree, _ := readOpenAPITreeOf(t, version)
 		read := 0
@@ -411,6 +419,7 @@ func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
 // than its component schemas alone: a request body's nested objects are written where they
 // stand and carry a required of their own.
 func TestNoSchemaRequiresOneNameTwice(t *testing.T) {
+	t.Parallel()
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
 		tree, _ := readOpenAPITreeOf(t, version)
 		read := 0

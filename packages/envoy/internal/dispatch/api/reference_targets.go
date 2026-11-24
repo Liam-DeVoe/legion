@@ -62,15 +62,21 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // refuse a whole batch: the page reads its batches together, so one refusal would blank the
 // name of every reference in the batch.
 //
+// It answers for the acting reader (actingReader), as every read of the graph does: a target the
+// reader may not see is answered gone, as a target nothing addresses is (refs.TargetNames), and a
+// short id is resolved among the items the reader may see alone (refs.ResolvePrefixes), so an
+// item the reader may not see makes no short id ambiguous and names none.
+//
 // A caller that sent `Dispatch-Trees: 1` is given each block's whole text as its text_tree
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	targets, err := s.referenceTargets(r.Context(), r.URL.Query()["ref"], trees)
+	targets, err := s.referenceTargets(r.Context(), who, r.URL.Query()["ref"], trees)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -99,9 +105,10 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // a caller matching the members against the strings it sent finds none of them under a
 // reference this read had rewritten.
 //
-// trees is the request's own reader, nil for a caller that asked for no tree, which then reads
-// no block's text at all.
-func (s *server) referenceTargets(ctx context.Context, raw []string, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
+// who is the reader the read answers for, whose visibility predicates both the short ids and the
+// names are read under. trees is the request's own reader, nil for a caller that asked for no
+// tree, which then reads no block's text at all.
+func (s *server) referenceTargets(ctx context.Context, who model.Actor, raw []string, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
 	if len(raw) == 0 {
 		return nil, errorf(apicode.InvalidReference, "ref is required, once per reference to resolve")
 	}
@@ -116,7 +123,7 @@ func (s *server) referenceTargets(ctx context.Context, raw []string, trees *disp
 		}
 		parsed[index] = ref
 	}
-	ambiguous, err := s.wholeReferences(ctx, parsed)
+	ambiguous, err := s.wholeReferences(ctx, who, parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +140,7 @@ func (s *server) referenceTargets(ctx context.Context, raw []string, trees *disp
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(ctx, s.deps.Store.Pool, named)
+	names, err := refs.TargetNames(ctx, s.deps.Store.Pool, who, named)
 	if err != nil {
 		return nil, err
 	}
@@ -160,8 +167,10 @@ func (s *server) referenceTargets(ctx context.Context, raw []string, trees *disp
 //
 // Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
 // distinct id once, in one statement per kind of item and two for the blocks of a document, so
-// a set with no short id costs no statement.
-func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (ambiguous []bool, err error) {
+// a set with no short id costs no statement. The batch reads for who, so an item who may not see
+// is no candidate for any prefix, as GET /api/v1/references reads one prefix for its reader
+// (wholeReference).
+func (s *server) wholeReferences(ctx context.Context, who model.Actor, references []text.Ref) (ambiguous []bool, err error) {
 	short := make([]refs.ShortID, len(references))
 	var asked []refs.ShortID
 	for index, ref := range references {
@@ -175,7 +184,7 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +219,11 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 // the names cost, and no document is loaded for them: a block of a document, a comment or an ask
 // has its text read from the block index, and a block of a message has its text split again from
 // its message's body, since no table records it.
+//
+// A block is read only for a member that is not gone, and a member is not gone only where
+// refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
+// visibility predicate of its own, so that test is what keeps the text of a block the reader may
+// not see out of the answer: such a block is gone, and no text of it is read.
 //
 // answers must have stopped growing: what is registered is a pointer into each member.
 func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget, named []refs.Target, trees *displayTreeReader) error {

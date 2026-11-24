@@ -17,6 +17,7 @@ import (
 // enabled, so of the test-hook routes only their number is pinned: len(routes)+2*15 in
 // TestRoutesTablePinsEveryRegisteredRoute, fifteen hooks at two paths each.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
+	t.Parallel()
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {
 		t.Fatalf("mounted rows with no shape: %v", shapeless)
 	}
@@ -33,6 +34,7 @@ func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 // is written from, so the predicate for a body is stated there alone. Every route is read, the
 // shapes routeShapes holds and the ones a routeRow declares in its own columns alike.
 func TestRouteShapesDescribeASuccess(t *testing.T) {
+	t.Parallel()
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		name, shape := route.Method+" "+route.Pattern, route.shape()
 		if shape.Status < http.StatusOK || shape.Status >= http.StatusMultipleChoices {

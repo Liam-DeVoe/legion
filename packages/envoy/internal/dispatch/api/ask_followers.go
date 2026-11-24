@@ -4,16 +4,18 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
-// directly. Every session that writes to an ask follows it (asks.FollowAuthor at each
+// directly. Every session that writes to an ask follows it (asks.QueueFollowAuthor at each
 // insert site); these routes let a session leave or rejoin and a person curate the list.
 //
 // A credential acting as the addressed session — the session a broker-issued token proved,
@@ -194,8 +196,12 @@ func (s *server) writeAskFollower(
 	}
 	eventType := "ask.follower_added"
 	var changed bool
+	var followed asks.Followed
 	if follow {
-		changed, err = asks.Follow(r.Context(), tx, askID, sessionID)
+		// The follower is a node of the store from this write on, made before the event that
+		// records the follow exists and moved onto it below.
+		followed, err = asks.Follow(r.Context(), tx, askID, sessionID, actor, time.Now(), graphstore.NoEvent)
+		changed = followed.Added
 	} else {
 		eventType = "ask.follower_removed"
 		changed, err = asks.Unfollow(r.Context(), tx, askID, sessionID)
@@ -211,9 +217,11 @@ func (s *server) writeAskFollower(
 		}
 		return s.readFollowerBack(w, r, tx, readBack)
 	}
-	event, err := s.appendEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
+	// The follow's node waits for the event that records it: the two are one batch, the node's
+	// facts appended right after the event, under its id (appendCausingEvent).
+	event, err := s.appendCausingEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
-	}))
+	}), followed.Uncaused)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return false

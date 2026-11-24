@@ -168,6 +168,25 @@ func (s *server) v2MiscRows() []routeRow {
 			Refusals: listRefusals(),
 		},
 		{
+			Method: http.MethodGet, Pattern: "/nodes", Auth: authAny, Versions: onlyV2,
+			Description: "The nodes of one person, newest first, read from the node and tuple store across every project: " +
+				"what they wrote and what reached a session of theirs. person=<login> names the person and is required " +
+				"(400 INVALID_QUERY without it). Each row carries the node's kind and id, the relations that put it on " +
+				"the list (authored_by, delivered_to, or both), the first line of its text, when it was written and the " +
+				"dashboard path it opens at. project=<key>, repeatable, keeps the rows of each project it names; none " +
+				"keeps every project's (400 INVALID_PROJECT for a value that is no project key). {items, total, limit, " +
+				"offset}, limit 1 to 200 (default 50). Needs the person scope. A person none of whose nodes the reader " +
+				"may see, a login nobody holds among them, lists no row, so the answer never says whether that person " +
+				"exists; the reader's own login lists the rows they may see. GET /api/v1/people/{login}/nodes answers " +
+				"the same rows under rows, and 404 NOT_FOUND where this lists none for another login.",
+			Handler:  s.listPersonNodesV2,
+			Resource: "nodes", Kind: kindCollection, CrossProject: true,
+			Query:       personNodesV2Query{},
+			Shape:       routeShape{Status: http.StatusOK, Response: page[personNode]{}},
+			OAuthScopes: routeScopeSet{model.ScopePerson},
+			Refusals:    listRefusals(),
+		},
+		{
 			Method: http.MethodGet, Pattern: "/search-coverage", Auth: authAny, Versions: onlyV2,
 			Description: "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured " +
 				"embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null " +
@@ -477,12 +496,13 @@ func (s *server) getBlockLinksV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[blockLinksV2Query](r)
-	documents, err := s.blockLinkDocuments(r.Context(), [2]string{query.From, query.To}, apicode.ArtifactNotFound)
+	who := s.requestReader(r)
+	documents, err := s.blockLinkDocuments(r.Context(), who, [2]string{query.From, query.To}, apicode.ArtifactNotFound)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	links, err := refs.BlockLinks(r.Context(), s.deps.Store.Pool, documents[0].ID, documents[1].ID)
+	links, err := refs.BlockLinks(r.Context(), s.deps.Store.Pool, who, documents[0].ID, documents[1].ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -510,7 +530,7 @@ func (s *server) listReferenceTargetsV2(w http.ResponseWriter, r *http.Request) 
 	}
 	query := v2Query[referenceTargetsV2Query](r)
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	targets, err := s.referenceTargets(r.Context(), query.Ref, trees)
+	targets, err := s.referenceTargets(r.Context(), s.requestReader(r), query.Ref, trees)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -594,9 +614,11 @@ type searchResultsV2 struct {
 }
 
 // searchResultsV2 answers GET /api/v2/search-results: the search GET /api/v1/search/results runs
-// (searchAnswer), over the projects the request names.
+// (searchAnswer), over the projects the request names, read as the acting person (actingReader),
+// as /api/v1's is.
 func (s *server) searchResultsV2(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	query := v2Query[searchResultsV2Query](r)
@@ -605,6 +627,7 @@ func (s *server) searchResultsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, problem)
 		return
 	}
+	parameters.who = who
 	response, err := s.searchAnswer(r, parameters)
 	if err != nil {
 		s.writeHandlerError(w, r, err)

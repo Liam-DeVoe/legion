@@ -931,10 +931,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1007,8 +1008,8 @@ type issueRead struct {
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
-func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
-	parts, err := s.readIssueParts(ctx, key, everyIssueReadPart)
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
+	parts, err := s.readIssueParts(ctx, who, key, everyIssueReadPart)
 	if err != nil {
 		return issueDetail{}, err
 	}
@@ -1029,8 +1030,8 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 
 // readIssueParts is the database work of an issue's read, both versions': its two batches, the
 // first queuing the parts that name the issue's key alone, the second what only the first's
-// answers name. A key no issue carries answers pgx.ErrNoRows.
-func (s *server) readIssueParts(ctx context.Context, key string, parts issueReadParts) (issueRead, error) {
+// answers name, each read as who may see it. A key no issue carries answers pgx.ErrNoRows.
+func (s *server) readIssueParts(ctx context.Context, who model.Actor, key string, parts issueReadParts) (issueRead, error) {
 	var read issueRead
 	var links []model.ExternalLink
 	issueCounts := map[string]int{}
@@ -1078,7 +1079,7 @@ func (s *server) readIssueParts(ctx context.Context, key string, parts issueRead
 		})
 	}
 	if parts.referencedByCount {
-		if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+		if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 			return issueRead{}, err
 		}
 	}
@@ -1091,7 +1092,7 @@ func (s *server) readIssueParts(ctx context.Context, key string, parts issueRead
 	read.issue.ExternalLinks = links
 	read.referencedByCount = issueCounts[read.issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(read.artifacts), askReadPointers(read.asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(read.artifacts), askReadPointers(read.asks)); err != nil {
 		return issueRead{}, err
 	}
 	return read, nil
@@ -1101,10 +1102,10 @@ func (s *server) readIssueParts(ctx context.Context, key string, parts issueRead
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}

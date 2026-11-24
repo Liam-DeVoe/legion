@@ -461,7 +461,8 @@ func (s *server) askV2Rows(ctx context.Context, q queryer, read askV2Read, page 
 // and the thread where include asks for it, read with the rows' texts through one reader, so the
 // texts are one query and one store.
 func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []askV2, thread, single bool) error {
-	if err := s.prepareAsksV2(ctx, rows, single); err != nil {
+	who := s.requestReader(r)
+	if err := s.prepareAsksV2(ctx, who, rows, single); err != nil {
 		return err
 	}
 	reader := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
@@ -470,7 +471,7 @@ func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []ask
 		for index := range rows {
 			ids[index] = rows[index].ID
 		}
-		threads, err := s.loadAskThreads(ctx, ids, reader)
+		threads, err := s.loadAskThreads(ctx, who, ids, reader)
 		if err != nil {
 			return err
 		}
@@ -518,8 +519,8 @@ func (s *server) completeWrittenAskV2(ctx context.Context, r *http.Request, rows
 // prepareAsksV2 fills in the identity event, the inbound backlink count and the part ids every
 // list of asks batches (loadAskDetails), and the anchor's block position on the read of one ask
 // (single).
-func (s *server) prepareAsksV2(ctx context.Context, rows []askV2, single bool) error {
-	if err := loadAskDetails(ctx, s.deps.Store.Pool, askV2Pointers(rows)); err != nil {
+func (s *server) prepareAsksV2(ctx context.Context, who model.Actor, rows []askV2, single bool) error {
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, who, askV2Pointers(rows)); err != nil {
 		return err
 	}
 	if single {
@@ -611,12 +612,12 @@ func (s *server) readAskV2(ctx context.Context, r *http.Request, id string, incl
 // tables: its row (askV2ByID) and what every list of asks batches beside it (loadAskDetails),
 // for completeWrittenAskV2 to complete. A write of the ask reads them on its own transaction
 // before it commits (writtenAskV2), so a read that fails rolls the write back.
-func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, id string) ([]askV2, error) {
+func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, who model.Actor, id string) ([]askV2, error) {
 	rows, err := s.askV2ByID(ctx, q, id, "")
 	if err != nil {
 		return nil, err
 	}
-	if err := loadAskDetails(ctx, q, askV2Pointers(rows)); err != nil {
+	if err := loadAskDetails(ctx, q, who, askV2Pointers(rows)); err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -632,7 +633,10 @@ type writtenAskV2 struct {
 
 // readBack reads the rows of the ask id names on q, the write's transaction.
 func (written *writtenAskV2) readBack(ctx context.Context, q queryer, id string) (err error) {
-	written.rows, err = written.server.writtenAskRowsV2(ctx, q, id)
+	// The read-back runs inside the write's transaction, which holds no request, so it reads as
+	// everyReader; the answer the write sends completes the row as its caller reads it
+	// (completeWrittenAskV2).
+	written.rows, err = written.server.writtenAskRowsV2(ctx, q, everyReader, id)
 	return err
 }
 
@@ -655,7 +659,7 @@ func (written *writtenAskV2) write(w http.ResponseWriter, r *http.Request, statu
 // already (putChangesNothing) - with the ask as a write of it answers it, read on the pool, at
 // status. A request that writes reads its answer on its own transaction instead (writtenAskV2).
 func (s *server) writeAskV2(w http.ResponseWriter, r *http.Request, status int, id string) {
-	rows, err := s.writtenAskRowsV2(r.Context(), s.deps.Store.Pool, id)
+	rows, err := s.writtenAskRowsV2(r.Context(), s.deps.Store.Pool, s.requestReader(r), id)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -739,7 +743,7 @@ func askSource(source string) (kind, id string, err error) {
 // source's document, one row per question block, paged in memory, since one document's questions
 // are few.
 func (s *server) listAsksV2(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, r, err)
 		return
@@ -758,7 +762,7 @@ func (s *server) listAsksV2(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, r, err)
 			return
 		}
-		answer, ok := s.readQuestionMap(w, r, kind, id, human)
+		answer, ok := s.readQuestionMap(w, r, actor.Recorded(), kind, id, human)
 		if !ok {
 			return
 		}

@@ -669,14 +669,14 @@ func (s *server) getCommentV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCommentV2(w, r, id) {
 		return
 	}
-	read, err := s.readCommentThread(r.Context(), id, wantsDisplayTrees(r))
+	read, err := s.readCommentThread(r.Context(), s.requestReader(r), id, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	answer := commentReadV2{shapedComment: read.Comment, Replies: read.Replies}
 	if slices.Contains(v2Query[commentReadV2Query](r).Include, "blocks") {
-		blocks, err := s.itemBlocks(r.Context(), refs.ItemComment, id)
+		blocks, err := s.itemBlocks(r.Context(), s.requestReader(r), refs.ItemComment, id)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -883,7 +883,9 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 	if s.listAnswers.answer(w, kept) {
 		return
 	}
-	listed, err := s.commentPageV2(r.Context(), owner, artifact, query.pageQuery)
+	// The answer is kept and handed to every reader whose request names this owner and ETag
+	// (listAnswers), so it is read as everyReader, as /api/v1's comment list is (answerCommentList).
+	listed, err := s.commentPageV2(r.Context(), everyReader, owner, artifact, query.pageQuery)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -902,13 +904,13 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 // commentPageV2 is the page query asks for of owner's comments, oldest first, artifactFilter
 // keeping one document's where it names one: every comment's row read, and the side tables of
 // the page's alone (hydrateCommentSideTables), which reads each comment by itself.
-func (s *server) commentPageV2(ctx context.Context, owner owner, artifactFilter string, query pageQuery) (page[model.Comment], error) {
+func (s *server) commentPageV2(ctx context.Context, who model.Actor, owner owner, artifactFilter string, query pageQuery) (page[model.Comment], error) {
 	comments, err := readOwnerComments(ctx, s.deps.Store.Pool, owner, artifactFilter)
 	if err != nil {
 		return page[model.Comment]{}, err
 	}
 	listed := pageOf(comments, query)
-	if listed.Items, err = s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, listed.Items); err != nil {
+	if listed.Items, err = s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, who, listed.Items); err != nil {
 		return page[model.Comment]{}, err
 	}
 	return listed, nil
@@ -944,7 +946,7 @@ func (s *server) getMessageV2(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := messageReadV2{messageThreadV2: messageThreadOf(read)}
 	if slices.Contains(v2Query[messageReadV2Query](r).Include, "blocks") {
-		blocks, err := s.itemBlocks(r.Context(), refs.ItemMessage, id)
+		blocks, err := s.itemBlocks(r.Context(), s.requestReader(r), refs.ItemMessage, id)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -1071,7 +1073,7 @@ func (s *server) listIssueMessagesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listed := pageOf(roots, query)
-	reads, err := s.hydrateMessageThreads(r.Context(), listed.Items, wantsDisplayTrees(r))
+	reads, err := s.hydrateMessageThreads(r.Context(), s.requestReader(r), listed.Items, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1122,7 +1124,7 @@ func (s *server) listAgentMessagesV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, fmt.Errorf("count the session's conversations: %w", err))
 		return
 	}
-	reads, err := s.readAgentConversations(r.Context(), agentConversationRootsCTE+`
+	reads, err := s.readAgentConversations(r.Context(), actor, agentConversationRootsCTE+`
 		select `+messageColumns+`, unread
 		from roots
 		where not $4::boolean or unread

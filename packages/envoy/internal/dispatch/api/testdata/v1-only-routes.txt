@@ -161,6 +161,7 @@ POST /api/v1/messages/{id}/deliveries/{attempt}/accept
 POST /api/v1/messages/{id}/reply
 GET /api/v1/near-copy-checks # #4103, merged after c8a44f97
 GET /api/v1/near-copy-checks/{id} # #4103, merged after c8a44f97
+GET /api/v1/people/{login}/nodes # #3178, a person's page read from the graph of nodes and tuples
 GET /api/v1/priorities
 POST /api/v1/priorities
 DELETE /api/v1/priorities/{id}

@@ -366,7 +366,7 @@ func (s *server) listEventLogV2(w http.ResponseWriter, r *http.Request) {
 	}
 	arguments = append(arguments, query.Limit, query.Offset)
 	statement += fmt.Sprintf(` order by e.id %s limit $%d offset $%d`, sqlDirection(order), len(arguments)-1, len(arguments))
-	events, err := s.readEventRows(r.Context(), statement, arguments...)
+	events, err := s.readEventRows(r.Context(), s.requestReader(r), statement, arguments...)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -411,8 +411,8 @@ func ownerEventsReadOf(r *http.Request, query ownerEventsV2Query, last int64) (o
 }
 
 // readOwnerEventsV2 reads one page of owner's event log, an issue's or a document's, as read names
-// it, and the count of every event its filters keep, the page's total.
-func (s *server) readOwnerEventsV2(ctx context.Context, owner owner, read ownerEventsRead) (page[model.Event], error) {
+// it and who may see it, and the count of every event its filters keep, the page's total.
+func (s *server) readOwnerEventsV2(ctx context.Context, who model.Actor, owner owner, read ownerEventsRead) (page[model.Event], error) {
 	var arguments []any
 	argument := func(value any) string {
 		arguments = append(arguments, value)
@@ -443,7 +443,7 @@ func (s *server) readOwnerEventsV2(ctx context.Context, owner owner, read ownerE
 	}
 	statement := eventSelect + ` where ` + where + ` order by e.seq ` + sqlDirection(read.sort) +
 		` limit ` + argument(read.page.Limit) + ` offset ` + argument(read.page.Offset)
-	events, err := s.readEventRows(ctx, statement, arguments...)
+	events, err := s.readEventRows(ctx, who, statement, arguments...)
 	if err != nil {
 		return page[model.Event]{}, err
 	}
@@ -504,7 +504,7 @@ func (s *server) listIssueEventsV2(w http.ResponseWriter, r *http.Request) {
 	if s.listAnswers.answer(w, kept) {
 		return
 	}
-	events, err := s.readOwnerEventsV2(r.Context(), issueOwner(key), read)
+	events, err := s.readOwnerEventsV2(r.Context(), s.requestReader(r), issueOwner(key), read)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -547,7 +547,7 @@ func (s *server) listArtifactEventsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	events, err := s.readOwnerEventsV2(r.Context(), owner, read)
+	events, err := s.readOwnerEventsV2(r.Context(), s.requestReader(r), owner, read)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -561,7 +561,7 @@ func (s *server) listArtifactEventsV2(w http.ResponseWriter, r *http.Request) {
 // listReferencesV2 answers GET /api/v2/references: the read GET /api/v1/references makes
 // (readReferences), its since read as after, its edges kept below a before, ordered and paged.
 func (s *server) listReferencesV2(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, r, err)
 		return
@@ -578,7 +578,7 @@ func (s *server) listReferencesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	edgeQuery.Since = positions.after
-	answer, ok := s.readReferences(w, r, edgeQuery, ref, unknownKinds, human)
+	answer, ok := s.readReferences(w, r, actor.Recorded(), edgeQuery, ref, unknownKinds, human)
 	if !ok {
 		return
 	}

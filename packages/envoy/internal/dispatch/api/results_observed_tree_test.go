@@ -14,6 +14,7 @@ import (
 // of the read answer it alike, each in its own envelope: GET /api/v1/issues/{key}/results and GET
 // /api/v2/issues/{key}/checks, which the page reads, both read the checks through readIssueChecks.
 func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "OBST", "Observed trees", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)

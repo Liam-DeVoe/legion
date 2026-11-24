@@ -150,6 +150,7 @@ POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
 GET /api/v1/near-copy-checks any
 GET /api/v1/near-copy-checks/{id} any
+GET /api/v1/people/{login}/nodes any
 GET /api/v1/priorities any
 POST /api/v1/priorities any
 DELETE /api/v1/priorities/{id} any
@@ -319,6 +320,7 @@ POST /api/v2/messages/{id}/deliveries any
 PUT /api/v2/messages/{id}/deliveries/{attempt}/state bearer
 POST /api/v2/messages/{id}/replies bearer
 GET /api/v2/near-copy-checks/{id} any
+GET /api/v2/nodes any
 GET /api/v2/priorities any
 POST /api/v2/priorities any
 DELETE /api/v2/priorities/{id} any

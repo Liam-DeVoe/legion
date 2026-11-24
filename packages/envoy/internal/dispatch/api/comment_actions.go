@@ -117,7 +117,7 @@ func (s *server) reopenCommentAs(w http.ResponseWriter, r *http.Request, actor m
 	comment.ResolvedAt = nil
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -258,7 +258,7 @@ func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor mod
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, r, apicode.InvalidComment, carriedErr.Error())
 		return
@@ -269,7 +269,7 @@ func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor mod
 	}
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -426,7 +426,8 @@ func (s *server) commentActionAs(w http.ResponseWriter, r *http.Request, actor m
 				// Only the orphaned key is written, the one key this refusal decides: writing the
 				// whole anchor would write back every other key of the column as this transaction
 				// read it, which is not what orphaning an anchor means. The narrow write says what
-				// it changes.
+				// it changes, and the artifact the comment's anchored_to tuple names stays among
+				// the rest, so this write restates nothing the store holds.
 				if err := queueExec(ledger, `
 					update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
 				`, comment.ID); err != nil {
@@ -483,7 +484,7 @@ func (s *server) commentActionAs(w http.ResponseWriter, r *http.Request, actor m
 	}
 	s.registerCommentAnchor(ledger, comment, actor, true)
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return

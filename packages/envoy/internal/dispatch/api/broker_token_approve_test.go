@@ -118,6 +118,7 @@ func newCredentialRelayRig(t *testing.T) (*fakeBrokerRig, *brokerTokenRig) {
 // personal token's mint, a decision's Keep, each at /api/v1 and at the /api/v2 route that answers
 // it), fails rather than passes: /api/v2 grants nothing /api/v1 refuses.
 func TestNoBrokerTokenGetsApprove(t *testing.T) {
+	t.Parallel()
 	credentials, rig := newCredentialRelayRig(t)
 	caller := newBrokerCaller(t)
 	tokens := approveTestTokens(caller.jkt)

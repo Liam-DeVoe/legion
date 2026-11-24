@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // searchParameters is one validated search: the words, the filters every leg of it is narrowed
@@ -41,6 +42,11 @@ import (
 // beside its text (scanSearchRows); the answerer's own search reads a hit's title and href alone
 // and asks for none.
 //
+// who is the credential the search acts for, which every statement binds last
+// (searchQueryArguments) so that no read answers a node that credential may not see
+// (refs.VisibilityArg). The zero actor proves no author, which is what the answerer's own
+// search and the package's tests read as.
+//
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
 // it through queryReading.
@@ -61,6 +67,7 @@ type searchParameters struct {
 	broaden       []string
 	excluded      string
 	reading       *searchReading
+	who           model.Actor
 }
 
 // projectScope is the form of the statements this search runs: several where it names a list of
@@ -299,20 +306,24 @@ func searchQOpenerArguments(parameters searchParameters) []any {
 }
 
 // searchQueryArguments binds searchQuery's parameters, in the order its own comment names them:
-// the base eight, then searchQOpener's own from $9. searchQueryMeaning takes the same values
-// with the meaning leg's three between them (searchMeaningQueryArguments), so this pair is the
-// one place that knows what a search binds.
+// the base eight, then searchQOpener's own from $9, then the acting credential at
+// searchSeenParam. searchQueryMeaning takes the same values with the meaning leg's three between
+// them (searchMeaningQueryArguments), so this pair is the one place that knows what a search
+// binds.
 func searchQueryArguments(parameters searchParameters) []any {
-	return append(searchQueryBase(parameters), searchQOpenerArguments(parameters)...)
+	arguments := append(searchQueryBase(parameters), searchQOpenerArguments(parameters)...)
+	return append(arguments, refs.VisibilityArg(parameters.who))
 }
 
 // searchMeaningQueryArguments binds searchQueryMeaning's: the base eight, the meaning leg's
-// three at $9-$11, then the opener's own from $12, each appended to the one before it as
-// relatedSearch appends the check's own, so that a parameter added to the base moves the
-// opener's own along with them rather than being bound in their place.
+// three at $9-$11, the opener's own from $12, then the acting credential at
+// searchMeaningSeenParam, each appended to the one before it as relatedSearch appends the
+// check's own, so that a parameter added to the base moves the opener's own along with them
+// rather than being bound in their place.
 func searchMeaningQueryArguments(parameters searchParameters, vector []float32, identity string) []any {
 	arguments := append(searchQueryBase(parameters), embed.Literal(vector), searchMeaningFloor, identity)
-	return append(arguments, searchQOpenerArguments(parameters)...)
+	arguments = append(arguments, searchQOpenerArguments(parameters)...)
+	return append(arguments, refs.VisibilityArg(parameters.who))
 }
 
 // searchRarestWordsSQL is the fallback's choice of words: the words of $1 ordered rarest first,
