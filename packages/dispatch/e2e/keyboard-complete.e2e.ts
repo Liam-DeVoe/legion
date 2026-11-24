@@ -61,7 +61,7 @@ import {
 import { expectTimeout } from "./expect-timeout";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, displayChoice, listOf } from "./filters";
-import { nextFrames } from "./frames";
+import { nextFrames, settledScrollTop } from "./frames";
 import { drawer } from "./inbox-drawer";
 import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -9399,3 +9399,111 @@ for (const place of ["the reading pane", "card mode", "the drawer"] as const) {
     await nextItemOnlyShownSteps(page, place);
   });
 }
+
+// The tester's red rows of round 16 (R8, and 9feff4e4's no scroll while the rows still stand): in
+// card mode and in the drawer a snooze of two selected rows scrolls the list nowhere. At 9d3e0777
+// the list jumps by about 200 to 500 px and the next row ends at the top edge.
+/** Where `row` stands in the box that scrolls the list it is in - the list column, the drawer, or
+ *  the document where no element around it scrolls: its top against the box's visible top, and
+ *  the box's scrollTop. */
+function listPlace(row: Locator): Promise<{ scrollTop: number; top: number }> {
+  return row.evaluate((node) => {
+    let box: Element | null = node.parentElement;
+    while (box !== null) {
+      const style = getComputedStyle(box);
+      if (/(auto|scroll)/.test(style.overflowY) && box.scrollHeight > box.clientHeight) break;
+      box = box.parentElement;
+    }
+    const scroller = box ?? document.scrollingElement ?? document.documentElement;
+    const top = box === null ? 0 : Math.max(box.getBoundingClientRect().top, 0);
+    return {
+      scrollTop: Math.round(scroller.scrollTop),
+      top: Math.round(node.getBoundingClientRect().top - top),
+    };
+  });
+}
+
+/** k-next-item's snooze of two selected rows in the middle of a list that scrolls: the row after
+ *  the last of them takes the focus (R8: "When the reader acts on selected items, the item after
+ *  the last of them is selected"), and the list does not scroll - that row moves up into the place
+ *  where the first selected row stood, as beside the reading pane (9feff4e4: "after an act on rows
+ *  the next row takes the focus with no scroll while the rows still stand, and is brought into
+ *  view once they have gone"). */
+async function nextItemBulkNoScrollSteps(page: Page, place: InboxPlace): Promise<void> {
+  const step = (text: string) => `k-next-item: ${place}: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  for (let n = 18; n >= 1; n -= 1) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `Rollout ${n}` });
+    await createAsk(issue.key, { question: `Ship rollout ${n}?` }, asker);
+  }
+  const inbox = await openInboxAt(page, place, 18);
+  const [first, second, after] = inbox.order.slice(9, 12);
+  if (first === undefined || second === undefined || after === undefined) {
+    throw new Error("the Inbox lists fewer than the eighteen asks seeded");
+  }
+  for (const id of [first, second]) {
+    await goTo(inbox, id);
+    await page.keyboard.press("x");
+  }
+  await expect(
+    inbox.scope.getByRole("toolbar", { name: "Selected rows" }),
+    step("x selects two rows")
+  ).toContainText("2 selected");
+  // The first selected row is scrolled to the middle of what the list shows, and the pointer is
+  // taken off every row.
+  await rowOf(inbox, first).evaluate((node) => {
+    let box: Element | null = node.parentElement;
+    while (box !== null) {
+      const style = getComputedStyle(box);
+      if (/(auto|scroll)/.test(style.overflowY) && box.scrollHeight > box.clientHeight) break;
+      box = box.parentElement;
+    }
+    const r = node.getBoundingClientRect();
+    if (box === null) window.scrollBy(0, r.top + r.height / 2 - innerHeight / 2);
+    else {
+      const b = box.getBoundingClientRect();
+      box.scrollTop += r.top + r.height / 2 - (b.top + b.height / 2);
+    }
+  });
+  await page.mouse.move(2, 2);
+  await settledScrollTop(page, 5);
+  const before = await listPlace(rowOf(inbox, first));
+  await page.keyboard.press("b");
+  await expect(openTrigger(page), step("b opens the bar's Snooze")).toHaveAccessibleName(
+    "Snooze selected asks"
+  );
+  await page.keyboard.press("1");
+  await expectInHand(
+    inbox,
+    after,
+    step("a snooze of two selected rows hands on to the row after them")
+  );
+  await settledScrollTop(page, 10);
+  const now = await listPlace(rowOf(inbox, after));
+  expect(
+    Math.abs(now.scrollTop - before.scrollTop),
+    step(
+      `a snooze of two selected rows scrolls the list nowhere (scrollTop ${before.scrollTop} before, ${now.scrollTop} after)`
+    )
+  ).toBeLessThanOrEqual(4);
+  expect(
+    Math.abs(now.top - before.top),
+    step(
+      `the row after them stands where the first selected row stood (${before.top} px, now ${now.top} px)`
+    )
+  ).toBeLessThanOrEqual(4);
+}
+
+// SLOW(>=2s): eighteen asks seeded, two selected and snoozed, and the list read as it settles.
+test("k-next-item: in card mode a snooze of two selected rows in a list that scrolls hands on to the row after them with no scroll", async ({
+  page,
+}) => {
+  await nextItemBulkNoScrollSteps(page, "card mode");
+});
+
+// SLOW(>=2s): eighteen asks seeded, two selected and snoozed, and the list read as it settles.
+test("k-next-item: in the drawer a snooze of two selected rows in a list that scrolls hands on to the row after them with no scroll", async ({
+  page,
+}) => {
+  await nextItemBulkNoScrollSteps(page, "the drawer");
+});
