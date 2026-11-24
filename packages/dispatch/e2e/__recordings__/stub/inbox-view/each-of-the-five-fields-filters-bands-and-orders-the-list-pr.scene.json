@@ -1,9 +1,9 @@
 {
-  "read": "reply:44ccbe8e-cb05-4519-8031-7faf5a9d93ed",
+  "read": "reply:b93d20c6-3220-4670-a55c-493626be8ce1",
   "rows": [
     {
       "assignee": "alice",
-      "id": "843386dd-fe81-4967-808e-9f176cc00052",
+      "id": "d25f3799-80df-4487-becd-4e57d33c20c1",
       "issueKey": "CORE-1",
       "priority": "P0",
       "project": "CORE",
@@ -12,7 +12,7 @@
     },
     {
       "assignee": "alice",
-      "id": "835c03cf-4da3-4931-a85b-513c1127d57e",
+      "id": "d9f59241-c110-4fa9-9ead-651c84aff041",
       "issueKey": "CORE-2",
       "priority": "P1",
       "project": "CORE",
@@ -21,7 +21,7 @@
     },
     {
       "assignee": "bob",
-      "id": "f03df423-5f7f-492c-8d09-92cfad6e1028",
+      "id": "038ab81a-7b38-4637-8ff0-151a891e1eac",
       "issueKey": "CORE-3",
       "priority": "P2",
       "project": "CORE",
@@ -30,7 +30,7 @@
     },
     {
       "assignee": "alice",
-      "id": "a7db901e-1e1b-4a4d-ab95-5e417bd99b7a",
+      "id": "0e4862d6-ddbd-47e7-9b25-6d7f89b2bfc4",
       "issueKey": "CORE-4",
       "priority": "P3",
       "project": "CORE",
@@ -39,7 +39,7 @@
     },
     {
       "assignee": "carol",
-      "id": "98fc00c6-a665-4943-aa96-42076b52435f",
+      "id": "2a37d42e-f24f-46a6-93c9-94fca9e29935",
       "issueKey": "CORE-5",
       "priority": "none",
       "project": "CORE",
@@ -48,7 +48,7 @@
     },
     {
       "assignee": "alice",
-      "id": "50a3a9dc-37fc-4406-99f2-cfe65e465aaf",
+      "id": "a6dd3aa9-f60f-455c-9593-b565d6feb611",
       "issueKey": "CORE-6",
       "priority": "P1",
       "project": "CORE",
@@ -57,7 +57,7 @@
     },
     {
       "assignee": "alice",
-      "id": "42bd700d-767f-417b-8c14-f163ba819689",
+      "id": "7cc59a66-c7ee-490e-9b91-378211b6d86a",
       "issueKey": "CORE-7",
       "priority": "P2",
       "project": "CORE",
@@ -66,7 +66,7 @@
     },
     {
       "assignee": "alice",
-      "id": "reply:efe865bf-6cd1-4188-81d3-2d448f780c9f",
+      "id": "reply:fd55cdc1-3c03-4083-a2fb-46ae7f162280",
       "issueKey": "CORE-8",
       "priority": "P3",
       "project": "CORE",
@@ -75,7 +75,7 @@
     },
     {
       "assignee": "alice",
-      "id": "reply:b86c7ceb-db9b-47e2-aa6e-772c46de037e",
+      "id": "reply:8452e5cf-5efa-4721-bb74-f0b2d2ba17a9",
       "issueKey": "MIRROR-1",
       "priority": "none",
       "project": "MIRROR",
@@ -84,7 +84,7 @@
     },
     {
       "assignee": "alice",
-      "id": "agent:b996e131-444a-4f93-80d5-db31492a65f6",
+      "id": "agent:c336fa20-7ae1-4573-ba6e-81be724173d1",
       "priority": "none",
       "project": "none",
       "type": "agent",
@@ -92,7 +92,7 @@
     },
     {
       "assignee": "alice",
-      "id": "reply:44ccbe8e-cb05-4519-8031-7faf5a9d93ed",
+      "id": "reply:b93d20c6-3220-4670-a55c-493626be8ce1",
       "issueKey": "CORE-9",
       "priority": "none",
       "project": "CORE",
@@ -102,48 +102,48 @@
   ],
   "at": [
     [
-      "843386dd-fe81-4967-808e-9f176cc00052",
-      "2026-11-16T01:51:33.311917Z"
+      "d25f3799-80df-4487-becd-4e57d33c20c1",
+      "2026-11-22T19:18:33.487533Z"
     ],
     [
-      "50a3a9dc-37fc-4406-99f2-cfe65e465aaf",
-      "2026-11-16T01:51:33.938576Z"
+      "a6dd3aa9-f60f-455c-9593-b565d6feb611",
+      "2026-11-22T19:18:33.901966Z"
     ],
     [
-      "835c03cf-4da3-4931-a85b-513c1127d57e",
-      "2026-11-16T01:51:33.385683Z"
+      "d9f59241-c110-4fa9-9ead-651c84aff041",
+      "2026-11-22T19:18:33.518161Z"
     ],
     [
-      "42bd700d-767f-417b-8c14-f163ba819689",
-      "2026-11-16T01:51:34.177219Z"
+      "7cc59a66-c7ee-490e-9b91-378211b6d86a",
+      "2026-11-22T19:18:34.056466Z"
     ],
     [
-      "f03df423-5f7f-492c-8d09-92cfad6e1028",
-      "2026-11-16T01:51:33.551527Z"
+      "038ab81a-7b38-4637-8ff0-151a891e1eac",
+      "2026-11-22T19:18:33.577899Z"
     ],
     [
-      "a7db901e-1e1b-4a4d-ab95-5e417bd99b7a",
-      "2026-11-16T01:51:33.583037Z"
+      "0e4862d6-ddbd-47e7-9b25-6d7f89b2bfc4",
+      "2026-11-22T19:18:33.59786Z"
     ],
     [
-      "98fc00c6-a665-4943-aa96-42076b52435f",
-      "2026-11-16T01:51:33.639622Z"
+      "2a37d42e-f24f-46a6-93c9-94fca9e29935",
+      "2026-11-22T19:18:33.626407Z"
     ],
     [
-      "reply:44ccbe8e-cb05-4519-8031-7faf5a9d93ed",
-      "2026-11-16T01:51:34.343099Z"
+      "reply:b93d20c6-3220-4670-a55c-493626be8ce1",
+      "2026-11-22T19:18:34.162033Z"
     ],
     [
-      "agent:b996e131-444a-4f93-80d5-db31492a65f6",
-      "2026-11-16T01:51:34.303828Z"
+      "agent:c336fa20-7ae1-4573-ba6e-81be724173d1",
+      "2026-11-22T19:18:34.13532Z"
     ],
     [
-      "reply:b86c7ceb-db9b-47e2-aa6e-772c46de037e",
-      "2026-11-16T01:51:34.278805Z"
+      "reply:8452e5cf-5efa-4721-bb74-f0b2d2ba17a9",
+      "2026-11-22T19:18:34.1175Z"
     ],
     [
-      "reply:efe865bf-6cd1-4188-81d3-2d448f780c9f",
-      "2026-11-16T01:51:34.232743Z"
+      "reply:fd55cdc1-3c03-4083-a2fb-46ae7f162280",
+      "2026-11-22T19:18:34.095169Z"
     ]
   ]
 }

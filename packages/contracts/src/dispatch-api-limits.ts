@@ -40,15 +40,19 @@ export const IDEMPOTENCY_KEY_INVALID = "KEY_INVALID";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person: the machine holding it has signed nobody in, so Dispatch
- * has nobody to record the write under. Its reads are unaffected. The message names
- * `agent-secrets login`, the one command that makes the write possible, because whoever reads
- * the refusal is whoever must run it.
+ * session and a service but no person under the project scope `person`: the machine holding it
+ * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
+ * unaffected. The message names `agent-secrets login`, the one command that makes the write
+ * possible, because whoever reads the refusal is whoever must run it. A token that names a
+ * service and no person under the project scope `named` is no such token: an exchange account
+ * entry naming no person minted it, its service is that account, and its writes are recorded
+ * under the account.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
-/** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
- *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
+/** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
+ *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as
+ *  landed; a call that writes nothing (`IDEMPOTENCY_ANSWER_NOT_KEPT`) asks again. */
 export type IdempotencyLandedCode =
   | typeof IDEMPOTENCY_KEY_COMMITTED
   | typeof IDEMPOTENCY_ANSWER_NOT_KEPT;

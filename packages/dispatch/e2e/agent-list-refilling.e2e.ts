@@ -1,6 +1,7 @@
 import {
   agentRow,
   type FakeSession,
+  pollAgentListEvery,
   setInterests,
   setListsState,
   setLiveSessions,
@@ -28,29 +29,40 @@ import { asUser } from "./users";
 // dot and no no_holder route marker. A listener that could not answer at all (the fake's `down`
 // state) is unreachable wording on the same views, never the refilling notice.
 //
-// The Agents page and an agent's conversation page poll the list every 15 s, so they move from a
-// complete read to a refilling one in place, keeping the rows they had. The other views read
-// again on a reload or a Retry. A refused read surfaces only once the shared retry policy's two
-// retries are out (`web/src/main.tsx`), and a refusal that names a wait is left alone for it:
-// Dispatch passes the listener's `Retry-After: 5` on with ENVOY_REFILLING (`agentsAnswer` below
-// pins it), and each retry waits those 5 s plus a random share of them again (`queryRetryDelay`,
-// `web/src/api/query-client.ts`), so a view's first refilling read says so only once up to 20 s
-// of the page's own time are out. The polls and those waits are page timers: a row about a
-// refilling list installs its context's clock before its first page loads, and each wait for a
-// view to say it is refilling, or to stop, moves that clock until the view does (`untilRefilling`
-// and `untilNotRefilling` below), rather than waiting the timers out. The row whose listener
-// cannot answer at all moves the same clock: each of its views says so only once its read's two
-// retries are out, and its two polling pages only after their next 15 s poll, so it moves the
-// clock until each one does (`untilShown`). Running-state marks are found by their accessible
-// names (`Running`, `Not running`, `Running state unknown`: `AgentName`'s mark).
+// The Agents page and an agent's conversation page poll the list (the shell's 15 s,
+// `AGENT_REGISTRY_POLL_MS`; these rows' pages every `ROW_POLL_MS`, `pollAgentListEvery`), so they
+// move from a complete read to a refilling one in place, keeping the rows they had. The other
+// views read again on a reload or a Retry. A refused read surfaces only once the shared retry
+// policy's two retries are out (`web/src/main.tsx`), and a refusal that names a wait is left alone
+// for it: Dispatch passes the listener's `Retry-After` on with ENVOY_REFILLING (`agentsAnswer`
+// below pins it, the real listener's 5 and the rows' own 1), and each retry waits that long plus a
+// random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`). At the listener's
+// 5 s a view's first refilling read says so only once up to 20 s of the page's own time are out;
+// the rows set `ROW_RETRY_AFTER_SECONDS`, so each view's wait is up to 4 s. The polls and those
+// waits are page timers: a row about a refilling list installs its context's clock before its
+// first page loads, and each wait for a view to say it is refilling, or to stop, moves that clock
+// until the view does (`untilRefilling` and `untilNotRefilling` below), rather than waiting the
+// timers out. The row whose listener cannot answer at all moves the same clock: each of its views
+// says so only once its read's two retries are out, and its two polling pages only after their
+// next poll, so it moves the clock until each one does (`untilShown`). Running-state marks are
+// found by their accessible names (`Running`, `Not running`, `Running state unknown`:
+// `AgentName`'s mark).
 
 const REFILLING = "The agent list is refilling. Try again in a moment.";
-// The bound on the two polling pages' reads in the row whose listener cannot answer: one 15 s
-// poll, the two half-second retries of the read it makes and a margin, measured from whenever the
-// state flipped. That row spends this time on the page's clock before it reads them
+// The agent list's cadence on these rows' pages.
+const ROW_POLL_MS = 1_000;
+// The `Retry-After` these rows' refilling list carries.
+const ROW_RETRY_AFTER_SECONDS = 1;
+// The bound on Dispatch's answer taking up the rows' own `Retry-After`: it serves the listener's
+// answer from a copy at most 5 s old (`routeRosterTTL`), and a margin for a loaded runner. An
+// upper bound only: the poll passes as soon as the answer does.
+const REFILL_TIMEOUT = 20_000;
+// The bound on the two polling pages' reads in the row whose listener cannot answer: one poll
+// (`ROW_POLL_MS`), the two half-second retries of the read it makes and a margin, measured from
+// whenever the state flipped. That row spends this time on the page's clock before it reads them
 // (`untilShown`), so what the bound is left to cover is the real round trips of the reads the
 // jumps fire.
-const POLL_TIMEOUT = 50_000;
+const POLL_TIMEOUT = 30_000;
 const PLANNER_ROLE = "refill-planner";
 const DOCUMENT_SLUG = "refill-notes";
 
@@ -280,6 +292,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([planner, watcher]);
   const alice = await asUser(browser, "alice");
+  await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
     // The clock is the context's, so all four pages below share it, and moving it for one moves
     // the timers of each: the polling pages' polls as much as the fresh page's retries.
@@ -313,7 +326,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     const recipients = askRecipients(page, fixture.askId);
     await expect(recipients.getByRole("button", { name: "Reaches 2" })).toBeVisible();
 
-    await setListsState("refilling");
+    await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
 
     // The open composer reads the list again as its suggestions open: the rows it had stay, and
     // the refilling notice stands where "No live agents match." would.
@@ -388,6 +401,7 @@ test("an empty list that starts refilling never says nobody is connected", async
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([]);
   const alice = await asUser(browser, "alice");
+  await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
     // The clock is the context's, so all four pages below share it, and moving it for one moves
     // the timers of each: the polling pages' polls as much as the fresh page's retries.
@@ -432,7 +446,7 @@ test("an empty list that starts refilling never says nobody is connected", async
     // The view choice is remembered; the refilling pass opens the List first, as here.
     await page.getByRole("button", { name: "List" }).click();
 
-    await setListsState("refilling");
+    await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
 
     const during = await openMentionSuggestions(issuePage);
     await untilRefilling(during);
@@ -457,14 +471,25 @@ test("an empty list that starts refilling never says nobody is connected", async
 
 test("a listener refilling from the first read shows every view refilling", async ({ browser }) => {
   const fixture = await seedRefillFixture([planner, watcher]);
+  // What every view below reads: Dispatch's own refilling answer, not an unreachable listener,
+  // with the listener's `Retry-After` passed on as it is - the real listener's 5, and then the
+  // rows' own 1, which the views below wait out. Dispatch serves the listener's answer from a copy
+  // at most 5 s old (`routeRosterTTL`, `readRouteRoster` in internal/dispatch/api/agents.go), so
+  // the second figure shows once that copy is read again.
   await setListsState("refilling");
-  // What every view below reads: Dispatch's own refilling answer, not an unreachable listener.
   expect(await agentsAnswer()).toEqual({ code: "ENVOY_REFILLING", retryAfter: "5", status: 503 });
+  await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
+  await expect.poll(agentsAnswer, { timeout: REFILL_TIMEOUT }).toEqual({
+    code: "ENVOY_REFILLING",
+    retryAfter: String(ROW_RETRY_AFTER_SECONDS),
+    status: 503,
+  });
   expect(await getIssue(fixture.issueKey)).toMatchObject({
     route_status: "unknown",
     route_status_reason: "refilling",
   });
   const alice = await asUser(browser, "alice");
+  await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
     const page = await alice.newPage();
     await page.clock.install();
@@ -495,6 +520,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
   test.setTimeout(150_000);
   const fixture = await seedRefillFixture([planner, watcher]);
   const alice = await asUser(browser, "alice");
+  await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
     // The clock is the context's, so all three pages below share it, and moving it for one moves
     // the timers of each: the polling pages' polls as much as the fresh page's retries.
@@ -588,8 +614,8 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
 
     // The polling pages refreshed in place: they keep the rows they had and say the refresh
-    // failed, not that the list is refilling. Each says so after its next 15 s poll and that read's
-    // two retries, which the clock is moved through.
+    // failed, not that the list is refilling. Each says so after its next poll (`ROW_POLL_MS`) and
+    // that read's two retries, which the clock is moved through.
     await untilShown(
       agentsPage.getByRole("alert").filter({ hasText: /^Could not refresh agents: / }),
       "the Agents page's poll says it could not refresh"

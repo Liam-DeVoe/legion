@@ -271,6 +271,58 @@ downloads and compiles their closure on a key that hit: 115 `go: downloading` li
 job 129055096326 of run 42585736615, where this build still sat inside the alone job's
 3-minute browser step, against 4 with go-envoy-test in job 129071749416 of run 42590831386.
 
+## The fill of go-dispatch-browser in ci-caches.yaml
+
+Moved from `.github/workflows/ci-caches.yaml`, whose dispatch-browser job fills the family the
+binaries job restores (the section above). In this section "this workflow", "the header" and a job
+"above" or "below" are that workflow's, its head comment and its jobs, and "here" is that fill job.
+
+go-dispatch-browser, the family of dispatch-browser.yaml's binaries job alone, its one reader.
+It keys on packages/envoy/go.mod's Go, which that job sets up, and it builds what that job
+builds, as that job builds it. That job's build step pins CGO_ENABLED=0 on its two `go build`s,
+and Go's build cache keys every object on the build's configuration, cgo included: net,
+os/user and runtime/cgo differ with it, and so does every package above them. So the
+go-envoy-test entry that job restored before, which the envoy job above fills on the runner's
+default CGO_ENABLED=1 (the runner has gcc), held its modules and almost none of its objects.
+Measured in cluster Jobs on 4 CPUs with golang:1.27.3, that step's builds at b1634bff of #3513
+took 95 s after a cgo-on build of the same commands at main's 278138ea, the commit main's
+go-envoy-test entry was saved at (Job infra-1109-gocgo-dv7gl), and 16 s after the same fill
+made with CGO_ENABLED=0 (Job infra-1109-gobuild-894l9);
+.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser holds
+the rest of the readings. The fill also runs that job's connections step's `go run`, with
+CGO_ENABLED=0 as that step runs it, so that step reuses the build step's objects.
+
+A job of its own on ubuntu-24.04, the binaries job's runner, and not a step of the envoy job's
+x86_64 leg: a save takes the machine's whole module cache and build cache, so in that leg, in
+whichever order the three builds ran, one entry would carry another family's objects that its
+readers cannot use - go-envoy's or go-envoy-test's cgo-on objects in this entry, or this
+build's cgo-off objects in theirs - and which it carried would turn on which keys that run
+missed. Here the entry holds this build alone. Each push fills it again from its newest entry
+(the header says why).
+
+Its output, `go-dispatch-browser-x64`: the key this job saved, named by its architecture as the
+other fills' outputs are. Its restore step, `go-dispatch-browser`: the newest entry of the family,
+which the builds below compile on, found as the daemon job's restore finds its own.
+
+Its build step, "Build what the binaries job of dispatch-browser.yaml builds": the binaries job's
+go commands, run as it runs them, in packages/envoy: its build step's two `go build`s over the
+same packages into the same outputs, and its connections step's `go run`, each with
+CGO_ENABLED=0. They are copied here rather than run from one script both jobs call, because that
+job's go commands stay in its steps' own pinned text
+(.github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static).
+Nothing fails when the two drift apart - the binaries job just builds cold again - so a change to
+them there is a change here too.
+
+From the header, after its record of what a family filled once per Go version had to compile
+again: go-dispatch-browser was filled that way longer, on the ground that its build is small: the
+binaries job's commands, built as that job builds them, took 69 s on an empty build cache, 16 s
+on one filled with CGO_ENABLED=0 at main's 278138ea, and 5 s on one filled at the commit built
+(the dispatch-browser job below names the Jobs, and
+.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser holds the
+readings). But 278138ea was 171 of main's commits older than 8a954068, the main commit the
+built one had merged, and an entry filled once per Go version only ages further until the next
+Go bump, drifting toward the cold build as the envoy module's had.
+
 ## What the binaries build writes, and why it is static
 
 Everything the run's other jobs execute, built in one step: the four Go commands, the

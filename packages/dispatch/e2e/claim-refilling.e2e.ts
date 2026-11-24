@@ -12,12 +12,15 @@ import { asUser } from "./users";
 // claim as held and says why. A complete list that does not name the holder is the one answer
 // that lapses the claim, which the second test shows, picking the value in the column itself.
 //
-// Dispatch passes the listener's `Retry-After: 5` on with that refusal, and the shared retry
-// policy leaves a read that names a wait alone for it before each of its two retries, plus a
-// random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first
-// refilling read says so only once up to 20 s of the page's own time are out. Those waits are page
-// timers: the row installs the page's clock before the page loads and moves it until each view
-// says what the row asserts (`spendPageTimeUntil`, `e2e/agents.ts`), rather than waiting them out.
+// Dispatch passes the listener's `Retry-After` on with that refusal, and the shared retry policy
+// leaves a read that names a wait alone for it before each of its two retries, plus a random
+// share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`). At the real listener's 5 s
+// a view's first refilling read says so only once up to 20 s of the page's own time are out; the
+// row's refilling list names `ROW_RETRY_AFTER_SECONDS` instead (`setListsState`), so up to 4 s.
+// agent-list-refilling.e2e.ts pins that Dispatch passes the listener's own 5 on. Those waits are
+// page timers: the row installs the page's clock before the page loads and moves it until each
+// view says what the row asserts (`spendPageTimeUntil`, `e2e/agents.ts`), rather than waiting
+// them out.
 //
 // Under a refilling list each of the shell's 15 s polls of the registry
 // (`AGENT_REGISTRY_POLL_MS`) makes the chip drop its note and the filter its own until the
@@ -27,6 +30,7 @@ import { asUser } from "./users";
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";
+const ROW_RETRY_AFTER_SECONDS = 1;
 
 async function seedSessionClaim(): Promise<string> {
   await createProject({ key: "CORE", name: "Core" });
@@ -55,7 +59,7 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     await expect(chip).toHaveAttribute("title", /Claimed /);
     await expect(chip).not.toHaveAttribute("title", /no longer running/);
 
-    await setListsState("refilling");
+    await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
     await page.reload();
     // The header's notice comes from the issue's subscribers read and the chip's word from the
     // agent list: two reads, each retried on timers of its own, so the clock moves until each

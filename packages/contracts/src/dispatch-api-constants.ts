@@ -75,6 +75,33 @@ export const MAX_ISSUE_BLOCKERS = 20;
 export const MAX_ISSUE_ADVANCES = 20;
 
 /**
+ * The most labels one issue holds, and so the most one `labels` or `labels_add` input names,
+ * before duplicates, which differ in case alone, are removed. `labels_add` is held to it twice:
+ * the input alone, and the issue's labels with the input added. Generated into Go as
+ * `contracts.MaxIssueLabels`, which `POST /api/v1/issues`, `PATCH /api/v1/issues/{key}` and the
+ * `label` filter of `GET /api/v1/issues` enforce as `400 LABELS_INPUT` naming the limit, and the
+ * issue tools' `labels` and `labels_add` take it as their bound.
+ */
+export const MAX_ISSUE_LABELS = 20;
+
+/**
+ * The longest label, in UTF-16 units, counted after the trim the issue routes apply; a blank or
+ * longer one is `400 LABELS_INPUT`. Generated into Go as `contracts.IssueLabelMax`, which those
+ * routes enforce, and which the label the dashboard gives an issue it files from a person's typed
+ * words (`DISPATCH_NEW_ISSUE_LABEL`) is held to at boot; the issue tools' labels take it as each
+ * item's bound.
+ */
+export const ISSUE_LABEL_MAX = 40;
+
+/**
+ * The most component ids one `components` input of mode `explicit` names, before duplicates are
+ * removed. Generated into Go as `contracts.MaxIssueComponents`, which `POST /api/v1/issues` and
+ * `PATCH /api/v1/issues/{key}` enforce as `400 COMPONENTS_INPUT` naming the limit, and the issue
+ * tools' `components.ids` take it as its bound.
+ */
+export const MAX_ISSUE_COMPONENTS = 50;
+
+/**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
  * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
  * `limit` takes the same bound, so the two ends agree.
@@ -92,6 +119,15 @@ export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
  * `events` nor `all_events`: what `DispatchClient.read` returns by default.
  */
 export const DEFAULT_ISSUE_READ_EVENTS = 10;
+
+/**
+ * The most rows one answer of a post's history holds, newest first: `GET
+ * /api/v1/comments/{id}/history` and `GET /api/v1/messages/{id}/history`, whose `?before=` the
+ * oldest row's `edited_at` answers the page after. Generated into Go as
+ * `contracts.PostHistoryPageLimit`, the page the server reads, and `dispatch read --history`
+ * takes a page of exactly this many rows as one that may have older rows, so the two ends agree.
+ */
+export const POST_HISTORY_PAGE_LIMIT = 200;
 
 /**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
@@ -232,8 +268,18 @@ export const REFERENCE_TARGETS_MAX = 256;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. A write without the header is run as it always was, with no
- * replay (the IETF `Idempotency-Key` draft; Google AIP-155).
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment or an issue message, eight
+ * routes answer its repeat with that post read afresh, under the first answer's status: a
+ * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
+ * reply to a comment or a message. Any other stored success is not replayed once it holds a
+ * comment or an issue message that is deleted (an object whose own id is the post, such as a
+ * related-item hit with its snippet) or a document version a delete renamed: such a repeat is the
+ * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`, and where one of the five routes above
+ * answers a repeat of an answer a delete so ended from what it made, that replay keeps none of the
+ * first answer's other members, such as its `advice`. A post named only in a text, a citation,
+ * holds no part of it and ends nothing, and a stored refusal is replayed as it was. A write
+ * without the header is run as it always was, with no replay (the IETF `Idempotency-Key` draft;
+ * Google AIP-155).
  */
 export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
@@ -250,9 +296,12 @@ export const IDEMPOTENCY_KEY_IN_FLIGHT = "KEY_IN_FLIGHT";
  *  and reads again what it wrote (the event feed carries the change too). */
 export const IDEMPOTENCY_KEY_COMMITTED = "KEY_COMMITTED";
 
-/** The code a replay's body carries when the first answer was larger than Dispatch keeps (1 MiB):
- *  the replay has the first answer's status and this body instead of the first's. A 2xx with it
- *  means the write ran; the client reads the resource again rather than this body. */
+/** The code a replay's body carries when Dispatch gives no copy of the first answer: one larger
+ *  than it keeps (1 MiB), or a success that holds a deleted post or a version a delete renamed
+ *  (`IDEMPOTENCY_KEY_HEADER`). The replay has the first answer's status and this body instead of
+ *  the first's, and its message says what the request did, as the key recorded it: a request that
+ *  wrote ran, and its caller reads what it wrote; a request that wrote nothing, such as the
+ *  markdown round trip or the related-item check, may be sent again under a new key. */
 export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
 
 /**
@@ -291,9 +340,9 @@ export function retriesUnderKey(status: number, code: string | undefined): boole
 /**
  * Whether an answer of `status`, `replayed` (it carried `IDEMPOTENCY_REPLAYED_HEADER`) and parsed
  * `body` is a replay whose first answer Dispatch did not keep: a replayed 2xx whose body is
- * `{ code: IDEMPOTENCY_ANSWER_NOT_KEPT }`. The write ran; the client reads the resource again
- * rather than taking this body for it. An answer that is not a replay is the resource itself,
- * whatever it holds.
+ * `{ code: IDEMPOTENCY_ANSWER_NOT_KEPT }`. Its caller takes no resource from this body: a write
+ * that ran reads what it wrote again, and a call that writes nothing asks again under a new key.
+ * An answer that is not a replay is the resource itself, whatever it holds.
  */
 export function answerNotKept(status: number, replayed: boolean, body: unknown): boolean {
   return (
@@ -389,6 +438,15 @@ export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_
  */
 export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
+
+/**
+ * The error a delete settles each send of its post still pending with: the post's delete ended
+ * the attempt, and nothing more - not whether its frame had already reached the session. Each
+ * such attempt also gets a failed receipt carrying it. Generated into Go as
+ * `contracts.DeletedPostDeliveryError`, so the string the server writes and the string the
+ * dashboard reads a delete's receipts and attempts by are one literal.
+ */
+export const DELETED_POST_DELIVERY_ERROR = "ended by the post's delete";
 
 /**
  * The cause a delivery attempt records when the listener answered its send 503 with the code that
@@ -685,6 +743,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.anchor_refreshed": true,
   "comment.answered": true,
   "comment.created": true,
+  "comment.deleted": true,
   "comment.delivery": true,
   "comment.edited": true,
   "comment.reopened": true,
@@ -701,7 +760,9 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "message.accepted": true,
   "message.answered": true,
   "message.created": true,
+  "message.deleted": true,
   "message.delivery": true,
+  "message.edited": true,
   "priority.updated": true,
   "project.created": true,
   "project.updated": true,

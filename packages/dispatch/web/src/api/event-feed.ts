@@ -7,7 +7,7 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
-import { keptUntilRejected } from "../features/shell/chunk-loads";
+import { keptUntilRejected, renderChunk } from "../features/shell/chunk-loads";
 import { whenContentDrawn } from "../features/shell/content-drawn";
 import { signedInLogin } from "../features/writes/write-store";
 
@@ -196,10 +196,13 @@ export function useEventFeed({
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
     trackQueryFetches(queryClient);
-    // The map from an event to the queries it changes, started with the feed - or, on a landing
-    // whose page draws a live document, once that document has drawn (`whenContentDrawn`) - and
-    // awaited by each event below. One promise at a time, which every event waits on, so the
-    // events are read in order (`event-refresh-load.ts`).
+    // The map from an event to the queries it changes, and beside it the facts a post's
+    // correction writes into the reads that hold the post (`corrected-post.ts`, a module that
+    // imports the map's): no first paint reads either, so both are chunks of their own, each
+    // under `renderChunk`, so that a failure of either spends the tab's recovery reload. They are
+    // started with the feed - or, on a landing whose page draws a live document, once that
+    // document has drawn (`whenContentDrawn`) - and awaited by each event below. One promise at a
+    // time, which every event waits on, so the events are read in order (`event-refresh-load.ts`).
     //
     // A download that fails is not kept (`keptUntilRejected`), and the next event starts the
     // import again. The failure does not always reload the tab: nothing reloads while the browser
@@ -213,7 +216,13 @@ export function useEventFeed({
     // fetch (WebKit) answers with the same failure from its module map
     // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then refreshes
     // everything, under that refresh's own throttle, rather than nothing.
-    const awaitRefreshMap = keptUntilRejected(() => whenContentDrawn().then(loadEventRefresh));
+    const awaitRefreshMap = keptUntilRejected(() =>
+      whenContentDrawn()
+        .then(() =>
+          Promise.all([loadEventRefresh(), renderChunk(() => import("./corrected-post"))])
+        )
+        .then(([map, { markCorrectedPost }]) => ({ ...map, markCorrectedPost }))
+    );
     void awaitRefreshMap();
 
     const scheduleFlush = () => {
@@ -324,15 +333,19 @@ export function useEventFeed({
           refreshEverything();
           return;
         }
-        // The refresh the event asks for waits on the map's chunk, and every event waits on the
-        // same promise, so they are read in the order they arrived (`event-refresh-load.ts`).
+        // The refresh the event asks for, and the correction it marks, wait on the map's chunk,
+        // and every event waits on the same promise, so they are read in the order they arrived
+        // (`event-refresh-load.ts`).
         // The chunk is in after the first round trip, so this is a promise already settled for
         // all but the first few events of a page. A feed that stopped meanwhile refreshes nothing
         // (`stopped`), whether the chunk lands or fails.
         void awaitRefreshMap().then(
-          ({ askThreadsIssue, eventRefreshTargets }) => {
+          ({ askThreadsIssue, eventRefreshTargets, markCorrectedPost }) => {
             if (stopped) return;
             try {
+              // Written ahead of the batch's refresh, whose stale mark a write would clear: a
+              // read of the post whose refetch fails keeps the answer this marks.
+              markCorrectedPost(queryClient, event);
               const targets = eventRefreshTargets(event, signedInLogin(queryClient));
               markAskThreadsSeededByAnOlderInbox(queryClient, targets, askThreadsIssue(event));
               queueRefresh(targets);

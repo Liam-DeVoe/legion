@@ -7,6 +7,7 @@ import {
   type FakeSession,
   getSentMessages,
   openAgents,
+  pollAgentListEvery,
   setListsState,
   setLiveSessions,
   setSessionLastSeen,
@@ -986,15 +987,25 @@ function connection(page: Page): Locator {
   );
 }
 
-/** A change of the registry reaches an open live view on the shell's next poll of the agent list
- *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`), a page timer that one
- *  jump of the page's clock fires (`spendPageTime`, `e2e/agents.ts`). The jump puts the page's date
- *  back on the wall clock after it, which is what lets the row below take seven of them: left
- *  ahead, the date would read the live socket as silent past `LIVE_SOCKET_SILENT_MS` between two
- *  of the server's real-time heartbeats, the page would replace the socket, and the new one would
- *  send again the subscribe the row asserts is sent once. A listener that is down refuses the
- *  poll's read with no wait named, so the page's two retries of it come half a second apart on
- *  the running clock, inside an assertion's own wait. */
+/** The agent list's cadence on the pages of the row below (`pollAgentListEvery`), in place of the
+ *  shell's 15 s (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`): a change of
+ *  the registry reaches an open live view on the next poll of the list. */
+const ROW_POLL_MS = 1_000;
+
+/** The `Retry-After` the row's refilling list carries (`setListsState`): the view says the list
+ *  is refilling only once the page's two retries of the poll's refused read are out, and each
+ *  waits that long and up to as much again (`queryRetryDelay`, `web/src/api/query-client.ts`). */
+const ROW_REFILLING_RETRY_AFTER_SECONDS = 1;
+
+/** A change of the registry reaches an open live view on the next poll of the agent list, a page
+ *  timer that one jump of the page's clock fires (`spendPageTime`, `e2e/agents.ts`): a jump of the
+ *  shell's own cadence (`AGENT_REGISTRY_POLL_MS`) passes the row's `ROW_POLL_MS` too. The jump
+ *  puts the page's date back on the wall clock after it, which is what lets the row below take
+ *  seven of them: left ahead, the date would read the live socket as silent past
+ *  `LIVE_SOCKET_SILENT_MS` between two of the server's real-time heartbeats, the page would
+ *  replace the socket, and the new one would send again the subscribe the row asserts is sent
+ *  once. A listener that is down refuses the poll's read with no wait named, so the page's two
+ *  retries of it come half a second apart on the running clock, inside an assertion's own wait. */
 function nextRegistryPoll(page: Page): Promise<void> {
   return spendPageTime(page, AGENT_REGISTRY_POLL_MS);
 }
@@ -1026,8 +1037,8 @@ function listedSession(
 // list refilling or the listener down, is no word of the registry's: the header says why it has
 // no list to read, and the last list's word stands beside that, in the header and in the line.
 // SLOW(>=2s): three live views, a reconnect, and eight changes of the registry, each read on the
-// shell's poll of the agent list, which the page's clock fires, one of them a refilling list the
-// page retries twice for before it says so.
+// agent list's poll (`ROW_POLL_MS`), which the page's clock fires, one of them a refilling list
+// the page retries twice for before it says so.
 test("a silent session says so in the header and in a line above its messages, in the relay's words or the registry's", async ({
   browser,
 }) => {
@@ -1059,6 +1070,7 @@ test("a silent session says so in the header and in a line above its messages, i
   );
 
   const context = await asUser(browser, "alice");
+  await pollAgentListEvery(context, ROW_POLL_MS);
   const page = await context.newPage();
   const sockets = watchLiveSockets(page);
   const view = frontLiveView(page);
@@ -1191,7 +1203,7 @@ test("a silent session says so in the header and in a line above its messages, i
     // page's two retries of it are out, and the list's last word stands beside it: the session is
     // still unresponsive, the header still reads no Live beside its note, and the line still says
     // what the list says.
-    await setListsState("refilling");
+    await setListsState("refilling", { retryAfterSeconds: ROW_REFILLING_RETRY_AFTER_SECONDS });
     const refilling = view.getByTestId("agent-list-refilling");
     await spendPageTimeUntil(page, () => refilling.isVisible(), "the header says the list refills");
     await expect(refilling).toBeVisible();

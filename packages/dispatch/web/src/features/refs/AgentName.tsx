@@ -12,6 +12,7 @@ import {
   type AgentVariant,
   drawnSessionName,
   isSessionActor,
+  type RegistryTitles,
   resolveAgent,
   SessionAgentName,
 } from "./SessionName";
@@ -34,6 +35,21 @@ import { Timestamp } from "./Timestamp";
  *
  *     rg -n --glob '!*.test.*' 'liveDotBg|offlineDotBorder|stalledDotBorder|unknownDotBorder|/live`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title' packages/dispatch/web/src
  */
+
+/** No registry title at all: what an agent is named by before the registry answers, or where
+ *  no registry is read (`actorLabelText`). */
+const NO_TITLES: RegistryTitles = { title: () => undefined, titles: new Map() };
+
+/** `AgentText.label`'s words for an agent, by the titles `registry` holds: its name, with the
+ *  agent a person's act was made through, then its attribution. */
+function labelText(ref: AgentRef, registry: RegistryTitles): string {
+  const { attribution, name } = resolveAgent(ref, registry);
+  // The same name `AgentName` draws, the agent an act was made through included, so a title
+  // or an aria-label never says a person wrote what their agent wrote for them.
+  const acted =
+    "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
+  return `${acted}${attribution}`;
+}
 
 type AgentSubject =
   | { actor: Actor; sessionId?: never; storedTitle?: never }
@@ -173,6 +189,17 @@ export interface AgentText {
   initials(actor: Actor): string;
 }
 
+/**
+ * `AgentText.label` for a caller that reads no agent registry, such as a pure model: the label
+ * `useAgentText` spells before the registry has answered, or with no registry. A person by login,
+ * with the agent an act was made through; a session by the title stamped on its write, else its
+ * short id (`session:<8>…`); and the attribution after either. Where the registry lists a session
+ * under a title, `label` names it by that title and this does not.
+ */
+export function actorLabelText(actor: Actor): string {
+  return labelText({ actor }, NO_TITLES);
+}
+
 /** `AgentText.author` inside `NoTooltips`: a session as `drawnSessionName` names it there, a
  *  person as `personAuthor` does, and no actor by the page's words for an author nobody
  *  recorded. */
@@ -242,14 +269,7 @@ export function useAgentText(): AgentText {
   const registry = useAgentRegistry(false);
   const page = usePageWords();
   return useMemo(() => {
-    const label = (ref: AgentRef) => {
-      const { attribution, name } = resolveAgent(ref, registry);
-      // The same name `AgentName` draws, the agent an act was made through included, so a title
-      // or an aria-label never says a person wrote what their agent wrote for them.
-      const acted =
-        "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
-      return `${acted}${attribution}`;
-    };
+    const label = (ref: AgentRef) => labelText(ref, registry);
     return {
       author: (actor: Actor | undefined) =>
         page !== null

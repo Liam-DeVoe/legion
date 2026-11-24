@@ -283,6 +283,14 @@ export type DispatchEvent =
       readonly type: "comment.edited";
       readonly payload: CommentEventPayload;
     })
+  /** The author withdrew the comment: its body is cleared, and the payload carries the routing
+   *  fields its `comment.created` carried with `deleted_at` and `deleted_by` in place of every
+   *  body. A reply's carries no text of the post it answers: its `reply_block` keeps every field
+   *  but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "comment.deleted";
+      readonly payload: CommentEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "suggestion.accepted";
       readonly payload: CommentEventPayload;
@@ -305,6 +313,20 @@ export type DispatchEvent =
     })
   | (DispatchEventBase & {
       readonly type: "message.answered";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author replaced the body of an issue message, as `comment.edited` does for a comment.
+   *  The payload carries the new body. */
+  | (DispatchEventBase & {
+      readonly type: "message.edited";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author withdrew the issue message: its body is cleared, and the payload carries the
+   *  routing fields its `message.created` carried with `deleted_at` and `deleted_by` in place of
+   *  every body. A reply's carries no text of the post it answers: no `reply_body`, and its
+   *  `reply_block` keeps every field but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "message.deleted";
       readonly payload: MessageEventPayload;
     })
   | (DispatchEventBase & {

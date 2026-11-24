@@ -66,16 +66,19 @@ interface ResolvedAgent {
   readonly attribution: string;
 }
 
+/** What `resolveAgent` reads of the registry: its titles alone. */
+export type RegistryTitles = Pick<AgentRegistry, "title" | "titles">;
+
 /** The name and attribution `main` gives an agent: every name `AgentName.tsx` spells as text
  *  (`AgentText`'s `label`, `part`, `sessionText` and `initials`, on every surface) and every name
  *  it draws outside `NoTooltips` comes from here. Inside `NoTooltips` a drawn session name follows
  *  `drawnSessionName`, and `AgentText.author` names an author, instead. */
 export function resolveAgent(
   ref: SessionRef,
-  registry: AgentRegistry
+  registry: RegistryTitles
 ): ResolvedAgent & { readonly sessionId: string };
-export function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent;
-export function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
+export function resolveAgent(ref: AgentRef, registry: RegistryTitles): ResolvedAgent;
+export function resolveAgent(ref: AgentRef, registry: RegistryTitles): ResolvedAgent {
   if ("actor" in ref) {
     const { actor } = ref;
     return {
