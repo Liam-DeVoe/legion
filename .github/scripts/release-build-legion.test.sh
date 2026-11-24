@@ -149,6 +149,19 @@ printf 'go 1.22\n\nuse ./packages/daemon\n' > "$root/go.work"
 run_mode "$root" env linux/amd64 GOWORK
 check "a go.work at the root: GOWORK names it" "$(is "$status|$out" "0|$(cd "$root" && pwd -P)/go.work")"
 
+echo "case: modules prints the go.mod of each module the build's go.work uses"
+root=$(fixture modules)
+run_mode "$root" modules linux/amd64
+check "no go.work: the daemon's go.mod alone" "$(is "$status|$out" "0|$(cd "$root" && pwd -P)/packages/daemon/go.mod")"
+mkdir -p "$root/packages/other"
+printf 'module example.com/other\n\ngo 1.22\n' > "$root/packages/other/go.mod"
+printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/other\n)\n' > "$root/go.work"
+run_mode "$root" modules linux/amd64
+check "a go.work: the go.mod of each module it uses" \
+  "$(is "$status|$out" "0|$(cd "$root" && pwd -P)/packages/daemon/go.mod"$'\n'"$(cd "$root" && pwd -P)/packages/other/go.mod")"
+run_mode "$root" modules
+check "modules without a target: exits 2 with the usage" "$(is "$status|$(contains "$err" 'usage: release-build-legion.sh ')" '2|true')"
+
 echo "case: a mode it does not know, or one without its target"
 root=$(fixture usage)
 run_mode "$root" bogus

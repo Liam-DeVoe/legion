@@ -71,11 +71,22 @@ GO
 }
 
 # release <root> <paths>: release.yaml with a LEGION_VERSION_ARGS of one --patch-path and <paths>
-# after its `--`.
+# after its `--`, and the version step that reads it, as the real one runs it.
 release() {
-  printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: >-\n    --patch-path packages/daemon/internal/prompts/roles/\n    -- %s\njobs: {}\n' \
-    "$2" > "$1/.github/workflows/release.yaml"
+  printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: >-\n    --patch-path packages/daemon/internal/prompts/roles/\n    -- %s\n%s' \
+    "$2" "$version_job" > "$1/.github/workflows/release.yaml"
 }
+
+# The job of release.yaml that runs legion's version step, as the real one runs it.
+version_job='jobs:
+  legion_build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine next version
+        id: version
+        run: |
+          .github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS >> "$GITHUB_OUTPUT"
+'
 
 # gowork <root>: a go.work at the root that binds the two modules, as the real one does, and an
 # empty go.work.sum beside it.
@@ -172,6 +183,45 @@ printf 'go 1.22\n\nuse (\n\t%s/packages/daemon\n\t%s/packages/envoy\n)\n' "$root
 GOWORK="$work/gowork-outside-parent/go.work" run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says it is outside the repository" "$(contains "$out" 'is outside the repository')"
+
+echo "case: a module the workspace uses that links nothing into legion, whose go.mod the list does not name"
+# In workspace mode the require lines of every module go.work uses feed one version selection, so
+# a change to such a module's go.mod alone can change what legion links.
+root=$(fixture gowork-other-module)
+gowork "$root"
+mkdir -p "$root/packages/other"
+printf 'module github.com/example/other\n\ngo 1.22\n' > "$root/packages/other/go.mod"
+: > "$root/packages/other/go.sum"
+printf 'package other\n' > "$root/packages/other/other.go"
+printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n\t./packages/other\n)\n' > "$root/go.work"
+release "$root" "$covering go.work go.work.sum"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names its go.mod and go.sum" "$(contains "$out" 'would release no legion: packages/other/go.mod, packages/other/go.sum\.')"
+
+echo "case: the version step reads the list as the check does not"
+# The check expands LEGION_VERSION_ARGS as the step that runs release-push.sh version legion-v
+# does: from the workflow's env, unquoted in bash, at the root. A job or step env that sets the
+# variable, a working directory, or no such step makes the release read another list.
+root=$(fixture step-env)
+version_job="${version_job/    runs-on: ubuntu-latest/    runs-on: ubuntu-latest
+    env:
+      LEGION_VERSION_ARGS: -- packages/}" release "$root" "$covering"
+run_check "$root"
+check "a job env that sets it: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) sets LEGION_VERSION_ARGS in its job's env")"
+root=$(fixture step-directory)
+version_job="${version_job/        id: version/        id: version
+        working-directory: packages}" release "$root" "$covering"
+run_check "$root"
+check "a working directory: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" "legion version step (job legion_build) sets its working-directory (packages)")"
+root=$(fixture step-none)
+version_job='jobs: {}
+' release "$root" "$covering"
+run_check "$root"
+check "no such step: exits 1" "$(is "$status" 1)"
+check "says so" "$(contains "$out" 'has 0 steps that run `.github/scripts/release-push.sh version legion-v \$LEGION_VERSION_ARGS`, want one')"
 
 echo "case: a directory covers every package below it"
 root=$(fixture directory)
@@ -281,7 +331,7 @@ check "exits 1 with no LEGION_VERSION_ARGS" "$(is "$status" 1)"
 check "says so" "$(contains "$out" 'has no env LEGION_VERSION_ARGS')"
 
 root=$(fixture no-dashes)
-printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: packages/daemon/\njobs: {}\n' > "$root/.github/workflows/release.yaml"
+printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: packages/daemon/\n%s' "$version_job" > "$root/.github/workflows/release.yaml"
 run_check "$root"
 check "exits 1 with no --" "$(is "$status" 1)"
 check "says release-push.sh refuses the words, as the release would" \
