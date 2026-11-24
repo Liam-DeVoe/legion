@@ -211,9 +211,6 @@ func (r *fixLineRig) sends(role claim.Role, row record.OutboxRow) runtime.Adopti
 	machine.Wait()
 	testwait.Eventually(r.t, "the "+string(role)+"'s task to reach its agent", func() bool { return len(r.conns[role].Prompts()) == 1 })
 	app := "legion-" + string(role) + "[bot]"
-	if role != claim.RoleImplementer {
-		app = "legion-review[bot]"
-	}
 	var made []runtime.Adoption
 	for _, call := range r.rt.CallsOf("AdoptWorkingCopy") {
 		if call.Identity.Name == app {
