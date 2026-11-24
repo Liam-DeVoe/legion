@@ -1037,9 +1037,11 @@ build and pack steps are envoy-go-build's, and its shell-script tests envoy-go-c
 
 The unit step, the envoy-go leg's share of the module's unit tests, is a step of ci.yaml to keep
 a timeout-minutes of its own (main's #5084; .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips).
-Each Pair of TestStatementTimings runs on the database cmd/dispatch-seed fills, one package at a
-time after every Postgres-backed step of the leg (the step "Time the statements on the seeded
-measurement database" of ci.yaml's go-envoy-held job).
+TestStatementTimings of refs and of docs times nothing: each runs the statements its package's
+BenchmarkStatementTimings times, once and untimed, on the database cmd/dispatch-seed fills, and
+checks what they read, one package at a time after every Postgres-backed step of the leg (the step
+"Check the statements on the seeded measurement database" of ci.yaml's go-envoy-held job). The
+timings are the benchmarks', a tool's, since a runner's load decides a timed pair.
 
 ## The envoy-go unit step: one go test that counts the broker's skips
 

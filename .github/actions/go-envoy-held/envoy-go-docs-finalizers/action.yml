@@ -64,8 +64,8 @@ runs:
     # gotestsum's retry refuses; the compiler run with it would print them too. gotestsum's
     # standard-verbose format prints the package's leak check, which TestMain writes after the
     # tests have run: the count of services the tests left alive is the half of this leg that no
-    # detector of Go's reports. The -skip is this package's TestStatementTimings, which times
-    # statements on the seeded measurement database alone: the envoy-go legs' statement-timing step
+    # detector of Go's reports. The -skip is this package's TestStatementTimings, which checks
+    # statements on the seeded measurement database alone: the envoy-go legs' statement step
     # runs it there, so a run of it here was its second in one run (TestStatementTimings); and the
     # two corpus tests, which the next step runs in every leg. go-test-split.sh lists the package's
     # tests and keeps this leg's share. -timeout 15m is the smallest whole minute at which this

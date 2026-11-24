@@ -1259,7 +1259,7 @@ cd packages/envoy && DISPATCH_TEST_DATABASE_URL=<test database> DISPATCH_RECALL_
 
 These are INFRA-325's own measurements: every changed statement's plan and time (A8), and the median wall time of the six write routes the new triggers slow (A9).
 Both run against the seeded measurement database `cmd/dispatch-seed` fills, never against a test database and never against production.
-`DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `go-envoy-held` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale 0.01, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
+`DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `go-envoy-held` job, in "Check the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale 0.01, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
 `internal/dispatch/api`'s two measurements, below, are tools, run by the author of a change to those statements on a seed of 0.03 or more: at the largest scale that job's time allows, their bounds do not hold.
 So are `internal/dispatch/refs`' `BenchmarkStatementTimings`, which measures every pair of that package on a seed of 1, the scale they were sized at, and `internal/dispatch/docs`' `BenchmarkStatementTimings`, which measures that package's six anchor reads on a seed of 0.01 or more: a runner's load decides those pairs' verdicts.
 Each package's `TestStatementTimings` times nothing, and checks at 0.01 the subjects and statements its pairs read.
