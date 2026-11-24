@@ -47,7 +47,7 @@ jobs:
     # to 5 minutes, and runs it at once, so 71 in all. And at least the waits on the network up to
     # the last forced-order step's download of nats-server, so each can fail by name:
     # why: .github/ci-notes/ci-job-envoy-go-race.md#the-jobs-limit-held-to-the-downloads-its-forced-order-steps-run
-    # 240 s + 2,100 s + 1,325 s + 1,325 s + 425 s = 5,415 s -> 91 min.
+    # 240 s + 19 s + 2,100 s + 1,325 s + 1,325 s + 425 s = 5,434 s -> 91 min.
     timeout-minutes: 91
     services:
       postgres:

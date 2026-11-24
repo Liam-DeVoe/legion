@@ -15,11 +15,12 @@ time: jobs 128730667606, 128991520632 and 129036051255 (runs 42480325123, 425656
 sha256:69c3a316).
 
 - The PostgreSQL signing key, read by `.github/scripts/fetch.sh` from www.postgresql.org: 0.54 s,
-  0.71 s and 0.44 s. fetch.sh's curl `--max-time` bounds an attempt's whole transfer, its body
-  included, so the tool's own deadline is the bound, at the rule network-install.sh's kinds
-  follow: twice the slowest, 1.42 s, rounded up to the minute, 60 s. It makes up to three
-  attempts, with curl's own pauses of 1 s and 2 s, and starts none after 120 s: 183 s at most
-  before it fails the RUN by name (fetch.sh's header says the form).
+  0.71 s and 0.44 s. fetch.sh cuts an attempt 30 s into a stall and at the bound its call passes,
+  the file's size at 250,000 bytes a second rounded up to the minute, and at least 60 s (fetch.sh's
+  header says why): the key's 4,812 bytes take under a second at that rate, so 60 s, which is also
+  twice the slowest, 1.42 s, rounded up to the minute. It makes up to three attempts, with curl's
+  own pauses of 1 s and 2 s, and starts none after 120 s: 183 s at most before it fails the RUN by
+  name (fetch.sh's header says the form).
 - `apt-get update --error-on=any`: 2.2 s, 2.2 s and 1.3 s (35.2 MB of lists). It runs through
   network-install.sh, under its bound for apt, 60 s an attempt, which that kind's measurement sets
   and these fit inside: 245 s before it fails by name.
@@ -41,8 +42,8 @@ its own: the step's limit is its bound.
 Up to the record step's last read, the job waits on the network in these steps, each counted at
 its worst:
 
-- 608 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
-  case of the tool installs that read .github/scripts/ci-tools.sh" derives.
+- 848 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+  case of the tool installs that read .github/scripts/ci-tools.sh" derives for an x86_64 runner.
 - 245 s: the decide step's `crane config`, through network-install.sh's bound for crane (three
   attempts of 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses).
 - 240 s: the builder's pull of its BuildKit image, which setup-buildx-action makes with `docker
@@ -53,6 +54,6 @@ its worst:
 - 20.4 s: every other step at its slowest, from job 128991520632's 97 s: less the build step's
   65.7 s and the four steps above at their healthy 0.6 s, 0.5 s, 8.0 s and 1.8 s.
 
-780 s + 608 s + 245 s + 240 s + 735 s + 20.4 s = 2,628.4 s, rounded up to 44 minutes. The 3
+780 s + 848 s + 245 s + 240 s + 735 s + 20.4 s = 2,868.4 s, rounded up to 48 minutes. The 3
 minutes main gives the job would end a stalled read in GitHub's cancellation, which names nothing,
 before the wrapper or curl failed it by name.

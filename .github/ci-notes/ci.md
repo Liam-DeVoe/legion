@@ -2708,11 +2708,13 @@ of 304 green "Initialize containers" steps pulled in 62.7 s (dispatch-browser's 
 Each such limit is held to this sum: up to each step that installs, the runner's pulls, the bounds
 of every step before it (its own limit, or its installs where it sets none) and the step's own
 installs at their worst case, three attempts of the kind's bound, each killed 15 s after its
-SIGTERM, with two 10 s pauses (`network-install.sh --bounds` prints each kind's numbers). Each job
-whose limit this rests on derives it in its own note (`ci-job-daemon-go.md`, `ci-job-pi-envoy.md`,
-`ci-job-pi-legion.md`, `ci-job-claude-envoy.md`, `ci-job-dispatch-ui.md`, `ci-job-envoy-client.md`,
-`ci-job-envoy-smoke.md`, `ci-job-envoy-go-race.md`, `ci-job-ci-images.md`, `dispatch-browser.md`,
-`browser-image.md`, `worker-image.md`).
+SIGTERM, with two 10 s pauses (`network-install.sh --bounds` prints each kind's numbers), and each
+tool install that reads `.github/scripts/ci-tools.sh` at the worst case the section below derives.
+Each job whose limit this rests on derives it in its own note (`ci-job-daemon-go.md`,
+`ci-job-pi-envoy.md`, `ci-job-pi-legion.md`, `ci-job-pi-shared.md`, `ci-job-plugin-pack.md`,
+`ci-job-claude-envoy.md`, `ci-job-dispatch-ui.md`, `ci-job-envoy-client.md`,
+`ci-job-envoy-smoke.md`, `ci-job-envoy-go-checks.md`, `ci-job-envoy-go-race.md`,
+`ci-job-ci-images.md`, `dispatch-browser.md`, `browser-image.md`, `worker-image.md`).
 
 ## The worst case of the tool installs that read .github/scripts/ci-tools.sh
 
@@ -2720,20 +2722,29 @@ The actions that install a tool through `.github/scripts/ci-tools.sh` run no ins
 network-install.sh, and carry bounds of their own, which a job's sum counts at their worst. One
 fetch of a row's source is `ci_tools_curl` (`--retry 7 --retry-all-errors --retry-max-time 60
 --connect-timeout 30 --speed-limit 10000 --speed-time 30 --max-time <the row's max_time>`): a
-stall is cut 30 s in, and an attempt that keeps moving runs up to the row's `max_time`, twice its
-slowest green fetch rounded up to the minute (`.github/ci-tools.yaml` names each), so one fetch
-fails by name inside 92 s + `max_time` (the comment above that function says why): 152 s for
-every row's 60 s, and 272 s for uv's 180 s. A row whose second source is the copy in
+stall is cut 30 s in, and an attempt that keeps moving runs up to the row's `max_time`, the larger
+of twice its slowest green fetch and its largest file at 250,000 bytes a second, each rounded up
+to the minute (`.github/ci-tools.yaml` names each), so one fetch fails by name inside 92 s +
+`max_time` (the comment above that function says why): 152 s for a row's 60 s, 212 s for 120 s,
+272 s for 180 s, 332 s for 240 s and 572 s for 480 s. A row whose second source is the copy in
 ghcr.io/cybermonklabs/legion/ci reads three more after its primary fails: the pull token, the
-blob, and the store the blob's redirect names.
+blob, and the store the blob's redirect names, each under the row's own `max_time`.
 
-- 608 s: `.github/actions/install-crane`, and install-jj's own install of mise: the release
-  asset, 152 s, then the copy, 3 × 152 s.
+- 848 s: `.github/actions/install-crane` on an x86_64 runner, whose row's tarball takes 120 s: the
+  release asset, 212 s, then the copy, 3 × 212 s. On an arm64 runner, whose row's tarball takes
+  60 s, 608 s: 152 s, then 3 × 152 s; `.github/actions/install-changie` and
+  `.github/actions/install-elan` the same, 608 s.
 - 544 s: `.github/actions/install-uv`: the release asset, then PyPI's wheel, 2 × 272 s.
-- 1,640 s: `.github/actions/install-jj`: its mise, 608 s; then `mise install` of the jj spec,
+- 2,300 s: `.github/actions/install-jj`: its mise, whose row takes 180 s on either machine: the
+  release asset, 272 s, then the copy, 3 × 272 s, 1,088 s; then `mise install` of the jj spec,
   whose API reads gave up after 336 s behind a proxy that accepted and never answered (mise
   2026.8.12: 30 s a request, each tried 3 more times), and whose download the action bounds at
-  60 s, tried 4 times, 240 s; then the copy of the jj binary, 3 × 152 s, 456 s:
-  608 s + 336 s + 240 s + 456 s.
+  60 s, tried 4 times, 240 s; then the copy of the jj binary, whose row takes 120 s on either
+  machine, 3 × 212 s, 636 s: 1,088 s + 336 s + 240 s + 636 s.
 - 304 s: `.github/actions/install-zsh`, which fetches each of its two pinned files the Actions
   cache lacks through `ci_tools_curl` with a bound of its own of 60 s: 2 × (92 s + 60 s).
+- 1,144 s: `.github/actions/install-pulumi`: get.pulumi.com, then the release asset, the one
+  tarball the row's 480 s holds, 2 × 572 s.
+- 424 s: `.github/actions/install-docker-plugin`: the release asset, then get.pulumi.com, 2 ×
+  212 s.
+- 848 s: `.github/actions/install-helm`: get.helm.sh, 212 s, then the copy, 3 × 212 s.

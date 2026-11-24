@@ -28,8 +28,8 @@ Each job's limit is held, beside what its comment derives from its go test steps
 the network the job makes, so each one fails by name before GitHub's cancellation, which names
 nothing: up to each step that installs, the bounds of every step before it (its own limit, or its
 installs and its go tests' worst case where it sets none), the runner's pulls and the step's own
-installs. Both jobs make the same waits but for the NATS images, the uv install and the
-forced-order step's download:
+installs. Both jobs make the same waits but for the NATS images, the uv install, the forced-order
+step's download and daemon-go-race's sizing step:
 
 - 240 s: before the first step the runner pulls the Postgres service image with `docker pull`,
   which has no bound of its own and takes none from a workflow, so the job's limit is its one
@@ -38,12 +38,16 @@ forced-order step's download:
 - 490 s: the two apt commands of `.github/scripts/runner-tmux.sh`, 245 s each (three attempts of
   apt's 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses). They run only on a runner
   image without tmux, which a later image can be, so they count.
-- 1,640 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+- 2,300 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
   case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - 1,207 s: `.github/actions/install-omp`'s download of the pinned Oh My Pi, `curl --retry 3
   --retry-all-errors --max-time 300`: four attempts of 300 s, with curl's own pauses of 1, 2 and
   4 s between them, before the action fails by name.
 - 544 s, in daemon-go alone: `.github/actions/install-uv`, from that same section.
+- 19 s, in daemon-go-race alone: the step that sizes the Postgres service for the lane's Dispatch
+  processes (`.github/scripts/pg-connection-ceiling.sh`), which runs before its installs and sets
+  no limit of its own, at its measured time: its cold build of the connections command and the
+  service's restart took 19 s in envoy-go-race's job 137890840698.
 - 425 s for each NATS test image `.github/actions/pull-test-images` pulls: one in daemon-go
   (testnats.Image), three in daemon-go-race (Image, SkippingImage and Envoy's HubImage).
 - In daemon-go alone, the forced-order step's download of nats-server's module, which
@@ -53,10 +57,10 @@ forced-order step's download:
   sum: the plain step's slowest green run and its -timeout, 15.0 min + 15 min = 1,800 s, and the
   race-impossible step's, 0.5 min + 10 min = 630 s.
 
-daemon-go: 240 s + 490 s + 1,640 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 7,401 s,
-which its 124 minutes (7,440 s) hold.
-daemon-go-race: 240 s + 490 s + 1,640 s + 1,207 s + 1,275 s = 4,852 s, which its 81 minutes
-(4,860 s) hold.
+daemon-go: 240 s + 490 s + 2,300 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 8,061 s,
+which its 135 minutes (8,100 s) hold.
+daemon-go-race: 240 s + 19 s + 490 s + 2,300 s + 1,207 s + 1,275 s = 5,531 s, which its 93 minutes
+(5,580 s) hold.
 
 The 60 and 70 minutes main gives the two jobs (3,600 s and 4,200 s) end before those sums, so a
 stalled install there would end in GitHub's cancellation, which names nothing.

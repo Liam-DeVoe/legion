@@ -77,10 +77,10 @@ jobs:
     # That sum is the floor; the limit also holds the waits on the network before the tests, so
     # each can fail by name:
     # why: .github/ci-notes/ci-job-pi-legion.md#the-jobs-limit-held-to-the-installs-it-runs
-    # 240 s + 1,640 s + 1,207 s + 425 s + 425 s = 3,937 s -> 66 min.
-    timeout-minutes: 66
+    # 240 s + 2,300 s + 1,207 s + 425 s + 425 s = 4,597 s -> 77 min.
+    timeout-minutes: 77
     env:
-      JOB_TIMEOUT_MINUTES: 66 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 77 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:

@@ -86,8 +86,8 @@ jobs:
     # It holds the waits on the network too, each failing by name before the job's limit, the
     # forced-order step's download of nats-server after both go test steps above at their worst:
     # why: .github/ci-notes/ci-job-daemon-go.md#each-jobs-limit-held-to-the-installs-it-runs
-    # 240 s + 490 s + 1,640 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 7,401 s, under 7,440 s.
-    timeout-minutes: 124
+    # 240 s + 490 s + 2,300 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 8,061 s, under 8,100 s.
+    timeout-minutes: 135
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -101,7 +101,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 124 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 135 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -260,8 +260,8 @@ jobs:
     # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes. It holds the
     # waits on the network too:
     # why: .github/ci-notes/ci-job-daemon-go.md#each-jobs-limit-held-to-the-installs-it-runs
-    # 240 s + 490 s + 1,640 s + 1,207 s + 1,275 s = 4,852 s, under 4,860 s.
-    timeout-minutes: 81
+    # 240 s + 19 s + 490 s + 2,300 s + 1,207 s + 1,275 s = 5,531 s, under 5,580 s.
+    timeout-minutes: 93
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -275,7 +275,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 81 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 93 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       TESTCONTAINERS_RYUK_DISABLED: "true"

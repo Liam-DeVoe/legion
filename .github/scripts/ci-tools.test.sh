@@ -18,7 +18,10 @@
 # both arms share before either reads the archive and no failure of either leaves anything at
 # the destination it was given, a row whose primary carries a `primary_digest` is held to it
 # before its `primary_member` is taken out, and
-# ci_tools_fetch_primary leaves the archive the primary served rather than that member. It also
+# ci_tools_fetch_primary leaves the archive the primary served rather than that member. A source
+# that answers 429 or 503 with a Retry-After past the ladder's bound, which curl 8.14.1 answers
+# with exit 0 and no file, is a source that did not serve, and a curl that exits 0 on a 2xx and
+# writes nothing fetched nothing. It also
 # runs the repository's own .github/ci-tools.yaml through the helper, so a row this file cannot
 # parse fails here rather than in a job.
 #
@@ -67,7 +70,10 @@
 # in that case and in every other, is the real mktemp.
 #
 # Run from anywhere: .github/scripts/ci-tools.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's test job, under that runner's own curl alone (ubuntu-24.04-arm's
+# 8.5.0). A change of the helper's curl calls runs it by hand under trixie's curl 8.14.1 as well,
+# the way .github/scripts/fetch.test.sh's header gives, since that curl exits 0 where 8.5.0 exits
+# 22 on the Retry-After case above.
 set -euo pipefail
 # Each digest and each payload below is read inside a command substitution, and bash does not
 # carry errexit into one on its own: without this, a value that failed to build would be written
@@ -107,11 +113,30 @@ curl_arguments="$work/curl-arguments"
 # safe under: the cases that read a redirect to another origin run under it, so they read that
 # the credential reaches no other origin through this helper, whatever curl's own rule is. A call
 # with no `-L` is handed nothing more, since `--location-trusted` would make it follow.
+# While the file $curl_exits_0 exists, the stand-in answers as curl 8.14.1 answers a 429 or a 503
+# whose Retry-After waits past --retry-max-time, on any curl: it prints the error 22 line, writes
+# the `-w` format with the HTTP status that file holds and no redirect address, writes nothing
+# to the `-o` file and exits 0. The cases that read it hold the helper to what it makes of that
+# answer under a CI runner's curl, 8.5.0, which exits 22 there itself.
 forwarding_curl="$work/forwarding-curl"
+curl_exits_0="$work/curl-exits-0"
 real_curl=$(command -v curl)
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$curl_arguments"
+if [ -s "$curl_exits_0" ]; then
+  code=\$(<"$curl_exits_0")
+  format=
+  previous=
+  for argument in "\$@"; do
+    [ "\$previous" != -w ] || format=\$argument
+    previous=\$argument
+  done
+  format=\${format//"%{http_code}"/\$code}
+  printf '%s' "\${format//"%{redirect_url}"/}"
+  echo "curl: (22) The requested URL returned error: \$code" >&2
+  exit 0
+fi
 forward=()
 if [ -e "$forwarding_curl" ]; then
   for argument in "\$@"; do
@@ -503,7 +528,10 @@ YAML
 # A file with `<file>.pace` beside it is served whole at the bytes a second that file writes, in
 # a write every quarter second, as a slow source that keeps moving serves it; one with
 # `<file>.stall` beside it sends its headers, the number of bytes that file writes and then
-# nothing more, as a source that stops mid-body does.
+# nothing more, as a source that stops mid-body does. A path with `<file>.answer` beside it, which
+# need not exist itself, is answered every time with the status that file writes and the
+# `Retry-After` it writes after it, `<status> <seconds>`, and no body, as a service that sheds
+# load answers with a 429 or a 503.
 cat > "$work/origin.py" <<'PY'
 import http.server
 import os
@@ -523,6 +551,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             log.write(self.path + "\n")
         with open(logfile + ".auth", "a") as log:
             log.write(self.path + " " + (self.headers.get("Authorization") or "none") + "\n")
+
+    def answered(self):
+        """Answers the status and Retry-After `<file>.answer` writes, where there is one, and says
+        whether it did."""
+        answer = self.translate_path(self.path) + ".answer"
+        if not os.path.isfile(answer):
+            return False
+        with open(answer) as handle:
+            status, retry_after = handle.read().split()
+        self.send_response(int(status))
+        self.send_header("Retry-After", retry_after)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
 
     def redirected(self):
         """Answers the redirect `<file>.redirect` writes, where there is one, and says whether it did."""
@@ -566,12 +608,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         self.record()
-        if not self.redirected() and not self.paced():
+        if not self.answered() and not self.redirected() and not self.paced():
             super().do_GET()
 
     def do_HEAD(self):
         self.record()
-        if not self.redirected():
+        if not self.answered() and not self.redirected():
             super().do_HEAD()
 
     def log_message(self, *args):
@@ -685,13 +727,14 @@ nothing_at() { [ -e "$1" ] && echo false || echo true; }
 # temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
 temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
 
-# What `recorded_ladder` writes in place of the sixteenth argument, which is the file this run's own
-# mktemp named. That one word is the only word of the record this file cannot write down, since
-# it is another on every run; every other word is pinned by the helper, the manifest or the seam.
+# What `recorded_ladder` writes in place of the eighteenth argument, which is the file this run's
+# own mktemp named. That one word is the only word of the record this file cannot write down,
+# since it is another on every run; every other word is pinned by the helper, the manifest or the
+# seam.
 RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 
 # recorded_ladder: every argument the stand-in curl was handed by the call that ran last, one per
-# line, with the sixteenth replaced by that placeholder. The whole record is held, and so is its
+# line, with the eighteenth replaced by that placeholder. The whole record is held, and so is its
 # length, which is what catches a word appended anywhere, after the URL included: curl reads the
 # last word on --retry-max-time, so one appended word there takes the bound off every fetch this
 # repository makes. It is read inside `is` and never printed, so a credential that ever reached
@@ -700,20 +743,20 @@ recorded_ladder() {
   local argument number=0
   while IFS= read -r argument; do
     number=$((number + 1))
-    [ "$number" -ne 16 ] || argument=$RECORDED_TEMPORARY_FILE
+    [ "$number" -ne 18 ] || argument=$RECORDED_TEMPORARY_FILE
     printf '%s\n' "$argument"
   done < "$curl_arguments"
 }
 
-# pinned_ladder <max_time>: the fifteen words ci_tools_curl pins before the file it writes, with
-# that row's own bound in place.
+# pinned_ladder <max_time>: the seventeen words ci_tools_curl pins before the file it writes, with
+# that row's own bound in place, the last two before `-o` the HTTP status it holds the fetch to.
 pinned_ladder() {
   printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
-    --speed-limit 10000 --speed-time 30 --max-time "$1" -o
+    --speed-limit 10000 --speed-time 30 --max-time "$1" -w '%{http_code}' -o
 }
 
-# whole_record <max_time> <url>: the seventeen words ci_tools_curl hands curl for a row whose fetch
-# carries no argument of its own — those fifteen, then the temporary file the placeholder above
+# whole_record <max_time> <url>: the nineteen words ci_tools_curl hands curl for a row whose fetch
+# carries no argument of its own — those seventeen, then the temporary file the placeholder above
 # stands in for, then the URL the seam built.
 whole_record() {
   pinned_ladder "$1"
@@ -745,8 +788,8 @@ ladder=$(recorded_ladder)
 check "the fetch exits 0, so the record is that primary's own call" "$(is "$status" 0)"
 run ci_tools_field tarred max_time
 bound=$out
-# Seventeen words, because the sixteenth is the temporary file a mktemp of this run named and the
-# seventeenth is the URL the seam built from the row's own `primary`. The record is held whole, with
+# Nineteen words, because the eighteenth is the temporary file a mktemp of this run named and the
+# nineteenth is the URL the seam built from the row's own `primary`. The record is held whole, with
 # that one unpredictable word standing in for itself, so that a changed flag, a changed bound, a
 # changed URL and a word appended anywhere — after the URL as well — each fail here.
 check "the whole record is the pinned ladder with the row's own bound, this run's temporary file and the URL the seam built" \
@@ -803,6 +846,79 @@ check "says the transfer was too slow, for 30 s under 10,000 bytes a second" \
   "$(contains "$out" "Operation too slow. Less than 10000 bytes/sec transferred the last 30 seconds")"
 check "after the 30 s window and well before the 120 s bound" \
   "$(is "$([ "$took" -ge 30 ] && [ "$took" -lt 90 ] && echo yes)" yes)"
+
+echo "case: a source that answers 503 with a Retry-After past the ladder's bound did not serve, on every curl"
+# A service that sheds load answers 429 or 503 with a Retry-After, and one that would wait past
+# --retry-max-time ends curl's retries at once. curl 7.88.1 and 8.5.0 exit 22 there; curl 8.14.1
+# prints its error 22, writes nothing and exits 0. ci_tools_curl holds the HTTP status as well as
+# curl's exit, so on every curl the fetch fails as exit 22 with no file, and ci_tools_fetch reads
+# the second source. Run under curl 8.14.1 this case is that curl's own answer; the case after
+# next is that answer on any curl.
+origin retry-after-long
+printf '503 600\n' > "$root/$ASSET_PATH.answer"
+dest="$work/dest/retry-after-long"
+run ci_tools_curl "$dest" 7 "$base/$ASSET_PATH"
+check "ci_tools_curl exits 22" "$(is "$status" 22)"
+check "and leaves nothing at the destination" "$(nothing_at "$dest")"
+check "after one request, since the wait would run past the ladder's bound" \
+  "$(is "$(grep -c "^/$ASSET_PATH\$" "$log")" 1)"
+dest="$work/dest/retry-after-long-fetch"
+run ci_tools_fetch tarred "$dest"
+check "ci_tools_fetch exits 0" "$(is "$status" 0)"
+check "says the primary did not serve the bytes" \
+  "$(contains "$out" '^ci-tools: tarred: github-release did not serve the bytes (curl exit 22); trying the second source$')"
+check "names the copy that served them" \
+  "$(contains "$out" "^ci-tools: tarred: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: a token request the package answers 429 with a Retry-After past the ladder's bound fails by name, on every curl"
+# The same answer on the request that carries a credential, which follows no redirect and so
+# passes a 3xx to its caller: a 429 is no 3xx, and the fetch refuses it as the exit 22 it is.
+origin token-retry-after
+rm -- "$root/$ASSET_PATH"
+printf '429 600\n' > "$root/ghcr/token.answer"
+dest="$work/dest/token-retry-after"
+run ci_tools_fetch tarred "$dest"
+check "exits 1" "$(is "$status" 1)"
+check "names both sources and what each did" \
+  "$(contains "$out" '^::error::ci-tools: tarred: no source served the bytes; github-release: curl exit 22; ghcr-mirror: the pull token request failed (curl exit 22)$')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: a curl that exits 0 on a 503, as curl 8.14.1 does after such a Retry-After"
+# The stand-in curl answers every call this way while $curl_exits_0 holds a status, so this is
+# curl 8.14.1's answer on the runner's curl too.
+origin curl-exits-0
+printf '503\n' > "$curl_exits_0"
+dest="$work/dest/curl-exits-0"
+run ci_tools_curl "$dest" 7 "$base/$ASSET_PATH"
+check "ci_tools_curl exits 22" "$(is "$status" 22)"
+check "says curl exited 0 on that status and how it reads it" \
+  "$(contains "$out" '^ci-tools: curl exited 0 on HTTP 503, which is no 2xx .*, so this fetch is read as curl exit 22$')"
+check "and leaves nothing at the destination" "$(nothing_at "$dest")"
+run ci_tools__curl_held "$dest" 7 "$base/ghcr/token"
+check "ci_tools__curl_held exits 22 too" "$(is "$status" 22)"
+check "and still writes the status its caller reads" "$(contains "$out" '^503 ')"
+run ci_tools_fetch tarred "$dest"
+check "ci_tools_fetch exits 1, every request having answered so" "$(is "$status" 1)"
+check "and names both sources as not having served the bytes" \
+  "$(contains "$out" '^::error::ci-tools: tarred: no source served the bytes; github-release: curl exit 22; ghcr-mirror: the pull token request failed (curl exit 22)$')"
+check "nothing is at the destination" "$(nothing_at "$dest")"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+rm -f -- "$curl_exits_0"
+
+echo "case: a curl that exits 0 on a 200 and writes no file"
+# The other half of what the helper holds: a 2xx is a fetch only with the file there. The
+# stand-in answers 200 this way while $curl_exits_0 holds that status.
+origin curl-200-no-file
+printf '200\n' > "$curl_exits_0"
+dest="$work/dest/curl-200-no-file"
+run ci_tools_curl "$dest" 7 "$base/$ASSET_PATH"
+check "ci_tools_curl exits 22" "$(is "$status" 22)"
+check "and says nothing is at the file it was given" \
+  "$(contains "$out" "^ci-tools: curl exited 0 on HTTP 200 and left nothing at $dest, so this fetch is read as curl exit 22\$")"
+rm -f -- "$curl_exits_0"
 
 echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"
 origin primary-refuses

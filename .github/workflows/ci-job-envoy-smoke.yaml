@@ -33,10 +33,10 @@ jobs:
   envoy-smoke:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-envoy-smoke.md#the-jobs-limit-held-to-the-installs-it-runs
-    # 844 s + 4 x 425 s + 1,765 s = 4,309 s -> 72 min.
-    timeout-minutes: 72
+    # 844 s + 4 x 425 s + 1,765 s + 1,144 s + 424 s = 5,877 s -> 98 min.
+    timeout-minutes: 98
     env:
-      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 98 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
       TESTCONTAINERS_RYUK_DISABLED: "true"
