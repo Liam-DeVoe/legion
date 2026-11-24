@@ -601,7 +601,7 @@ export function createLegionTool(deps: {
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
-        "again is answered as taken), another document than the plan " +
+        "again is answered as taken, and adds you to its givers), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +

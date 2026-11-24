@@ -8,10 +8,10 @@ body: |-
   - The version in force given again is answered 200 and stores nothing, also where the first
     step carried it from generation 0, or a hand-over carried it with its run. Before, those two
     were refused `409 PLAN_VERSION_OLD`.
-  - Before the issue's first step, a version in force that no owner of the issue gave is set
-    aside at the give, as the first step sets it aside, and the owner's version is stored and run.
-    Before, the give was answered against that version, and the first step then passed the
-    owner's plan over.
+  - Before the first step of an issue the daemon has recorded, a version in force that no owner
+    of the issue gave is set aside at the give, as the first step sets it aside, and the owner's
+    version is stored and run. Before, the give was answered against that version, and the first
+    step then passed the owner's plan over.
   - A version below the version in force is refused `409 PLAN_VERSION_OLD` also when it was taken
     before; a give whose giver no longer owns the issue is refused `ISSUE_OUTSIDE_TREE`, one of a
     generation the issue left `PLAN_STALE_GENERATION`, and one in a lingering tree
