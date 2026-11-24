@@ -226,7 +226,7 @@ func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 		want     []claim.Agent
 	}{
 		{want: []claim.Agent{"implementer", "tester", "tester"}},
-		{sessions: record.KeySessions{"implementer": "k"}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
+		{sessions: record.KeySessions{"implementer": {Role: "implementer", Key: "k"}}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"}},
 			want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer"}},

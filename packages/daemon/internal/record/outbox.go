@@ -1297,13 +1297,15 @@ type SuperviseRequest struct {
 	// (plan.AgentID): `key:<key>` for the agent of a key, `step:<place>:<task>` for the agent of a
 	// step with no key. The workflow writes it on every start of a step's agent of an issue with
 	// plan rows (enter's, the held phase's retry and the send of an owed entry), the retro's naming
-	// the agent that runs it, and on no other start. Where a start that names none makes its claim,
-	// the runner takes the agent the steps give the claim's name (store.ClaimAgentFromSteps), and
-	// nothing writes that agent into the row. The runner hands it to the decision that brings the
-	// claim back (supervise.StartWork.Agent), which leaves the claim's session behind where it is
-	// another agent's (supervise.Claim.SessionAgent) and records this agent as the agent of the
-	// session it begins or takes; a claim that runs another agent's process is suspended first. A
-	// run of the row again once the claim's session is this agent's asks nothing of the claim. The
+	// the agent that runs it, and on no other start. Where a start names none, of a claim that
+	// records none and has run nothing, whichever try of the start made the claim, the runner takes
+	// the agent the steps give the claim's name (store.ClaimAgentFromSteps, internal/daemon's
+	// startAgent), and nothing writes that agent into the row. The runner hands it to the decision
+	// that brings the claim back (supervise.StartWork.Agent), which leaves the claim's session
+	// behind where it is another agent's (supervise.Claim.SessionAgent) and records this agent as
+	// the agent of the session it begins or takes; a claim that runs another agent's process is
+	// suspended first. A run of the row again once the claim's session is this agent's asks
+	// nothing of the claim. The
 	// release before decodes strictly (DisallowUnknownFields), so the way back of
 	// 20261122120917_claim_session_agent takes the key off each queued supervise row this release
 	// wrote.

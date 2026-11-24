@@ -3,11 +3,13 @@ package record
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // PhaseRowOf is role's row among rows now, read with no walk: the row with the highest entry, and
@@ -362,6 +364,48 @@ func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim
 func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
 	entry := entries[PhaseRole{Issue: issue, Role: role}]
 	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
+}
+
+// StartClaim is the claim a start row of role on issue acts on: the claim the row names
+// (SuperviseRequest.Claim), the one a phase worker's start was queued for, or, for a row that names
+// none, one the release before wrote, the claim WorkerClaim gives role's step over rows. It is the
+// one rule of that claim: the outbox's start acts on it, and the served state and the idle
+// release's notice name a start that waits for its pod by it, so all three name one claim. Its
+// error is WorkerClaim's, for a role or an issue no token spells.
+func StartClaim(project, issue string, role claim.Role, named claim.Token, rows []PhaseRow) (claim.Token, error) {
+	if named != "" {
+		return named, nil
+	}
+	return WorkerClaim(project, issue, role, rows)
+}
+
+// StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), with
+// the claim it starts in its Claim (StartClaim over rows), each once and in the order of starts: a
+// row that names a claim and a row of its role that names none can start one claim, and two rows
+// can be one start queued twice. The readers of those rows keep each row (Store.StartsWaitingForPod,
+// pods.IdleView.StartsWaitingForPod), so this is the one place they are made distinct.
+func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]pods.WaitingStart, error) {
+	claims := make([]pods.WaitingStart, 0, len(starts))
+	for _, start := range starts {
+		token, err := StartClaim(project, issue, start.Role, start.Claim, rows)
+		if err != nil {
+			return nil, fmt.Errorf("the claim of %s's start of %s that waits for its pod: %w", issue, start.Role, err)
+		}
+		if started := (pods.WaitingStart{Role: start.Role, Claim: token}); !slices.Contains(claims, started) {
+			claims = append(claims, started)
+		}
+	}
+	return claims, nil
+}
+
+// IdlePhaseRows is the phases rows an idle view keeps (pods.IdleView.Phases), one of each role
+// with its claim and the task of the step it runs, as the rows WorkerClaim and StartClaim read.
+func IdlePhaseRows(view pods.IdleView) []PhaseRow {
+	rows := make([]PhaseRow, 0, len(view.Phases))
+	for role, row := range view.Phases {
+		rows = append(rows, PhaseRow{Issue: view.Issue, Role: role, Claim: row.Claim, StepTask: row.StepTask})
+	}
+	return rows
 }
 
 // PhaseReader reads an issue's phases rows (Store.Phases), what ReadWorkerClaim needs of a store.

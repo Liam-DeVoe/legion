@@ -29,7 +29,8 @@ const claimSessionAgentRelease = "the release that records the agent of a claim'
 // a key the release before does not know: it decodes strictly, so a start left queued with it would
 // fail at every attempt. The way back, the last paragraph of the migration's header
 // (migrations.WayBack), takes that key off each queued supervise row and leaves every other key,
-// drops the column and deletes the version row, so the roll forward runs the migration again.
+// drops the function claim_agent_from_steps and the column, and deletes the version row, so the
+// roll forward runs the migration again.
 func TestTheClaimRecordsTheAgentOfItsSessionAndTheWayBackForgetsIt(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

@@ -65,7 +65,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // reportStranded logs, once the boot has re-adopted every claim and replayed the failed ones to
 // the workflow, the claims nothing will wake (workflow.Stranded), read from records as the state
 // route reads them: one error line, however many there are, naming each claim by its name
-// (api.StrandedClaim.Name: `<issue> <role>`, with the token beside them for an agent not named
+// (api.ClaimName: `<issue> <role>`, with the token beside them for an agent not named
 // for its role, so two claims of one issue that hold one role read apart)
 // under the move that brings it back, keyed by that move's value (api.StrandedClaim.Move, the one
 // statement of which move each claim takes, which `legion state` groups by too). A fleet a restart

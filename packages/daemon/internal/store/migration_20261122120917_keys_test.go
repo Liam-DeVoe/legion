@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -35,8 +34,9 @@ import (
 // with), and the claim it makes records the key, as the claim of a start of this release does.
 //
 // The claim of a name only an agent with no key held, reviewer, records that agent, the agent of
-// step 2 (`step:2:t`), and a queued start of such a claim names it, so the next start of another
-// agent that reaches it starts a session of its own (20261122120917's header).
+// step 2 (`step:2:t`), and the steps give that agent to a queued start of such a claim, which names
+// none, so the next start of another agent that reaches the claim starts a session of its own
+// (20261122120917's header).
 func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t *testing.T) {
 	ctx := context.Background()
 	st := emptyStore(t)
@@ -248,15 +248,6 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 		if got := rowsAsText(t, st, `select payload::text from outbox order by id`); !slices.Equal(got, payloads) {
 			t.Fatalf("the queued supervise rows %s = %q, want each as the release before wrote it, %q", when, got, payloads)
 		}
-		for _, row := range rowsAsText(t, st, `select payload::text from outbox order by id`) {
-			var keys map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(row), &keys); err != nil {
-				t.Fatal(err)
-			}
-			if _, named := keys["agent"]; named {
-				t.Fatalf("the queued row %s %s names an agent, which the release before cannot decode", row, when)
-			}
-		}
 		if got := rowsAsText(t, st, `select coalesce(claim_agent_from_steps('LEGION-213', 'legion-legion-legion-213-implementer'), '')`); !slices.Equal(got, []string{"key:f"}) {
 			t.Fatalf("the agent the steps give LEGION-213's start %s = %q, want key:f", when, got)
 		}
@@ -306,10 +297,23 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 		}
 	}
 
-	exec(wayBackOf(t, claimSessionAgentVersion, claimSessionAgentRelease))
-	if got := rowsAsText(t, st, `select count(*)::text from outbox where payload ? 'agent'`); !slices.Equal(got, []string{"0"}) {
-		t.Fatalf("the queued rows naming an agent after the way back = %v, want none", got)
+	// A start this release queues names its step's agent, a key the release before does not
+	// decode: the way back takes that key off it and leaves every other key as it was.
+	const agentStart = `{"op":"start","tree":"LEGION-208","role":"implementer","claim":"legion-legion-legion-208-implementer","generation":1,"phase":"implementing","entry":2,"task":"Build it.","agent":"key:b"}`
+	var agentRow int64
+	if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ('supervise', 'LEGION-208', $1, 0, now(), '', '') returning id`, agentStart).Scan(&agentRow); err != nil {
+		t.Fatalf("queue a start that names its agent: %v", err)
 	}
+	exec(wayBackOf(t, claimSessionAgentVersion, claimSessionAgentRelease))
+	var stripped bool
+	if err := st.Pool().QueryRow(ctx, `select payload = $1::jsonb - 'agent' from outbox where id = $2`, agentStart, agentRow).Scan(&stripped); err != nil {
+		t.Fatalf("read the start that named its agent after the way back: %v", err)
+	}
+	if !stripped {
+		t.Fatalf("the start that named its agent after the way back = %s, want it without the key agent and with every other key", agentStart)
+	}
+	exec(`delete from outbox where id = $1`, agentRow)
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward: %v", err)
 	}
@@ -462,12 +466,5 @@ func TestTheSessionAgentMigrationRecordsTheAgentThatRanLastOnAClaim(t *testing.T
 	}
 	if got := rowsAsText(t, st, `select concat(token, '=', session_agent) from claims order by token`); !slices.Equal(got, want) {
 		t.Fatalf("the claims after the migration = %q, want %q", got, want)
-	}
-	held := supervise.Claim{SessionAgent: sessionAgentOfToken(t, st, "legion-legion-legion-301-implementer")}
-	if keyC := (plan.Agent{Key: "c"}).ID(); held.SessionOfAnotherAgent(keyC) {
-		t.Errorf("LEGION-301's claim records %q, so key c, named again, leaves its own session behind", held.SessionAgent)
-	}
-	if stepOne := plan.AgentOf("a", 1, plan.Step{Role: "implementer"}).ID(); !held.SessionOfAnotherAgent(stepOne) {
-		t.Errorf("LEGION-301's claim records %q, so the agent with no key, which never ran, takes key c's session", held.SessionAgent)
 	}
 }

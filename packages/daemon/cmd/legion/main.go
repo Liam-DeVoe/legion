@@ -1154,13 +1154,36 @@ type roundClaim struct {
 	head string
 }
 
+// issueClaim is one claim of an issue that the state serves: the role it holds and its view.
+type issueClaim struct {
+	role legionclaim.Role
+	view api.ClaimView
+}
+
+// issueClaims is each claim of issue that the state serves, in one order: its architect, its
+// workers by role, and its other claims (api.Issue.OtherClaims), where the second claim of a role
+// stands, such as the `implementer-2` a plan that runs the role twice starts beside the role's own
+// agent in a slot of the same pod, or the agent of another role's name that holds the role for a
+// step. A controller's claim is on no issue (internal/projection puts it on none) and is read with
+// `legion claims list` instead.
+func issueClaims(issue api.Issue) []issueClaim {
+	claims := make([]issueClaim, 0, 1+len(issue.Workers)+len(issue.OtherClaims))
+	if issue.Architect != nil {
+		claims = append(claims, issueClaim{role: legionclaim.RoleArchitect, view: *issue.Architect})
+	}
+	for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
+		claims = append(claims, issueClaim{role: role, view: issue.Workers[role].Claim})
+	}
+	for _, other := range issue.OtherClaims {
+		claims = append(claims, issueClaim{role: other.Role, view: other.Claim})
+	}
+	return claims
+}
+
 // openRounds is every update round the state's issues have open, by issue and then round, each
 // with its claims by role and then name, so the role's own claim comes before each other claim of
 // its role: a round is the daemon holding a process back from replacement until its worker has
-// pushed its work and answered. Each claim of an issue is read: its architect, its workers, and
-// its other claims (api.Issue.OtherClaims), where the second claim of a role stands, such as the
-// `implementer-2` a plan that runs the role twice starts beside the role's own agent in a slot of
-// the same pod, or the agent of another role's name that holds the role for a step.
+// pushed its work and answered. Each claim of each issue is read (issueClaims).
 func openRounds(issues map[string]api.Issue) []issueRound {
 	rounds := map[string]*issueRound{}
 	add := func(issue string, role legionclaim.Role, view api.ClaimView) {
@@ -1176,14 +1199,8 @@ func openRounds(issues map[string]api.Issue) []issueRound {
 		})
 	}
 	for key, issue := range issues {
-		if issue.Architect != nil {
-			add(key, legionclaim.RoleArchitect, *issue.Architect)
-		}
-		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			add(key, role, issue.Workers[role].Claim)
-		}
-		for _, other := range issue.OtherClaims {
-			add(key, other.Role, other.Claim)
+		for _, c := range issueClaims(issue) {
+			add(key, c.role, c.view)
 		}
 	}
 	keys := slices.Sorted(maps.Keys(rounds))
@@ -1240,11 +1257,7 @@ type claimCall struct {
 // word for and nothing else is, so that is the test here too: openCallsSummary names each of these
 // rows with that word. That is the shape a stalled turn leaves behind: the daemon reads the same
 // record to decide a turn has stopped moving, and this is where an operator reads it. Each claim
-// of an issue is read: its architect, its workers, and its other claims (api.Issue.OtherClaims),
-// where the second claim of a role stands, such as the `implementer-2` a plan that runs the role
-// twice starts beside the role's own agent, or the agent of another role's name that holds the
-// role for a step. A controller's claim is in none of these — internal/projection puts it on no
-// issue — and is read with `legion claims list` instead.
+// of each issue is read (issueClaims).
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue string, role legionclaim.Role, view api.ClaimView) {
@@ -1255,14 +1268,8 @@ func openCalls(issues map[string]api.Issue) []claimCall {
 		calls = append(calls, claimCall{issue: issue, role: role, name: name, step: *view.Step})
 	}
 	for key, issue := range issues {
-		if issue.Architect != nil {
-			open(key, legionclaim.RoleArchitect, *issue.Architect)
-		}
-		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			open(key, role, issue.Workers[role].Claim)
-		}
-		for _, other := range issue.OtherClaims {
-			open(key, other.Role, other.Claim)
+		for _, c := range issueClaims(issue) {
+			open(key, c.role, c.view)
 		}
 	}
 	slices.SortFunc(calls, func(a, b claimCall) int {
@@ -1317,7 +1324,7 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
+// and each by its name (api.ClaimName: its issue and role, and its token beside them for
 // the claim of an agent not named for its role) under the move that brings it back
 // (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
 // move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,

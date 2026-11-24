@@ -259,27 +259,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
-		// Each start that waits for the issue's pod, by its role and the claim it starts: the
-		// claim its row names, or, for a row that names none, the claim the record gives the
-		// role's step (record.WorkerClaim), which is the claim the outbox's next try of that row
-		// acts on (the outbox's start). Two claims of one issue can hold one role, so a role
-		// alone would name a second agent of the role as the role's own agent. The derivation
-		// fails only for a role or an issue no token spells, and the outbox derived this same
-		// claim from the same row's role and issue on the try that wrote its wait, so a failure
-		// is a fault of the record and fails the state rather than serving a start unnamed.
-		for _, start := range waitingForPod[issue.Key] {
-			token := start.Claim
-			if token == "" {
-				token, err = record.WorkerClaim(projectToken, issue.Key, start.Role, phases)
-				if err != nil {
-					return api.State{}, fmt.Errorf("name %s's start of %s that waits for its pod: %w",
-						issue.Key, start.Role, err)
-				}
-			}
-			named := api.StartWaitView{Role: start.Role, Token: token}
-			if !slices.Contains(view.StartWaitsForPod, named) {
-				view.StartWaitsForPod = append(view.StartWaitsForPod, named)
-			}
+		// Each start that waits for the issue's pod, by its role and the claim it starts, each once
+		// (record.StartClaims): the claim its row names, or, for a row that names none, the claim the
+		// record gives the role's step, which is the claim the outbox's next try of that row acts on,
+		// since the outbox's start reads it by the same rule (record.StartClaim). Two claims of one
+		// issue can hold one role, so a role alone would name a second agent of the role as the
+		// role's own agent. The rule fails only for a role or an issue no token spells, and the
+		// outbox read this same claim from the same row's role and issue on the try that wrote its
+		// wait, so a failure is a fault of the record and fails the state rather than serving a
+		// start unnamed.
+		starts, err := record.StartClaims(projectToken, issue.Key, waitingForPod[issue.Key], phases)
+		if err != nil {
+			return api.State{}, fmt.Errorf("name the starts of %s that wait for its pod: %w", issue.Key, err)
+		}
+		for _, start := range starts {
+			view.StartWaitsForPod = append(view.StartWaitsForPod, api.StartWaitView{Role: start.Role, Token: start.Claim})
 		}
 		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of

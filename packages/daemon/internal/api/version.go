@@ -3457,12 +3457,13 @@ package api
 // sentence, and its key is unchanged, so every contract is served it. From this entry the last
 // number of answers.go's SupportedContracts is `api.startWaitTokenContract`, and
 // `strandedTokenContract` stays 222.
-// (This entry takes 245, above the base's 222 (the entry above), above every number another open
-// pull request declares and above the two numbers two more of them are to take: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made
-// between 2026-11-24T07:08:28Z and 07:09:16Z, read all 514 and found 242 the highest number
-// declared, by #4596 and #4948, then 241 by #4771 and #5307 and 240 by #3831 and #5271; #5164 is
-// to take 243 and #5156 a number above it, neither declared at its head at that reading. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line.)
+// (This entry took 245, above the base's 222 (the entry above), at a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made between
+// 2026-11-24T07:08:28Z and 07:09:16Z, which read all 514 and found 242 the highest number
+// declared, by #4596 and #4948, then 241 by #4771 and #5307 and 240 by #3831 and #5271; #5164 was
+// to take 243 and #5156 a number above it, neither declared at its head at that reading. A later
+// reading, of 492 open pull requests between 2026-11-24T11:07:24Z and 11:08:45Z, all read, found
+// #4960 at 245 too, so 245 is not this entry's alone: the merge of the base reads the base's own
+// number and every open pull request again and gives this entry the number it takes. Read them
+// again at that merge rather than from this line.)
 const DaemonAPIVersion = 245

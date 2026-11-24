@@ -213,6 +213,23 @@ const SIGN_OFF_TERMS = {
   ],
 } as const;
 
+/** The daemon's own refusal codes the description names after `sign_off`'s part, for the
+ * architect's release and rerun of a child, the controller's fresh_session and compact, and its
+ * pause and resume: values of the daemon's answers, held by their codes and by no sentence. */
+const AFTER_SIGN_OFF_CODES = [
+  "CHILD_UNDER_ACCEPTED_PARENT",
+  "INVALID_CLAIM",
+  "CLAIM_NOT_OF_ROLE",
+  "CLAIM_IN_A_TURN",
+  "CLAIM_UNSETTLED",
+  "CLAIM_NOT_RUNNING",
+  "CLAIM_NOT_ON_OMP",
+  "PROJECT_ALREADY_PAUSED",
+  "PAUSE_UNAVAILABLE",
+  "PROJECT_NOT_PAUSED",
+  "PROJECT_PAUSED",
+] as const;
+
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -237,7 +254,7 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description sets the host's sentences before handoff_complete's contract, ends on the host's Envoy publish tool, for every session, and names stop_task's and sign_off's terms", () => {
+test("the legion tool's description sets the host's sentences before handoff_complete's contract, ends on the host's Envoy publish tool, for every session, and names stop_task's and sign_off's terms and the refusal codes after them", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
     expect(description).toContain(
@@ -255,6 +272,9 @@ test("the legion tool's description sets the host's sentences before handoff_com
     }
     for (const term of SIGN_OFF_TERMS.names) {
       expect(signOff).toContain(term);
+    }
+    for (const code of AFTER_SIGN_OFF_CODES) {
+      expect(signOff).toContain(code);
     }
   }
 });
@@ -2475,7 +2495,7 @@ test("read_state's summary names the live trees and each held issue with its rea
 
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
-// roles whose stop it still waits on and how many rows it holds; one line while the project
+// claims whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
 // the project's first pause. The two states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
@@ -2485,7 +2505,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   const pausedLine =
     "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
+    "the model provider is refusing every turn; waits on 1 claim — LEGION-208 implementer; " +
     "holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
 
@@ -2501,7 +2521,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const unpaused = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
   expect(pauseLines(unpaused)).toEqual([]);
 
-  // A pause every role has stopped for, with nothing held yet, and one that waits on two roles
+  // A pause every claim has stopped for, with nothing held yet, and one that waits on two claims
   // and holds one row.
   const pause = {
     id: 9,
@@ -2512,7 +2532,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   const settled = legionState({ paused: { ...pause, waitsOn: [], held: [] } });
   expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: settled }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
-      "waits on no role; holds no row",
+      "waits on no claim; holds no row",
   ]);
   const waiting = legionState({
     paused: {
@@ -2536,17 +2556,19 @@ test("read_state's summary prints the pause's line while the project is paused a
   });
   expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: waiting }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
-      "waits on 2 roles — INFRA-100 architect, INFRA-101 tester; holds 1 row",
+      "waits on 2 claims — INFRA-100 architect, INFRA-101 tester; holds 1 row",
   ]);
 });
 
-// The pause's line names each claim whose stop the pause still waits on as `legion state` names
-// it (`api.ClaimName` in `packages/daemon/internal/api/state.go`): by its issue and role, and by
-// its token beside them for the claim of an agent not named for its role. A pause waits on every
-// claim of an issue, so it can wait on two claims of one role — the role's own and a second agent
-// such as `implementer-2`, or the agent of another role's name that holds the role for a step —
-// and the line names them apart. A stop the daemon served without its claim is named by its issue
-// and role, as `legion state` names it.
+// The pause's line names each claim whose stop the pause still waits on by the rule the issue lines
+// name a claim by: its issue and role, and its token beside them where the issue and the role do
+// not reach it, so fresh_session and compact reach it by its token. The issue and the role reach the
+// claim the issue's `workers` shows for the role, and, where the state shows none, the role's own
+// claim. A pause waits on every claim of an issue, so it can wait on two claims of one role — the
+// role's own and a second agent such as `implementer-2`, or the agent of another role's name that
+// holds the role for a step — and the line names them apart. A stop the daemon served without its
+// claim is named by its issue and role. Where the second agent works the role's step, the issue
+// and the role reach it, and the role's own claim is the one named with its token.
 test("read_state's summary names two claims of one role apart on the pause's line", async () => {
   const stop = (role: string, claim?: string) => ({
     ...(claim === undefined ? {} : { claim }),
@@ -2573,13 +2595,45 @@ test("read_state's summary names two claims of one role apart on the pause's lin
   const paused = lines.filter((line) => line.startsWith("paused: "));
   expect(paused).toHaveLength(1);
   // The names the line lists between its count of the claims and its count of the rows held.
-  const listed = /; waits on 4 roles — (.+); holds no row$/.exec(paused[0] ?? "");
+  const listed = /; waits on 4 claims — (.+); holds no row$/.exec(paused[0] ?? "");
   expect(listed?.[1]?.split(", ")).toEqual([
     "LEGION-208 implementer",
     "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2)",
     "LEGION-208 tester (claim legion-legion-legion-208-reviewer)",
     "LEGION-208 merger",
   ]);
+
+  const stepped = stateOf92Issues(1);
+  const tester = stepped.issues["INFRA-100"]?.workers?.tester?.claim;
+  if (tester === undefined) throw new Error("INFRA-100 lacks its tester");
+  tester.token = "legion-acme-infra-100-tester-2";
+  stepped.paused = {
+    id: 9,
+    since: "2026-11-16T08:00:00Z",
+    by: { kind: "operator" },
+    reason: "a provider outage",
+    waitsOn: [
+      {
+        claim: "legion-acme-infra-100-tester",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
+      {
+        claim: "legion-acme-infra-100-tester-2",
+        issue: "INFRA-100",
+        role: "tester",
+        askedAt: "2026-11-16T08:00:00Z",
+      },
+    ],
+    held: [],
+  };
+  const second = (await summaryLinesOf(recordingDaemon({ state: stepped }).daemon)).filter((line) =>
+    line.startsWith("paused: ")
+  );
+  expect(
+    /; waits on 2 claims — (.+); holds no row$/.exec(second[0] ?? "")?.[1]?.split(", ")
+  ).toEqual(["INFRA-100 tester (claim legion-acme-infra-100-tester)", "INFRA-100 tester"]);
 });
 
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how

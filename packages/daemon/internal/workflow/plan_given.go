@@ -141,9 +141,10 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	return given, nil, nil
 }
 
-// keySessions is the names of issue's claims whose sessions are a key's agent's
-// (record.KeySessionsOf), read in tx with the rows a version is named from: the claim of such a
-// name and the session it holds wait for the key whatever the rows still name (record.NameAgents).
+// keySessions is issue's stored claims by name, each with its role and the key whose agent's
+// session it holds (record.KeySessionsOf), read in tx with the rows a version is named from: the
+// claim of a key's name and the session it holds wait for the key whatever the rows still name, and
+// a name whose claim holds another role is no name for an agent of a role (record.NameAgents).
 func (e *Engine) keySessions(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.KeySessions, error) {
 	_, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {

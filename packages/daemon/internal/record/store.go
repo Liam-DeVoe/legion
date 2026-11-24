@@ -3186,8 +3186,8 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 // pod lacks the slot of the start's claim or the role of its step: a supervise start whose last
 // error begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes it; the
 // idle view's startWaitsForPodRow reads the same rows). Each is its role and the claim the row
-// names, "" for a row that names none (pods.WaitingStart); each pair once, in the order of its
-// rows.
+// names, "" for a row that names none (pods.WaitingStart), one for each row, in the order of the
+// rows: StartClaims gives each the claim it starts and makes them distinct.
 func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string,
 ) (map[string][]pods.WaitingStart, error) {
 	rows, err := tx.Query(ctx, `select issue, payload->>'role', coalesce(payload->>'claim', '')
@@ -3204,10 +3204,7 @@ func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project s
 		if err := rows.Scan(&issue, &role, &token); err != nil {
 			return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
 		}
-		start := pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}
-		if !slices.Contains(waiting[issue], start) {
-			waiting[issue] = append(waiting[issue], start)
-		}
+		waiting[issue] = append(waiting[issue], pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)

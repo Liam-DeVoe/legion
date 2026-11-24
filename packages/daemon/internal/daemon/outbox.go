@@ -2529,6 +2529,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if (payload.Op == "suspend" || payload.Op == "tree_close") && payload.Tree != issue.Tree {
 		return r.stopInLeftTree(ctx, row, payload, issue)
 	}
+	// A start's try that stored its claim and failed before it recorded the start against it leaves
+	// a claim that has run nothing (supervise.Claim.Unstarted), which no close row of a leave or a
+	// linger that read the issue's claims before that store names. Where the issue no longer
+	// stands in the workflow, each such claim is retired here, before the fences below, which
+	// finish that try's retry, and every later start of the issue, without acting
+	// (retireUnstartedOfLeftIssue). A check start is fenced on its check instead, and starts its
+	// look in a lingering tree.
+	if payload.Op == "start" && payload.CheckLook == 0 {
+		if _, err := r.retireUnstartedOfLeftIssue(ctx, row, issue.Key); err != nil {
+			return err
+		}
+	}
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
 	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
@@ -2595,14 +2607,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
-	// for, or the one stored claim a row of another op stands for. A row that names none, one the
-	// release before wrote, acts on the claim record.WorkerClaim gives its role's step.
-	token := payload.Claim
-	if token == "" {
-		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
-			return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
-		}
+	// The claim the row acts on is the one record.StartClaim gives it, the rule the served state and
+	// the idle release's notice name a waiting start by too: the claim a phase worker's start was
+	// queued for, or the one stored claim a row of another op stands for, which the row names; and
+	// for a row that names none, one the release before wrote, the claim record.WorkerClaim gives
+	// its role's step.
+	token, err := record.StartClaim(r.project, row.Issue, payload.Role, payload.Claim, rows)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 	}
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
@@ -2750,6 +2762,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// later entry can commit between that read and that lock; a later act judges nothing
 		// (supervise.Standing).
 		step := r.stepStanding(ctx, row, payload)
+		// The agent this start is a run of (startAgent), one value for every act of the start that
+		// reads it: the one that makes the claim ready for the step, the record of the agent on a
+		// running claim, and the decision that brings the claim back.
+		var held supervise.Claim
+		if found {
+			held = machine.Claim()
+		}
+		agent, err := r.startAgent(ctx, issue.Key, token, payload.Agent, held)
+		if err != nil {
+			return err
+		}
 		// The start of a step's entry whose claim holds another role, or whose claim's session is
 		// another agent's, makes the claim ready for that step first (prepareClaimForStep): the
 		// steps of one key are one claim, and its next step may be of another role or another
@@ -2758,34 +2781,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// lock, and the row finishes without acting, since the start of the step the issue stands
 		// in now makes the claim ready for that one.
 		if found {
-			if err := r.prepareClaimForStep(step, machine, row, issue, token, payload); errors.Is(err, supervise.ErrStepLeft) {
+			if err := r.prepareClaimForStep(step, machine, row, issue, token, payload, agent); errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before its claim was made ready for it; finished without acting", "row", row.ID,
-					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", payload.Agent)
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", agent)
 				return nil
 			} else if err != nil {
 				return err
 			}
 		}
-		// The agent this start is a run of. A start that names none and makes its claim is one
-		// the release before the record of a claim's agent queued, or one no step names: the
-		// claim it makes records the agent the steps give its name (store.ClaimAgentFromSteps),
-		// the rule the migration that added the record filled every claim of that release by, so
-		// a later start of another agent leaves its session. The row itself is not written, so
-		// it reads as that release wrote it.
-		agent := payload.Agent
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
-			}
-			if agent == "" {
-				err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-					var err error
-					agent, err = store.ClaimAgentFromSteps(ctx, tx, issue.Key, token)
-					return err
-				})
-				if err != nil {
-					return fmt.Errorf("read the agent the steps give claim %s: %w", token, err)
-				}
 			}
 			machine, _, err = r.supervisor.Create(ctx, supervise.Claim{
 				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued,
@@ -2795,25 +2801,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			// A leave or a linger that committed between the fences above and this create read
 			// the issue's claims before this one was stored, so none of its rows names it, and the
-			// tree's cleanup would wait for it. So the issue is read again now, its row and its
-			// root's locked for share (store.StandsInWorkflow): where it has left the workflow or
-			// its tree lingers, the new claim, which has run nothing, is retired as a tree close
-			// retires a claim. A check start is fenced by its check instead, and starts its look in
-			// a lingering tree.
+			// tree's cleanup would wait for it. So the issue is read again now
+			// (retireUnstartedOfLeftIssue): where it has left the workflow or its tree lingers, the
+			// new claim, which has run nothing, is retired as a tree close retires a claim, and so
+			// is any other such claim of the issue. A try that fails at that read, or after it and
+			// before the start is recorded, leaves the claim unstarted, and the retry retires it
+			// above the fences. A check start is fenced by its check instead, and starts its look
+			// in a lingering tree.
 			if payload.CheckLook == 0 {
-				var stands bool
-				err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-					var err error
-					stands, err = store.StandsInWorkflow(ctx, tx, issue.Key, record.OutOfWorkflow)
-					return err
-				})
+				left, err := r.retireUnstartedOfLeftIssue(ctx, row, issue.Key)
 				if err != nil {
-					return fmt.Errorf("read %s again after storing claim %s: %w", issue.Key, token, err)
+					return err
 				}
-				if !stands {
-					if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
-						return fmt.Errorf("retire claim %s, stored after %s left the workflow: %w", token, issue.Key, err)
-					}
+				if left {
 					r.log.Info("outbox start of an issue that left the workflow while it stored its claim; the claim is retired and the start finished without acting",
 						"row", row.ID, "issue", issue.Key, "role", payload.Role, "claim", token)
 					return nil
@@ -2892,9 +2892,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// to judge it, and a move or a later entry that committed since the fences above leaves the
 		// claim recording no agent, and the start finishes here without acting: its task would be
 		// refused at its delivery in any case.
-		if err := machine.TakeSessionFor(step, payload.Agent); errors.Is(err, supervise.ErrStepLeft) {
+		if err := machine.TakeSessionFor(step, agent); errors.Is(err, supervise.ErrStepLeft) {
 			r.log.Info("outbox start serves a step its issue left before the running claim took its agent; finished without acting", "row", row.ID,
-				"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", payload.Agent)
+				"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", agent)
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("record the agent of the session of claim %s: %w", token, err)
@@ -3269,6 +3269,68 @@ func (r *outbox) claimsOfIssue(issue string) []*supervise.Machine {
 		return strings.Compare(string(a.View().Claim.Token), string(b.View().Claim.Token))
 	})
 	return machines
+}
+
+// retireUnstartedOfLeftIssue retires each claim of issue that no start has run against since it
+// was stored (supervise.Claim.Unstarted), where issue no longer stands in the workflow: it has left
+// it, or its tree lingers (store.StandsInWorkflow, read with the issue's row and its root's locked
+// for share). A leave or a linger closes the claims it reads of the issue, so one that read them
+// before such a claim was stored names it in no close row, and the tree's cleanup would wait for
+// it; each is retired as a tree close retires a claim. The start that stores a claim asks it after
+// its create, and every start of the issue asks it before its fences, since a try that failed after
+// the create leaves the claim, and its retry and every later start of an issue that left are
+// finished at those fences. left is whether the issue was read and stands no longer; an issue with
+// no such claim is not read.
+func (r *outbox) retireUnstartedOfLeftIssue(ctx context.Context, row record.OutboxRow, issue string) (left bool, err error) {
+	var unstarted []*supervise.Machine
+	for _, machine := range r.claimsOfIssue(issue) {
+		if machine.View().Claim.Unstarted() {
+			unstarted = append(unstarted, machine)
+		}
+	}
+	if len(unstarted) == 0 {
+		return false, nil
+	}
+	var stands bool
+	err = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		stands, err = store.StandsInWorkflow(ctx, tx, issue, record.OutOfWorkflow)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("read %s again for the %d claims of it no start has run against: %w", issue, len(unstarted), err)
+	}
+	if stands {
+		return false, nil
+	}
+	for _, machine := range unstarted {
+		token := machine.View().Claim.Token
+		if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
+			return false, fmt.Errorf("retire claim %s, stored after %s left the workflow: %w", token, issue, err)
+		}
+		r.log.Info("outbox start: a claim no start has run against, of an issue that has left the workflow, is retired", "row", row.ID,
+			"issue", issue, "claim", token)
+	}
+	return true, nil
+}
+
+// startAgent is the agent a start of the claim token of issue is a run of, the one value of it the
+// start reads (supervise.StartWork.Agent and the acts before it): the agent the start names
+// (record.SuperviseRequest.Agent); and, for a start that names none of a claim that records none
+// (supervise.Claim.SessionAgent) and has run nothing (supervise.Claim.Launched), the agent the
+// steps give the claim's name (store.ClaimAgentFromSteps), the rule the migration that added the
+// record filled every claim of the release before by. A start that names none is one that release
+// queued, or one no step names. held is the claim as the start finds it, the zero claim where the
+// start is about to make it. The steps are asked whichever try of the start made the claim: a try
+// that made it and failed before it was brought back leaves it so, and the retry finds it made,
+// recording no agent. A claim that has run a process holds a session whose agent the steps do not
+// show, so the start's own agent goes to it (supervise.Machine.TakeSessionFor), as that release
+// gave it the session. The row itself is not written, so it reads as that release wrote it.
+func (r *outbox) startAgent(ctx context.Context, issue string, token claim.Token, named stepplan.AgentID, held supervise.Claim) (stepplan.AgentID, error) {
+	if named != "" || held.SessionAgent != "" || held.Launched() {
+		return named, nil
+	}
+	return store.ClaimAgentFromSteps(ctx, r.pool, issue, token)
 }
 
 // childArchitectFirstStart says whether payload is the plain start of issue's own architect that a

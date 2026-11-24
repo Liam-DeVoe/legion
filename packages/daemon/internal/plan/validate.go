@@ -67,14 +67,13 @@ func numberedRoleRefusals(p Plan, d Deployment) []Refusal {
 	}
 	var refusals []Refusal
 	for _, role := range p.RoleBlocks {
-		others := slices.DeleteFunc(slices.Clone(names), func(r claim.Role) bool { return r == claim.Role(role) })
-		if of, ok := claim.NumberedAgentRole(role, others); ok {
+		if of, ok := claim.NumberedAgentRole(role, names); ok {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 				"the plan defines the role %s, the name Legion gives a second or later agent of the role %s%s", role, of, held)})
 			continue
 		}
 		for _, name := range deployment {
-			if _, ok := claim.NumberedAgentRole(name, []claim.Role{claim.Role(role)}); ok && name != role {
+			if _, ok := claim.NumberedAgentRole(name, []claim.Role{claim.Role(role)}); ok {
 				refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 					"the plan defines the role %s, whose second or later agent Legion would name %s, the deployment's role%s", role, name, held)})
 				break

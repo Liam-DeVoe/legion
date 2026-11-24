@@ -2192,6 +2192,19 @@ func (c Claim) ReleasedLaunch() bool {
 	return c.State == StateQueued && c.Generation > 0 && c.Locator == nil
 }
 
+// Launched is whether a launch of the claim was ever written: each launch raises the claim's
+// generation (launchNow), and a claim is created at generation zero. A claim that never launched
+// has run no process and holds no session, so no agent's work is in it.
+func (c Claim) Launched() bool { return c.Generation > 0 }
+
+// Unstarted is whether no start has run against the claim since it was stored: queued, never
+// launched (Launched), and no start recorded against it (LastStartRow). The outbox's start stores
+// a claim so and records itself against it (StartedBy) before it brings the claim back, so a claim
+// still unstarted once the try that stored it has ended is one that try failed to bring back.
+func (c Claim) Unstarted() bool {
+	return c.State == StateQueued && !c.Launched() && c.LastStartRow == 0
+}
+
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
 // before it can be told apart from one written after. A stop is retried until the runtime takes
 // it, and a retry that lands after this start would suspend the run this start began. That
