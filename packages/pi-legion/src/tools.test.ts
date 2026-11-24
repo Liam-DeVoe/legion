@@ -20,6 +20,7 @@ import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -302,16 +303,26 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
-/** The properties whose description the tool states, in the order it declares them. */
-const DESCRIBED_PROPERTIES = [
-  "artifactId",
-  "step",
-  "task",
-  "reason",
-  "giveUp",
-  "consumer",
-  "throughSeq",
-];
+/** The properties whose description the tool states, in the order it declares them, each with the
+ * operations, fields, flags and values that description names. */
+const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  artifactId: ["register_gate", "register_plan", "--artifact"],
+  step: ["register_gate", "decisions", "criteria", "spec"],
+  task: ["stop_task", "plan_task", "default"],
+  reason: [
+    "close_root",
+    "request_backward_move",
+    "retry_or_escalate",
+    "pause",
+    "discard_give_up",
+    "replay_give_up",
+    "rerun_child",
+    "issue",
+  ],
+  giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
+  consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
+  throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
+};
 
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
@@ -323,11 +334,13 @@ test("the legion tool's parameter schema serializes to the exact schema Oh My Pi
     for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
       if (description !== undefined) {
         expect(typeof description, name).toBe("string");
+        const missing = namesMissing(String(description), DESCRIBED_PROPERTIES[name] ?? []);
+        expect(missing, name).toEqual([]);
         described.push(name);
       }
       properties[name] = property;
     }
-    expect(described).toEqual(DESCRIBED_PROPERTIES);
+    expect(described).toEqual(Object.keys(DESCRIBED_PROPERTIES));
     expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
@@ -772,12 +785,14 @@ test("read_release_records reads the window with this session's claim, and repor
 
 // Every phase worker reads one description of the tool, whatever its role, and the daemon alone
 // decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
-// no phase worker is given a description of its own. The case holds no word of it.
+// no phase worker is given a description of its own. That one description names the `verdict`
+// field, its two values and the tester, the role it is taken from. The case holds no word of it.
 test("every phase worker is given the same description of the legion tool", () => {
   const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
     (role) => toolFor(claimSession(role)).description
   );
   expect(new Set(described).size).toBe(1);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail", "tester"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {

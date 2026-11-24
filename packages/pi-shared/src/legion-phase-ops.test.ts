@@ -6,6 +6,7 @@ import {
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
 } from "@legion/contracts/legion-api";
+import { namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
@@ -179,6 +180,11 @@ test("the description sets the host's texts before and after handoff_complete's 
   const placed = legionToolDescription({ envoyPublish: publish, before, after });
   expect(bare).not.toContain(before);
   expect(bare).not.toContain(after);
+  // read_record and request_backward_move are operations only some hosts carry, so the template
+  // names neither: a host that carries one names it in its own `before` or `after`.
+  for (const op of ["read_record", "request_backward_move"]) {
+    expect(namesWhole(bare, op), `the bare description names ${op}`).toBe(false);
+  }
   const at = placed.indexOf(before);
   const later = placed.indexOf(after);
   expect(at, "the description holds no `before`").toBeGreaterThan(-1);
@@ -191,6 +197,8 @@ test("the description sets the host's texts before and after handoff_complete's 
   const update = placed.indexOf("ready_for_update", contract);
   expect(update, "ready_for_update's part is not after the contract").toBeGreaterThan(contract);
   expect(update, "ready_for_update's part is not before `after`").toBeLessThan(later);
+  const updatePart = placed.slice(update, later);
+  expect(namesWhole(updatePart, "`round`"), "ready_for_update's part names no `round`").toBe(true);
   const tool = placed.lastIndexOf(publish);
   expect(tool, "the Envoy publish tool is not named after `after`").toBeGreaterThan(later);
   expect(placed.slice(tool + publish.length)).toMatch(/^\W*$/);
@@ -560,6 +568,24 @@ test("handoff_complete takes the retro's rating fields on the contract's scale, 
         plan_reason: "fit",
       })
     ).rejects.toThrow(`400 ${code}`);
+  }
+});
+
+// The description is where every host's agent reads what the completion that ends the retro
+// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
+// a rating.
+test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  for (const words of [
+    "`plan_rating`",
+    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
+    "`plan_reason`",
+    "skill://legion-retro",
+    "PLAN_RATING_UNEXPECTED",
+    "PLAN_RATING_INPUT",
+    "PLAN_RATING_REQUIRED",
+  ]) {
+    expect(description).toContain(words);
   }
 });
 

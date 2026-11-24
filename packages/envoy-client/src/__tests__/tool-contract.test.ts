@@ -5,8 +5,10 @@ import {
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { delivered } from "../../test/delivered";
+import { streamStores } from "../stream-topics";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
@@ -18,7 +20,7 @@ import {
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
-import { createEnvoyClient, UNRESPONSIVE_RULE } from "../transport";
+import { createEnvoyClient, type SessionState, UNRESPONSIVE_RULE } from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: the rule's text must carry that number, and a change of the constant
@@ -100,9 +102,19 @@ describe("envoyToolSpecs", () => {
     for (const subject of ["pr.<n>.comment", "pr.<n>.review", "pr.<n>.mention", "pr.<n>.checks"]) {
       expect(subscribe?.description).toContain(subject);
     }
-    for (const field of ["merge_commit_sha", "merged_by", "head_sha"]) {
-      expect(subscribe?.description).toContain(field);
-    }
+    // The pull request's lifecycle actions and the fields a closed one carries, each by name, and
+    // the subject form a subscription's base is registered from.
+    const lifecycle = [
+      "opened",
+      "synchronize",
+      "closed",
+      "merged",
+      "merge_commit_sha",
+      "merged_by",
+      "head_sha",
+    ];
+    expect(namesMissing(subscribe?.description ?? "", lifecycle)).toEqual([]);
+    expect(subscribe?.description).toContain("<subject>.>");
     expect(subscribe?.description).toContain("workflow.<file>.<action>");
     expect(subscribe?.description).not.toContain("pr.<n>.check,");
     expect(subscribe?.description).not.toContain("pr.<n>.ci");
@@ -116,6 +128,27 @@ describe("envoyToolSpecs", () => {
     expect(subscribe?.description).toContain("envoy.exceptions.<original-topic>");
   });
 
+  // Each topic kind the stream stores is named, in the list the two texts that say what a
+  // subscription and a publish reach give it, and a 200 is what a stored publish answers.
+  test("names each topic kind the stream stores, and the 200 a stored publish answers", () => {
+    const kinds = [
+      "agent",
+      "dispatch",
+      "github",
+      "slack",
+      "legion",
+      "ghostwispr",
+      "whatsapp",
+      "team",
+    ];
+    expect(kinds.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual([]);
+    for (const name of ["envoy_subscribe", "envoy_publish"]) {
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(description, name).toContain(`(${kinds.join(", ")};`);
+      expect(namesMissing(description, ["200"]), name).toEqual([]);
+    }
+  });
+
   test("names the recipient counts, the stopped state and the hours of the duplicate window", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
@@ -124,7 +157,8 @@ describe("envoyToolSpecs", () => {
       expect(description).toContain("stopped");
       expect(description).toContain(`${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`);
     }
-    expect(publish?.description).toContain("recipients_connected");
+    const counts = namesMissing(publish?.description ?? "", ["recipients", "recipients_connected"]);
+    expect(counts).toEqual([]);
   });
 });
 
@@ -271,6 +305,8 @@ describe("publishConfirmationText", () => {
     for (const name of named) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
       expect(description).toContain(UNRESPONSIVE_RULE);
+      const states: SessionState[] = ["live", "unresponsive", "gone"];
+      expect(namesMissing(description, states), name).toEqual([]);
     }
   });
 });

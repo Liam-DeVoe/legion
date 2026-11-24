@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
@@ -958,7 +959,10 @@ describe("dispatchToolSpecs", () => {
       properties: Record<string, { description?: string }>;
     };
 
-    expect(typeof json.properties.priority?.description).toBe("string");
+    const description = json.properties.priority?.description;
+    expect(typeof description).toBe("string");
+    // It names the two ends of the scale the schema takes, and the null that clears it.
+    expect(namesMissing(description ?? "", ["P0", "P3", "null"])).toEqual([]);
   });
 
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
@@ -1463,6 +1467,87 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // What a description's rules are about, by name: the values, fields, flags, commands, statuses
+  // and printed labels an agent types or reads. Each is held as a whole token, so the sentences
+  // around them may be reworded and a rule that stops naming one fails here.
+  const descriptionNames: readonly (readonly [string, readonly string[]])[] = [
+    ["dispatch_comment", ["reply_to_ask", "dispatch edit-ask"]],
+    ["dispatch_doc_edit", ["replace", "insert", "{#id}"]],
+    ["dispatch_artifact", ["spec.md", "dispatch doc-edit"]],
+    ["dispatch_ask", ["urgency", "high"]],
+    [
+      "dispatch_message",
+      ["--issue", "expects_reply", "optional", "required", "false", "reply_with"],
+    ],
+    [
+      "dispatch_read",
+      [
+        "`Block:`",
+        "`Type:`",
+        "`Document:`",
+        "`check`",
+        "serves",
+        "surface",
+        "run",
+        "when",
+        "negative_control",
+        "ci_check",
+        "`plan_task`",
+        "needs",
+        "`Changed in version:`",
+        "`Text:`",
+        "`No block <id> in <document>.`",
+      ],
+    ],
+    ["dispatch_project", ["dispatch projects", "dispatch issue"]],
+    ["dispatch_priorities", ["backlog", "icebox"]],
+    ["dispatch_architecture_sync", ["repo"]],
+    ["dispatch_review", ["approve"]],
+  ];
+  test.each(
+    descriptionNames
+  )("%s's description, which --help prints, names each name its rules are about", (name, names) => {
+    expect(namesMissing(specFor(name).description, names)).toEqual([]);
+  });
+
+  test("dispatch_resolve_ask's description names every kind the tool takes", () => {
+    const argumentsSchema = specFor("dispatch_resolve_ask").arguments(schemaApi) as unknown as {
+      kind: z.ZodEnum;
+    };
+    const kinds = argumentsSchema.kind.options.map(String);
+    expect(kinds.length).toBeGreaterThan(0);
+    expect(namesMissing(specFor("dispatch_resolve_ask").description, kinds)).toEqual([]);
+  });
+
+  // A reference flag's help names the forms of reference it takes, each a pattern of the
+  // reference grammar rather than a sentence about it.
+  const referenceForms: readonly (readonly [string, string, readonly string[]])[] = [
+    ["dispatch_ask", "ref", ["dispatch://"]],
+    [
+      "dispatch_read",
+      "ref",
+      [
+        "dispatch://PROJECT/artifact/<slug>[@vN]",
+        "/ask/<id>",
+        "/comment/<id>",
+        "dispatch://KEY/spec#b-<block id>[@vN]",
+        "dispatch://KEY/artifact/<slug>#b-<block id>[@vN]",
+        "dispatch://PROJECT/artifact/<slug>#b-<block id>[@vN]",
+      ],
+    ],
+  ];
+  test.each(
+    referenceForms
+  )("%s's %s flag help names each form of reference it takes", (name, field, forms) => {
+    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+      string,
+      { description?: string; unwrap?: () => { description?: string } }
+    >;
+    const argument = fields[field];
+    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    expect(forms.filter((form) => !description.includes(form))).toEqual([]);
+  });
+
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
     const documentEdit = dispatchToolSpecs.find((spec) => spec.name === "dispatch_doc_edit");
@@ -1524,6 +1609,7 @@ describe("dispatchToolSpecs", () => {
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
     expect(flag, `${name} --${field}`).toContain(":::ask");
+    expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
   });
 
   // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
