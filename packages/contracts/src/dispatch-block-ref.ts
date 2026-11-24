@@ -518,9 +518,9 @@ const CONTAINER_MARKER = new RegExp(`^${CONTAINER_MARKER_PATTERN}`);
  * a live text of the release before, and the CLI's reader of a live text and its check of a
  * version for open ask blocks before an approval request, all read openers here, so none takes a
  * line a document's writer quoted for a state or an answer Dispatch recorded. The server's
- * refs.questionBlocks makes the same scan past the same markers (trimContainerMarkers), but reads
- * the lines of front matter too, and takes only spaces and tabs after a closing fence, where this
- * scan takes any blank.
+ * refs.questionBlocks makes the same scan past the same markers (trimContainerMarkers) and the
+ * same front matter (frontMatterEnd), but takes only spaces and tabs after a closing fence, where
+ * this scan takes any blank.
  */
 export function askOpenerLines(markdown: string): string[] {
   const openers: string[] = [];

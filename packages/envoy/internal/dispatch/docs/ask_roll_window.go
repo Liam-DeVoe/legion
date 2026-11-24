@@ -424,10 +424,10 @@ func askStringItems(value any) ([]string, bool) {
 // withoutStoredAskAttributes takes the seven attributes a version can store
 // (storedAskAttributes) off node, an ask block, and reports whether it held any: the write once
 // the fleet is one build to a block whose ask no write knows - one settlement cannot read and no
-// row indexes, one the decisions step moves that no row names, or one a version or the decisions
-// step's restore writes that has no ask row and is no copy (storableVersionTree, writePresent,
-// withoutAsklessAskAttributes) - whose state is no ask's, a forged state or answerer among them
-// where a browser put them on it.
+// row indexes, one the decisions step moves that no row names and is no copy (movedBlockOf), or
+// one a version or the decisions step's restore writes that has no ask row and is no copy
+// (storableVersionTree, writePresent, withoutAsklessAskAttributes) - whose state is no ask's, a
+// forged state or answerer among them where a browser put them on it.
 func withoutStoredAskAttributes(node *pmdoc.Node) bool {
 	changed := false
 	for _, name := range storedAskAttributes() {
