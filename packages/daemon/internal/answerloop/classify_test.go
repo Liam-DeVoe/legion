@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -167,6 +168,15 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 			map[string]any{"id": "m-8", "body": "Plum.\n\n<!-- legion-answer:abc -->"}, map[string]any{"attempt": 1, "mode": "btw"}))},
 		{name: "the loop's gh comment, by its footer's answer key", handoff: dispatchHandoff("ses_tester", frame("comment.created", agent, new("LEGION-9"),
 			comment("c-8", nil, `Done. <!-- legion: {"session":"ses_x","phase":"testing","answer":"q.1"} -->`), mention))},
+		// What another stopped agent's dispatch tool posts carries the loop's mark (dispatchtool.Mark),
+		// so the loop answers none of it: a comment mentioning the agent, a message sent to it, and
+		// an agent's message to its session. The same comment and message without the mark are
+		// questions ("a comment mentioning the agent", "a message sent to the agent").
+		{name: "the loop's dispatch comment mentioning the agent, by its mark", handoff: dispatchHandoff("ses_tester", frame("comment.created", agent, new("LEGION-9"),
+			comment("c-31", nil, "@tester why?"+dispatchtool.Mark("dispatch:m-1", 3)), mention))},
+		{name: "the loop's dispatch message to the agent, by its mark", handoff: messageHandoff("ses_tester", "m-9", 1, "Why plum?"+dispatchtool.Mark("dispatch:m-1", 4))},
+		{name: "the loop's dispatch message to the agent's session, by its mark", handoff: dispatchHandoff("ses_tester", frame("message.created", agent, nil,
+			map[string]any{"id": "m-10", "issue_key": nil, "body": "Hi?" + dispatchtool.Mark("dispatch:m-1", 5), "target": "session:ses_tester"}, map[string]any{"attempt": 1, "mode": "btw"}))},
 		{name: "another agent's Envoy message", kind: KindEnvoy, maySkip: true,
 			handoff: envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-1", "agent.ses_tester.0123456789abcdef0123456789abcdef", "Which fruit?")},
 		{name: "an Envoy message with the loop's dedupe key", handoff: envoyHandoff("notifications.role.x", "ses_tester", "evt-2", "legion-answer:q1", "Plum.")},

@@ -10,7 +10,8 @@ import (
 
 // A gh call is recorded before it runs, with no result, and finished after with what the model
 // read and gh's exit; a call number recorded once is refused a second time, a finished call is not
-// finished again, and a refused call that never ran is finished with no exit.
+// finished again, and a refused call that never ran is finished with no exit. A call that names no
+// tool is gh's, the column's own default.
 func TestAnswerToolCallsAreRecordedBeforeAndFinishedAfter(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -23,7 +24,7 @@ func TestAnswerToolCallsAreRecordedBeforeAndFinishedAfter(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("AnswerToolCall after the start = %+v, %t, %v; want the row", got, ok, err)
 	}
-	if !slices.Equal(got.Args, call.Args) || got.App != "implement" || got.Owner != "acme" || !got.StartedAt.Equal(started) || got.Result != nil || got.Exit != nil || got.FinishedAt != nil {
+	if !slices.Equal(got.Args, call.Args) || got.Tool != ToolGH || got.App != "implement" || got.Owner != "acme" || !got.StartedAt.Equal(started) || got.Result != nil || got.Exit != nil || got.FinishedAt != nil {
 		t.Errorf("the started call reads %+v, want %+v with no result, exit or end", got, call)
 	}
 	if err := s.StartAnswerToolCall(ctx, call); !errors.Is(err, ErrAnswerToolCallRecorded) {

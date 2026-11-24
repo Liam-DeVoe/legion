@@ -1716,7 +1716,7 @@ It runs under either runtime.
 
 The code: `packages/daemon/internal/answerloop` (the question pipeline:
 intake, classification, one writer per conversation, posting, passing on), `internal/answer` (the model loop, which builds the request and reads the reply but makes its model calls through `packages/envoy/agentloop`, the loop the daemon and Dispatch share and this repository's only import of Grafana's AI SDK for Go), `internal/conversation` (`omp` and `claude`:
-each harness's conversation read as it rebuilds it on resume, and appended to in its own format), `internal/ghtool` (the loop's `gh` tool) and `internal/agenthistory` (the record of conversations the loop answers from, and its mirror in the Envoy listener's agent registry).
+each harness's conversation read as it rebuilds it on resume, and appended to in its own format), `internal/ghtool` (the loop's `gh` tool), `internal/dispatchtool` (the loop's `dispatch` tool) and `internal/agenthistory` (the record of conversations the loop answers from, and its mirror in the Envoy listener's agent registry).
 
 ### Configuration
 
@@ -1752,7 +1752,7 @@ answers:
 - `conversation_store.user` (under `session_store: cloudsql-iam`): The daemon's connection to the conversation store, the IAM login the daemon signs in as to `session_database`'s instance and database, through a Cloud SQL proxy of its own over the daemon's own cloud identity.
   Without it the loop is off (below).
 
-- `bounds.answer_seconds` (180): How long one answer may take, its model calls and `gh` calls together.
+- `bounds.answer_seconds` (180): How long one answer may take, its model calls and tool calls together.
 
 - `bounds.model_calls` (8): Model calls per answer; the last one allowed offers no tool, so it must be the reply.
   That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, to reply now, in the reply form, from what the agent already knows, and that a `not_answered` or `needs_work` reply must say in `needs` what it needs, since that call's reply is never asked for again.
@@ -1765,12 +1765,13 @@ answers:
   The exchange written into the agent's conversation never holds the cut reply, and its tokens and cost count in the answer's.
   A second cut reply, or one on the last call `model_calls` allows, is `length` (below).
 
-- `bounds.gh_seconds` (30): How long one `gh` call may run.
+- `bounds.gh_seconds` (30): How long one `gh` or `dispatch` call may run.
 
-- `bounds.gh_output_chars` (60000): How much of a `gh` call's output the model reads; the rest is cut with a note saying how much.
+- `bounds.gh_output_chars` (60000): How much of a `gh` or `dispatch` call's output the model reads; the rest is cut with a note saying how much.
   It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut.
 
-- `bounds.gh_calls` (20): `gh` calls per answer.
+- `bounds.gh_calls` (20): Calls per answer of each tool, counted per tool: at most this many `gh` calls, and apart from them at most this many `dispatch` calls.
+  Each tool's count holds an earlier run's calls of the same question, and a call past it is refused as the tool's result, naming the bound.
 
 - `bounds.concurrent` (4): Conversations the project answers at once; the questions to one conversation always run one after another.
 
@@ -1796,6 +1797,14 @@ Beside that `gh`, boot needs the shared public leak check the loop's tool runs b
 a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon needs the deployment's leak check setting, `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` or the `leak_check` block ([Worker image](#worker-image)), and reads the tag it installs that check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
 A Kubernetes daemon runs no other tool of its host but that check, which it installs and runs itself, since its pods run the image's.
 `legion config check` and `legion probe-boot` make the same refusals.
+With the loop on, boot also looks for the `dispatch` command the loop's `dispatch` tool runs ([The `dispatch` tool](#the-dispatch-tool)), and finding none refuses nothing:
+`LEGION_DISPATCH_PATH`, which must be an absolute executable, else the first `dispatch` on `PATH`, else `/opt/legion/pi-envoy/bin/dispatch` where it is executable.
+A script is taken, since the Envoy plugin's `dispatch` is a `/bin/sh` shim that runs `bun` on its bundled CLI.
+The worker image keeps it at that last path, and its `PATH` does not hold that directory, so a Kubernetes daemon finds it there.
+`bun` is `LEGION_BUN_PATH`, which must be an absolute executable, else the first `bun` on `PATH`.
+A daemon that names no `dispatch_url`, finds no `dispatch`, or finds no `bun` for it offers no `dispatch` tool, and everything else runs as before.
+Boot logs the loop's tools in one line, `answers: tools`, whose `tools` key lists the tools the loop offers (`["gh","dispatch"]`), with one key named for each tool it does not offer, holding why, such as `"dispatch":"no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)"`.
+`legion config check` prints the same in one line, `answers: tools [gh dispatch]`, or `answers: tools [gh]; dispatch: <why>`.
 While the loop is on, `legion state --json` shows the block under `settings.answers`, and while it is off it shows none, as without `answers`:
 each provider's `base_url` and `api_key_source` (which key names it), the prices and the settled bounds, never a key, a key's command or file, or the conversation store's connection.
 `deploy/kubernetes/daemon/legion.yaml.example` carries the block, commented out.
@@ -1843,7 +1852,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A failed read of the thread leaves the hand-off to be delivered again.
 
 - **Never asked**, decided before any model call:
-  an edit, a resolution, a delivery receipt, a claim, an issue event, an ask's answer, the daemon's own notices and posts, the Envoy broker's own messages, and anything carrying the loop's own marker (its `legion-answer:` dedupe key, the `<!-- legion-answer:<id> -->` marker every reply it posts carries, or a Legion footer with an `answer` key), so the loop never answers itself.
+  an edit, a resolution, a delivery receipt, a claim, an issue event, an ask's answer, the daemon's own notices and posts, the Envoy broker's own messages, and anything carrying the loop's own marker (its `legion-answer:` dedupe key, the `<!-- legion-answer:<id> -->` marker every reply it posts and every comment and message its `dispatch` tool posts carries, or a Legion footer with an `answer` key), so the loop never answers itself.
 
 - **The loop's own answer to a stopped asker.**
   The answer it posts for an Envoy message goes to the asker through the listener, which hands it to the asker's own daemon when that agent is stopped, in place of the copy it would store for the asker or its `404`.
@@ -1865,7 +1874,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 
 - **Never a running conversation.**
   When the conversation is its claim's current one and the claim runs it, or is starting it, nothing is appended:
-  the question, with every `gh` call the loop already made for it and its result, goes to the running agent on its role topic, held and offered again until a live session holds the role, and back to the loop if the claim stops first.
+  the question, with every tool call the loop already made for it, each named with its tool, and its result, goes to the running agent on its role topic, held and offered again until a live session holds the role, and back to the loop if the claim stops first.
   A claim's start waits at most 10 seconds for an answer being appended to its conversation.
 
 - **Never a released claim.**
@@ -1890,10 +1899,10 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A provider's 429, 5xx or transport error is retried once, within the answer's time; nothing else retries.
 
 - **The reply** is one JSON object the daemon checks, of four kinds:
-  `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what `gh` reads) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
+  `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what its tools read) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
   and `none`, offered only for an Envoy message, a reply in a comment thread or a person's reply on the agent's ask, which posts nothing.
   The form's own field descriptions tell the model the two rules its schema cannot hold a reply to: a `not_answered` or `needs_work` reply names what it needs, and every kind but `none` carries text.
-  The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's `gh` results, raw JSON among them read with each escape such as `\n` as a space.
+  The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's tool results, raw JSON among them read with each escape such as `\n` as a space.
   The rule is that narrow so that a terse right answer passes: `No.`, a commit sha, or a marker such as `SBOM-ZINC-512`.
   A reply that breaks one of these rules is asked for once again, with the daemon's reason as a message after it, inside the same `model_calls`, `answer_seconds` and `output_tokens`, and the exchange appended to the conversation then holds the refused reply, that message and the reply after it, in that order.
   A second such reply, or one made on the last call `model_calls` allows, is `malformed` (below).
@@ -1910,7 +1919,9 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   ``I could not answer within the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). I passed your question to the Legion controller.``
   A write is every call but a read: a comment, a review, `pr merge`, `pr edit`, `run rerun`, `workflow run` and a `gh api` call of any method but `GET` and `HEAD`, among the rest.
   A read (`pr view`, `run view`, a search, a `gh api` `GET` or `HEAD`, a GraphQL query), a call asking for `--help` and a call the tool refused are not named, and a write the daemon stopped during is named with no exit.
-  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each `gh` call with its result, without the cut reply made again or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
+  Each `dispatch` write the question's calls ran is named after them, by its command and dispatch's exit: `` I had already run these Dispatch writes: `dispatch comment` (exit 0).``
+  That is every `dispatch` call but one of the dispatch command's reads, a command the tool does not know counted as a write, and no call the tool refused.
+  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each tool call with its result, without the cut reply made again or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
   A fault decided before any model call, or a first call that returned nothing, appends nothing.
 
 - **Passing on.**
@@ -1919,6 +1930,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
   `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
   The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
+  A `dispatch` write is named in the reply alone, not in `writes`.
   A person's decision on an ask a stopped agent opened is passed on once, as one `agent-decision` notice (`{kind, role, agent_decision: {id, issue, session, asker, ref, text}}`, the text cut as a question's is):
   to the architect that owns the agent's issue while it holds its role and its tree neither lingers nor has closed, and otherwise to the controller on its controller topic.
   A decision the parked-decision relay of the ask's own tree carries itself gets no such notice.
@@ -1927,15 +1939,15 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   a Dispatch message through its delivery's reply route, a mention through the comment's reply route, an ask thread as a comment carrying the reply's marker (the thread is read for it before a post is made again), an Envoy message by a direct message to its sender in reply to it.
 
 - **After a restart** a question resumes where it stood:
-  one not yet appended is answered again, the model given the `gh` calls the earlier run made (a comment or review call whose outcome was never recorded is looked up on GitHub by its footer first, so it is posted once), unless its conversation already holds the exchange an earlier run wrote there, which the `legion-answer` entry naming the question says:
+  one not yet appended is answered again, the model given the tool calls the earlier run made, each named with its tool (a `gh` comment or review call whose outcome was never recorded is looked up on GitHub by its footer first, so it is posted once, and a `dispatch` call whose outcome was never recorded is looked up nowhere and given as `The daemon stopped while this call ran; what it did is unknown. Read Dispatch before you repeat a write.`), unless its conversation already holds the exchange an earlier run wrote there, which the `legion-answer` entry naming the question says:
   the reply recorded before that write is then posted and no model is called.
   One appended is posted without being answered again, since its answer is already in the conversation.
 
 - **While the project is paused** ([Pausing a project](#pausing-a-project)), the loop does no work.
   It reads the pause's own flag, the one the daemon's launches and task sends read.
-  No answer starts, and an answer in flight when the pause comes stops before its next model call or `gh` call, its cost so far counted in the day's spend.
+  No answer starts, and an answer in flight when the pause comes stops before its next model call or tool call, its cost so far counted in the day's spend.
   A question that arrives during the pause, or is in flight when it comes, is kept where it stood (`answers: the project is paused; the question waits for the resume`): nothing is posted for it, and it is not passed to the controller.
-  After the resume the loop answers the questions in the order they arrived, each within its usual bounds, and a run the pause stopped is answered again as one after a restart is, given the `gh` calls it already made.
+  After the resume the loop answers the questions in the order they arrived, each within its usual bounds, and a run the pause stopped is answered again as one after a restart is, given the tool calls it already made.
   A daemon that cannot hold a pause, a tmux daemon among them, never pauses its loop.
 
 ### Cost and logs
@@ -1944,11 +1956,12 @@ Every answer logs one line, `answers: answered`, with `question`, `issue`, `role
 An answer the project's pause stopped carries `paused` too, set to true.
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
-Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, and `answers: question passed to the controller` once per question passed on.
+Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), and `answers: question passed to the controller` once per question passed on.
+Boot logs the loop's tools once, `answers: tools` ([Configuration](#configuration)).
 
 ### The `gh` tool, a security decision
 
-`gh` is the loop's one tool: GitHub's own command line with the GitHub access the agent's pane has.
+`gh` is one of the loop's tools: GitHub's own command line with the GitHub access the agent's pane has.
 
 - **What the model is told.**
   The tool's description is built for each answer.
@@ -2041,6 +2054,42 @@ So the tool runs only what is safe there, and decides before anything runs:
   It never resolves the check in the environment the guard's children run in, whose `PATH` has gh's directory in front and which carries no `PUBLIC_LEAK_CHECK`.
   A call made while the machine's setup is broken, or names no check at all, is refused with the setup error naming what the resolution read, whether or not the deployment names a leak check: a pane of a deployment that names none runs its writes under the guard's rules alone where no check is named, and the tool runs no call without one.
   Where the deployment names a leak check, the guard holds the machine's check to its manifest digest (above).
+
+### The `dispatch` tool
+
+`dispatch` is the loop's second tool: Dispatch's own `dispatch` command, the one a Legion pane runs, which the daemon offers where boot found it ([Configuration](#configuration)).
+The daemon runs it as the agent's own session, with the Dispatch token it gives the agent's pane or pod, so Dispatch answers each call as it answers the running agent, with that session's access.
+
+- **What the model is told.**
+  The tool's description says what it is and who it runs as, gives one read (`{"args":["read","<issue>"]}`) and one comment whose body is the call's standard input (`{"args":["comment","--issue","<issue>","--body-file","-"],"stdin":"…"}`), lists the commands it runs, and says every other command is refused.
+  Its input is `args`, dispatch's arguments without `dispatch`, an array of strings no shell reads, and `stdin`, an optional string that is the call's standard input, which an option `--<field>-file -` reads.
+  The system prompt names it beside `gh`, with the session it runs as and its bound.
+
+- **Exactly twenty commands**, decided from the first argument before anything runs.
+  The reads: `read`, `doc-read`, `search`, `related`, `issues`, `projects`, `priorities`, `open-asks`, `answers`, `whoami`, `limits`, `handoff-read`, `steps`, `plans`, `results` and `inbox`.
+  The writes: `comment`, `message`, `send-to-agent` and `resolve-comment`.
+  Every other command is refused, a command the CLI adds later included, since the tool keeps the list of what it runs and none of what it refuses.
+  The refusal is the tool's result and says why: the agent's session holds no claim while it is stopped, so a status write, a claim, an ask or a document edit would stand as a person's move, and the daemon writes only replies in the agent's name.
+
+- **No file of the daemon's host.**
+  For every command, an option `--<field>-file` or `--<field>-json-file` whose value is not `-` is refused, in either form (`--body-file /x`, `--body-file=/x`), and so is `--image` in either form, which would upload a picture file.
+  The options are read as the CLI reads them: every argument that starts with `--` is an option, its value the rest of its word after `=` or else the next argument unless that one starts with `--`.
+  The call's `stdin` is the one input a `-` reads.
+
+- **The loop's mark.**
+  Every body a `comment`, `message` or `send-to-agent` call posts carries the loop's mark after a blank line, `<!-- legion-answer:<question>.<seq> -->`, which the tool adds to the `--body` value or to `stdin` where the body is `--body-file -`.
+  So the loop answers no message its own tool posted, and the mark is never the one its own reply carries, `<!-- legion-answer:<question> -->`, which the loop reads a thread for before posting there again.
+  A read and a resolution run as they are given.
+
+- **A scrubbed environment.**
+  `HOME` an empty directory the daemon makes per answer, `<state_dir>/answers/<question>/dispatch/home`, so no personal Dispatch token or configuration of the host takes part, which is also the working directory;
+  `DISPATCH_HOST=omp`, `DISPATCH_SESSION_ID` the agent's session, `DISPATCH_URL` the daemon's `dispatch_url`, `DISPATCH_TOKEN_FILE` the daemon's `dispatch_token_file`, and `DISPATCH_STATE_DIR` `<state_dir>/answers/<question>/dispatch/state`;
+  and `PATH` of `bun`'s directory and `/bin`, which the shim needs to start `bun`, and nothing else of the daemon's environment.
+  The answer's directory is removed when the answer ends, and no line or result carries the token.
+
+- **Bounds and records.**
+  Each call runs within `gh_seconds` and its output is cut at `gh_output_chars`, as a `gh` call's is, and an answer makes at most `gh_calls` `dispatch` calls, counted apart from its `gh` calls.
+  Each call is recorded in `answer_tool_calls` with `tool` `dispatch` and no App or owner, before it runs and finished after with what the model read and its exit; a refused call is recorded with its refusal, and a call whose start cannot be recorded does not run.
 
 ### The conversation stores
 
@@ -3455,9 +3504,9 @@ The loop marked each question and each decision passed in the transaction that q
 a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 229 or later, and a deleted decision is not told again.
 
 **The four tables need no statement.**
-This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), and adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`).
+This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`), and adds the tool of each call to `answer_tool_calls` (`20261124072849_answer_tool_calls_tool`).
 An earlier daemon does not refuse a database that records migrations it does not know: its migrator applies each migration it embeds that the database has not recorded and compares nothing else (`Store.Migrate` in `store/store.go`), so it boots on that database and names none of the four tables.
-Leave them and their four `schema_version` rows as they are: a roll forward finds the four versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
+Leave them and their five `schema_version` rows as they are: a roll forward finds the five versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
 
 **A tmux daemon on `runtime.tmux.session_store: postgres` waits until it holds no session to resume.**
 Under that store this release tells every pane `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE`, so each pane's Oh My Pi session is a row of the session table, keyed by the path its file would have had.
@@ -3917,8 +3966,8 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463) and this release's 20261124021727_answer_questions_thread_reply are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
-That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, 20261123212127 on one that #5278's release or a later one before this one migrated, and 20261124021727 on one that this release migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463) and this release's 20261124021727_answer_questions_thread_reply and 20261124072849_answer_tool_calls_tool are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, 20261123212127 on one that #5278's release or a later one before this one migrated, and 20261124072849 on one that this release migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
 `internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which is the newest migration this tree embeds.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
@@ -4011,6 +4060,7 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261124021727_answer_questions_thread_reply writes the check of `answer_questions.kind` again with `thread_reply` added and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
+20261124072849_answer_tool_calls_tool adds `answer_tool_calls.tool` at its default, `gh`, and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

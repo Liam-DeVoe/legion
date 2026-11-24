@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -101,6 +102,112 @@ func answersGH(lookupEnv func(string) (string, bool), resolved map[string]string
 		return "", fmt.Errorf("answers needs gh on the daemon's host, which the answer loop's gh tool runs, and none was found: set %s to an absolute executable path, or put gh on PATH", toolEnv("gh"))
 	}
 	return gh, nil
+}
+
+// dispatchInstall is where the worker image keeps the dispatch command, the Envoy plugin's /bin/sh
+// shim that execs bun on its bundled CLI (the image build's last step runs its --help,
+// docs/kubernetes.md). The image's PATH does not hold that directory, and a Kubernetes daemon runs
+// from that image, so this is where such a daemon finds it.
+const dispatchInstall = "/opt/legion/pi-envoy/bin/dispatch"
+
+// dispatchFound is what boot found for the answer loop's dispatch tool: the dispatch command, bun's
+// directory, which that command's shim starts bun from, and the daemon's Dispatch token file, made
+// absolute; or, where the loop offers no dispatch tool, why (absent), and none of the three.
+type dispatchFound struct {
+	dispatch, bunDir, tokenFile string
+	absent                      string
+}
+
+// answersDispatch is the dispatch command the answer loop's dispatch tool runs, which a daemon with
+// the answer loop on finds at boot under either runtime, as it finds the loop's gh: the
+// LEGION_DISPATCH_PATH override, which must be an absolute executable, else the first dispatch on
+// PATH, else install where it is executable (dispatchInstall, the worker image's). Unlike gh, a
+// script is taken: the Envoy plugin's dispatch is a /bin/sh shim. bun, which that shim starts by
+// name, is LEGION_BUN_PATH or else the first bun on PATH, and the tool runs with its directory on
+// PATH. The tool runs against the daemon's own Dispatch, dispatchURL, with its token, tokenFile.
+// Where the daemon names no dispatch_url, finds no dispatch, or no bun for it, nothing refuses the
+// boot: the loop offers no dispatch tool, and absent says why, which the boot line and
+// `legion config check` name (loopTools).
+func answersDispatch(lookupEnv func(string) (string, bool), dispatchURL, tokenFile, install string) dispatchFound {
+	if dispatchURL == "" {
+		return dispatchFound{absent: "no dispatch_url, so no Dispatch to run it against"}
+	}
+	dispatch, err := resolveTool(lookupEnv, "dispatch")
+	if err != nil {
+		return dispatchFound{absent: err.Error()}
+	}
+	if dispatch == "" && isExecutable(install) {
+		dispatch = install
+	}
+	if dispatch == "" {
+		return dispatchFound{absent: fmt.Sprintf("no dispatch command on PATH or at %s (set %s)", install, toolEnv("dispatch"))}
+	}
+	bun, err := resolveTool(lookupEnv, "bun")
+	if err != nil {
+		return dispatchFound{absent: err.Error()}
+	}
+	if bun == "" {
+		return dispatchFound{absent: fmt.Sprintf("no bun for %s, which runs on it (set %s, or put bun on PATH)", dispatch, toolEnv("bun"))}
+	}
+	token, err := filepath.Abs(tokenFile)
+	if err != nil {
+		return dispatchFound{absent: fmt.Sprintf("dispatch_token_file %s: %v", tokenFile, err)}
+	}
+	return dispatchFound{dispatch: dispatch, bunDir: filepath.Dir(bun), tokenFile: token}
+}
+
+// loopTools are the answer loop's tools as boot found them: each the loop offers, in the loop's
+// order, and each it does not offer with why.
+type loopTools struct {
+	offered []string
+	absent  [][2]string
+}
+
+// loopToolsOf is the loop's tools with dispatch as boot found it: gh, which boot refuses to start
+// without, and dispatch where boot found its command.
+func loopToolsOf(dispatch dispatchFound) loopTools {
+	tools := loopTools{offered: []string{"gh"}}
+	if dispatch.dispatch != "" {
+		tools.offered = append(tools.offered, "dispatch")
+	} else {
+		tools.absent = append(tools.absent, [2]string{"dispatch", dispatch.absent})
+	}
+	return tools
+}
+
+// answersToolsLine is the message of the boot's one line naming the loop's tools, which an
+// after_merge check of INFRA's boot log reads, as its keys: tools, the list of those the loop
+// offers, and one key per tool it does not offer, named for the tool, holding why.
+const answersToolsLine = "answers: tools"
+
+// attrs are the line's keys and values (answersToolsLine).
+func (t loopTools) attrs() []any {
+	attrs := []any{"tools", t.offered}
+	for _, absent := range t.absent {
+		attrs = append(attrs, absent[0], absent[1])
+	}
+	return attrs
+}
+
+// String is the line as `legion config check` prints it, in the words of the boot's line:
+// `answers: tools [gh dispatch]`, and after the list, for each tool the loop does not offer,
+// `; <tool>: <why>`.
+func (t loopTools) String() string {
+	line := fmt.Sprintf("%s [%s]", answersToolsLine, strings.Join(t.offered, " "))
+	for _, absent := range t.absent {
+		line += fmt.Sprintf("; %s: %s", absent[0], absent[1])
+	}
+	return line
+}
+
+// AnswersToolsLine is `legion config check`'s line naming the answer loop's tools, read from the
+// daemon's environment (lookup) as boot reads it (answersDispatch, loopToolsOf), and false for a
+// configuration without answers, whose daemon runs no loop.
+func AnswersToolsLine(cfg config.Config, lookup func(string) (string, bool)) (string, bool) {
+	if cfg.Answers == nil {
+		return "", false
+	}
+	return loopToolsOf(answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall)).String(), true
 }
 
 // answersLeakCheck is where the shared public leak check comes from that the answer loop's gh tool

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/conversation/claude"
 	"github.com/sjawhar/legion/daemon/internal/conversation/omp"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -39,14 +40,17 @@ type stubGH struct {
 	onCall func(seq int)
 }
 
+// ghCall is one call the stand-in took: its seq among the answer's calls, its number among the
+// answer's gh calls, and its arguments.
 type ghCall struct {
 	seq  int
+	n    int
 	args string
 }
 
-func (g *stubGH) Run(_ context.Context, seq int, args string) ghtool.Result {
+func (g *stubGH) Run(_ context.Context, seq, n int, args string) ghtool.Result {
 	g.mu.Lock()
-	g.calls = append(g.calls, ghCall{seq: seq, args: args})
+	g.calls = append(g.calls, ghCall{seq: seq, n: n, args: args})
 	onCall := g.onCall
 	g.mu.Unlock()
 	if onCall != nil {
@@ -186,7 +190,7 @@ func TestAnAnthropicAnswerReplaysItsSignaturesAndAppendsEveryTurn(t *testing.T) 
 	if stepOne[0]["type"] != "thinking" || stepOne[0]["signature"] != "sig-step-1+/==" || stepOne[0]["thinking"] != "Check the PR." {
 		t.Errorf("the second call carries the first call's turn as %v, want its thinking with its signature", stepOne)
 	}
-	if calls := gh.made(); !reflect.DeepEqual(calls, []ghCall{{1, `["pr","view","7"]`}, {2, `["pr","checks","7"]`}}) {
+	if calls := gh.made(); !reflect.DeepEqual(calls, []ghCall{{1, 1, `["pr","view","7"]`}, {2, 2, `["pr","checks","7"]`}}) {
 		t.Errorf("gh calls %+v", calls)
 	}
 
@@ -288,21 +292,60 @@ func offerOf(t *testing.T, r recorded) offered {
 	return body
 }
 
-// The loop's tool list holds gh, every model call offers it, and the system prompt names it.
-func TestTheLoopsToolListHoldsGh(t *testing.T) {
-	if !slices.ContainsFunc(tools, func(t tool) bool { return t.name == "gh" }) {
-		t.Fatalf("the loop's tools %v hold no gh", tools)
+// The loop's tool list holds its tools, and the Verification document names this test: gh, which
+// every model call offers; dispatch, Dispatch's own command run as the agent's session, which a
+// model call offers where the daemon found the command (Request.Dispatch); and web_search, the
+// third, which its own change adds. Each offered tool is named with its input schema and its
+// description, and the system prompt names each.
+func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
+	for _, name := range []string{"gh", "dispatch"} {
+		if !slices.ContainsFunc(tools, func(t tool) bool { return t.name == name }) {
+			t.Fatalf("the loop's tools %v hold no %s", tools, name)
+		}
 	}
-	s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)))
-	if _, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 1)); err != nil {
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)),
+		anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)),
+	)
+	req := anthropicRequest(t, s, &stubGH{}, 1)
+	req.Dispatch = &stubDispatch{}
+	if _, err := Answer(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
 	body := offerOf(t, s.requests()[0])
-	if len(body.Tools) != 1 || body.Tools[0].Name != "gh" || body.Tools[0].InputSchema.Properties["args"].Type != "array" {
-		t.Errorf("the call offers tools %+v, want gh taking args, an array", body.Tools)
+	offered := map[string]int{}
+	for i, tool := range body.Tools {
+		offered[tool.Name] = i
 	}
-	if len(body.System) == 0 || !strings.Contains(body.System[0].Text, "`gh`") {
-		t.Errorf("the system prompt %+v does not name gh", body.System)
+	gh, hasGH := offered["gh"]
+	at, hasDispatch := offered["dispatch"]
+	if len(body.Tools) != 2 || !hasGH || !hasDispatch || body.Tools[gh].InputSchema.Properties["args"].Type != "array" {
+		t.Fatalf("the call offers tools %+v, want gh taking args, an array, and dispatch", body.Tools)
+	}
+	dispatch := body.Tools[at]
+	if dispatch.InputSchema.Properties["args"].Type != "array" || dispatch.InputSchema.Properties["stdin"].Type != "string" {
+		t.Errorf("the call offers dispatch as %+v, want it taking args, an array, and stdin, a string", dispatch)
+	}
+	for _, want := range append([]string{
+		"Dispatch's own `dispatch` command", "as your own session, s-planner", "with that session's access",
+		`{"args":["read","INFRA-1"]}`, `{"args":["comment","--issue","INFRA-1","--body-file","-"],"stdin":`,
+		"Every other command is refused", "the loop's mark, which the tool adds",
+	}, slices.Concat(dispatchtool.ReadCommands, dispatchtool.WriteCommands)...) {
+		if !strings.Contains(dispatch.Description, want) {
+			t.Errorf("the dispatch tool's description lacks %q:\n%s", want, dispatch.Description)
+		}
+	}
+	if len(body.System) == 0 || !strings.Contains(body.System[0].Text, "`gh`") || !strings.Contains(body.System[0].Text, "`dispatch`") {
+		t.Errorf("the system prompt %+v does not name gh and dispatch", body.System)
+	}
+
+	// An answer whose request carries no dispatch tool, a daemon that found no dispatch command,
+	// is offered gh alone, and its prompt names no dispatch.
+	if _, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if body := offerOf(t, s.requests()[1]); len(body.Tools) != 1 || body.Tools[0].Name != "gh" || strings.Contains(body.System[0].Text, "dispatch") {
+		t.Errorf("an answer with no dispatch tool offers %+v under %q, want gh alone and no dispatch named", body.Tools, body.System[0].Text)
 	}
 }
 
@@ -1381,6 +1424,6 @@ func TestAFailedGhCallGoesBackAsAnErrorResult(t *testing.T) {
 // failingGH is a gh tool whose call runs and fails.
 type failingGH struct{}
 
-func (failingGH) Run(context.Context, int, string) ghtool.Result {
+func (failingGH) Run(context.Context, int, int, string) ghtool.Result {
 	return ghtool.Result{Output: "could not resolve to a PullRequest", Exit: 1, Ran: true}
 }

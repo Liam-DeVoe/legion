@@ -146,6 +146,8 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		if r.answers, err = readAnswersBoot(*cfg.Answers, cfg.Runtime.Name, cfg.LeakCheck, r.tmux, lookup); err != nil {
 			return bootReads{}, err
 		}
+		// The dispatch tool refuses no boot: a daemon that finds no dispatch command offers none.
+		r.answers.dispatch = answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall)
 	}
 	return r, nil
 }
@@ -154,15 +156,17 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 // own host its gh tool runs, under either runtime (answersGH); where the shared public leak check
 // that tool's guard runs comes from (answersLeakCheck): leakCheck, the machine's check a tmux
 // daemon resolved, or leakCheckTag, the pin a Kubernetes daemon installs the deployment's setting's
-// check at (installAnswersLeakCheck), exactly one of them set; and conversationDSN, the URL of the
+// check at (installAnswersLeakCheck), exactly one of them set; conversationDSN, the URL of the
 // database the conversations live in: answers.conversation_store.dsn_file's under
 // runtime.kubernetes.session_store postgres, runtime.tmux.session_dsn_file's under
-// runtime.tmux.session_store postgres ("" under any other store). It is the one place the loop
-// gets that URL from, whichever key named its file.
+// runtime.tmux.session_store postgres ("" under any other store), the one place the loop gets that
+// URL from, whichever key named its file; and dispatch, the dispatch command its dispatch tool
+// runs, or why the loop offers none (answersDispatch).
 type answersReads struct {
 	gh                      string
 	leakCheck, leakCheckTag string
 	conversationDSN         string
+	dispatch                dispatchFound
 }
 
 // readAnswersBoot is the answer loop's share of readBoot under runtimeName and the deployment's

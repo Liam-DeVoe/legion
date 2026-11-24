@@ -9,8 +9,9 @@
 // and moves received -> generating -> appended -> posted, or passed_on when the
 // controller must hear of it (PassOn), forwarded when the agent runs its conversation, or dropped.
 // Recovery follows the state and the conversation: a question not yet appended is answered again,
-// the model handed the gh calls the earlier run made (a comment or review call of unknown outcome
-// looked up on GitHub first, ghtool.Lookup), unless the conversation already holds the exchange
+// the model handed the tool calls the earlier run made (a gh comment or review call of unknown
+// outcome looked up on GitHub first, ghtool.Lookup; a dispatch call of unknown outcome told the
+// model as such, dispatchtool.UnknownOutcome), unless the conversation already holds the exchange
 // an earlier pass wrote, which its legion-answer marker names: that reply, recorded before the
 // append, is posted and the model is not called again. One appended is posted without answering
 // again, since its answer is in the conversation already.
@@ -130,6 +131,18 @@ type Tools interface {
 	Open(ctx context.Context, agent ghtool.Agent, question string) (Tool, error)
 }
 
+// DispatchTool is one answer's dispatch tool (*dispatchtool.Answer, with its Close).
+type DispatchTool interface {
+	answer.Dispatch
+	Close() error
+}
+
+// DispatchTools opens the dispatch tool an answer runs with, as the agent's session, for
+// question.
+type DispatchTools interface {
+	Open(session, question string) (DispatchTool, error)
+}
+
 // PassOn tells the controller of a question the agent's reply does not settle: one not answered, a
 // request for work, one past a bound or a fault, or over the daily limit. reason is the Reason,
 // origin the question as its hand-off carries it: its text, who asked (Asker) and where (Ref, a
@@ -212,6 +225,9 @@ type Config struct {
 	Conversations Conversations
 	PassOn        PassOn
 	Decisions     Decisions
+	// DispatchTools opens each answer's dispatch tool; nil is a daemon that found no dispatch
+	// command (or no bun for it), whose answers are offered gh alone.
+	DispatchTools DispatchTools
 	// AppID is the configured id of a role's GitHub App (config.GitHubApps), which the gh tool's
 	// log line names.
 	AppID func(claim.Role) string

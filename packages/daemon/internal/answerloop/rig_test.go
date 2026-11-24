@@ -121,20 +121,32 @@ func (s *standIn) posts() []request {
 }
 
 // fakeTool is the gh tool: no call runs (the stub answer makes none), and Lookup answers what the
-// test says GitHub holds for each seq.
+// test says GitHub holds for each seq, recording each seq it was asked of.
 type fakeTool struct {
-	found map[int]ghtool.Found
-	err   map[int]error
+	found  map[int]ghtool.Found
+	err    map[int]error
+	mu     sync.Mutex
+	looked []int
 }
 
-func (f *fakeTool) Run(context.Context, int, string) ghtool.Result { return ghtool.Result{} }
+func (f *fakeTool) Run(context.Context, int, int, string) ghtool.Result { return ghtool.Result{} }
 func (f *fakeTool) Lookup(_ context.Context, seq int) (ghtool.Found, error) {
+	f.mu.Lock()
+	f.looked = append(f.looked, seq)
+	f.mu.Unlock()
 	if err := f.err[seq]; err != nil {
 		return ghtool.Found{}, err
 	}
 	return f.found[seq], nil
 }
 func (f *fakeTool) Close() error { return nil }
+
+// lookedUp are the seqs Lookup was asked of, in order.
+func (f *fakeTool) lookedUp() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.looked)
+}
 
 type toolsFunc func(ghtool.Agent) Tool
 

@@ -110,9 +110,10 @@ type ConversationStore struct {
 }
 
 // AnswerBounds are `answers.bounds`: how long one answer may take, how many model calls it may make
-// and how many tokens each may write; how long one `gh` call may run, how much of its output the
-// model reads, and how many calls one answer may make; how many questions the project answers at
-// once; and how many USD the project spends a UTC day.
+// and how many tokens each may write; how long one `gh` or `dispatch` call may run and how much of
+// its output the model reads; how many calls of each tool one answer may make, counted per tool
+// (at most GHCalls gh calls, and apart from them at most GHCalls dispatch calls); how many
+// questions the project answers at once; and how many USD the project spends a UTC day.
 type AnswerBounds struct {
 	Answer        time.Duration
 	ModelCalls    int

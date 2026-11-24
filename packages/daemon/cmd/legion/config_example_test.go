@@ -499,16 +499,29 @@ var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n
 // stderr, so a `-v` run shows what the check printed for each edit of the example.
 func checkShippedExample(t *testing.T, edit func(string) string, extra map[string]string) string {
 	t.Helper()
+	return checkShippedExamplePrints(t, edit, extra, shippedExampleCheckOK)
+}
+
+// checkShippedExamplePrints is checkShippedExample with the whole stdout the check must print.
+func checkShippedExamplePrints(t *testing.T, edit func(string) string, extra map[string]string, want string) string {
+	t.Helper()
 	config := stageShippedExample(t, edit, extra)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
-	if code != 0 || out.String() != shippedExampleCheckOK {
-		t.Fatalf("legion config check on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), shippedExampleCheckOK)
+	if code != 0 || out.String() != want {
+		t.Fatalf("legion config check on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	return config
+}
+
+// answersCheckOK is the whole stdout of `legion config check` on the shipped example with its
+// answers block on: the example's own lines, and the line naming the answer loop's tools, tools,
+// before the repository cache's.
+func answersCheckOK(tools string) string {
+	return strings.Replace(shippedExampleCheckOK, defaultCacheLine, tools+"\n"+defaultCacheLine, 1)
 }
 
 // The example's commented `answers` block, uncommented, passes the check too, on the postgres
@@ -517,15 +530,25 @@ func checkShippedExample(t *testing.T, edit func(string) string, extra map[strin
 // shared public leak check's pin found in LEGION_LEAK_CHECK_TAG as the worker image sets it for
 // the daemon it runs (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL
 // file read, and its placeholder api_key_command, which sh could not run, never run — a key is
-// read for each model call, never by the check. Without that pin, or without the setting, the same
-// file is refused, naming what is missing, since a Kubernetes daemon's gh tool would then have no
-// check to run before any call.
+// read for each model call, never by the check. The check names the loop's tools as the boot line
+// does: gh and dispatch, found by LEGION_DISPATCH_PATH and LEGION_BUN_PATH, and gh alone, saying
+// why, where no bun runs dispatch. Without that pin, or without the setting, the same file is
+// refused, naming what is missing, since a Kubernetes daemon's gh tool would then have no check to
+// run before any call.
 func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", gh)
+	tools := t.TempDir()
+	dispatch, bun := filepath.Join(tools, "dispatch"), filepath.Join(tools, "bun")
+	for path, contents := range map[string]string{dispatch: "#!/bin/sh\n", bun: "\x7fELF\x02\x01\x01\x00"} {
+		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("LEGION_DISPATCH_PATH", dispatch)
 	files := map[string]string{
 		"conversations-dsn": "postgres://legion-daemon:placeholder@conversations.internal.example:5432/omp_sessions\n",
 		"anthropic-key":     "placeholder\n",
@@ -534,10 +557,19 @@ func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 		t.Setenv(leakguard.RepositoryVar, "example-org/deployment")
 		t.Setenv(leakguard.ManifestVar, strings.Repeat("5e", 32))
 	}
+	t.Run("with no bun for dispatch", func(t *testing.T) {
+		setting(t)
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		t.Setenv("LEGION_BUN_PATH", "")
+		t.Setenv("PATH", t.TempDir())
+		checkShippedExamplePrints(t, uncommentAnswers, files,
+			answersCheckOK("answers: tools [gh]; dispatch: no bun for "+dispatch+", which runs on it (set LEGION_BUN_PATH, or put bun on PATH)"))
+	})
 	t.Run("with the worker image's pin", func(t *testing.T) {
 		setting(t)
 		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
-		config := checkShippedExample(t, uncommentAnswers, files)
+		t.Setenv("LEGION_BUN_PATH", bun)
+		config := checkShippedExamplePrints(t, uncommentAnswers, files, answersCheckOK("answers: tools [gh dispatch]"))
 		cfg, err := configpkg.LoadForValidation(config, func(name string) string {
 			if name == "LEGION_POSTGRES_DSN" {
 				return "postgres://127.0.0.1:1/legion"

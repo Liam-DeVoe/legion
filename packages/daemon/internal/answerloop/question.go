@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -46,9 +47,10 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // never answered again), its claim runs the conversation (forwarded) or the day's spend is over
 // the limit (the daemon's reply). It records the reply, adds the exchange to the conversation,
 // then posts the reply. An answer the model gave none to is the daemon's reply naming the fault
-// and every gh write the question's calls ran (faultText); when a model call returned anything,
-// the run's turns and that reply are the exchange it adds (conversation.Append.NoAnswer), so the
-// agent's conversation holds every call it made, a write among them.
+// and every gh and dispatch write the question's calls ran (faultText); when a model call
+// returned anything, the run's turns and that reply are the exchange it adds
+// (conversation.Append.NoAnswer), so the agent's conversation holds every call it made, a write
+// among them.
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -120,6 +122,21 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			l.cfg.Log.Warn("answers: the gh tool's directory was not removed", "question", q.ID, "error", err)
 		}
 	}()
+	// The answer's dispatch tool, where the daemon found the dispatch command, runs as the agent's
+	// own session.
+	var dispatchTool answer.Dispatch
+	if l.cfg.DispatchTools != nil {
+		opened, err := l.cfg.DispatchTools.Open(conv.Session, q.ID)
+		if err != nil {
+			return fmt.Errorf("open the dispatch tool: %w", err)
+		}
+		defer func() {
+			if err := opened.Close(); err != nil {
+				l.cfg.Log.Warn("answers: the dispatch tool's directory was not removed", "question", q.ID, "error", err)
+			}
+		}()
+		dispatchTool = opened
+	}
 	// The pause is read again before the question's first gh call, a lookup of an earlier call's
 	// outcome, as the answer reads it before its first model call.
 	if l.paused() {
@@ -130,7 +147,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		return err
 	}
 	// An answer the pause stops (answer.ErrPaused) leaves q generating: its cost is the day's all
-	// the same, nothing is appended or posted, and the next run after the resume is handed the gh
+	// the same, nothing is appended or posted, and the next run after the resume is handed the tool
 	// calls this one made (earlierCalls).
 	reply, err := l.cfg.Answer(ctx, answer.Request{
 		Conversation:  session.Conversation(),
@@ -139,7 +156,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		Question:      answer.Question{ID: q.ID, Text: origin.Text, Asker: origin.Asker, Where: origin.Where},
 		MayAskNothing: q.MayAskNothing, Earlier: earlier,
 		Providers: l.cfg.Answers.Providers, Prices: l.cfg.Answers.Prices, Bounds: l.cfg.Answers.Bounds,
-		GH: tool, Paused: l.cfg.Paused, Log: l.cfg.Log,
+		GH: tool, Dispatch: dispatchTool, Paused: l.cfg.Paused, Log: l.cfg.Log,
 	})
 	if reply.CostUSD > 0 {
 		if spendErr := l.cfg.Store.AddAnswerSpend(context.WithoutCancel(ctx), l.cfg.Project, now, reply.CostUSD); spendErr != nil {
@@ -212,10 +229,13 @@ func (l *Loop) appended(ctx context.Context, q store.AnswerQuestion, origin Orig
 	return l.post(ctx, q, origin)
 }
 
-// earlierCalls are the gh calls an earlier run of q made, each with its result; a comment or review
-// call the daemon stopped during is looked up on GitHub by its footer first, and what was found is
-// recorded as its result, so the model is told whether it posted. A call that posts nothing, or one
-// whose target cannot be read, stays of unknown outcome.
+// earlierCalls are the tool calls an earlier run of q made, each with its result. A gh comment or
+// review call the daemon stopped during is looked up on GitHub by its footer first, and what was
+// found is recorded as its result, so the model is told whether it posted; a gh call that posts
+// nothing, or one whose target cannot be read, stays of unknown outcome. A dispatch call the
+// daemon stopped during is looked up nowhere, since its mark is no key Dispatch can be searched
+// by: dispatchtool.UnknownOutcome is recorded as its result, which tells the model to read
+// Dispatch before it writes again.
 func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool Tool) ([]store.AnswerToolCall, error) {
 	calls, err := l.cfg.Store.AnswerToolCalls(ctx, q.ID)
 	if err != nil {
@@ -225,18 +245,20 @@ func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool To
 		if call.Result != nil {
 			continue
 		}
-		found, err := tool.Lookup(ctx, call.Seq)
-		var outcome string
-		switch {
-		case errors.Is(err, ghtool.ErrNotAWrite):
-			continue
-		case err != nil:
-			l.cfg.Log.Warn("answers: a gh call of unknown outcome could not be looked up", "question", q.ID, "seq", call.Seq, "error", err)
-			continue
-		case found.Exists:
-			outcome = "The daemon stopped while this call ran. GitHub shows what it posted, at " + found.URL + "; do not post it again."
-		default:
-			outcome = "The daemon stopped while this call ran. GitHub shows nothing it posted."
+		outcome := dispatchtool.UnknownOutcome
+		if call.Tool != store.ToolDispatch {
+			found, err := tool.Lookup(ctx, call.Seq)
+			switch {
+			case errors.Is(err, ghtool.ErrNotAWrite):
+				continue
+			case err != nil:
+				l.cfg.Log.Warn("answers: a gh call of unknown outcome could not be looked up", "question", q.ID, "seq", call.Seq, "error", err)
+				continue
+			case found.Exists:
+				outcome = "The daemon stopped while this call ran. GitHub shows what it posted, at " + found.URL + "; do not post it again."
+			default:
+				outcome = "The daemon stopped while this call ran. GitHub shows nothing it posted."
+			}
 		}
 		calls[i].Result = &outcome
 		if err := l.cfg.Store.FinishAnswerToolCall(ctx, q.ID, call.Seq, outcome, nil, l.cfg.Now().UTC()); err != nil {
@@ -247,8 +269,8 @@ func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool To
 }
 
 // decideFault fixes the daemon's own reply in the agent's name for a question the model gave no
-// answer to, naming the bound or fault and every gh write the question's calls ran (faultText),
-// and posts it; the question is passed on.
+// answer to, naming the bound or fault and every gh and dispatch write the question's calls ran
+// (faultText), and posts it; the question is passed on.
 func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin Origin, reason Reason) error {
 	from := q.State
 	text, err := l.faultText(ctx, q.ID, reason)
@@ -263,20 +285,21 @@ func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin O
 }
 
 // faultText is the daemon's reply for question, which got no answer for reason: faultReply over
-// the gh writes its recorded calls ran (ghtool.Writes), this run's and an earlier one's.
+// the gh writes its recorded calls ran (ghtool.Writes) and the dispatch writes (dispatchtool.Writes),
+// this run's and an earlier one's.
 func (l *Loop) faultText(ctx context.Context, question string, reason Reason) (string, error) {
 	calls, err := l.cfg.Store.AnswerToolCalls(ctx, question)
 	if err != nil {
 		return "", err
 	}
-	return l.faultReply(reason, ghtool.Writes(calls)), nil
+	return l.faultReply(reason, ghtool.Writes(calls), dispatchtool.Writes(calls)), nil
 }
 
-// faultReply is the daemon's reply, as the agent, for reason, naming each of writes (ranWrites):
-// an asker told only that the agent could not answer would not know that it already approved,
-// merged or commented.
-func (l *Loop) faultReply(reason Reason, writes []record.AgentQuestionWrite) string {
-	return l.faultSentence(reason) + ranWrites(writes) + " I passed your question to the Legion controller."
+// faultReply is the daemon's reply, as the agent, for reason, naming each of writes (ranWrites)
+// and each of dispatchWrites (ranDispatchWrites): an asker told only that the agent could not
+// answer would not know that it already approved, merged, commented or posted.
+func (l *Loop) faultReply(reason Reason, writes []record.AgentQuestionWrite, dispatchWrites []dispatchtool.Write) string {
+	return l.faultSentence(reason) + ranWrites(writes) + ranDispatchWrites(dispatchWrites) + " I passed your question to the Legion controller."
 }
 
 // faultSentence is what the daemon's reply says of reason.
@@ -331,6 +354,23 @@ func ranWrites(writes []record.AgentQuestionWrite) string {
 		}
 	}
 	return " I had already run these gh writes: " + strings.Join(named, "; ") + "."
+}
+
+// ranDispatchWrites is the sentence of the daemon's reply naming each of writes, the dispatch
+// writes the question's calls ran, by its command and dispatch's exit, "" for none.
+func ranDispatchWrites(writes []dispatchtool.Write) string {
+	if len(writes) == 0 {
+		return ""
+	}
+	named := make([]string, len(writes))
+	for i, w := range writes {
+		exit := "no exit status"
+		if w.Exit != nil {
+			exit = fmt.Sprintf("exit %d", *w.Exit)
+		}
+		named[i] = fmt.Sprintf("`dispatch %s` (%s)", w.Command, exit)
+	}
+	return " I had already run these Dispatch writes: " + strings.Join(named, "; ") + "."
 }
 
 // noAnswerNote is what the agent reads after the turns of its answer that got none for reason
@@ -453,8 +493,8 @@ func (l *Loop) drop(ctx context.Context, q *store.AnswerQuestion, because string
 }
 
 // forwardPayload is what a forwarded question carries to the running agent: the question, who
-// asked and where, how to answer it, and every gh call the loop already made for it, with its
-// result, so the agent does not repeat a write.
+// asked and where, how to answer it, and every tool call the loop already made for it, with its
+// tool and its result, so the agent does not repeat a write.
 type forwardPayload struct {
 	Kind     string        `json:"kind"`
 	Question string        `json:"question"`
@@ -468,6 +508,7 @@ type forwardPayload struct {
 
 type forwardCall struct {
 	Seq    int      `json:"seq"`
+	Tool   string   `json:"tool"`
 	Args   []string `json:"args"`
 	Result *string  `json:"result"`
 	Exit   *int     `json:"exit"`
@@ -497,16 +538,16 @@ func (l *Loop) deliverForward(ctx context.Context, q store.AnswerQuestion, origi
 	var text strings.Builder
 	fmt.Fprintf(&text, "A question reached you while you were stopped, from %s (%s, %s):\n\n%s\n\nAnswer it there yourself.", origin.Asker, origin.Where, origin.Ref, origin.Text)
 	if len(calls) > 0 {
-		text.WriteString(" The daemon's answer loop already ran these gh calls for it; do not repeat a write:\n")
+		text.WriteString(" The daemon's answer loop already ran these tool calls for it; do not repeat a write:\n")
 	}
 	for _, call := range calls {
-		payload.Calls = append(payload.Calls, forwardCall{Seq: call.Seq, Args: call.Args, Result: call.Result, Exit: call.Exit})
+		payload.Calls = append(payload.Calls, forwardCall{Seq: call.Seq, Tool: call.Tool, Args: call.Args, Result: call.Result, Exit: call.Exit})
 		result := "outcome unknown"
 		if call.Result != nil {
 			result = *call.Result
 		}
 		args, _ := json.Marshal(call.Args)
-		fmt.Fprintf(&text, "\n%d. gh %s\n%s\n", call.Seq, args, result)
+		fmt.Fprintf(&text, "\n%d. %s %s\n%s\n", call.Seq, call.Tool, args, result)
 	}
 	payload.Text = text.String()
 	summary := fmt.Sprintf("A question for the %s of %s from %s", q.Role, q.Issue, origin.Asker)

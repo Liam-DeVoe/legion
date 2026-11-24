@@ -293,8 +293,9 @@ func args(argv ...string) string {
 	return string(data)
 }
 
+// run makes the call seq of the answer, its seq also its number among the answer's gh calls.
 func (f *fixture) run(seq int, argv ...string) Result {
-	return Run(context.Background(), Call{Answer: f.answer, Seq: seq, Args: args(argv...), Bounds: bounds})
+	return Run(context.Background(), Call{Answer: f.answer, Seq: seq, N: seq, Args: args(argv...), Bounds: bounds})
 }
 
 // invocations are the calls the stand-in gh was run for so far: helps says whether to include
@@ -540,7 +541,7 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 		if raw == "" {
 			raw = args(tc.argv...)
 		}
-		got := Run(context.Background(), Call{Answer: f.answer, Seq: seq, Args: raw, Bounds: bounds})
+		got := Run(context.Background(), Call{Answer: f.answer, Seq: seq, N: seq, Args: raw, Bounds: bounds})
 		ok := slices.ContainsFunc(strings.Split(tc.want, "||"), func(want string) bool { return strings.Contains(got.Output, want) })
 		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !ok {
 			t.Errorf("gh %s = %+v; want a refusal containing %q, gh never run", raw, got, tc.want)
@@ -1494,18 +1495,18 @@ func TestEveryAllowedCommandsOptionsAreGhsOwn(t *testing.T) {
 // killed keeps what it printed, with the signal named.
 func TestOutputIsCutAndASlowGhIsStopped(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: strings.Repeat("é", 30), Stderr: "warning", Exit: 1})
-	got := Run(context.Background(), Call{Answer: f.answer, Seq: 1, Args: args("api", "user"), Bounds: config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 10, GHCalls: 5}})
+	got := Run(context.Background(), Call{Answer: f.answer, Seq: 1, N: 1, Args: args("api", "user"), Bounds: config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 10, GHCalls: 5}})
 	if want := strings.Repeat("é", 10) + "\n[cut: 27 more characters]"; got.Output != want || got.Exit != 1 || !got.Ran {
 		t.Errorf("a long answer = %+v; want %q, exit 1", got, want)
 	}
-	whole := Run(context.Background(), Call{Answer: f.answer, Seq: 2, Args: args("api", "user"), Bounds: bounds})
+	whole := Run(context.Background(), Call{Answer: f.answer, Seq: 2, N: 2, Args: args("api", "user"), Bounds: bounds})
 	if want := strings.Repeat("é", 30) + "warning"; whole.Output != want {
 		t.Errorf("stdout and stderr read %q, want %q", whole.Output, want)
 	}
 
 	setBehaviour(t, f.stand, behaviour{Stdout: "partial", Sleep: time.Minute})
 	start := time.Now()
-	got = Run(context.Background(), Call{Answer: f.answer, Seq: 3, Args: args("api", "user"), Bounds: config.AnswerBounds{GHCall: 2 * time.Second, GHOutputChars: 100, GHCalls: 5}})
+	got = Run(context.Background(), Call{Answer: f.answer, Seq: 3, N: 3, Args: args("api", "user"), Bounds: config.AnswerBounds{GHCall: 2 * time.Second, GHOutputChars: 100, GHCalls: 5}})
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
 		t.Errorf("a gh sleeping a minute under a 2s bound returned after %s", elapsed)
 	}
@@ -1519,7 +1520,7 @@ func TestOutputIsCutAndASlowGhIsStopped(t *testing.T) {
 	// A gh a signal ended from outside the tool ran: what it printed stands, with the signal's
 	// words, and its exit is -1, since a signal leaves no status (procgroup.Ended).
 	setBehaviour(t, f.stand, behaviour{Stdout: "partial", Killed: true})
-	got = Run(context.Background(), Call{Answer: f.answer, Seq: 4, Args: args("api", "user"), Bounds: bounds})
+	got = Run(context.Background(), Call{Answer: f.answer, Seq: 4, N: 4, Args: args("api", "user"), Bounds: bounds})
 	if want := "partial\n[gh was ended by signal: killed]"; !got.Ran || got.Exit != -1 || got.Output != want {
 		t.Errorf("a gh a signal ended = %+v; want it run, exit -1 and %q", got, want)
 	}
@@ -1528,20 +1529,22 @@ func TestOutputIsCutAndASlowGhIsStopped(t *testing.T) {
 	}
 }
 
-// An answer makes at most gh_calls calls: the call past the bound is refused without gh starting.
+// An answer makes at most gh_calls gh calls, counted apart from its calls of every other tool:
+// the call's number among the answer's gh calls is what the bound reads, not its seq among every
+// call of the answer. The gh call past the bound is refused without gh starting.
 func TestTheCallPastTheBoundIsRefused(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "ok"})
 	capped := config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 100, GHCalls: 2}
-	for seq := 1; seq <= 3; seq++ {
+	for _, c := range []struct{ seq, n int }{{3, 1}, {6, 2}, {7, 3}} {
 		f.clearInvocations()
-		got := Run(context.Background(), Call{Answer: f.answer, Seq: seq, Args: args("api", "user"), Bounds: capped})
+		got := Run(context.Background(), Call{Answer: f.answer, Seq: c.seq, N: c.n, Args: args("api", "user"), Bounds: capped})
 		switch {
-		case seq <= 2 && !got.Ran:
-			t.Errorf("call %d of 2 = %+v; want it run", seq, got)
-		case seq == 3 && (got.Ran || !strings.Contains(got.Output, "this answer has made its 2 gh calls")):
-			t.Errorf("call 3 of 2 = %+v; want it refused", got)
-		case seq == 3 && len(f.invocations(true)) != 0:
-			t.Errorf("call 3 of 2 started gh: %+v", f.invocations(true))
+		case c.n <= 2 && !got.Ran:
+			t.Errorf("gh call %d (seq %d) of 2 = %+v; want it run", c.n, c.seq, got)
+		case c.n == 3 && (got.Ran || !strings.Contains(got.Output, "this answer has made its 2 gh calls")):
+			t.Errorf("gh call 3 of 2 = %+v; want it refused", got)
+		case c.n == 3 && len(f.invocations(true)) != 0:
+			t.Errorf("gh call 3 of 2 started gh: %+v", f.invocations(true))
 		}
 	}
 }

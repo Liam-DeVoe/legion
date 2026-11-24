@@ -140,7 +140,7 @@ func TestAQuestionsGHCallsReadBackInOrder(t *testing.T) {
 	}
 }
 
-// The read a gh write is taken from (AnswerToolCallArgsTx) holds each call's question, seq,
+// The read a gh write is taken from (AnswerToolCallArgsTx) holds each call's question, seq, tool,
 // arguments, owner and exit, by question and in seq order, and never its result, which a call's
 // output fills to gh_output_chars: what `legion state` lists of a question is its writes, not the
 // output the model read. A question with no recorded call has none.
@@ -171,12 +171,12 @@ func TestTheWritesReadOfTheGHCallsHoldsNoResult(t *testing.T) {
 	zero := 0
 	want := map[string][]AnswerToolCall{
 		"q1": {
-			{Question: "q1", Seq: 1, Args: []string{"pr", "merge", "7"}, Owner: "acme", Exit: &zero},
-			{Question: "q1", Seq: 2, Args: []string{"pr", "view", "7"}, Owner: "acme"},
+			{Question: "q1", Seq: 1, Tool: ToolGH, Args: []string{"pr", "merge", "7"}, Owner: "acme", Exit: &zero},
+			{Question: "q1", Seq: 2, Tool: ToolGH, Args: []string{"pr", "view", "7"}, Owner: "acme"},
 		},
-		"q2": {{Question: "q2", Seq: 1, Args: []string{"pr", "comment", "7"}}},
+		"q2": {{Question: "q2", Seq: 1, Tool: ToolGH, Args: []string{"pr", "comment", "7"}}},
 	}
 	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("the writes' read of the calls = %+v, want %+v: each call's question, seq, arguments, owner and exit, and no result", calls, want)
+		t.Fatalf("the writes' read of the calls = %+v, want %+v: each call's question, seq, tool, arguments, owner and exit, and no result", calls, want)
 	}
 }

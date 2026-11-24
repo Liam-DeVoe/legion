@@ -211,12 +211,15 @@ func (a *Answer) Close() error {
 }
 
 // Call is one gh call the model makes in an answer: the answer it runs in (which names the agent
-// and the question), its seq among the answer's calls, from 1, its arguments as the model gave
-// them (a JSON array of strings, gh's arguments without `gh`; no shell reads them) and the
-// answer's bounds.
+// and the question), its seq among the answer's calls of every tool, from 1, which its record is
+// kept under, its number among the answer's gh calls alone, from 1, an earlier run's counted,
+// which the gh_calls bound is read against, so the answer's calls of another tool spend none of
+// it, its arguments as the model gave them (a JSON array of strings, gh's arguments without `gh`;
+// no shell reads them) and the answer's bounds.
 type Call struct {
 	Answer *Answer
 	Seq    int
+	N      int
 	Args   string
 	Bounds config.AnswerBounds
 }
@@ -239,8 +242,9 @@ type Result struct {
 const noRepository = "not a git repository"
 
 // Run runs call. It is refused, with gh never started, when its arguments are no JSON array of
-// strings, its seq is past the answer's gh_calls bound, its command is none of the tool's (the
-// allow list, whose refusal says how the tool is called: Usage), it submits a review the agent's
+// strings, its number among the answer's gh calls is past the answer's gh_calls bound, its command
+// is none of the tool's (the allow list, whose refusal says how the tool is called: Usage), it
+// submits a review the agent's
 // recorded round cannot decide (reviewOf: the record names no head, the review names no pull
 // request by repository and number, or names another commit_id), or it posts a comment or review
 // in a form the agent's footer cannot be added to; it is refused with gh never started too when
@@ -272,11 +276,11 @@ func Run(ctx context.Context, call Call) Result {
 		return a.refuse(ctx, call.Seq, []string{call.Args}, started, err.Error())
 	}
 	switch {
-	case call.Seq < 1:
+	case call.Seq < 1 || call.N < 1:
 		return a.refuse(ctx, call.Seq, argv, started, fmt.Sprintf("call %d is no call of the answer: calls are numbered from 1", call.Seq))
 	case call.Bounds.GHCall <= 0 || call.Bounds.GHOutputChars <= 0:
 		return a.refuse(ctx, call.Seq, argv, started, "the gh tool has no time or output bound (answers.bounds), so it runs nothing")
-	case call.Seq > call.Bounds.GHCalls:
+	case call.N > call.Bounds.GHCalls:
 		return a.refuse(ctx, call.Seq, argv, started, fmt.Sprintf("this answer has made its %d gh calls (answers.bounds.gh_calls); answer with what the calls so far found", call.Bounds.GHCalls))
 	}
 	words := commandWords(argv)
@@ -400,9 +404,9 @@ func (a *Answer) guardRefusal(ctx context.Context, seq int, run []string, starte
 	return a.refuse(ctx, seq, run, started, err.Error())
 }
 
-// record is the row a call starts with.
+// record is the row a call starts with, the gh tool's.
 func (a *Answer) record(seq int, argv []string, owner string, started time.Time) store.AnswerToolCall {
-	return store.AnswerToolCall{Question: a.question, Seq: seq, Args: argv, App: string(a.agent.App()), Owner: owner, StartedAt: started}
+	return store.AnswerToolCall{Question: a.question, Seq: seq, Tool: store.ToolGH, Args: argv, App: string(a.agent.App()), Owner: owner, StartedAt: started}
 }
 
 // log is the call's one line: the question and seq, the App (its role and configured id) and the

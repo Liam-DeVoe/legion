@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -38,9 +39,10 @@ type answering struct {
 
 // attachAnswers builds the answer loop over its configuration (answersLoop), and under kubernetes
 // first installs the shared public leak check its gh tool's guard runs (answersTools), refusing
-// the boot only over a cause that is not GitHub's trouble (appTransient). stop ends the install
-// where it still runs in the background and waits for it to end, which the daemon does as it
-// stops. Without `answers` it builds nothing, and stop does nothing.
+// the boot only over a cause that is not GitHub's trouble (appTransient). It logs the loop's tools
+// in one line (answersToolsLine): gh, and dispatch where boot found its command, or why not. stop
+// ends the install where it still runs in the background and waits for it to end, which the
+// daemon does as it stops. Without `answers` it builds nothing, and stop does nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) (stop func(), err error) {
 	if w.answers == nil {
 		return func() {}, nil
@@ -53,13 +55,15 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	if err != nil {
 		return nil, fmt.Errorf("the answer loop: %w", err)
 	}
+	w.log.Info(answersToolsLine, loopToolsOf(p.answers.dispatch).attrs()...)
 	w.answers.loop = answerloop.New(w.answersLoop(cfg, p, s, st, client, tools))
 	return stop, nil
 }
 
 // answersLoop is the answer loop's configuration over the daemon's store, its Dispatch client
 // (client, posting in an agent's name), its Envoy listener, supervision's answer gate, the issue
-// record, the gh tool (tools, answersTools'), the conversation store and the project's pause flag.
+// record, the gh tool (tools, answersTools'), the dispatch tool where boot found its command
+// (answersDispatchTools), the conversation store and the project's pause flag.
 func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision, st *store.Store, client answerloop.Dispatch, tools ghTools) answerloop.Config {
 	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
 	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
@@ -73,7 +77,7 @@ func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision,
 	return answerloop.Config{
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
 		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
-		Issues: recordFacts{w}, Tools: tools,
+		Issues: recordFacts{w}, Tools: tools, DispatchTools: answersDispatchTools(cfg, p.answers.dispatch, st, w.log),
 		Conversations: answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
 		PassOn:        controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
 		Decisions:     routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
@@ -308,8 +312,8 @@ type ghTool struct {
 	bounds config.AnswerBounds
 }
 
-func (t ghTool) Run(ctx context.Context, seq int, args string) ghtool.Result {
-	return ghtool.Run(ctx, ghtool.Call{Answer: t.answer, Seq: seq, Args: args, Bounds: t.bounds})
+func (t ghTool) Run(ctx context.Context, seq, n int, args string) ghtool.Result {
+	return ghtool.Run(ctx, ghtool.Call{Answer: t.answer, Seq: seq, N: n, Args: args, Bounds: t.bounds})
 }
 
 func (t ghTool) Lookup(ctx context.Context, seq int) (ghtool.Found, error) {
@@ -317,6 +321,29 @@ func (t ghTool) Lookup(ctx context.Context, seq int) (ghtool.Found, error) {
 }
 
 func (t ghTool) Close() error { return t.answer.Close() }
+
+// answersDispatchTools is the answer loop's dispatch tool where boot found the dispatch command
+// (answersDispatch): each answer's opens under the daemon's host, which runs that command with
+// bun's directory on its PATH against the daemon's own Dispatch, dispatch_url, with its own token,
+// dispatch_token_file, the one it gives each agent's pane or pod, under cfg's answers.bounds, and
+// records each call in the daemon's store. Where boot found none it is nil, and the loop offers
+// no dispatch tool.
+func answersDispatchTools(cfg config.Config, found dispatchFound, st *store.Store, log *slog.Logger) answerloop.DispatchTools {
+	if found.dispatch == "" {
+		return nil
+	}
+	return dispatchTools{host: dispatchtool.Host{
+		Dispatch: found.dispatch, BunDir: found.bunDir, URL: cfg.DispatchURL, TokenFile: found.tokenFile, StateDir: cfg.StateDir,
+		Bounds: cfg.Answers.Bounds, Calls: st, Log: log, Now: time.Now,
+	}}
+}
+
+// dispatchTools opens the dispatch tool of one answer (dispatchtool.Open) under the daemon's host.
+type dispatchTools struct{ host dispatchtool.Host }
+
+func (d dispatchTools) Open(session, question string) (answerloop.DispatchTool, error) {
+	return dispatchtool.Open(d.host, session, question)
+}
 
 // controllerPassOn passes a question to the controller: in one transaction it marks the question
 // passed by its id (processed_events, store.QuestionPassedSource) and queues its agent-question

@@ -9,13 +9,15 @@ import (
 )
 
 // systemPrompt is the short system prompt the agent's resumed conversation runs under: who it is
-// and that it answers while it is not running, its tools (the list, gh named, and the sentence on
-// where gh runs and what every call names that the gh tool's description and its refusals carry
-// too: ghtool.Usage.Checkout), the Legion footer the tool puts on what it posts, the work it
-// declines, and the reply form.
+// and that it answers while it is not running, its tools (the list of those its request offers,
+// gh named, and the sentence on where gh runs and what every call names that the gh tool's
+// description and its refusals carry too: ghtool.Usage.Checkout; and dispatch, where the request
+// offers it, named with the session it runs as), the Legion footer and the loop's mark the tools
+// put on what they post, the bounds of each tool's calls, the work it declines, and the reply form.
 func systemPrompt(req Request) string {
-	names := make([]string, len(tools))
-	for i, t := range tools {
+	offered := req.offeredTools()
+	names := make([]string, len(offered))
+	for i, t := range offered {
 		names[i] = "`" + t.name + "`"
 	}
 	var b strings.Builder
@@ -24,8 +26,15 @@ func systemPrompt(req Request) string {
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
 	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
 	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
+	if req.Dispatch != nil {
+		fmt.Fprintf(&b, "The `dispatch` tool is Dispatch's own command line, run as your own session, %s: read any issue with it, and reply with a comment or a message where the message asks you to; its description lists the commands it runs, and it refuses every other. Every comment or message you post with it carries the loop's mark, which the tool adds. ", req.Agent.Session)
+	}
 	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
-	fmt.Fprintf(&b, "This answer may make at most %d gh calls and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.ModelCalls)
+	if req.Dispatch != nil {
+		fmt.Fprintf(&b, "This answer may make at most %d gh calls, at most %d dispatch calls, counted apart from its gh calls, and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.GHCalls, req.Bounds.ModelCalls)
+	} else {
+		fmt.Fprintf(&b, "This answer may make at most %d gh calls and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.ModelCalls)
+	}
 	b.WriteString("Decline work your tools cannot do, such as work that needs your working copy or a run of your phase: say plainly that you cannot do it now and what it needs, and do not promise to do it later. Say plainly when you do not know.\n\n")
 	b.WriteString("Your reply is exactly one JSON object and nothing else, no code fence: {\"kind\": ..., \"text\": ..., \"needs\": ...}, all three always there. The kinds:\n")
 	b.WriteString("- \"answered\": text is your answer to the message; needs is \"\".\n")
@@ -48,7 +57,8 @@ const lastCall = "This is your last model call, and it offers no tool. Reply now
 	"A not_answered or needs_work reply must say in needs what you need, and needs is never empty for them."
 
 // userMessage is the one user message after the conversation: what has changed on the issue, the
-// question with who asked and where, and on a re-run the gh calls already made with their results.
+// question with who asked and where, and on a re-run the tool calls already made, each named with
+// its tool, with their results.
 func userMessage(req Request) string {
 	var b strings.Builder
 	if note := strings.TrimSpace(req.ChangeNote); note != "" {
@@ -56,15 +66,19 @@ func userMessage(req Request) string {
 	}
 	fmt.Fprintf(&b, "%s asked you, in %s:\n%s", req.Question.Asker, req.Question.Where, req.Question.Text)
 	if len(req.Earlier) > 0 {
-		b.WriteString("\n\nAn earlier attempt at this answer already made these gh calls; do not repeat a write among them:\n")
+		b.WriteString("\n\nAn earlier attempt at this answer already made these tool calls; do not repeat a write among them:\n")
 		for _, call := range req.Earlier {
 			args, _ := json.Marshal(call.Args)
-			fmt.Fprintf(&b, "\n%d. gh %s\n", call.Seq, args)
+			fmt.Fprintf(&b, "\n%d. %s %s\n", call.Seq, toolOf(call), args)
 			switch {
 			case call.Result == nil:
 				b.WriteString("Outcome unknown: it may or may not have run.\n")
-			case call.Exit == nil:
+			case call.Exit == nil && strings.HasPrefix(*call.Result, "refused: "):
 				fmt.Fprintf(&b, "Did not run:\n%s\n", *call.Result)
+			case call.Exit == nil:
+				// It started and answered no exit: it could not start, or the daemon stopped while it
+				// ran and a restart recorded what is known of it, so it is never said not to have run.
+				fmt.Fprintf(&b, "No exit status:\n%s\n", *call.Result)
 			default:
 				fmt.Fprintf(&b, "Exit %d:\n%s\n", *call.Exit, *call.Result)
 			}

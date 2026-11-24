@@ -242,7 +242,7 @@ func (a *Answer) read(ctx context.Context, line string, argv []string, limit int
 	cmd := exec.CommandContext(ctx, a.host.GH, argv...)
 	cmd.Env, cmd.Dir = a.env(dir), a.cwd
 	procgroup.Configure(cmd)
-	stdout := &cappedOutput{limit: limit}
+	stdout := NewCappedOutput(limit)
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	err = cmd.Run()

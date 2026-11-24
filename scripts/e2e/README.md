@@ -1837,7 +1837,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
 
 - A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
   a hit fails unless `questions.json` records it as not about the loop.
-  Then `go test ./internal/answer -run TestTheLoopsToolListHoldsGh`.
+  Then `go test ./internal/answer -run TestTheLoopsToolListHoldsItsThreeTools`.
 
 **The reads.**
 Every read a criterion is judged by — the daemon's log boot by boot, the stopped agents' conversations, the asker's inbox, the listener's log, the recording proxy's records, Dispatch, GitHub and the daemon's own state — lives in [`lib/answer-loop-reads.sh`](lib/answer-loop-reads.sh), which the rig sources.

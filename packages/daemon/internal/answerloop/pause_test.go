@@ -25,9 +25,9 @@ type countingTool struct {
 	runs, lookups atomic.Int64
 }
 
-func (c *countingTool) Run(ctx context.Context, seq int, args string) ghtool.Result {
+func (c *countingTool) Run(ctx context.Context, seq, n int, args string) ghtool.Result {
 	c.runs.Add(1)
-	return c.fakeTool.Run(ctx, seq, args)
+	return c.fakeTool.Run(ctx, seq, n, args)
 }
 
 func (c *countingTool) Lookup(ctx context.Context, seq int) (ghtool.Found, error) {
@@ -88,7 +88,7 @@ func TestAQuestionReceivedWhilePausedIsAnsweredOnceTheResumePokesTheLoop(t *test
 	p.cfg.Sweep = time.Hour
 	p.restart()
 	p.answer = func(req answer.Request) (answer.Reply, error) {
-		req.GH.Run(context.Background(), 1, `["pr","view","7"]`)
+		req.GH.Run(context.Background(), 1, 1, `["pr","view","7"]`)
 		return answered(req, "Plum, from "+req.Question.Text), nil
 	}
 	p.conversation("ses_tester", testerToken, 0)
@@ -160,7 +160,7 @@ func TestARunThePauseStopsInFlightIsAnsweredAgainAfterTheResume(t *testing.T) {
 			StartedAt: testNow}); err != nil {
 			t.Error(err)
 		}
-		req.GH.Run(context.Background(), 1, `["pr","comment","7","--body","Done."]`)
+		req.GH.Run(context.Background(), 1, 1, `["pr","comment","7","--body","Done."]`)
 		if err := p.st.FinishAnswerToolCall(p.ctx, req.Question.ID, 1, "https://github.com/o/r/pull/7#issuecomment-1", &exit, testNow); err != nil {
 			t.Error(err)
 		}

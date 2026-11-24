@@ -276,7 +276,7 @@ func (a *Answer) runGH(ctx context.Context, argv []string, configDir string, bou
 	cmd := exec.CommandContext(ctx, a.host.GH, argv...)
 	cmd.Env, cmd.Dir = a.env(configDir), a.cwd
 	procgroup.Configure(cmd)
-	out := &cappedOutput{limit: bounds.GHOutputChars}
+	out := NewCappedOutput(bounds.GHOutputChars)
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	end := procgroup.Ended(err)
@@ -293,17 +293,22 @@ func (a *Answer) runGH(ctx context.Context, argv []string, configDir string, bou
 	return Result{Output: output, Exit: cmd.ProcessState.ExitCode(), Ran: true}
 }
 
-// cappedOutput keeps the first limit characters written to it and counts the rest. A character is
+// CappedOutput keeps the first limit characters written to it and counts the rest. A character is
 // a UTF-8 sequence, counted by its leading byte, so a sequence split across writes counts once.
-type cappedOutput struct {
+// The answer loop's every tool cuts what its model reads with it, so a cut reads the same whatever
+// tool made it (internal/dispatchtool).
+type CappedOutput struct {
 	limit int
 	kept  []byte
 	chars int
 }
 
-var _ io.Writer = (*cappedOutput)(nil)
+// NewCappedOutput keeps the first limit characters written to it.
+func NewCappedOutput(limit int) *CappedOutput { return &CappedOutput{limit: limit} }
 
-func (c *cappedOutput) Write(p []byte) (int, error) {
+var _ io.Writer = (*CappedOutput)(nil)
+
+func (c *CappedOutput) Write(p []byte) (int, error) {
 	for _, b := range p {
 		if b&0xC0 != 0x80 {
 			c.chars++
@@ -316,7 +321,7 @@ func (c *cappedOutput) Write(p []byte) (int, error) {
 }
 
 // String is what was kept, and a note of how many characters were cut after it.
-func (c *cappedOutput) String() string {
+func (c *CappedOutput) String() string {
 	if c.chars <= c.limit {
 		return string(c.kept)
 	}

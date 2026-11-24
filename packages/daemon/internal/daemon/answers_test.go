@@ -43,7 +43,7 @@ import (
 
 type noTool struct{}
 
-func (noTool) Run(context.Context, int, string) ghtool.Result { return ghtool.Result{} }
+func (noTool) Run(context.Context, int, int, string) ghtool.Result { return ghtool.Result{} }
 func (noTool) Lookup(context.Context, int) (ghtool.Found, error) {
 	return ghtool.Found{}, ghtool.ErrNotAWrite
 }
@@ -665,7 +665,7 @@ type recordingTool struct {
 	now      time.Time
 }
 
-func (r recordingTool) Run(ctx context.Context, seq int, args string) ghtool.Result {
+func (r recordingTool) Run(ctx context.Context, seq, _ int, args string) ghtool.Result {
 	var argv []string
 	if err := json.Unmarshal([]byte(args), &argv); err != nil {
 		return ghtool.Result{Output: err.Error(), Exit: -1}

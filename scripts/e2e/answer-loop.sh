@@ -2936,10 +2936,10 @@ check_a16() {
     recorded_hit "$file" "$text" || printf '%s\n' "$line"
   done <<<"$hits")
   local test_out
-  test_out=$(cd "$root/packages/daemon" && go test -count=1 ./internal/answer -run TestTheLoopsToolListHoldsGh -v 2>&1) || true
+  test_out=$(cd "$root/packages/daemon" && go test -count=1 ./internal/answer -run TestTheLoopsToolListHoldsItsThreeTools -v 2>&1) || true
   note "$(grep -E '^(--- |ok|FAIL)' <<<"$test_out" | tr '\n' ' ')"
-  if [ -z "$unrelated" ] && grep -q '^--- PASS: TestTheLoopsToolListHoldsGh' <<<"$test_out"; then
-    record_result A16 PASS "every hit is one the questions file records as not about the loop; TestTheLoopsToolListHoldsGh passes"
+  if [ -z "$unrelated" ] && grep -q '^--- PASS: TestTheLoopsToolListHoldsItsThreeTools' <<<"$test_out"; then
+    record_result A16 PASS "every hit is one the questions file records as not about the loop; TestTheLoopsToolListHoldsItsThreeTools passes"
   else
     record_result A16 FAIL "hits about the loop or unrecorded: ${unrelated:-none}; the unit test: $(grep -E '^(--- |ok|FAIL)' <<<"$test_out" | tr '\n' ' ')"
   fi

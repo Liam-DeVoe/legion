@@ -168,7 +168,7 @@ func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...Qu
 	return nil
 }
 
-// AnswerToolCalls is every recorded gh call of question, in seq order.
+// AnswerToolCalls is every recorded tool call of question, in seq order.
 func (s *Store) AnswerToolCalls(ctx context.Context, question string) ([]AnswerToolCall, error) {
 	var calls []AnswerToolCall
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -180,41 +180,41 @@ func (s *Store) AnswerToolCalls(ctx context.Context, question string) ([]AnswerT
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
+		return nil, fmt.Errorf("read the tool calls of %s: %w", question, err)
 	}
 	return calls, nil
 }
 
-// AnswerToolCallArgsTx is every recorded gh call of each of questions, read through tx, by question
-// and in seq order, holding what a gh write is read from (ghtool.Writes) and nothing else: its
-// question, seq, arguments, owner and exit. Its result, the output the model read, which runs to
-// gh_output_chars, is not read, and neither is the rest of its row. A question with no recorded
-// call has none.
+// AnswerToolCallArgsTx is every recorded tool call of each of questions, read through tx, by
+// question and in seq order, holding what a gh write is read from (ghtool.Writes) and nothing else:
+// its question, seq, tool, arguments, owner and exit. Its result, the output the model read, which
+// runs to gh_output_chars, is not read, and neither is the rest of its row. A question with no
+// recorded call has none.
 func AnswerToolCallArgsTx(ctx context.Context, tx pgx.Tx, questions []string) (map[string][]AnswerToolCall, error) {
-	rows, err := tx.Query(ctx, `select question, seq, args, owner, exit from answer_tool_calls where question = any($1) order by question, seq`, questions)
+	rows, err := tx.Query(ctx, `select question, seq, tool, args, owner, exit from answer_tool_calls where question = any($1) order by question, seq`, questions)
 	if err != nil {
-		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+		return nil, fmt.Errorf("read the tool calls of %d questions: %w", len(questions), err)
 	}
 	defer rows.Close()
 	byQuestion := make(map[string][]AnswerToolCall)
 	for rows.Next() {
 		var call AnswerToolCall
 		var args []byte
-		if err := rows.Scan(&call.Question, &call.Seq, &args, &call.Owner, &call.Exit); err != nil {
-			return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+		if err := rows.Scan(&call.Question, &call.Seq, &call.Tool, &args, &call.Owner, &call.Exit); err != nil {
+			return nil, fmt.Errorf("read the tool calls of %d questions: %w", len(questions), err)
 		}
 		if err := json.Unmarshal(args, &call.Args); err != nil {
-			return nil, fmt.Errorf("gh call %s.%d: decode its arguments: %w", call.Question, call.Seq, err)
+			return nil, fmt.Errorf("%s call %s.%d: decode its arguments: %w", call.Tool, call.Question, call.Seq, err)
 		}
 		byQuestion[call.Question] = append(byQuestion[call.Question], call)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+		return nil, fmt.Errorf("read the tool calls of %d questions: %w", len(questions), err)
 	}
 	return byQuestion, nil
 }
 
-const toolCallColumns = `question, seq, args, app, owner, started_at, result, exit, finished_at`
+const toolCallColumns = `question, seq, tool, args, app, owner, started_at, result, exit, finished_at`
 
 // scanToolCalls is rows of toolCallColumns, which it closes.
 func scanToolCalls(rows pgx.Rows) ([]AnswerToolCall, error) {
@@ -223,11 +223,11 @@ func scanToolCalls(rows pgx.Rows) ([]AnswerToolCall, error) {
 	for rows.Next() {
 		var call AnswerToolCall
 		var args []byte
-		if err := rows.Scan(&call.Question, &call.Seq, &args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt); err != nil {
+		if err := rows.Scan(&call.Question, &call.Seq, &call.Tool, &args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(args, &call.Args); err != nil {
-			return nil, fmt.Errorf("gh call %s.%d: decode its arguments: %w", call.Question, call.Seq, err)
+			return nil, fmt.Errorf("%s call %s.%d: decode its arguments: %w", call.Tool, call.Question, call.Seq, err)
 		}
 		calls = append(calls, call)
 	}

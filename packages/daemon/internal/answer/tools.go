@@ -4,22 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/agentloop"
+
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // tool is one of the loop's tools: its name, what the model reads of it and the JSON schema of
-// its input, each built for the request, and what a call runs. A call answers with what the
-// model is told and whether the tool refused or failed.
+// its input, each built for the request, whether the request offers it (nil: every request does),
+// and what a call runs, given its number among the answer's calls of this tool. A call answers
+// with what the model is told and whether the tool refused or failed.
 type tool struct {
 	name        string
 	description func(req Request) string
 	schema      func(req Request) json.RawMessage
-	run         func(ctx context.Context, req Request, call agentloop.ToolCall) (output string, isError bool)
+	offered     func(req Request) bool
+	run         func(ctx context.Context, req Request, call agentloop.ToolCall, n int) (output string, isError bool)
 }
 
-// tools are the loop's tools, which the system prompt names and every model call offers.
-var tools = []tool{{name: "gh", description: ghDescription, schema: ghSchema, run: runGH}}
+// tools are the loop's tools, which the system prompt names and every model call of an answer
+// offers where its request does (Request.offeredTools): gh, and dispatch where the daemon found the
+// dispatch command.
+var tools = []tool{
+	{name: store.ToolGH, description: ghDescription, schema: ghSchema, run: runGH},
+	{name: store.ToolDispatch, description: dispatchDescription, schema: dispatchSchema, run: runDispatch,
+		offered: func(req Request) bool { return req.Dispatch != nil }},
+}
+
+// offeredTools are the tools req offers, in the list's order.
+func (req Request) offeredTools() []tool {
+	var offered []tool
+	for _, t := range tools {
+		if t.offered == nil || t.offered(req) {
+			offered = append(offered, t)
+		}
+	}
+	return offered
+}
 
 // ghDescription is what the model reads of the gh tool for req: GitHub's own gh, which the daemon
 // runs as the agent's role App; how a call is made, in the words the tool's own refusals use
@@ -72,15 +96,93 @@ type ghArgsSchema struct {
 	AdditionalProperties bool     `json:"additionalProperties"`
 }
 
-// toolSet is the loop's tools as agentloop offers and runs them for req, each call's output
+// dispatchDescription is what the model reads of the dispatch tool for req: Dispatch's own
+// `dispatch` command, which the daemon runs as the agent's own session with that session's access;
+// how a call is made, with one read and one comment whose body is the call's stdin; the commands it
+// runs (dispatchtool.ReadCommands and WriteCommands), and that every other command, and an option
+// handing it a file of the daemon's host, is refused; and the loop's mark it adds to what it posts.
+func dispatchDescription(req Request) string {
+	read, _ := json.Marshal(dispatchInput{Args: []string{"read", req.Agent.Issue}})
+	comment, _ := json.Marshal(dispatchInput{Args: []string{"comment", "--issue", req.Agent.Issue, "--body-file", "-"}, Stdin: "Your comment."})
+	return "Run Dispatch's own `dispatch` command, the one your pane runs. The daemon runs it as your own session, " +
+		req.Agent.Session + ", with that session's access, so Dispatch answers each call as it answers you when you run. " +
+		"Give dispatch's arguments without the leading dispatch, and as stdin the text an option `--<field>-file -` reads. " +
+		"Read an issue with its documents, comments, asks and messages, those written since you stopped included: " +
+		"for example " + string(read) + ". Post a comment with its body on stdin: " + string(comment) + ". " +
+		"It runs these commands: the reads " + strings.Join(dispatchtool.ReadCommands, ", ") + "; and the writes " +
+		strings.Join(dispatchtool.WriteCommands, ", ") + ". Every other command is refused with the reason, a status " +
+		"write, a claim, an ask and a document edit among them, and so is an option that hands it a file of the " +
+		"daemon's host (a --<field>-file or --<field>-json-file whose value is not -, or --image). Every comment, " +
+		"message and agent's message it posts carries the loop's mark, which the tool adds. " +
+		"`dispatch <command> --help` prints a command's options."
+}
+
+// dispatchInput is the dispatch tool's input, as the description's examples are written.
+type dispatchInput struct {
+	Args  []string `json:"args"`
+	Stdin string   `json:"stdin,omitempty"`
+}
+
+// dispatchSchema is the JSON schema of the dispatch tool's input: dispatch's arguments as an array
+// of strings, required, as gh's are (ghArgsSchema), and stdin, the call's standard input, a string
+// the model may leave out.
+func dispatchSchema(Request) json.RawMessage {
+	var schema dispatchArgsSchema
+	schema.Type = "object"
+	schema.Properties.Args.Type = "array"
+	schema.Properties.Args.Items.Type = "string"
+	schema.Properties.Args.Description = "dispatch's arguments without the leading dispatch, one per element; no shell reads them."
+	schema.Properties.Stdin.Type = "string"
+	schema.Properties.Stdin.Description = "The call's standard input, which an option --<field>-file - reads, such as a " +
+		"comment's body under --body-file -. Leave it out for none."
+	schema.Required = []string{"args"}
+	encoded, _ := json.Marshal(schema)
+	return encoded
+}
+
+// dispatchArgsSchema is the shape of the dispatch tool's input schema (dispatchSchema): args, an
+// array of strings, required, and stdin, a string, and no other property. It is one Go value
+// marshalled once, as ghArgsSchema is.
+type dispatchArgsSchema struct {
+	Type       string `json:"type"`
+	Properties struct {
+		Args struct {
+			Type  string `json:"type"`
+			Items struct {
+				Type string `json:"type"`
+			} `json:"items"`
+			Description string `json:"description"`
+		} `json:"args"`
+		Stdin struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		} `json:"stdin"`
+	} `json:"properties"`
+	Required             []string `json:"required"`
+	AdditionalProperties bool     `json:"additionalProperties"`
+}
+
+// toolSet is the loop's tools req offers as agentloop offers and runs them, each call's output
 // given to add as the model reads it (inFront.add). The project's pause is read before each call
 // (Request.Paused): a call it finds paused does not run, and answers a refusal. agentloop runs a
 // step's calls one at a time and finishes the step only once they have all returned, so once the
 // pause comes every call of the step still to run is refused, and OnStep then ends the run before
 // its next model call (answer).
+//
+// Each call is handed its number among the answer's calls of its own tool, from 1, counted on
+// from the calls of that tool an earlier run of the question made (Request.Earlier), which is what
+// that tool's bound reads: an answer's gh calls and its dispatch calls are counted apart, while
+// every call's seq, the one agentloop numbers it with, counts the calls of every tool.
 func toolSet(req Request, add func(string)) []agentloop.Tool {
-	set := make([]agentloop.Tool, len(tools))
-	for i, t := range tools {
+	offered := req.offeredTools()
+	set := make([]agentloop.Tool, len(offered))
+	for i, t := range offered {
+		made := &atomic.Int64{}
+		for _, call := range req.Earlier {
+			if toolOf(call) == t.name {
+				made.Add(1)
+			}
+		}
 		set[i] = agentloop.Tool{
 			Name:        t.name,
 			Description: t.description(req),
@@ -89,7 +191,7 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 				if req.paused() {
 					return "refused: the Legion project is paused, so the call did not run.", true
 				}
-				output, isError := t.run(ctx, req, call)
+				output, isError := t.run(ctx, req, call, int(made.Add(1)))
 				add(output)
 				return output, isError
 			},
@@ -98,12 +200,21 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 	return set
 }
 
+// toolOf is the tool a recorded call ran with, gh for a record that names none.
+func toolOf(call store.AnswerToolCall) string {
+	if call.Tool == "" {
+		return store.ToolGH
+	}
+	return call.Tool
+}
+
 // runGH runs one gh call through the request's GH, numbered as agentloop numbered the call: the
 // calls of the run counted on from the last one an earlier run of the question made
-// (Request.Earlier), which is the seq the call is recorded and the gh_calls bound is read
-// against. What the model reads is gh's output, with its exit status when it failed; a call gh
-// never ran, or one that failed, is an error result.
-func runGH(ctx context.Context, req Request, call agentloop.ToolCall) (string, bool) {
+// (Request.Earlier), which is the seq the call is recorded under, and n its number among the
+// answer's gh calls, which the gh_calls bound is read against. What the model reads is gh's
+// output, with its exit status when it failed; a call gh never ran, or one that failed, is an
+// error result.
+func runGH(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
 	var input struct {
 		Args json.RawMessage `json:"args"`
 	}
@@ -111,7 +222,7 @@ func runGH(ctx context.Context, req Request, call agentloop.ToolCall) (string, b
 	if json.Unmarshal(call.Input, &input) == nil && len(input.Args) > 0 {
 		args = string(input.Args)
 	}
-	result := req.GH.Run(ctx, call.Index, args)
+	result := req.GH.Run(ctx, call.Index, n, args)
 	switch {
 	case !result.Ran:
 		return result.Output, true
@@ -120,6 +231,30 @@ func runGH(ctx context.Context, req Request, call agentloop.ToolCall) (string, b
 		return result.Output, true
 	case result.Exit != 0:
 		return fmt.Sprintf("%s\n[gh exited %d]", result.Output, result.Exit), true
+	default:
+		return result.Output, false
+	}
+}
+
+// runDispatch runs one dispatch call through the request's Dispatch, numbered as runGH numbers a gh
+// call, n its number among the answer's dispatch calls, with the input's arguments and stdin. What
+// the model reads is dispatch's output, with its exit status when it failed; a call dispatch never
+// ran, one a signal ended, or one that failed, is an error result.
+func runDispatch(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
+	var input struct {
+		Args  json.RawMessage `json:"args"`
+		Stdin string          `json:"stdin"`
+	}
+	args := string(call.Input)
+	if json.Unmarshal(call.Input, &input) == nil && len(input.Args) > 0 {
+		args = string(input.Args)
+	}
+	result := req.Dispatch.Run(ctx, dispatchtool.Call{Seq: call.Index, N: n, Args: args, Stdin: input.Stdin})
+	switch {
+	case !result.Ran, result.Exit < 0:
+		return result.Output, true
+	case result.Exit != 0:
+		return fmt.Sprintf("%s\n[dispatch exited %d]", result.Output, result.Exit), true
 	default:
 		return result.Output, false
 	}

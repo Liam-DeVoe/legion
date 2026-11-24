@@ -1,8 +1,8 @@
 // Package answer is the daemon's model loop: it answers one question to an agent that is not
 // running, as that agent, by resuming the agent's own conversation on the model the conversation
-// last ran on, with the loop's tools (the slice in tools.go, holding gh), and returns the agent's
-// reply in its structured form, the turns to append to the conversation, and what the answer
-// cost.
+// last ran on, with the loop's tools (the slice in tools.go: gh, and dispatch where the daemon
+// found the dispatch command), and returns the agent's reply in its structured form, the turns to
+// append to the conversation, and what the answer cost.
 //
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
@@ -12,8 +12,9 @@
 // the provider cut at output_tokens are all its. This package is its caller: it builds the
 // request (the conversation as agentloop's messages, the system prompt, the reply form as the
 // request's Final schema, the form's own rules as its Check, the gh tool described for the
-// agent's repository, the last call's message, the bounds and the endpoint `answers.providers`
-// names, whose key is read again for every call), decides the faults that need no model call
+// agent's repository and the dispatch tool for its session, the last call's message, the bounds
+// and the endpoint `answers.providers` names, whose key is read again for every call), decides
+// the faults that need no model call
 // (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
 // nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, ends a run the
 // project's pause comes during before its next model call or gh call (ErrPaused), and reads the
@@ -40,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -125,11 +127,21 @@ func faultOf(fault agentloop.Fault) Fault {
 	}
 }
 
-// GH runs one gh call the model makes: its seq among the answer's calls, from 1, and its
-// arguments, a JSON array of strings, gh's arguments without `gh`. The daemon's runs ghtool.Run
-// with the answer's ghtool.Answer and bounds, which refuses a call past the gh_calls bound.
+// GH runs one gh call the model makes: its seq among the answer's calls of every tool, from 1,
+// which its record is kept under; its number among the answer's gh calls alone, from 1, an earlier
+// run's counted; and its arguments, a JSON array of strings, gh's arguments without `gh`. The
+// daemon's runs ghtool.Run with the answer's ghtool.Answer and bounds, which refuses a gh call
+// past the gh_calls bound.
 type GH interface {
-	Run(ctx context.Context, seq int, args string) ghtool.Result
+	Run(ctx context.Context, seq, n int, args string) ghtool.Result
+}
+
+// Dispatch runs one dispatch call the model makes (dispatchtool.Call): its seq among the answer's
+// calls of every tool, its number among the answer's dispatch calls alone, an earlier run's
+// counted, its arguments and its standard input. The daemon's is the answer's
+// *dispatchtool.Answer, which refuses a dispatch call past the gh_calls bound.
+type Dispatch interface {
+	Run(ctx context.Context, call dispatchtool.Call) dispatchtool.Result
 }
 
 // Agent is the stopped agent that answers: its role, its issue, its session and the phase the
@@ -167,9 +179,9 @@ type Request struct {
 	// MayAskNothing is a decision message, a reply in a comment thread or an agent's Envoy message,
 	// which may carry a question or not: only then may the agent reply None.
 	MayAskNothing bool
-	// Earlier are the gh calls an earlier run of this question already made, in seq order, each
-	// with its result; a call with no Result is of unknown outcome. New calls are numbered after
-	// them.
+	// Earlier are the tool calls an earlier run of this question already made, in seq order, each
+	// with its tool and its result; a call with no Result is of unknown outcome. New calls are
+	// numbered after them, and each tool's bound counts its own among them.
 	Earlier []store.AnswerToolCall
 	// Providers, Prices and Bounds are `answers`' (config.Answers).
 	Providers map[config.AnswerProvider]config.AnswerEndpoint
@@ -177,6 +189,9 @@ type Request struct {
 	Bounds    config.AnswerBounds
 	// GH runs the gh tool's calls.
 	GH GH
+	// Dispatch runs the dispatch tool's calls; nil is a daemon that found no dispatch command,
+	// whose model is offered no dispatch tool.
+	Dispatch Dispatch
 	// Paused says whether the project is paused; nil is never paused. It is read before the
 	// first model call, before each gh call and as each model call ends, once the gh calls it
 	// asked for have returned, and a run that finds the project paused ends with ErrPaused
@@ -544,9 +559,9 @@ func unmetered(result agentloop.Result) bool {
 	return true
 }
 
-// firstToolIndex is how many gh calls an earlier run of the question already made, which
-// agentloop numbers this run's calls on from, so a re-run's first call takes the seq after the
-// recorded ones.
+// firstToolIndex is how many tool calls an earlier run of the question already made, of every
+// tool, which agentloop numbers this run's calls on from, so a re-run's first call takes the seq
+// after the recorded ones.
 func firstToolIndex(earlier []store.AnswerToolCall) int {
 	first := 0
 	for _, call := range earlier {

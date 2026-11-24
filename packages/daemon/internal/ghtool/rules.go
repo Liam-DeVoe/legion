@@ -559,7 +559,9 @@ var reads = map[string]bool{
 // Writes are the calls of calls, as answer_tool_calls records them, that write and that the tool
 // let gh run, in their order: every one but a read (reads, and a gh api GET, HEAD or GraphQL
 // query), a call asking for help, and one the tool refused, which it records with no owner
-// (Answer.refuse) and gh never started. A call the daemon stopped during is one, since gh may have
+// (Answer.refuse) and gh never started. A call of another of the loop's tools records no owner
+// either, since it runs as no GitHub App, so it is none of these (dispatchtool.Writes names a
+// dispatch call's). A call the daemon stopped during is one, since gh may have
 // made its write. Each is the one type every record of a gh write carries, the reply the loop
 // posts, the controller's notice and the questions `legion state` lists alike
 // (record.AgentQuestionWrite): its seq among the question's calls; its command words as gh reads
