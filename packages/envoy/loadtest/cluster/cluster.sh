@@ -20,9 +20,10 @@
 #       packages/envoy/loadtest/browsertype or whose built browsertype has no -protect or no
 #       -person flag (below), a loadgen that does not build or whose oidc-mint -h lists no
 #       -sub <subject>=<file>, a prebuilt one's too (Dispatch's identity at the copy's listener,
-#       and Prebuilt binaries, below), and a
+#       and Prebuilt binaries, below), a
 #       --pg-volume that is not a whole number of Gi
-#       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims.
+#       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims, and a
+#       session id that is no Kubernetes label value (The session label, below).
 #       Refuses with exit 2 while the lock ConfigMap
 #       dispatch-loadtest-lock exists. Then takes the lock, mints the copy's own token issuer
 #       (Dispatch's identity at the copy's listener, below), installs the copy (Postgres 16 CPU /
@@ -109,6 +110,19 @@
 #       stays up for typing steps and replays named by the caller, held (--keep-for, default 2h,
 #       valid only with --keep) so it does not go stale while they are typed; cluster.sh hold
 #       extends that hold.
+#
+# The session label: every pod of the copy -- each Deployment's and StatefulSet's pod template and
+# the bare runner pod -- carries theorem.dev/omp-session=<session> (SESSION_LABEL) beside
+# dispatch-loadtest/run=<run id> and dispatch-loadtest/role, so the compute spend accounting
+# (agent_spend) charges its cost to the session that ran up. The session is the first of
+# OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID that is set and not empty, the order this
+# repository's builds Jobs take for their own (up_session). up records it in state.json (session),
+# and every render of a manifest takes it from there, so the pods a later command of the run makes
+# (db-size's Postgres, redeploy's Dispatch) carry the session that ran up, whoever runs them. up
+# refuses, before it creates anything, a value that is no Kubernetes label value (at most 63
+# characters, letters, digits, '-', '_' and '.', beginning and ending with a letter or digit),
+# naming the variable. With none of the three set (a person running cluster.sh by hand), up says
+# so in one note, state.json records session null, and no pod carries the label.
 #
 # The stored-order checker: up builds a static envoy-dispatch from --dispatch-commit's own tree
 # (git archive of this checkout's git store, built in a scratch directory), so the checker's
@@ -329,6 +343,8 @@ RUNNER_STOP_GRACE_SECONDS=120
 RUNNER_RUN_SLACK_SECONDS=900
 RUN_LABEL=dispatch-loadtest/run
 ROLE_LABEL=dispatch-loadtest/role
+# The label that names the session that ran up on every pod of the copy (The session label, above).
+SESSION_LABEL=theorem.dev/omp-session
 LEGION_REPO=cybermonklabs/legion
 ENVOY_IMAGE_REPO=ghcr.io/cybermonklabs/legion/envoy
 PG_IMAGE_PREFIX=mirror.gcr.io/pgvector/pgvector:0.8.1-pg
@@ -514,6 +530,7 @@ valid() {
     issue) re='^[A-Z][A-Z0-9]*-[0-9]+$' ;;
     pod) re='^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$' ;;
     uid) re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' ;;
+    label_value) re='^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$' ;;
     rfc3339) re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' ;;
     *) die "valid: no kind $1" ;;
   esac
@@ -662,12 +679,19 @@ declare -A PLACEHOLDER_KIND=(
   [PG_MAX_CONNECTIONS]=pg_setting [PG_SHARED_BUFFERS]=pg_setting [PG_EFFECTIVE_CACHE_SIZE]=pg_setting
   [PG_WORK_MEM]=pg_setting [PG_MAINTENANCE_WORK_MEM]=pg_setting [PG_MAX_WAL_SIZE]=pg_setting
   [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [LISTENER_TOKEN]=hex [SIGNING_KEY]=hex [ACCOUNT_JWT]=jwt
-  [OIDC_KEY_ID]=b64url256 [OIDC_KEY_X]=b64url256 [OIDC_KEY_Y]=b64url256
+  [OIDC_KEY_ID]=b64url256 [OIDC_KEY_X]=b64url256 [OIDC_KEY_Y]=b64url256 [OMP_SESSION]=label_value
 )
 
+# The placeholders that are a label's whole value, on that label's own line
+# (`theorem.dev/omp-session: __OMP_SESSION__`): an empty value leaves the line out, as a run with
+# no session labels no pod with one, and any other value is written in double quotes, so YAML
+# reads it as the string a label value must be (123 and true are label values, which YAML would
+# read as a number and a boolean).
+LABEL_PLACEHOLDERS=" OMP_SESSION "
+
 # render_manifest FILE KEY=VALUE...: FILE with each __KEY__ replaced by its VALUE, which must have
-# the key's shape; dies when a placeholder is left. The sed script goes through stdin, so no
-# credential is on a command line.
+# the key's shape (a LABEL_PLACEHOLDERS key's empty value leaves its line out); dies when a
+# placeholder is left. The sed script goes through stdin, so no credential is on a command line.
 render_manifest() {
   local file=$1 kv key value kind script="" out left
   shift
@@ -675,10 +699,15 @@ render_manifest() {
     key=${kv%%=*} value=${kv#*=}
     kind=${PLACEHOLDER_KIND[$key]:-}
     [ -n "$kind" ] || die "render: no placeholder $key"
+    if [[ $LABEL_PLACEHOLDERS == *" $key "* && -z $value ]]; then
+      script+="/__${key}__/d"$'\n'
+      continue
+    fi
     if ! valid "$kind" "$value"; then
       case $kind in hex | jwt) value='<redacted>' ;; esac
       die "render: $key value '$value' is not a valid $kind"
     fi
+    [[ $LABEL_PLACEHOLDERS != *" $key "* ]] || value=\"$value\"
     script+="s|__${key}__|${value}|g"$'\n'
   done
   out=$(sed -f - "$file" <<<"$script")
@@ -687,7 +716,9 @@ render_manifest() {
   printf '%s\n' "$out"
 }
 
-# manifest_values: every placeholder's value from state.json, as KEY=VALUE lines.
+# manifest_values: every placeholder's value from state.json, as KEY=VALUE lines. A state.json
+# that records no session (session null, or a run up started before it recorded one) gives
+# OMP_SESSION an empty value, so no pod carries the session label.
 manifest_values() {
   jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)", "OIDC_ISSUER=\(.oidc_issuer)",
     "ENVOY_IMAGE=\(.images.dispatch)", "LISTENER_IMAGE=\(.images.listener)",
@@ -701,7 +732,7 @@ manifest_values() {
     "PG_MAINTENANCE_WORK_MEM=\(.postgres.settings.maintenance_work_mem)",
     "PG_MAX_WAL_SIZE=\(.postgres.settings.max_wal_size)",
     "ACCOUNT_JWT=\(.secrets.account_token)",
-    "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)",
+    "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)", "OMP_SESSION=\(.session // "")",
     "PG_PASSWORD=\(.secrets.pg_password)", "DISPATCH_TOKEN=\(.secrets.dispatch_token)",
     "LISTENER_TOKEN=\(.secrets.listener_token)", "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
 }
@@ -3673,6 +3704,25 @@ up_exit() {
   fi
 }
 
+# up_session: RUN_SESSION, the session that runs up, which every pod of the copy names in its
+# SESSION_LABEL label (The session label, above): the first of OMP_SESSION_ID,
+# DISPATCH_SESSION_ID and PI_SESSION_ID that is set and not empty, named in one note. Dies, naming
+# the variable, on a value that is no Kubernetes label value, which no pod could carry; empty,
+# after one note that says so, when none of the three is set.
+up_session() {
+  local name
+  RUN_SESSION=""
+  for name in OMP_SESSION_ID DISPATCH_SESSION_ID PI_SESSION_ID; do
+    [ -n "${!name:-}" ] || continue
+    valid label_value "${!name}" ||
+      die "up: $name '${!name}' is not a Kubernetes label value (at most 63 characters, letters, digits, '-', '_' and '.', beginning and ending with a letter or digit), and every pod of the copy names the session that runs up in its $SESSION_LABEL label; set $name to the session's id, or unset it"
+    RUN_SESSION=${!name}
+    note "the copy's pods carry $SESSION_LABEL=$RUN_SESSION ($name), so the compute spend accounting charges their cost to that session"
+    return 0
+  done
+  note "none of OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID is set, so the copy's pods carry no $SESSION_LABEL label and the compute spend accounting charges their cost to no session"
+}
+
 # up_run: up from OPT (also all's first phase).
 up_run() {
   local sc=${OPT[storage-class]:-} commit=${OPT[dispatch-commit]:-} major=${OPT[pg-major]:-}
@@ -3702,6 +3752,7 @@ up_run() {
   valid pod "$HOLDER_POD" || die "up: this pod's name '$HOLDER_POD' is not a pod name"
   valid uid "${POD_UID:-}" || die "up: POD_UID ('${POD_UID:-}') is not a pod uid; the lock names its holder's uid (a Legion pod sets POD_UID)"
   valid issue "${LEGION_ISSUE:-}" || die "up: LEGION_ISSUE ('${LEGION_ISSUE:-}') is not an issue key; the lock names it (a Legion pod sets LEGION_ISSUE)"
+  up_session
   stored_order_args "$commit" "$so_source" "$so_checker"
   prebuilt_valid LOADTEST_CLUSTER_LOADGEN up
   prebuilt_valid LOADTEST_CLUSTER_CHECKER up
@@ -3781,11 +3832,13 @@ up_run() {
     --arg issuer "$oidc_issuer" \
     --argjson stored_order "$STORED_ORDER_STATE" \
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
+    --arg session "$RUN_SESSION" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
     --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
     --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit, oidc_issuer: $issuer,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
+      session: (if $session == "" then null else $session end),
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,
       secrets: {pg_password: $pgpw, dispatch_token: $dt, listener_token: $lt, signing_key: $sk}}' >"$STATE")
