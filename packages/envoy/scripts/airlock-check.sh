@@ -433,6 +433,10 @@ proxy_config() { printf 'proxy = "%s"\n' "$(proxy_for "$1")"; }
 
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
+# refusals_of is why each call stand-in <stand> refused did not verify, in order (GET <records
+# URL>/refusals/<stand>), as one JSON array, and nothing at all when the route answered no array:
+# a reader takes nothing as UNKNOWN, never as no refusal.
+refusals_of() { curl -sS "$AIRLOCK_RECORDS_URL/refusals/$1" 2>/dev/null | jq -ce 'if type == "array" then . else empty end' 2>/dev/null || true; }
 
 # reread_all makes every broker read one secret's name again, which is what the release of a
 # new version of a stored value waits on. Each call is signed by this stack's session, one proof a
@@ -842,7 +846,8 @@ say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/re
 EOF
 	printf '%s' "$scoped_value" >"$WORK_DIR/k3-real"
 	chmod 600 "$WORK_DIR/k3-real"
-	agent-secrets AIRLOCK_SCOPED_TOKEN -- bash "$WORK_DIR/k3-steps.sh" >"$WORK_DIR/k3-cli.log" 2>&1 || true
+	agent-secrets AIRLOCK_SCOPED_TOKEN --reason "airlock check k3: the scoped placeholder in each header, the query and the body of calls to S" -- \
+		bash "$WORK_DIR/k3-steps.sh" >"$WORK_DIR/k3-cli.log" 2>&1 || true
 	rm -f "$WORK_DIR/k3-real"
 	declare -A K3
 	while IFS='=' read -r key value; do K3["$key"]="$value"; done <"$WORK_DIR/k3-out"
@@ -933,7 +938,8 @@ out="$WORK_DIR/k3-control-out"
 printf 'post=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)" >>"\$out"
 printf 'other=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)" >>"\$out"
 EOF
-	agent-secrets AIRLOCK_DEMO_TOKEN -- bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
+	agent-secrets AIRLOCK_DEMO_TOKEN --reason "airlock check k3 control: the demo placeholder on POST /read and GET /other, with no allow" -- \
+		bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
 	local crecs cpost cother
 	crecs="$(records s | jq --argjson n "$s_mark" '.[$n:]')"
 	cpost="$(printf '%s' "$crecs" | jq --arg v "$demo_value" '[.[] | select(.method == "POST" and .path == "/read") | .header.Authorization // [] | .[] | select(contains($v))] | length')"
@@ -1401,14 +1407,18 @@ EOF
 	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(bound_call_lines "$log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host")] | length')"; done)"
 }
 
-# k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service.
+# k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service, and
+# reads what it recorded and why it refused each call it refused (refusals_of), before and after:
+# the stand-in records a call whose signature it refuses as well as one it accepts, so its
+# records alone cannot show a refused signature.
 k6_aws() {
 	local d="$WORK_DIR/k6"
 	mkdir -p "$d"
 	head -c 102400 /dev/urandom >"$d/100k.bin"
 	# boto3's own two steps are scripts/airlock/aws-boto3.py, run where it lies.
-	local aws_before
+	local aws_before refusals_before
 	aws_before="$(records_count aws)"
+	refusals_before="$(refusals_of aws)"
 	cat >"$d/aws-steps.sh" <<EOF
 set -u
 out=$d/aws-out
@@ -1423,7 +1433,8 @@ say "cp=\$(aws --endpoint-url $AIRLOCK_AWS_URL s3 cp $d/100k.bin s3://airlock-bu
 $AIRLOCK_BOTO3_PYTHON $SCRIPT_DIR/airlock/aws-boto3.py $AIRLOCK_AWS_URL $d/boto3.json >$d/boto3.log 2>&1
 echo "boto3 exit \$?" >>$d/boto3.log
 EOF
-	agent-secrets AIRLOCK_AWS_KEY --ttl 30m -- bash "$d/aws-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
+	agent-secrets AIRLOCK_AWS_KEY --ttl 30m --reason "airlock check k6: the AWS CLI and boto3 call the stand-in AWS service" -- \
+		bash "$d/aws-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
 
 	declare -gA K6AWS
 	local key value
@@ -1438,6 +1449,16 @@ EOF
 	K6_AWS_PRESIGNED="$(jq -r '.presigned // ""' "$d/boto3.json" 2>/dev/null)"
 	K6_AWS_BOTO3="$(jq -c '{boto3, botocore, chunks, decoded_length, presigned_query}' "$d/boto3.json" 2>/dev/null)"
 	K6_AWS_BOTO3_LOG="$(tail -n 3 "$d/boto3.log" 2>/dev/null | tr '\n' ' ')"
+	# The stand-in's refusals of this run's calls, and UNKNOWN when either read answered no array.
+	local refusals_after
+	refusals_after="$(refusals_of aws)"
+	if [ -n "$refusals_before" ] && [ -n "$refusals_after" ]; then
+		K6_AWS_STAND_REFUSED="$(jq -n --argjson b "$refusals_before" --argjson a "$refusals_after" '($a | length) - ($b | length)')"
+		K6_AWS_STAND_REFUSALS="$(jq -rn --argjson b "$refusals_before" --argjson a "$refusals_after" '$a[($b | length):] | map(split("\n")[0]) | join(" | ")')"
+	else
+		K6_AWS_STAND_REFUSED=UNKNOWN
+		K6_AWS_STAND_REFUSALS="the stand-in's refusals route answered no JSON array, so whether it refused a signature is not known"
+	fi
 }
 
 # k6_second_aws starts a second stand-in AWS service that holds a second fake key pair with no
@@ -1533,15 +1554,19 @@ check_k6() {
 	aws_session="$(printf '%s' "$aws_secret" | jq -r .session_token)"
 	observe "the AWS CLI: sts said '${K6AWS[sts]}'; s3 ls said '${K6AWS[ls]}' and exited ${K6AWS[ls_exit]}; s3 cp said '${K6AWS[cp]}'"
 	observe "the stand-in AWS service recorded $K6_AWS_CALLS calls on $K6_AWS_REFUSED; the Credential of each named the key id '$K6_AWS_KEYIDS' and the real key id is '$AIRLOCK_AWS_KEY_ID'; $K6_AWS_PLACEHOLDERS of them carried a placeholder in a header or the query"
+	observe "the stand-in AWS service refused $K6_AWS_STAND_REFUSED of this run's calls (its own refusals route): ${K6_AWS_STAND_REFUSALS:-none}"
 	observe "boto3: $K6_AWS_BOTO3 (its own last lines: $K6_AWS_BOTO3_LOG)"
 	observe "the chunk-signed upload got: $K6_AWS_CHUNK"
 	observe "the presigned URL got: $K6_AWS_PRESIGNED"
 
+	# A record is a call that reached the stand-in, accepted or refused, so the judge reads the
+	# stand-in's own refusals as well: a call it refused is a signature it did not accept, and a
+	# refusals route that could not be read is UNKNOWN, which is no pass.
 	local accepted
 	accepted="$(printf '%s' "$K6_AWS_RECS" | jq '[.[] | select(.path != "")] | length')"
-	judge "$([ "$K6_AWS_PLACEHOLDERS" = 0 ] && [ "$accepted" -ge 3 ] && contains "$AIRLOCK_AWS_KEY_ID" "$K6_AWS_KEYIDS" && ! contains "403" "${K6AWS[sts]}" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AWS_PLACEHOLDERS" = 0 ] && [ "$accepted" -ge 3 ] && [ "$K6_AWS_STAND_REFUSED" = 0 ] && contains "$AIRLOCK_AWS_KEY_ID" "$K6_AWS_KEYIDS" && ! contains "403" "${K6AWS[sts]}" && echo 0 || echo 1)" \
 		"the stand-in AWS service accepts each signature of the STS call, the list and the upload, with the real session token, and finds no placeholder in them" \
-		"$accepted calls were verified against the real key id $K6_AWS_KEYIDS and the stack's own session token ($(shape "$aws_session")), with $K6_AWS_PLACEHOLDERS placeholders among them; the three calls said '${K6AWS[sts]}' / '${K6AWS[ls]}' / '${K6AWS[cp]}'"
+		"$accepted calls reached it, signed with the real key id $K6_AWS_KEYIDS and the stack's own session token ($(shape "$aws_session")), with $K6_AWS_PLACEHOLDERS placeholders among them, and it refused $K6_AWS_STAND_REFUSED of them; the three calls said '${K6AWS[sts]}' / '${K6AWS[ls]}' / '${K6AWS[cp]}'"
 
 	# The list is read for its own answer as well as its signature. A stand-in that verifies a
 	# signature and then answers a line of prose makes the AWS CLI report a 500, and a check that
