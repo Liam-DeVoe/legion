@@ -478,6 +478,52 @@ run_check "$root"
 check "and fails once the script no longer assigns it" "$(is "$status" 1)"
 check "naming the script" "$(contains "$out" 'FIXTURE_SEED: its row.s set_by_script names packages/web/seed-run.sh, which does not set it')"
 
+# The shape of DISPATCH_E2E_VISUAL_SEED: the set_by_script script hands the variable to the
+# container its tests run in (`docker run -e "NAME=value"`), and the job's step runs it through a
+# wrapper of .github/scripts, which runs it from the step's directory.
+root=$(fixture set-by-wrapped-script)
+cat > "$root/packages/web/seeded.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+test.skipIf(process.env.FIXTURE_SEED === undefined)("the seeded row", () => {
+  expect(1).toBe(1);
+});
+TS
+cat > "$root/packages/web/seed-run.sh" <<'SH'
+#!/usr/bin/env bash
+# Runs the seeded row in a container, with a seed of its own.
+docker run --rm -e HOME -e "FIXTURE_SEED=/seed" fixture-image bun test seeded.test.ts
+SH
+cat > "$root/.github/scripts/seeded-suite.sh" <<'SH'
+#!/usr/bin/env bash
+# The seeded leg: its one run, from the step's directory.
+./seed-run.sh
+SH
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  seeded:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Seeded run
+        run: '"$GITHUB_WORKSPACE/.github/scripts/seeded-suite.sh"'
+        working-directory: packages/web
+YAML
+sed -i 's|    needs: \[lint, go, bun\]|    needs: [lint, go, bun, seeded]|' "$root/.github/workflows/ci.yaml"
+row "$root" FIXTURE_SEED 'class: set' 'jobs: [seeded]' 'set_by_script: packages/web/seed-run.sh' 'why: The seed seed-run.sh hands its container.'
+run_check "$root"
+check "a set row whose script hands it to a container, run through a wrapper, holds" "$(is "$status" 0)"
+sed -i 's|^\./seed-run\.sh$|echo "no seeded run"|' "$root/.github/scripts/seeded-suite.sh"
+run_check "$root"
+check "and fails once the wrapper no longer runs the script" "$(is "$status" 1)"
+check "naming the script no named job runs" \
+  "$(contains "$out" 'FIXTURE_SEED: no step of a job its row names runs packages/web/seed-run.sh, which sets it')"
+check "and the job that no longer sets it" "$(contains "$out" 'FIXTURE_SEED: its row names seeded, which does not set it')"
+sed -i 's|^echo "no seeded run"$|./seed-run.sh|' "$root/.github/scripts/seeded-suite.sh"
+sed -i 's|-e "FIXTURE_SEED=/seed"|-e FIXTURE_SEED|' "$root/packages/web/seed-run.sh"
+run_check "$root"
+check "and fails where the script forwards the caller's value (-e NAME) and sets none" "$(is "$status" 1)"
+check "naming the script that does not set it" \
+  "$(contains "$out" 'FIXTURE_SEED: its row.s set_by_script names packages/web/seed-run.sh, which does not set it')"
+
 echo "case: 3 - a step that runs a script of the repository, which exports the variable and runs the tests"
 root=$(fixture script-step)
 mkdir -p "$root/.github/scripts"

@@ -1,22 +1,24 @@
 //go:build basebuild
 
-// The three acceptance tests of this tag are this change's acceptance runs:
-// TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
-// (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit
-// BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
-// needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
-// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
-// one bound that needs neither a database nor that commit and takes milliseconds.
-// They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
-// time and by name, as
+// legion: tool - the store census from an older build (BASELINE_SHA) to this one, for a person who moves a database from a build before the node and tuple store and must know that every row and every read survives; run with BASELINE_SHA=<that build's commit> go test -tags basebuild -count=1 -run '^$' -bench '^BenchmarkTheStoreCensusReadsZeroDifferences$' -benchtime 1x -timeout 2h ./cmd/dispatch
 //
-//	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
+// The three measurements of this tag were this change's acceptance runs, and each is a tool, a
+// Benchmark that no go test of the package runs: BenchmarkTheStoreCensusReadsZeroDifferences in
+// this file, and BenchmarkNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and
+// BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go), which
+// share graph_cost_test.go. Each builds the server at the commit BASELINE_SHA names (baseBuild,
+// testbaseline.Commit) and compares it with this build, so each needs a checkout that holds that
+// commit, and each takes from 2 to 45 minutes on an issue pod. The census starts before the
+// migration that made the store, so its BASELINE_SHA is a commit from before the store: at one
+// that holds the store it fails at its first check (requireTheSizingRunsBeforeTheMigration).
+// The tag also holds TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, a unit test of
+// one bound that needs neither a database nor that commit and takes milliseconds: the last
+// envoy-go leg of ci.yaml's go-envoy-held job runs it.
 
 package main
 
 // The store census end to end, from before the migration that made the store
-// (the check c-census). The test is TestTheStoreCensusReadsZeroDifferences below,
+// (the check c-census). The measurement is BenchmarkTheStoreCensusReadsZeroDifferences below,
 // and everything else in this file is what it drives.
 
 import (
@@ -89,6 +91,13 @@ type inventoryRow struct {
 	Actor    string `json:"actor"`
 }
 
+// BenchmarkTheStoreCensusReadsZeroDifferences is the census, a tool and not a test: run it once
+// (-benchtime 1x), with BASELINE_SHA naming a commit from before the store. Its body,
+// theStoreCensusReadsZeroDifferences below, runs as one test of its own (runAsOneTest).
+func BenchmarkTheStoreCensusReadsZeroDifferences(b *testing.B) {
+	runAsOneTest(b, "TheStoreCensusReadsZeroDifferences", theStoreCensusReadsZeroDifferences)
+}
+
 // The store census reads zero differences, and the rows it reads are the rows that were there
 // before the store existed.
 //
@@ -128,7 +137,7 @@ type inventoryRow struct {
 // different question from store-to-projection equality: both sides can agree while the answer a
 // reader gets has changed. Each read must answer something on the older build, since two empty
 // answers agree and prove nothing either.
-func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
+func theStoreCensusReadsZeroDifferences(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
 	older := baseBuild(t)
@@ -214,7 +223,7 @@ func censusDatabase(t *testing.T) string {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
 	if raw == "" {
-		t.Skipf("%s is unset", storetest.DatabaseURLEnv)
+		t.Fatalf("%s is unset: the census makes its database on the server it names", storetest.DatabaseURLEnv)
 	}
 	server, err := url.Parse(raw)
 	if err != nil {

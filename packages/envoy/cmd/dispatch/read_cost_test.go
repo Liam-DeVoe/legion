@@ -1,18 +1,20 @@
 //go:build basebuild
 
-// The basebuild tag, and how a test of it is run: store_census_test.go.
+// legion: tool - c-read-cost, the reads of the node and tuple store timed on this build and on an older one (BASELINE_SHA), for a person who changes those reads and decides whether a cost is worth it; run with BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild -count=1 -run '^$' -bench '^BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode$' -benchtime 1x -timeout 2h ./cmd/dispatch
+//
+// The basebuild tag, and how a measurement of it is run: store_census_test.go.
 
 package main
 
 // This change's check c-read-cost: no read this child changes gets slower, and no event
 // outruns its node.
 //
-// The test is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode at the end of this
-// file; everything above it is the four corpora it writes, what each shape is held to, the state
-// before the backfill it puts this child's arm in, and the eight reads it measures over each
-// shape in each state. The second half of the check, that no event outruns its node, is
-// TestNoEventOutrunsItsNode (internal/dispatch/api/no_event_outruns_test.go), which holds the
-// server's own comment write at its seam; the check's run names both tests. graph_cost_test.go
+// The measurement is BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode at the end
+// of this file, after its body; everything above it is the four corpora it writes, what each
+// shape is held to, the state before the backfill it puts this child's arm in, and the eight
+// reads it measures over each shape in each state. The second half of the check, that no event
+// outruns its node, is TestNoEventOutrunsItsNode (internal/dispatch/api/no_event_outruns_test.go),
+// which holds the server's own comment write at its seam, and which CI runs. graph_cost_test.go
 // holds the two arms, the clock and the order statistic the two cost measurements share, and
 // write_cost_test.go the document generator and the corpus writers both use.
 
@@ -736,7 +738,7 @@ func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map
 // The name is the check's. Its second half, that no event outruns its node, is
 // TestNoEventOutrunsItsNode in internal/dispatch/api, which holds the server's own comment write
 // at its seam before the commit, and the check's run names both tests.
-func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) {
+func noReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) {
 	t.Log(costGVisorNote)
 	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
 		"a database of its own which that build migrated at boot, and each is driven over its own " +
@@ -787,6 +789,14 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 	requireReadCostShapes(t, readCostAfter, head, base, shapes)
 	requireReadCostTuples(t, head, shapes[head])
 	readCostMeasure(t, readCostAfter, head, base, shapes)
+}
+
+// BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode is c-read-cost, a tool and
+// not a test: run it once (-benchtime 1x), with BASELINE_SHA naming the commit to compare with.
+// Its body, noReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode above, runs as one test of
+// its own (runAsOneTest).
+func BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(b *testing.B) {
+	runAsOneTest(b, "NoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode", noReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode)
 }
 
 // readCostShapePhrase is the word one shape's main document carries and no other document of the

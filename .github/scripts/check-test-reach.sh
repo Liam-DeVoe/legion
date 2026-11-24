@@ -18,8 +18,9 @@
 #        set and selector: each job the row names sets the variable (a workflow, job or step
 #          `env:`, an inline `NAME=value command`, an `export`, an action that writes it into
 #          $GITHUB_ENV), and some named job runs the gate's test in a step whose environment
-#          holds it; or, where the row names `set_by_script`, that script assigns it and a step of
-#          a named job runs the script;
+#          holds it; or, where the row names `set_by_script`, that script assigns it or hands it
+#          to a container (`docker run -e NAME=…`), and a step of a named job runs the script,
+#          itself or through a repository script that runs it from the step's directory;
 #        prerequisite: the gate calls testprereq.Require, requireOrSkip or skipWithout, or reads
 #          GITHUB_ACTIONS and fails there;
 #        tool: the gate is in a `Benchmark…` function or a file that carries the tool line;
@@ -2418,22 +2419,34 @@ def registry() -> dict[str, Row]:
     return rows
 
 
-SCRIPT_ASSIGNS = r"(?:^|[\s\"'])(?:export\s+)?{name}=|-e\s+\"?{name}\b"
+# What sets a variable in a set_by_script script: an assignment (`NAME=…`, `export NAME=…`), or
+# its hand-on to a container, `docker run -e NAME=…` or `-e "NAME=…"`, which sets it for the
+# command the container runs. `-e NAME` with no value forwards the caller's own and sets nothing.
+SCRIPT_ASSIGNS = r"(?:^|[\s\"'])(?:export\s+)?{name}="
 
 
 def script_runners(flows: Workflows, script: str) -> set[str]:
-    """The required jobs a step of which runs `script`, by its path from the step's directory."""
-    found = set()
-    for step in required_steps(flows):
-        for command in commands(step.script):
+    """The required jobs a step of which runs `script`, by its path from the step's directory or
+    from the checkout's root through $GITHUB_WORKSPACE (repository_script), or inside a repository
+    script the step runs that runs it in turn, from the step's directory as the wrapper leaves it:
+    dispatch-browser.yaml's visual step runs .github/scripts/dispatch-browser-visual-suite.sh,
+    which runs e2e/visual-run.sh from packages/dispatch."""
+    def runs(text: str, cwd: str, seen: frozenset) -> bool:
+        for command in commands(text):
             words = words_of(command)
+            if words[:1] == ["cd"] and len(words) == 2:
+                cwd = join(cwd, words[1])
+                continue
             while words and INLINE.match(words[0]):
                 words = words[1:]
-            if words[:1] in (["bash"], ["sh"]):
-                words = words[1:]
-            if words and join(step.workdir, words[0]) == script:
-                found.add(step.part.job)
-    return found
+            path = repository_script(cwd, words)
+            if path is None or path in seen:
+                continue
+            if path == script or runs(read_text(path), cwd, seen | {path}):
+                return True
+        return False
+
+    return {step.part.job for step in required_steps(flows) if runs(step.script, step.workdir, frozenset())}
 
 
 def variable_findings(rows: dict[str, Row], gates: list[Gate], flows: Workflows, tree: GoTree,

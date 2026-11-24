@@ -1,12 +1,12 @@
 //go:build basebuild
 
-// The basebuild tag, and how a test of it is run: store_census_test.go.
+// The basebuild tag, and how a measurement of it is run: store_census_test.go.
 
 package main
 
 // The two cost measurements of this change share this file. c-write-cost is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
-// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
+// BenchmarkNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
+// BenchmarkNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.
 //
@@ -58,6 +58,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
+
+// runAsOneTest runs BODY, a measurement written against the package's *testing.T helpers, as one
+// test named NAME through testing.RunTests, the function `go test` runs a package's tests with,
+// and fails B where it failed. The helpers take a *testing.T and use what only a test has (t.Run,
+// t.Deadline), which a benchmark's *testing.B lacks. The matcher takes the test whatever -test.run
+// says (a measurement's run passes `-run '^$'`), so the body keeps no Test name and no go test of
+// the package runs it.
+func runAsOneTest(b *testing.B, name string, body func(*testing.T)) {
+	b.Helper()
+	every := func(string, string) (bool, error) { return true, nil }
+	if !testing.RunTests(every, []testing.InternalTest{{Name: name, F: body}}) {
+		b.Fatalf("%s failed; its readings and the line of each failure are above", name)
+	}
+}
 
 const (
 	// costWriteRuns is how many readings the write measurement takes of each path on each arm,

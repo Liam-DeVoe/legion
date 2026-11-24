@@ -24,6 +24,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -894,9 +895,9 @@ function leftOf(stdout: string, stderr: string): string[] {
 }
 
 /** Whether this machine's `/proc/<pid>/status` has the `ShdPnd:` line `leftBehind` reads a kill
- *  from. gVisor's has none. Where it has none, each row that runs a driver is skipped by name,
- *  outside CI, and runs under `GITHUB_ACTIONS`, where its driver refuses by name
- *  (`left behind: unknown: no ShdPnd: line …`) and the row fails with that line. */
+ *  from. gVisor's has none. Where it has none, each row that runs a driver is skipped by name
+ *  outside CI, and under `GITHUB_ACTIONS`, whose runners have the line, the file fails, naming
+ *  what is missing (requireOrSkip). */
 const shdPnd = (() => {
   try {
     return /^ShdPnd:/m.test(readFileSync("/proc/self/status", "utf8"));
@@ -905,9 +906,14 @@ const shdPnd = (() => {
   }
 })();
 
-/** A row that runs a driver over `leftBehind`: run wherever `ShdPnd` can be read, and under
- *  `GITHUB_ACTIONS` in any case (`shdPnd`). */
-const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
+/** A row that runs a driver over `leftBehind`: run wherever `ShdPnd` can be read (`shdPnd`). */
+const driverRow = test.skipIf(
+  requireOrSkip(
+    "a /proc/<pid>/status with the ShdPnd: line the driver reads a kill from",
+    shdPnd,
+    "dispatch-ui"
+  )
+);
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the

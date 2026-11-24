@@ -7,9 +7,10 @@ description: >-
   leg; the corpus tests of internal/dispatch/pmdoc in every leg, each on the leg's shard of the
   repository's markdown; in the leg the `rest` input marks, the steps no leg splits: the backend
   count, the skip counter's own test, the moto run, the natslive matrix, the integration tests and
-  the callout check; and in the last leg (`part` equal to `legs`), the two unsplit steps the `rest`
-  leg has no room for: what the race build cannot run at all or at full size, and the pmdoc
-  differential. ci.yaml's go-envoy-held job runs the unit step, one go test through the database
+  the callout check; and in the last leg (`part` equal to `legs`), the three unsplit steps the
+  `rest` leg has no room for: what the race build cannot run at all or at full size, the pmdoc
+  differential, and what the basebuild tag adds that needs no older build. ci.yaml's
+  go-envoy-held job runs the unit step, one go test through the database
   skip counter (packages/envoy/scripts/database-skips.sh), after these steps, in each leg, and the
   statement timings in the `rest` leg, as steps of its own with their own timeout-minutes; its
   envoy-go job carries the old check-run name `envoy-go / envoy-go` and passes only when every leg
@@ -260,6 +261,36 @@ runs:
     - if: failure() && inputs.part == inputs.legs
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with: {name: go-envoy-held-envoy-go-differential-report, path: '${{ runner.temp }}/differential/report.jsonl', if-no-files-found: ignore, overwrite: true}
+    # The tests the basebuild tag adds that need no older build: the 8,001-block path's allowance
+    # of the write cost (./cmd/dispatch, write_cost_test.go), and that no route or field the base
+    # served is gone (./internal/dispatch/api, no_reach_base_test.go), which reads the base's
+    # committed OpenAPI document at BASELINE_SHA (internal/testbaseline). The base is the pull
+    # request's or the merge group's, fetched as the differential above fetches it, and a
+    # dispatched run's is its commit's parent. The tag's three measurements, which build an older
+    # server, are Benchmarks, tools that no step runs (cmd/dispatch/store_census_test.go). Each
+    # package runs only the tests the tag adds, its -run from .github/scripts/go-tagged-tests.sh,
+    # for the reasons the natslive step's comment below gives.
+    - name: Test what the basebuild tag adds that needs no older build
+      if: inputs.part == inputs.legs
+      shell: bash
+      working-directory: packages/envoy
+      env:
+        BASELINE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      run: |
+        if [ -z "$BASELINE_SHA" ]; then
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          BASELINE_SHA=$(git rev-parse HEAD^)
+        else
+          git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
+        fi
+        bound=$(../../.github/scripts/go-tagged-tests.sh basebuild ./cmd/dispatch)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-basebuild-dispatch.json" --packages ./cmd/dispatch/ -- -count=1 -timeout 5m -tags basebuild -run "$bound"
+        routes=$(../../.github/scripts/go-tagged-tests.sh basebuild ./internal/dispatch/api)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-basebuild-api.json" --packages ./internal/dispatch/api/ -- -count=1 -timeout 5m -tags basebuild -run "$routes"
+    - if: always() && inputs.part == inputs.legs
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-held-envoy-go-${{ inputs.part }}-basebuild
     # The built agent-secrets against moto's AWS, with no AWS account
     # (cmd/cipher/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): the one run of the binary
     # through the AWS SDK's own profile and credential chain, which the in-process tests replace

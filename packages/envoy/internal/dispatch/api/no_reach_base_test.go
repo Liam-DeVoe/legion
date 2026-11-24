@@ -30,7 +30,9 @@ import (
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
 // that does not hold the named commit (a shallow clone, an archive) has nothing to read, which is
-// the reason cmd/dispatch's older-build test reads its base the same way.
+// the reason cmd/dispatch's older-build measurements read their base the same way. The last
+// envoy-go leg of ci.yaml's go-envoy-held job runs it, with BASELINE_SHA the base of the pull
+// request or the merge group, which that step fetches.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	t.Parallel()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")

@@ -1,16 +1,19 @@
 //go:build basebuild
 
-// The basebuild tag, and how a test of it is run: store_census_test.go.
+// legion: tool - c-write-cost, the write paths of the node and tuple store timed on this build and on an older one (BASELINE_SHA), for a person who changes those paths and decides whether a cost is worth it; run with BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild -count=1 -run '^$' -bench '^BenchmarkNoWritePathThisChildChangesGetsSlower$' -benchtime 1x -timeout 2h ./cmd/dispatch
+//
+// The basebuild tag, and how a measurement of it is run: store_census_test.go.
 
 package main
 
 // This change's check c-write-cost: no write path this child changes gets slower.
 //
-// The test is TestNoWritePathThisChildChangesGetsSlower at the end of this file; everything
-// above it is the corpus it writes and the paths it measures (writeCostPaths). graph_cost_test.go
-// holds the two arms, the clock and the order statistic the two cost measurements share.
-// TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, last in the file, holds the
-// 8,001-block path's allowance (writeCostOverAllowance) to its rule with no database and no arm.
+// The measurement is BenchmarkNoWritePathThisChildChangesGetsSlower, after its body near the end
+// of this file; everything above it is the corpus it writes and the paths it measures
+// (writeCostPaths). graph_cost_test.go holds the two arms, the clock and the order statistic the
+// two cost measurements share. TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise, last
+// in the file, holds the 8,001-block path's allowance (writeCostOverAllowance) to its rule with no
+// database and no arm.
 
 import (
 	"context"
@@ -434,7 +437,7 @@ func writeCostPaths() []writeCostPath {
 // times the garbage, almost all of it outside the parse, so the collector runs inside nearly
 // every request rather than one in five. A part read over three readings states where the
 // collector fell, not what the part does.
-func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
+func noWritePathThisChildChangesGetsSlower(t *testing.T) {
 	t.Log(costGVisorNote)
 	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
 		"a database of its own which that build migrated at boot, and each is driven over its own " +
@@ -636,6 +639,13 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 				ratio, path.ratio, path.absolute)
 		}
 	}
+}
+
+// BenchmarkNoWritePathThisChildChangesGetsSlower is c-write-cost, a tool and not a test: run it
+// once (-benchtime 1x), with BASELINE_SHA naming the commit to compare with. Its body,
+// noWritePathThisChildChangesGetsSlower above, runs as one test of its own (runAsOneTest).
+func BenchmarkNoWritePathThisChildChangesGetsSlower(b *testing.B) {
+	runAsOneTest(b, "NoWritePathThisChildChangesGetsSlower", noWritePathThisChildChangesGetsSlower)
 }
 
 // writeCostWhereTheTimeWent prints what one version of the 1,999-block document did on each arm:
@@ -1282,7 +1292,7 @@ func writeCostOverAllowance(here, before time.Duration) (allowance time.Duration
 //
 // It starts no arm, builds no commit and opens no database, so it needs no BASELINE_SHA and
 // takes milliseconds. It carries this file's basebuild tag because the helper and the bounds it
-// reads do, and is run by name as
+// reads do, and the last envoy-go leg of ci.yaml's go-envoy-held job runs it by name, as
 //
 //	go test -tags basebuild ./cmd/dispatch/ -run '^TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise$' -count=1 -v
 func TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise(t *testing.T) {
