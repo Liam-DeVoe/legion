@@ -635,12 +635,27 @@ jobs:
       # ones codeberg.org, git.sr.ht, dmitri.shuralyov.com and gopkg.in serve themselves. The
       # go-notices stage's go-licenses report reads the same pages unretried, and a page it cannot
       # read leaves only that module's license URL unknown, which the notices do not print.
+      # And Oh My Pi's model catalog, which images job 138228770096 showed passing
+      # (dispatch://INFRA-1545, round 62): api.commandcode.ai (commandcode.ai), api.kilo.ai
+      # (kilo.ai), api.venice.ai (venice.ai), catalog.stencil.so (stencil.so),
+      # coding-intl.dashscope.aliyuncs.com (aliyuncs.com), hyper.charm.land (charm.land) and
+      # zenmux.ai. They are Oh My Pi's background model refresh in the sessions the final RUN's
+      # `legion probe-image` starts. It is a fetch at all because, in the Oh My Pi that .omp-pin
+      # names, `createAgentSession` (packages/coding-agent/src/sdk.ts) calls
+      # `modelRegistry.refreshInBackground()` when its caller passes no registry, and main.ts
+      # calls it after each non-interactive session it starts; that refresh
+      # (packages/coding-agent/src/config/model-registry.ts) is online-if-uncached, so it fetches
+      # models.dev's catalog from catalog.stencil.so (`MODELS_DEV_URL`,
+      # packages/catalog/src/provider-models/openai-compat.ts) and the model lists of the
+      # providers that need no key. Neither call reads a setting or an environment value that
+      # turns the refresh off, and a refresh that fails is logged as the warning "background
+      # model refresh failed" and fails nothing.
       - name: Start the recovering fault for the worker image build
         id: worker-proxy
         run: |
           .github/scripts/download-retry-proof.sh start worker --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net,alpinelinux.org,registry.yarnpkg.com,authelia.com,cel.dev,codeberg.org,dario.cat,dmitri.shuralyov.com,filippo.io,git.sr.ht,gitlab.com,go.etcd.io,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,mvdan.cc,rsc.io
+            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net,alpinelinux.org,registry.yarnpkg.com,authelia.com,cel.dev,codeberg.org,dario.cat,dmitri.shuralyov.com,filippo.io,git.sr.ht,gitlab.com,go.etcd.io,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,mvdan.cc,rsc.io,commandcode.ai,kilo.ai,venice.ai,stencil.so,aliyuncs.com,charm.land,zenmux.ai
           .github/scripts/download-retry-proof.sh probe worker
       - name: Build the worker image under the recovering fault
         id: worker-build
@@ -669,12 +684,15 @@ jobs:
       # fall-through reads those pages and clones nothing (dispatch://INFRA-1545, round 61). Its
       # notices RUN's go-licenses report reads the same pages unretried, and a page it cannot read
       # leaves only that module's license URL unknown, which the notices do not print.
+      # proxy.golang.org serves its module zips from storage.googleapis.com (googleapis.com),
+      # which images job 138228770096 showed this build's Go fetch reaching unfaulted
+      # (dispatch://INFRA-1545, round 62).
       - name: Start the recovering fault for the Envoy image build
         id: envoy-proxy
         run: |
           .github/scripts/download-retry-proof.sh start envoy --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com,authelia.com,cloud.google.com,dario.cat,dmitri.shuralyov.com,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,rsc.io
+            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com,googleapis.com,authelia.com,cloud.google.com,dario.cat,dmitri.shuralyov.com,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,rsc.io
           .github/scripts/download-retry-proof.sh probe envoy
       - name: Build the Envoy image under the recovering fault
         id: envoy-build
@@ -701,13 +719,15 @@ jobs:
       # gocloud.dev, gonum.org, gopkg.in, gotest.tools, honnef.co, lukechampine.com, modernc.org,
       # mvdan.cc, pgregory.net and rsc.io, where golang.org already holds google.golang.org. Its
       # golang image carries no git, so the fall-through reads those pages and clones nothing
-      # (dispatch://INFRA-1545, round 61).
+      # (dispatch://INFRA-1545, round 61). proxy.golang.org serves its module zips from
+      # storage.googleapis.com (googleapis.com), which images job 138228770096 showed this
+      # build's Go fetch reaching unfaulted (dispatch://INFRA-1545, round 62).
       - name: Start the recovering fault for the held-port image build
         id: heldport-proxy
         run: |
           .github/scripts/download-retry-proof.sh start heldport --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts golang.org,googlesource.com,github.com,githubusercontent.com,authelia.com,cel.dev,charm.land,cloud.google.com,codeberg.org,dario.cat,git.sr.ht,go.mongodb.org,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gocloud.dev,gonum.org,gopkg.in,gotest.tools,honnef.co,lukechampine.com,modernc.org,mvdan.cc,pgregory.net,rsc.io
+            --hosts golang.org,googlesource.com,github.com,githubusercontent.com,googleapis.com,authelia.com,cel.dev,charm.land,cloud.google.com,codeberg.org,dario.cat,git.sr.ht,go.mongodb.org,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gocloud.dev,gonum.org,gopkg.in,gotest.tools,honnef.co,lukechampine.com,modernc.org,mvdan.cc,pgregory.net,rsc.io
           .github/scripts/download-retry-proof.sh probe heldport
       - name: Build the held-port image under the recovering fault
         id: heldport-build
