@@ -1,4 +1,4 @@
-package daemon
+package record_test
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // The served state names each start that waits for its issue's pod by the claim it starts, as
@@ -23,23 +24,36 @@ import (
 // the implementer role whose slot the pod lacks, waits beside a start of the role's own agent
 // that waits too, and the two are served apart. A start of the release before names no claim,
 // and it is named by the claim the record gives its role's step, the claim the outbox's next try
-// of the row acts on: the tester's own here, since the issue has no phases rows.
+// of the row acts on: the tester's own here, since the issue has no phases rows. It reads
+// record.Postgres.StartsWaitingForPod's rows through projection.Project, so it is a test of this
+// package's read, in this package's external test package, since projection imports record.
 func TestTheStateNamesEachStartThatWaitsForItsPodByTheClaimItStarts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
+	pool := testpg.ClonePool(t, "legion_record_test")
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U",
 		LastDispatchSeq: 1}
-	putOutboxIssue(t, pool, records, issue)
-	own := mustClaimToken(t, issue.Key, claim.RoleImplementer)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return records.PutIssue(ctx, tx, issue)
+	}); err != nil {
+		t.Fatalf("put %s: %v", issue.Key, err)
+	}
+	roleToken := func(role claim.Role) claim.Token {
+		t.Helper()
+		got, err := claim.NewToken("legion", issue.Key, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	own, tester := roleToken(claim.RoleImplementer), roleToken(claim.RoleTester)
 	second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tester := mustClaimToken(t, issue.Key, claim.RoleTester)
 	// Each start as a try of the outbox leaves it when the issue's pod lacks the start's slot or
 	// role (the outbox's roleWaitsForItsPod): its last error begins with
 	// pods.StartWaitsForPodPrefix, and it is due again in an hour.
