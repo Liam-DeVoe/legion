@@ -56,11 +56,18 @@ type PauseStop struct {
 // issue, which the operator's spawn makes under the daemon's own project token, is a session this
 // daemon runs, so the pause holds it as it holds every other claim.
 func (m *Machine) pauseHolds() (int64, bool) {
-	if m.deps.Paused == nil || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree) {
+	return pauseHolding(m.deps.Paused, claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree))
+}
+
+// pauseHolding is pauseHolds' rule, for a claim that is the project controller's or not: the open
+// pause paused (Deps.Paused) names, and whether one is open. It is apart from the machine so the
+// rule that says whether the gate paces a launch reads it too (PacedLaunch).
+func pauseHolding(paused func() (int64, bool), controller bool) (int64, bool) {
+	if paused == nil || controller {
 		return 0, false
 	}
-	pause, paused := m.deps.Paused()
-	return pause, paused && pause > 0
+	pause, open := paused()
+	return pause, open && pause > 0
 }
 
 // pauseOpen is whether pause is the project's open pause now (Deps.Paused). A daemon whose project
@@ -215,15 +222,16 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // was held for has ended (decision 7): a reservation from the limiter, told to the daemon as the
 // moment the pacing lets it out (wakeLetOut, decision 14), then its timer, exactly as the wake gate
 // parks a launch (reserveWake, parkWake). A launch the reservation lets out now runs now, and a
-// daemon whose pacing is off runs it now, unpaced. Its callers are the gate's own stop finding no
-// pause open (pauseStopDue) and the resume's event (resumePause).
+// daemon whose pacing is off runs it now, unpaced. So does a launch that passed the wake gate
+// before the pause's gate held it (wake.ran): it took its token there. Its callers are the gate's
+// own stop finding no pause open (pauseStopDue) and the resume's event (resumePause).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0
 	m.disarm(TimerPause)
 	now := m.deps.Clock.Now()
 	reserve := m.deps.WakePace.Reserve
-	if reserve == nil {
+	if reserve == nil || waiting.ran {
 		m.wake = nil
 		waiting.at, waiting.reserved = now, now
 		return m.runWake(ctx, waiting, false)
