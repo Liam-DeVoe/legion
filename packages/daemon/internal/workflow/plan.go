@@ -156,7 +156,7 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held
 				steps[i].Agent = agent.Name
 			}
 		}
-		left, before := handedBefore(earlier, agent.Name)
+		left, before := handedBefore(earlier, held, agent.Name)
 		handed = append(handed, handOn{UnnamedAgent: agent, before: before, left: left})
 	}
 	return version, []record.PlanTask{task}, steps, handed
@@ -173,14 +173,21 @@ type handOn struct {
 }
 
 // handedBefore answers whether a row of earlier with no key holds name in a generation at or after
-// every row of earlier with a key that holds it — default steps of an earlier generation took the
-// name from its key then — and the session the newest such row leaves. Where the key's rows went
-// and only the lasting record keeps its name, a row with no key that holds it can only be such a
-// later one.
-func handedBefore(earlier []record.PlanStep, name claim.Agent) (string, bool) {
+// the latest generation a key held it at — default steps of an earlier generation took the name
+// from its key then — and the session the newest such row leaves. The key's hold is read from its
+// rows of earlier and from the lasting record (held, record.KeyName.Generation), since the key's
+// rows go where a first step passes over its owner's plan while the default steps' rows of an
+// earlier generation stay: a row with no key older than the key's hold showed the name before the
+// key took it, and is no hand-over.
+func handedBefore(earlier []record.PlanStep, held []record.KeyName, name claim.Agent) (string, bool) {
 	var keyed, free uint64
 	var freeSeen bool
 	var left string
+	for _, h := range held {
+		if h.Name == name {
+			keyed = max(keyed, h.Generation)
+		}
+	}
 	for _, row := range earlier {
 		if row.AgentName() != name {
 			continue

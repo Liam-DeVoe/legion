@@ -287,12 +287,14 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent), step.LeaveSession); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
-		// The name a key's agent holds is kept in the lasting record too (KeyNames): this write
-		// deletes the task's earlier rows, and the first step of a run deletes an earlier owner's
-		// plan, but the name's claim records the key's session in every later generation.
+		// The name a key's agent holds is kept in the lasting record too (KeyNames), with the
+		// latest generation that gave it: this write deletes the task's earlier rows, and the first
+		// step of a run deletes an earlier owner's plan, but the name's claim records the key's
+		// session in every later generation.
 		if name := step.AgentName(); step.AgentKey != "" && name != "" {
-			if _, err := tx.Exec(ctx, `insert into plan_key_names (issue, name, agent_key) values ($1, $2, $3)
-				on conflict (issue, name) do update set agent_key = excluded.agent_key`, v.Issue, string(name), step.AgentKey); err != nil {
+			if _, err := tx.Exec(ctx, `insert into plan_key_names (issue, name, agent_key, generation) values ($1, $2, $3, $4)
+				on conflict (issue, name) do update set agent_key = excluded.agent_key,
+				generation = greatest(plan_key_names.generation, excluded.generation)`, v.Issue, string(name), step.AgentKey, int64(v.Generation)); err != nil {
 				return fmt.Errorf("%s: the name %s of key %s: %w", describe, name, step.AgentKey, err)
 			}
 		}
@@ -377,13 +379,15 @@ func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]
 // answers for its key, beside the names the issue's plan_steps rows hold.
 func (s *Postgres) KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error) {
 	describe := fmt.Sprintf("read the names the keys of %s held", issue)
-	rows, err := tx.Query(ctx, `select name, agent_key from plan_key_names where issue = $1 order by name`, issue)
+	rows, err := tx.Query(ctx, `select name, agent_key, generation from plan_key_names where issue = $1 order by name`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (KeyName, error) {
 		var h KeyName
-		err := row.Scan(&h.Name, &h.AgentKey)
+		var generation int64
+		err := row.Scan(&h.Name, &h.AgentKey, &generation)
+		h.Generation = uint64(generation)
 		return h, err
 	})
 	if err != nil {
