@@ -237,6 +237,8 @@ A roll forward then finds running copies taken before the rollback and no record
 That copy cannot move `legion/<KEY>`, which no restore sets, but it would put that pod's workspace back on work behind the branch, which its roles would then have to bring forward over everything pushed while the earlier daemon ran.
 Deleting the running copies costs no work: a running copy's work is on the disk it was taken off, and no earlier daemon restores a running copy at all.
 What the rollback does cost is the copy of a pod the cluster ends while the earlier daemon runs, which no earlier daemon has.
+Until each issue pod is replaced on the earlier image, a pod of this release whose `roles` container was killed in the middle of a restore refuses every role start, since its launcher waits for the copy to come again and no earlier daemon sends a copy again.
+Replacing that pod ends it, and on a kept volume the record stays on the volume, so delete `.jj/legion-restore` in the workspace or reset the volume.
 The rows of `issue_pushes` and `issue_push_heads` need no act: they hold only times older than any push the earlier daemon saw and the commits of the pushes before it, and a running copy the new daemon takes after the roll forward is newer than all of them.
 The rows of `workspace_restore_asks` are kept rather than deleted, and the `update` marks each as a pod where a role registered.
 No earlier daemon reads or writes that table, so while it runs the rows change nothing and no registration is recorded: a role that first registers while the earlier daemon runs leaves its pod's row with no `registered_at`.

@@ -177,6 +177,17 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrWorkspaceCopyStore is a start the daemon's own store held: the take of the issue's saved
+// workspace copies for the pod's restore, or the drop of the copies the pod's kept volume holds,
+// failed, or its outcome was still unknown at the hop's bound (sandbox's restoreWorkspace). The
+// store is the daemon's, the one that holds the copies, not Oh My Pi's session store
+// (ErrSessionStore). It says nothing about the claim, so the caller charges nothing and starts
+// again at the probe interval until the store answers (supervise's launchTries). Nothing was
+// started: no Start was sent, and the copy stays in the store, owed to the pod while no role of
+// it has registered. A copy that was taken and then did not reach the pod's launcher is not this:
+// that start is the claim's failure.
+var ErrWorkspaceCopyStore = errors.New("the daemon's store of saved workspace copies did not answer the take or the drop of the pod's restore")
+
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
 // that the runtime did not send, because the pod's launcher has not said that it can look a
 // session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the

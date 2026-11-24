@@ -30,10 +30,10 @@ import (
 // are the store's, so the answer reads the copy's write off the row and the first ask off the
 // store's own record, and names both for the restore's line.
 //
-// A copy sent to a pod's launcher is spent once a role of that pod registers. The launcher's record
-// of the restore it ran dies with the process that ran it, so a roles container that restarts
-// comes back to the same disk with that record gone and the workspace hours of work past the copy;
-// the daemon's record survives, the send written in the take itself, before a slice leaves the
+// A copy sent to a pod's launcher is spent once a role of that pod registers. A roles container
+// that restarts after that comes back to the same disk with the workspace hours of work past the
+// copy, and the daemon does not rest on what the launcher left on that disk to keep the copy off
+// it: the daemon's own record is the send written in the take itself, before a slice leaves the
 // daemon, and the registration before the daemon answers it. The bytes stay in every case. What a
 // pod that ends before any role of it registered leaves is workspace_unspent_copy_test.go's.
 func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttempt(t *testing.T) {

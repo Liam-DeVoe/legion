@@ -3144,6 +3144,18 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
 		}
+		if errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+			// The daemon's own store did not take or drop the issue's saved workspace copies for
+			// the pod's restore, which says nothing about the claim: the start sent the pod's
+			// launcher nothing, so nothing is charged, and the same launch is tried again at the
+			// probe interval, as an unanswered hold is. It is not the session store's wait
+			// (startWaitsForStore): no session is in question, and the issue is told nothing.
+			err = errors.Join(err, m.stopPrevious(starting))
+			m.log.Warn("supervise: the daemon's store did not answer the take or the drop of the issue's saved workspace copies for the pod's restore; trying the launch again at the probe interval, charging nothing",
+				"generation", m.claim.Generation, "error", err)
+			m.relaunchAtProbe(l)
+			return errors.Join(err, m.persist(starting))
+		}
 		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
@@ -3212,9 +3224,10 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 }
 
 // relaunchAtProbe leaves the launch launchTries was making to be tried again at the probe
-// interval (relaunchLater), raised anew from the top (launchFromTop). It is the retry of the two
-// tries that started nothing and were refused by nothing about the claim: a write the store did
-// not take, and a hold of the session the store did not answer (launchTries).
+// interval (relaunchLater), raised anew from the top (launchFromTop). It is the retry of the tries
+// that started nothing and were refused by nothing about the claim: a write the store did not
+// take, a hold of the session the store did not answer, and a start the daemon's store of saved
+// workspace copies held (runtime.ErrWorkspaceCopyStore, launchTries).
 func (m *Machine) relaunchAtProbe(l launchTry) {
 	m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(l))
 }

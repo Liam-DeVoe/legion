@@ -283,10 +283,11 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 // on what was pushed registers it is sent to no pod again (store.Store.RecordPodRegistration).
 //
 // The pod it was sent to is the case the rule is for. Its roles container restarts, which is a
-// launcher process of its own, holding no record of the restore that already ran, on the pod's
-// own disk, whose workspace the roles have worked in since. The bundle sent there a second time
-// would `jj edit` that workspace back to the saved head and move each bookmark
-// `--allow-backwards` over all of it.
+// launcher process of its own, on the pod's own disk, whose workspace the roles have worked in
+// since. That launcher would refuse the bundle, the in-use record the pod's first role start wrote
+// being on that disk (internal/launcher's bundleRestore), but the daemon's rule does not rest on
+// it: a bundle sent there a second time and restored would `jj edit` that workspace back to the
+// saved head and move each bookmark `--allow-backwards` over all of it.
 func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()

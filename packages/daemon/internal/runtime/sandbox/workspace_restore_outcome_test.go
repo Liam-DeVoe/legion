@@ -318,11 +318,16 @@ func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.
 }
 
 // A take of the issue's copies that fails holds the role's start, for either kind of copy: the
-// start fails with the take's error and sends the launcher no launcher_start, so no role starts on
-// what was pushed while a copy is owed; the copy is left as it was, and the next launch, whose take
-// the store answers, sends it and starts the role. A role started beside the failed take would
+// start fails with the take's error, which is the daemon's own store's (runtime.ErrWorkspaceCopyStore,
+// which the supervisor retries charging nothing), and sends the launcher no launcher_start, so no
+// role starts on what was pushed while a copy is owed; and since no Start was sent, it sends no
+// launcher_stop either (stopIssuedChild). The copy is left as it was, and the next launch, whose
+// take the store answers, sends it and starts the role. A role started beside the failed take would
 // register and spend the copy, and a running copy would then be replaced by the next copy of its
 // pod's workspace, which never held the work.
+//
+// The controls (the pull request records the runs): the take's error not wrapped in the sentinel
+// fails the errors.Is; and stopIssuedChild without its startHeld case sends a launcher_stop.
 func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *testing.T) {
 	for _, kind := range []struct {
 		name string
@@ -350,12 +355,15 @@ func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *test
 			}))
 			spec := workerSpec(t)
 			g.launcher(spec.Claim)
-			if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "could not be taken") {
-				t.Fatalf("the start whose take failed answered %v; want it failed with the take's error", err)
+			_, err := g.r.Spawn(g.ctx, spec)
+			if err == nil || !strings.Contains(err.Error(), "could not be taken") || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+				t.Fatalf("the start whose take failed answered %v; want it failed with the take's error, runtime.ErrWorkspaceCopyStore", err)
 			}
 			sent := g.sent(spec.Claim)
-			if slices.ContainsFunc(sent, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }) {
-				t.Fatalf("the start whose take failed sent the launcher %v; want no launcher_start", frameTypes(sent))
+			for _, held := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
+				if countOf(sent, held) != 0 {
+					t.Fatalf("the start whose take failed sent the launcher %v; want no %s", frameTypes(sent), held)
+				}
 			}
 
 			again := newRig(t, nil, withOptions(func(o *Options) {

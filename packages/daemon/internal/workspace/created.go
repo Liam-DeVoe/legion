@@ -27,40 +27,21 @@ var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 // with errLinkedJJ and one that is no other directory with ENOTDIR. A link there would carry the
 // records into a directory off the workspace's disk: a record read there says nothing of this
 // workspace, and one written there can be lost at a container restart while the workspace keeps
-// its work. The entry is opened itself with O_PATH|O_NOFOLLOW, which reads through no link, and
-// its kind is read off that descriptor with fstat; only then is the directory opened for reading,
-// through that same descriptor (openat of "."). An open of the path with O_DIRECTORY|O_NOFOLLOW
-// would refuse a link on Linux, but gVisor, which issue pods run under, follows a link to a
-// directory there. Every read and write of a record goes through the open
-// directory (openat, fstatat), so nothing after this open reads .jj by its path again. held, when
-// set, runs once the directory is open and before the record is read or written: a test's seam
-// for a .jj swapped in that window.
+// its work. The open itself is the kernel's (openJJDir): on Linux it reads the entry through no
+// link, which gVisor, where issue pods run, needs. Every read and write of a record goes through
+// the open directory (openat, fstatat), so nothing after this open reads .jj by its path again.
+// held, when set, runs once the directory is open and before the record is read or written: a
+// test's seam for a .jj swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	entry, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	jj, err := openJJDir(path)
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
-	}
-	defer unix.Close(entry)
-	var stat unix.Stat_t
-	if err := unix.Fstat(entry, &stat); err != nil {
-		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
-	}
-	switch stat.Mode & unix.S_IFMT {
-	case unix.S_IFDIR:
-	case unix.S_IFLNK:
-		return nil, fmt.Errorf("%w: %s", errLinkedJJ, path)
-	default:
-		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
-	}
-	fd, err := unix.Openat(entry, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
+		return nil, err
 	}
 	if held != nil {
 		held()
 	}
-	return os.NewFile(uintptr(fd), path), nil
+	return jj, nil
 }
 
 // openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
@@ -79,7 +60,8 @@ func openIn(jj *os.File, name string, flags int, perm uint32) (*os.File, error) 
 // the workspace, so a workspace created again records its own creation.
 const createdFile = "legion-created"
 
-// createdRecordLimit bounds how much of the record Created reads: one RFC 3339 instant and a newline.
+// createdRecordLimit bounds the record Created reads: one RFC 3339 instant and a newline. A longer
+// one is refused (readRecord).
 const createdRecordLimit = 128
 
 // RecordCreated records at, in UTC, as the moment the workspace at dir was created. It writes the
@@ -113,39 +95,57 @@ func Created(dir string) (at time.Time, ok bool, err error) { return created(dir
 
 // created is Created, with held run as openJJ runs it.
 func created(dir string, held func()) (at time.Time, ok bool, err error) {
+	body, path, ok, err := readRecord(dir, held, createdFile, "the creation record", createdRecordLimit)
+	if !ok || err != nil {
+		return time.Time{}, false, err
+	}
+	at, err = time.Parse(time.RFC3339Nano, strings.TrimSpace(string(body)))
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("the creation record %s holds %q, not an RFC 3339 instant", path, body)
+	}
+	return at, true, nil
+}
+
+// readRecord is the body of the record name in the .jj directory of the workspace at dir, and the
+// path it was read at, which a refusal of what it holds names. ok is false when the workspace
+// holds none: no .jj is there, or nothing is at name. Each record is on the issue's volume, which
+// every agent of the issue can write, so it is read through .jj's descriptor (openJJ, which runs
+// held), opened without following a link or blocking on a special file, and anything but a
+// regular file of at most limit bytes is refused, naming the file. what names the record in each
+// error: Created's and ReadRestoreRecord's are its two readers.
+func readRecord(dir string, held func(), name, what string, limit int) (body []byte, path string, ok bool, err error) {
 	jj, err := openJJ(dir, held)
 	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, false, nil
+		return nil, "", false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record of workspace %s: %w", dir, err)
+		return nil, "", false, fmt.Errorf("read %s of workspace %s: %w", what, dir, err)
 	}
 	defer jj.Close()
-	record := filepath.Join(jj.Name(), createdFile)
-	file, err := openIn(jj, createdFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	path = filepath.Join(jj.Name(), name)
+	file, err := openIn(jj, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, false, nil
+		return nil, path, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
+		return nil, path, false, fmt.Errorf("read %s %s: %w", what, path, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
+		return nil, path, false, fmt.Errorf("read %s %s: %w", what, path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return time.Time{}, false, fmt.Errorf("the creation record %s is not a regular file (%s)", record, info.Mode().Type())
+		return nil, path, false, fmt.Errorf("%s %s is not a regular file (%s)", what, path, info.Mode().Type())
 	}
-	body, err := io.ReadAll(io.LimitReader(file, createdRecordLimit))
+	body, err = io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
+		return nil, path, false, fmt.Errorf("read %s %s: %w", what, path, err)
 	}
-	at, err = time.Parse(time.RFC3339Nano, strings.TrimSpace(string(body)))
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("the creation record %s holds %q, not an RFC 3339 instant", record, body)
+	if len(body) > limit {
+		return nil, path, false, fmt.Errorf("%s %s is over its %d bytes", what, path, limit)
 	}
-	return at, true, nil
+	return body, path, true, nil
 }
 
 // inUseFile is where MarkInUse records that the workspace is in use, beside createdFile in the
@@ -230,20 +230,30 @@ const restoreTemp = restoreFile + ".tmp"
 const restoreRecordLimit = shimwire.MaxFrameBytes
 
 // RestoreRecord is the launcher's record of a restore of a saved workspace copy into the
-// workspace: the slice sequence the copy arrived under (ID) and the release whose save it is.
-// One not Ended is a restore begun, and, read by a launcher that did not begin it, one cut off
-// before it ended: the launcher writes it before the restore runs and replaces it with the ended
-// one before any role starts, so no role has run on a workspace whose record has not ended. An
-// Ended record holds the restore's outcome, OK and Error, which with ID and Release are the
-// fields of shimwire.LauncherRestored the daemon reads, under that frame's JSON names: the report
-// the daemon is owed until a connection carries it, when the record is removed
-// (RemoveRestoreRecord).
+// workspace: the report the daemon is owed of it (shimwire.LauncherRestored), whose ID is the
+// slice sequence the copy arrived under and whose Release is the release whose save it is, and
+// whether the restore Ended. One not Ended is a restore begun. The launcher writes it before the
+// in-use record and before the restore, only where InUse read false or over another begun record,
+// and replaces it with the ended one, OK and Error its outcome, before any role starts. So a
+// launcher that reads a begun record it did not write knows that restore was cut off and that no
+// role has run on the workspace since the first such record was written (internal/launcher's
+// bundleRestore). An ended record is the report the daemon is owed until a connection carries it,
+// when the record is removed (RemoveRestoreRecord). A record that cannot be read proves neither,
+// so the launcher reads the in-use record beside it.
 type RestoreRecord struct {
-	ID      string `json:"id"`
-	Release int64  `json:"release"`
-	Ended   bool   `json:"ended"`
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
+	shimwire.LauncherRestored
+	Ended bool `json:"ended"`
+}
+
+// MarshalJSON writes the report's fields under the frame's own JSON names, beside ended. Without
+// it the report's MarshalJSON, which writes the frame with its type, would be the record's too and
+// leave ended out.
+func (r RestoreRecord) MarshalJSON() ([]byte, error) {
+	type report shimwire.LauncherRestored
+	return json.Marshal(struct {
+		report
+		Ended bool `json:"ended"`
+	}{report(r.LauncherRestored), r.Ended})
 }
 
 // RecordRestore records record on the disk of the workspace at dir, replacing the record there
@@ -299,42 +309,14 @@ func RecordRestore(dir string, record RestoreRecord) error {
 
 // ReadRestoreRecord is the record RecordRestore wrote on the disk of the workspace at dir. ok is
 // false when it holds none: no workspace is there, no restore ran on it, or the report of the one
-// that ran has reached the daemon. The record is on the issue's volume, which every agent of the
-// issue can write, so it is read through .jj's descriptor (openJJ), opened without following a
-// link or blocking on a special file and read only up to restoreRecordLimit, and anything but a
-// regular file holding one record that names its slice sequence is refused, naming the file. The
-// caller counts a refused record as none.
+// that ran has reached the daemon. The record is read as readRecord reads one, up to
+// restoreRecordLimit, and anything but one record that names its slice sequence is refused,
+// naming the file. The launcher does not count a refused record as none: it reads the in-use
+// record beside it (internal/launcher's bundleRestore.read).
 func ReadRestoreRecord(dir string) (record RestoreRecord, ok bool, err error) {
-	jj, err := openJJ(dir, nil)
-	if errors.Is(err, fs.ErrNotExist) {
-		return RestoreRecord{}, false, nil
-	}
-	if err != nil {
-		return RestoreRecord{}, false, fmt.Errorf("read the restore's record: %w", err)
-	}
-	defer jj.Close()
-	path := filepath.Join(jj.Name(), restoreFile)
-	file, err := openIn(jj, restoreFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return RestoreRecord{}, false, nil
-	}
-	if err != nil {
-		return RestoreRecord{}, false, fmt.Errorf("read the restore's record: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return RestoreRecord{}, false, fmt.Errorf("read the restore's record %s: %w", path, err)
-	}
-	if !info.Mode().IsRegular() {
-		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s is not a regular file (%s)", path, info.Mode().Type())
-	}
-	body, err := io.ReadAll(io.LimitReader(file, restoreRecordLimit+1))
-	if err != nil {
-		return RestoreRecord{}, false, fmt.Errorf("read the restore's record %s: %w", path, err)
-	}
-	if len(body) > restoreRecordLimit {
-		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s is over its %d bytes", path, restoreRecordLimit)
+	body, path, ok, err := readRecord(dir, nil, restoreFile, "the restore's record", restoreRecordLimit)
+	if !ok || err != nil {
+		return RestoreRecord{}, false, err
 	}
 	if err := json.Unmarshal(body, &record); err != nil {
 		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s holds no record: %w", path, err)

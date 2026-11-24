@@ -46,11 +46,15 @@ const restoreRefPrefix = "legion-restore-"
 // A restore that start runs is recorded on the same disk too (workspace.RecordRestore): begun,
 // before it runs, and replaced with its outcome, the report the daemon is owed, before the start
 // that ran it answers, so before any role starts; the record goes once a connection carries the
-// report (sent). So a launcher after it over that disk finds one of three things. A restore that
-// ended and whose report no connection carried: it refuses the bundle and still owes the report.
-// A restore begun and cut off, its container killed in the middle: no role has run there, so it
-// takes the copy the daemon sends again and restores it, and starts no role until one does. No
-// record: it refuses the bundle.
+// report (sent). So a launcher after it over that disk finds one of four things (read). A restore
+// that ended and whose report no connection carried: it refuses the bundle and still owes the
+// report. A restore begun and cut off, its container killed in the middle: no role has run there,
+// so it takes the copy the daemon sends again, restores it, and starts no role until one does; the
+// daemon sends it again only while no role of the pod has registered and its take still offers
+// that copy, and otherwise each start is refused until the claim fails. A record it cannot read,
+// which says nothing of the roles: it reads the in-use record, and counts the restore as cut off
+// only where no role has started on the workspace, and blocks every slice and every start where
+// one may have. No record: it refuses the bundle.
 type bundleRestore struct {
 	mu sync.Mutex
 	// sequence is the id of the slice sequence being assembled, with the count, the digest and
@@ -76,27 +80,37 @@ type bundleRestore struct {
 	// the daemon keeps its saved copy until one arrives, so this is held until a connection
 	// carries it and sent again on every connection until one does (manager.reportRestore). It is
 	// recorded on the workspace's disk as well (settle), and a launcher restarted over that disk
-	// starts owing it (newBundleRestore).
+	// starts owing it (read).
 	confirm *shimwire.LauncherRestored
 	// begun is the workspace's disk holding the record of a restore this process began and has
-	// not yet replaced with its outcome (settle), which no role may start beside.
+	// not yet replaced with its outcome (settle), which no role may start beside. While it is set,
+	// the in-use record is this process's own, written for that restore, and no role's use of the
+	// workspace (inUse).
 	begun bool
-	// cutOff is a restore an earlier launcher began on this workspace and never ended, read at this
-	// launcher's start, and nil once a restore of this process has ended: no role has run on the
-	// workspace since, so a slice is taken (fence), the copy sent again is restored, and a start
-	// with no copy to restore runs no role (apply). A record that could not be read (unread) is
-	// one too, with no sequence or release of its own.
-	cutOff *workspace.RestoreRecord
-	// unread is why the record of a restore an earlier launcher ran on the workspace could not be
-	// read when this one started, nil when it was read or none was there: it counts as a restore
-	// cut off, and the launcher's log says so (logUnread).
-	unread error
+	// cutOff is why the workspace takes the copy the daemon sends again though its disk may mark
+	// it in use: a restore an earlier launcher began there and never ended, its text naming that
+	// restore's release, or a record of one that could not be read on a workspace no role has
+	// started on, its text naming why (read). nil when there is neither, and once a restore of
+	// this process has ended. No role has run on the workspace since, so a slice is taken (fence),
+	// the copy sent again is restored, and a start with no copy to restore runs no role (apply).
+	cutOff error
+	// blocked is why the workspace takes no slice and starts no role: a record of a restore that
+	// could not be read where the workspace is marked in use, or where its in-use record could
+	// not be read either (read). It holds until the record reads, which each start and each slice
+	// tries again (fence, apply).
+	blocked error
 	// start starts each jj and git of the restore (restoreWorkspace): the launcher's pidGuard,
 	// which holds each one out of PID 1's reaper until its own wait has read its exit.
 	start procgroup.Starter
 	// workspace is the pod's workspace (Config.Workspace), the one directory the restore works
 	// and records in use, and "" for a launcher that works none, which restores nothing.
 	workspace string
+	// recordRestore, removeRecord and markInUse are the restore's writes to the workspace's disk,
+	// workspace.RecordRestore, workspace.RemoveRestoreRecord and workspace.MarkInUse: each is a
+	// test's seam for a write that fails.
+	recordRestore func(dir string, record workspace.RestoreRecord) error
+	removeRecord  func(dir string) error
+	markInUse     func(dir string) error
 }
 
 // The answers to a slice the restore refuses whatever its sequence: one over a workspace a
@@ -108,8 +122,22 @@ const (
 
 // newBundleRestore is a pod's restore into the workspace at dir, whose jj and git start starts. A
 // nil start panics here, at the launcher's start, rather than at the pod's first put-back. It
-// reads the record of the restore an earlier launcher process ran over the same disk
-// (workspace.ReadRestoreRecord).
+// reads what an earlier launcher process left on the same disk (read).
+func newBundleRestore(start procgroup.Starter, dir string) *bundleRestore {
+	if start == nil {
+		panic("launcher: the workspace restore was given no starter")
+	}
+	r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start, workspace: dir,
+		recordRestore: workspace.RecordRestore, removeRecord: workspace.RemoveRestoreRecord, markInUse: workspace.MarkInUse}
+	if dir != "" {
+		r.read()
+	}
+	return r
+}
+
+// read takes what the record of a restore an earlier launcher ran on the workspace says
+// (workspace.ReadRestoreRecord): at this launcher's start, and again at each start and each slice
+// while the workspace is blocked, so a record removed by hand is read at the next one.
 //
 // A restore that ended and whose report no connection carried is owed from the start: that roles
 // container restarted after its restore ran and before the daemon heard of it, and the daemon
@@ -121,37 +149,45 @@ const (
 // attempt), and a copy that was sent to this pod as well had its work put on the disk this pod
 // mounts by the restore the record reports.
 //
-// A restore begun and never ended is cutOff. So is a record that cannot be read, and the launcher
-// logs why (logUnread): counted as none, it would have the roles start on whatever the disk holds,
-// which can be a workspace no restore put the work back into, while counted as cut off a copy the
-// daemon sends again is restored, which it sends only while no role of the pod has registered, and
-// with none sent the roles do not start.
-func newBundleRestore(start procgroup.Starter, dir string) *bundleRestore {
-	if start == nil {
-		panic("launcher: the workspace restore was given no starter")
-	}
-	r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start, workspace: dir}
-	if dir == "" {
-		return r
-	}
-	record, ok, err := workspace.ReadRestoreRecord(dir)
+// A restore begun and never ended is cutOff: its record was written only where no role had
+// started on the workspace, and no role starts beside it. A record that cannot be read proves
+// nothing of the roles: on a kept volume it can be an earlier pod's, whose roles worked the disk
+// after it. So the in-use record decides. Where it is absent, no role has started there, and the
+// record counts as a restore cut off: counted as none, the roles would start on a workspace no
+// restore may have put the work back into. Where it is present, or cannot be read, the workspace
+// is blocked: a copy restored there could move a role's work back, and a role started there could
+// run on a restore left half done, so neither runs until the record reads.
+func (r *bundleRestore) read() {
+	r.cutOff, r.blocked = nil, nil
+	record, ok, err := workspace.ReadRestoreRecord(r.workspace)
 	switch {
 	case err != nil:
-		r.unread = err
-		r.cutOff = &workspace.RestoreRecord{}
+		marked, inUseErr := workspace.InUse(r.workspace)
+		if !marked && inUseErr == nil {
+			r.cutOff = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v) on a workspace no role has started on, so it counts as a restore cut off before it ended", r.workspace, err)
+			return
+		}
+		inUse := "the workspace is in use"
+		if inUseErr != nil {
+			inUse = fmt.Sprintf("its in-use record could not be read either (%v)", inUseErr)
+		}
+		r.blocked = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), and %s, so neither a restore nor a role start is safe there: the roles do not start and no copy is taken until the record reads, which removing .jj/legion-restore from the workspace by hand does, or the pod is replaced, which on a kept volume takes a reset of that volume",
+			r.workspace, err, inUse)
 	case ok && record.Ended:
-		r.confirm = &shimwire.LauncherRestored{ID: record.ID, Release: record.Release, OK: record.OK, Error: record.Error}
+		r.confirm = &record.LauncherRestored
 	case ok:
-		r.cutOff = &record
+		r.cutOff = fmt.Errorf("a restore of release %d into the workspace %s was cut off before it ended", record.Release, r.workspace)
 	}
-	return r
 }
 
-// logUnread writes, through logf, why the record of a restore an earlier launcher ran on the
-// workspace could not be read, when it could not (newBundleRestore).
-func (r *bundleRestore) logUnread(logf func(format string, args ...any)) {
-	if r.unread != nil {
-		logf("launcher: the record of a restore an earlier launcher ran on this workspace could not be read, so it counts as a restore cut off: a copy the daemon sends again is restored, and with none sent the roles do not start: %v", r.unread)
+// logFound writes, through logf, what this launcher found on the workspace at its start that
+// keeps a start from running a role as it is (read): a restore cut off, or a blocked workspace.
+func (r *bundleRestore) logFound(logf func(format string, args ...any)) {
+	switch {
+	case r.blocked != nil:
+		logf("launcher: %v", r.blocked)
+	case r.cutOff != nil:
+		logf("launcher: %v: a copy the daemon sends again is restored, and with none sent the roles do not start", r.cutOff)
 	}
 }
 
@@ -176,7 +212,8 @@ type restoreResult struct {
 // A slice already taken is answered as it was. Every other slice is refused once a restore or a
 // role has started on the workspace (fence), whatever its sequence: the rest of a sequence that
 // began before the first start, and every slice to a launcher restarted over the same disk, but
-// one restarted over a restore that was cut off before any role ran (cutOff).
+// one restarted over a restore that was cut off before any role ran (cutOff). Every slice to a
+// blocked workspace is refused too.
 func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.LauncherBundleResult {
 	if err := frame.Validate(); err != nil {
 		return shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index, Error: err.Error()}
@@ -221,24 +258,38 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 }
 
 // fence is why the restore refuses a slice it has not taken, and "" when it takes one: a launcher
-// with no workspace restores nothing, and a workspace this process has applied to, or that a
-// record on its disk marks in use (workspace.InUse), takes no bundle. A record that cannot be read
-// counts as one. A workspace whose restore was cut off (cutOff) is marked in use with no role run
-// there, so it takes the copy the daemon sends again. It is called under mu.
+// with no workspace restores nothing; a workspace this process has applied to takes no bundle; a
+// blocked one takes none, read again first (read); and one a role may have worked takes none
+// (inUse). It is called under mu.
 func (r *bundleRestore) fence() string {
-	if r.workspace == "" {
+	switch {
+	case r.workspace == "":
 		return noWorkspaceRefusal
-	}
-	if r.applied {
+	case r.applied:
 		return workspaceInUseRefusal
 	}
-	if r.cutOff != nil {
-		return ""
+	if r.blocked != nil {
+		r.read()
 	}
-	if inUse, err := workspace.InUse(r.workspace); inUse || err != nil {
+	switch {
+	case r.blocked != nil:
+		return r.blocked.Error()
+	case r.inUse():
 		return workspaceInUseRefusal
 	}
 	return ""
+}
+
+// inUse is whether a role may have worked the workspace, which then takes no restore: its disk
+// marks it in use (workspace.InUse), or the mark cannot be read. Neither counts while this process
+// holds a restore begun (begun), whose in-use record is its own, nor over a restore cut off
+// (cutOff), which no role ran beside. It is called under mu.
+func (r *bundleRestore) inUse() bool {
+	if r.begun || r.cutOff != nil {
+		return false
+	}
+	marked, err := workspace.InUse(r.workspace)
+	return marked || err != nil
 }
 
 // sliceAt is the payload already held for one slice of id, nil when that is not the sequence
@@ -275,21 +326,26 @@ func joined(slices [][]byte) []byte {
 // same notice.
 //
 // A restore it runs is recorded on the workspace's disk as begun (workspace.RecordRestore) before
-// the in-use record and the restore are written, and the record is replaced with the restore's
-// outcome before apply answers (settle). So no role starts while the disk says a restore is under
-// way, and a launcher after this one that finds a restore begun and never ended knows no role has
-// run there (cutOff). The begun record comes before the in-use one, so a container killed between
-// the two leaves a disk that reads as a restore cut off, never as one a role may have worked.
+// the in-use record and the restore are written, and every answer that lets a role start has the
+// record replaced with the restore's outcome first (settled). So no role starts while the disk
+// says a restore is under way, and a launcher after this one that finds a restore begun and never
+// ended knows no role has run there (cutOff). The begun record comes before the in-use one, so a
+// container killed between the two leaves a disk that reads as a restore cut off, never as one a
+// role may have worked.
 //
 // It fails closed. A workspace it cannot record in use, or on which it cannot record the restore
 // it begins, is its error, and the start must run no role there: a later launcher over that
 // workspace could restore a bundle over the role's work, or take a restore left half done for a
 // workspace a role has worked. The error leaves the restore as it was, a held body still held, so
-// the next start tries the records again, and slices are still taken, since no role has started.
-// A restore cut off on this disk whose copy has not arrived again is its error too: the workspace
-// may hold part of that restore, the work is in the daemon's database alone, and no role starts on
-// it until a start finds the copy held and restores it, which the daemon sends a restarted
-// container's start while no role of the pod has registered.
+// the next start tries the records again, and slices are still taken, since no role has started;
+// an in-use record this process wrote before such an error is its own (begun), so the next start
+// restores all the same. A blocked workspace is its error (read). So is a restore cut off on this
+// disk whose copy has not arrived again: the workspace may hold part of that restore, the work is
+// in the daemon's database alone, and no role starts on it until a start finds the copy held and
+// restores it. The daemon sends the copy again only while no role of the pod has registered and
+// its take still offers that copy, which a push newer than a running copy refuses; otherwise each
+// start is refused until the claim fails, and on a kept volume the record stays for the later pods
+// of its Sandbox until the volume is reset.
 func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult, error) {
 	// A manager built without one — a test's, which serves no daemon that could send a bundle —
 	// restores nothing and waits for nothing, as does a role or a launcher that works no
@@ -303,41 +359,28 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult,
 	// it. This is read before the body, which a restore that has run no longer holds. A record of
 	// it that still says it is under way keeps the role from starting (settle).
 	if r.applied {
-		unrecorded, err := r.settle()
-		if err != nil {
-			return restoreResult{}, err
+		return r.settled()
+	}
+	if r.blocked != nil {
+		if r.read(); r.blocked != nil {
+			return restoreResult{}, r.blocked
 		}
-		return restoreResult{Restored: r.restored, Notice: r.notice, Unrecorded: unrecorded}, nil
 	}
 	if r.cutOff != nil && r.body == nil {
-		if r.unread != nil {
-			return restoreResult{}, fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), so it counts as a restore cut off before it ended, the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start, and the next start tries again",
-				r.workspace, r.unread)
-		}
-		return restoreResult{}, fmt.Errorf("a restore of release %d into the workspace %s was cut off before it ended, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start, and the next start tries again",
-			r.cutOff.Release, r.workspace)
+		return restoreResult{}, fmt.Errorf("%w, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start until a start finds the copy sent again, which the daemon sends only while no role of the pod has registered and its take still offers that copy, and otherwise each start is refused until the claim fails",
+			r.cutOff)
 	}
-	// A record that cannot be read counts as in use, as it does for a slice (fence). A restore
-	// cut off on this disk is no role's use of it: no role starts before a restore ends.
-	inUse := false
-	if r.cutOff == nil {
-		marked, err := workspace.InUse(r.workspace)
-		inUse = marked || err != nil
-	}
-	restoring := r.body != nil && !inUse
+	restoring := r.body != nil && !r.inUse()
 	if restoring {
-		if err := workspace.RecordRestore(r.workspace, workspace.RestoreRecord{ID: r.sequence, Release: r.release}); err != nil {
+		if err := r.recordRestore(r.workspace, workspace.RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: r.sequence, Release: r.release}}); err != nil {
 			return restoreResult{}, fmt.Errorf("record on the workspace %s that the restore of release %d begins, before a role starts on it: %w", r.workspace, r.release, err)
 		}
 		r.begun = true
 	}
-	if err := workspace.MarkInUse(r.workspace); err != nil {
+	if err := r.markInUse(r.workspace); err != nil {
 		return restoreResult{}, fmt.Errorf("mark the workspace %s in use before a role starts on it: %w", r.workspace, err)
 	}
 	r.applied = true
-	if r.body == nil {
-		return restoreResult{}, nil
-	}
 	// The joined body is the bundle's bytes a second time: the slices hold the same bytes, and
 	// they stay, since a repeated slice is answered by comparing it with the one held (sliceAt).
 	// The join is let go here instead, so a 40 MiB bundle is not resident twice for the pod's
@@ -346,21 +389,28 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult,
 	// daemon's database, as for every restore that cannot run.
 	body := r.body
 	r.body = nil
-	if !restoring {
-		return restoreResult{}, nil
+	if restoring {
+		bundle, err := shimwire.ParseWorkspaceBundle(body)
+		if err != nil {
+			r.notice = fmt.Sprintf("the released workspace's saved work could not be read (%v); this workspace holds only what was pushed,"+
+				" and the bundle of release %d stays in the daemon's database, which sends it to no pod again once a role of this pod has registered", err, r.release)
+		} else {
+			r.restored, r.notice = restoreWorkspace(ctx, r.start, r.workspace, env, r.release, bundle)
+		}
+		r.confirm = &shimwire.LauncherRestored{ID: r.sequence, Release: r.release, OK: r.restored}
+		if !r.restored {
+			r.confirm.Error = r.notice
+		}
+		r.cutOff = nil
 	}
-	bundle, err := shimwire.ParseWorkspaceBundle(body)
-	if err != nil {
-		r.notice = fmt.Sprintf("the released workspace's saved work could not be read (%v); this workspace holds only what was pushed,"+
-			" and the bundle of release %d stays in the daemon's database, which sends it to no pod again once a role of this pod has registered", err, r.release)
-	} else {
-		r.restored, r.notice = restoreWorkspace(ctx, r.start, r.workspace, env, r.release, bundle)
-	}
-	r.confirm = &shimwire.LauncherRestored{ID: r.sequence, Release: r.release, OK: r.restored}
-	if !r.restored {
-		r.confirm.Error = r.notice
-	}
-	r.cutOff = nil
+	return r.settled()
+}
+
+// settled is a start's answer once apply has run, whether or not it restored: the restore's
+// outcome, once the record of a restore this process began is settled (settle), whose error is the
+// start's. Every answer of apply that lets a role start is this one, so none leaves a begun record
+// on the disk behind a role.
+func (r *bundleRestore) settled() (restoreResult, error) {
 	unrecorded, err := r.settle()
 	if err != nil {
 		return restoreResult{}, err
@@ -381,12 +431,10 @@ func (r *bundleRestore) settle() (unrecorded, err error) {
 		return nil, nil
 	}
 	if report := r.confirm; report != nil {
-		unrecorded = workspace.RecordRestore(r.workspace, workspace.RestoreRecord{
-			ID: report.ID, Release: report.Release, Ended: true, OK: report.OK, Error: report.Error,
-		})
+		unrecorded = r.recordRestore(r.workspace, workspace.RestoreRecord{LauncherRestored: *report, Ended: true})
 	}
 	if r.confirm == nil || unrecorded != nil {
-		if err := workspace.RemoveRestoreRecord(r.workspace); err != nil {
+		if err := r.removeRecord(r.workspace); err != nil {
 			return unrecorded, fmt.Errorf("the restore of release %d has ended, but its record on the workspace %s still says it is under way and could not be removed, so no role starts there: %w",
 				r.release, r.workspace, errors.Join(unrecorded, err))
 		}
@@ -422,7 +470,7 @@ func (r *bundleRestore) sent(report *shimwire.LauncherRestored) error {
 		return nil
 	}
 	r.confirm = nil
-	if err := workspace.RemoveRestoreRecord(r.workspace); err != nil {
+	if err := r.removeRecord(r.workspace); err != nil {
 		return fmt.Errorf("the restore's report reached the daemon, but its record on the workspace %s could not be removed, so a launcher restarted over this disk sends it again: %w", r.workspace, err)
 	}
 	r.begun = false

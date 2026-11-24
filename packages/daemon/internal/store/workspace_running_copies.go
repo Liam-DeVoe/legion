@@ -56,16 +56,16 @@ var ErrIssueNotRecorded = errors.New("the project does not record the issue, and
 // (workspaceBundleUnrestored).
 //
 // It names the pod and not the issue alone because the rule is about that pod. A pod that is not
-// the one the bundle came off is never refused by it: a pod that came back without being sent the
-// bundle — its launcher could not read the store, so it started on what was pushed
-// — goes on working, and its copies are newer than the bundle and are the restore's to weigh
-// (runtime.DecideWorkspaceRestore). Nor does it read the attempt: the pod a bundle came off never
-// spends it (TakeWorkspaceCopyForRestore answers that pod nothing), and the pod that does is made
-// only once the release has taken that pod away, so for as long as the bundle's row stands the
-// bundle is its pod's last copy. A release a wake cancels moves its bundle into the issue's
-// running copy (CancelIssueRelease), which lifts the refusal for the pod that then works on, and a
-// confirmed restore moves it too (KeepRestoredWorkspaceBundle), keeping its work as the restoring
-// pod's running copy.
+// the one the bundle came off is never refused by it: a pod the bundle was not sent to — one that
+// first asked for a restore before the save, and so has been working since that ask
+// (runtime.WorkspaceBundleLeftForNextPod) — goes on working, and its copies are newer than the
+// bundle and are the restore's to weigh (runtime.DecideWorkspaceRestore). Nor does it read the
+// attempt: the pod a bundle came off never spends it (TakeWorkspaceCopyForRestore answers that pod
+// nothing), and the pod that does is made only once the release has taken that pod away, so for as
+// long as the bundle's row stands the bundle is its pod's last copy. A release a wake cancels moves
+// its bundle into the issue's running copy (CancelIssueRelease), which lifts the refusal for the
+// pod that then works on, and a confirmed restore moves it too (KeepRestoredWorkspaceBundle),
+// keeping its work as the restoring pod's running copy.
 //
 // It is one text, read by the cadence before it asks a shim (ReleaseBundleSavedOff) and written
 // into both of PutRunningWorkspaceCopy's statements, so the two places are one rule.
@@ -668,8 +668,9 @@ func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time
 // row, so a take and a registration of one pod are ordered: a take that held the lock first sends
 // what it read and commits before the registration is written, and one that comes after reads the
 // registration and sends nothing. It only updates: a pod with no row is left with none. Every
-// pod's first role start asks for a restore before any role of it can register, so a missing row
-// is one pruned (maxWorkspaceRestoreAsks) or one whose take failed, and either reads as spent.
+// pod's first role start asks for a restore, and a start whose ask the store did not record starts
+// no role (internal/runtime/sandbox's restoreWorkspace), so a pod whose role registers with no row
+// is one whose row was pruned (maxWorkspaceRestoreAsks), which reads as spent.
 func (s *Store) RecordPodRegistration(ctx context.Context, issue, podUID string) error {
 	if podUID == "" {
 		return fmt.Errorf("record a registration in a pod of %s: no pod named", issue)

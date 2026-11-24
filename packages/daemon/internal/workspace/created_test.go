@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // The in-use record is the launcher's fence against a bundle restored over a workspace a role
@@ -240,8 +242,8 @@ func TestTheRestoreRecordIsReadAsItWasWrittenUntilItIsRemoved(t *testing.T) {
 		t.Fatalf("ReadRestoreRecord of a fresh .jj = %+v, %t, %v; want none and no error", record, ok, err)
 	}
 
-	begun := RestoreRecord{ID: "restore-INFRA-1117-11", Release: 11}
-	ended := RestoreRecord{ID: begun.ID, Release: begun.Release, Ended: true, Error: "the released workspace's saved work was not restored (a reason)"}
+	begun := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11}}
+	ended := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: begun.ID, Release: begun.Release, Error: "the released workspace's saved work was not restored (a reason)"}, Ended: true}
 	for _, want := range []RestoreRecord{begun, ended} {
 		if err := RecordRestore(dir, want); err != nil {
 			t.Fatalf("RecordRestore(%+v) = %v", want, err)
@@ -297,7 +299,7 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 		}
 		return dir
 	}
-	record := RestoreRecord{ID: "restore-INFRA-1117-11", Release: 11, Ended: true, OK: true}
+	record := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11, OK: true}, Ended: true}
 
 	t.Run("a link at the record's name", func(t *testing.T) {
 		dir := fresh(t)
@@ -319,7 +321,7 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 		if got, ok, err := ReadRestoreRecord(dir); ok || !errors.Is(err, syscall.ELOOP) {
 			t.Fatalf("ReadRestoreRecord of a link = %+v, %t, %v; want ELOOP, the link not followed", got, ok, err)
 		}
-		begun := RestoreRecord{ID: "restore-INFRA-1117-12", Release: 12}
+		begun := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-12", Release: 12}}
 		if err := RecordRestore(dir, begun); err != nil {
 			t.Fatalf("RecordRestore over a link = %v", err)
 		}

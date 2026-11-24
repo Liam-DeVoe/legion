@@ -1,0 +1,63 @@
+package supervise
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+)
+
+// A launch the daemon's store of saved workspace copies held (runtime.ErrWorkspaceCopyStore: the
+// take or the drop of the issue's copies for the pod's restore did not answer) started nothing and
+// says nothing about the claim: it is charged no launch failure and is tried again at the probe
+// interval, as a launch whose session hold the store did not answer is. Every issue pod's first
+// start takes, so a charge here would fail every claim a store outage of three launches met. A
+// launch held because a copy that was taken did not reach the pod's launcher, a slice lost, is the
+// start's own failure: it is charged, and the next try follows at its backoff.
+//
+// The controls (the pull request records the runs): the sentinel's branch taken out of
+// launchTries, which charges the first row a launch failure and fails its claim at a limit of one;
+// and the branch widened to every error that names the saved workspace copy, which charges the
+// second row nothing.
+func TestALaunchTheWorkspaceCopyStoreHeldIsChargedNothingAndOneWhoseCopyDidNotReachThePodIsCharged(t *testing.T) {
+	t.Run("the store did not answer the take", func(t *testing.T) {
+		h := newHarness(t)
+		h.deps.Limits.LaunchFailures = 1
+		held := fmt.Errorf("launcher %s start generation 1: issue INFRA-1, pod pod-1: the issue's saved workspace copies could not be taken for this pod's restore, so no role of the pod starts until a launch takes them: %w: %w",
+			testToken, runtime.ErrWorkspaceCopyStore, errors.New("dial tcp: connection refused"))
+		h.rt.ScriptSpawn(fake.SpawnResult{Err: held})
+
+		if err := h.handle(RequestSpawn{Claim: h.token}); !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+			t.Fatalf("the launch the copy store held answered %v, want runtime.ErrWorkspaceCopyStore", err)
+		}
+		if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
+			t.Fatalf("the claim is %s with %d launch failures charged, want it launching with none", c.State, c.Budgets.LaunchFailures)
+		}
+		h.wantCalls("Spawn", 1)
+		if lines := h.logs.lines("the daemon's store did not answer the take or the drop of the issue's saved workspace copies"); len(lines) != 1 {
+			t.Fatalf("logged %v, want the store's hold named once", lines)
+		}
+
+		h.advance(testProbe)
+		h.wantCalls("Spawn", 2)
+		if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 || c.Locator == nil {
+			t.Fatalf("after the retry at the probe interval the claim is %s with %d launch failures charged and process %v, want it launched with none charged",
+				c.State, c.Budgets.LaunchFailures, c.Locator)
+		}
+	})
+
+	t.Run("a slice of the taken copy did not reach the launcher", func(t *testing.T) {
+		h := newHarness(t)
+		lost := fmt.Errorf("launcher %s start generation 1: issue INFRA-1, pod pod-1: a slice of the saved workspace copy did not reach the launcher, so no role of the pod starts until a launch sends the copy again: %w",
+			testToken, io.ErrClosedPipe)
+		h.rt.ScriptSpawn(fake.SpawnResult{Err: lost})
+
+		h.must(RequestSpawn{Claim: h.token})
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{LaunchFailures: 1})
+		h.wantCalls("Spawn", 2)
+	})
+}

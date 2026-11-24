@@ -1318,14 +1318,11 @@ func (p *fakeLauncherProcess) hold(slice shimwire.LauncherBundle) bool {
 }
 
 // apply is a start's restore of the sequence p holds whole and has not applied: its id and the
-// release its save carried, which the start reports, or "" when there is none to apply or the
-// start started nothing.
-func (p *fakeLauncherProcess) apply(started bool) (string, int64) {
+// release its save carried, which the start reports, or "" when there is none to apply. Only a
+// start the launcher accepted calls it.
+func (p *fakeLauncherProcess) apply() (string, int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !started {
-		return "", 0
-	}
 	whole, release := p.whole, p.release
 	if whole != "" {
 		p.whole, p.release = "", 0
@@ -1377,8 +1374,10 @@ func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherPr
 				// (internal/launcher's manager.start), so the report crosses first; it names the
 				// release whose save the bundle carried, so that the daemon deletes that
 				// release's bundle and no other. A start that started nothing applies nothing.
-				if whole, release := p.apply(started); whole != "" {
-					_ = writer.WriteFrame(shimwire.LauncherRestored{ID: whole, Release: release, OK: g.failRestore == "", Error: g.failRestore})
+				if started {
+					if whole, release := p.apply(); whole != "" {
+						_ = writer.WriteFrame(shimwire.LauncherRestored{ID: whole, Release: release, OK: g.failRestore == "", Error: g.failRestore})
+					}
 				}
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)

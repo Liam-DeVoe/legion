@@ -536,8 +536,9 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
-// unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
-// launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
+// unless the launcher answered that Start with a refusal (startRefusal), which started nothing, or
+// the hop of the pod's saved workspace copy held the start before its Start was sent (startHeld).
+// A launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
 // refuses that launch before its Start is built.
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
@@ -545,7 +546,8 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 // bound, since the start's own deadline may be what ended it.
 func (r *Runtime) stopIssuedChild(ctx context.Context, token claim.Token, podUID string, generation uint64, startErr error) error {
 	var refused startRefusal
-	if errors.As(startErr, &refused) {
+	var held startHeld
+	if errors.As(startErr, &refused) || errors.As(startErr, &held) {
 		return nil
 	}
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.bootTimeout+r.terminationGrace)
