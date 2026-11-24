@@ -322,16 +322,16 @@ func (r *ownerStepsRig) returnsFiveTimes() {
 		prompts = r.hookPrompts()
 		return len(prompts) == len(want)
 	})
-	// The prompt of the fifth return names the hook, the issue, the move and the count, as
-	// record.HookPrompt.Message writes them from those values.
-	wantOpening, wantCount := hookParts(record.HookPrompt{Hook: "work-back", From: phase.Testing, To: phase.Implementing, Count: 5}.Message(r.key))
+	// The prompt of the fifth return is the message record.HookPrompt.Message writes from the
+	// firing's values: the hook and its words as the deployment gives them, the move from testing
+	// back to implementing, the hook's count 5, the task's counts of each move back (three from the
+	// review, two from the tests) and the issue's pull request.
+	prompt := record.HookPrompt{Hook: "work-back", From: phase.Testing, To: phase.Implementing, Count: 5,
+		Counts:      map[string]int{phase.Pair(phase.Reviewing, phase.Implementing): 3, phase.Pair(phase.Testing, phase.Implementing): 2},
+		PullRequest: fmt.Sprintf("%s#%d", liveRepo, r.number), Prompt: r.hookWords("work-back")}.Message(r.key)
 	for _, role := range want {
-		got := prompts[role]
-		if len(got) != 1 {
-			t.Fatalf("the hook prompted %s's %s with %q, want one prompt of the fifth return from testing to implementing", r.key, role, got)
-		}
-		if opening, count := hookParts(got[0]); opening != wantOpening || count != wantCount {
-			t.Fatalf("the hook prompted %s's %s with %q, want the prompt of the fifth return from testing to implementing", r.key, role, got[0])
+		if got := prompts[role]; !slices.Equal(got, []string{prompt}) {
+			t.Fatalf("the hook prompted %s's %s with %q, want the one prompt of the fifth return from testing to implementing %q", r.key, role, got, prompt)
 		}
 	}
 	r.runStep("implementer", answerPass, phase.Testing)
@@ -722,31 +722,31 @@ func (r *ownerStepsRig) claimRecorded(token claim.Token) bool {
 	return recorded
 }
 
-// hookPrompts is every prompt of the work-back hook the outbox has published to the topic of a
-// worker's claim of the walk's issue, by the claim's role: each message that opens as
-// record.HookPrompt.Message opens one of that hook on the walk's issue.
+// hookPrompts is every message the outbox has published to the topic of a worker's claim of the
+// walk's issue, by the claim's role. The walk that reads it makes no move that sends a worker any
+// other message (no conflict, no update round, no check run, no note), so each is a prompt of the
+// hook, and the test compares each whole.
 func (r *ownerStepsRig) hookPrompts() map[claim.Role][]string {
 	r.t.Helper()
-	of, _, _ := strings.Cut(record.HookPrompt{Hook: "work-back"}.Message(r.key), ":")
 	prompts := map[claim.Role][]string{}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
 		for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.token(role))) {
-			if strings.HasPrefix(published.Message, of+":") {
-				prompts[role] = append(prompts[role], published.Message)
-			}
+			prompts[role] = append(prompts[role], published.Message)
 		}
 	}
 	return prompts
 }
 
-// hookParts is the first line of a hook's prompt and the first sentence of its last paragraph, as
-// record.HookPrompt.Message writes them: the hook, the issue and the move, and the count that fired
-// the hook.
-func hookParts(message string) (string, string) {
-	opening, _, _ := strings.Cut(message, "\n")
-	paragraphs := strings.Split(message, "\n\n")
-	count, _, _ := strings.Cut(paragraphs[len(paragraphs)-1], ". ")
-	return opening, count
+// hookWords is the words of the hook named name as the daemon's settings give them.
+func (r *ownerStepsRig) hookWords(name string) string {
+	r.t.Helper()
+	for _, hook := range r.cfg.Hooks {
+		if hook.Name == name {
+			return hook.Prompt
+		}
+	}
+	r.t.Fatalf("the settings of %s name no hook %s", r.key, name)
+	return ""
 }
 
 // taskOf is task a of the walk's issue at generation 1 as its plan_tasks row holds it: its state,

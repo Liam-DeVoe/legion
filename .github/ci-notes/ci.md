@@ -643,13 +643,14 @@ credential_argument_test.go's credentialTextFiles lists every file git tracks or
 track, but docs/plans and docs/superpowers, which are dated history, and its
 TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
-## text_checks: The seven copies of shipped texts that readExtract reads
+## text_checks: The eight copies of shipped texts that readExtract reads
 
-The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
+The eight copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
-own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
+backs' (way_back_doc_test.go:129), the rollback below the release whose owner does
+a step's (owner_steps_way_back_doc_test.go:56) and the troubleshooting page's
+refusal table's (troubleshooting_refusals_doc_test.go:41), each committed beside
+the package whose own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
 not match.
 
 ## dispatch_memory: `go test -tags memory ./cmd/dispatch`. memory_profile_test.go
