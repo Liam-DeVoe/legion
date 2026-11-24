@@ -11,10 +11,12 @@
 package plan
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
@@ -66,8 +68,8 @@ func AgentOf(task string, place int, s Step) Agent {
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
 
-// DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
-// project's default steps.
+// DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"
 
 // Task is one `plan_task` block of a plan, as FromBlocks reads it.
@@ -237,3 +239,76 @@ func Line(steps []Step, merges bool) []phase.Phase {
 	}
 	return append(line, phase.Retro, phase.Merging)
 }
+
+// MovesBackPairs is every move back a task this release takes can make, each written
+// "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
+// from on the Line of some task that Supported and Validate take, since a task moves back from a
+// phase of its line to any phase before it (workflow's backwardRows). It is read off those two
+// checks, over every order of every choice of Legion's five roles and two roles a deployment
+// defines (deploymentRoles), so a later release whose checks take another line moves the set with
+// them. In this release it holds 41 of the 57 pairs of phase.MovePairs. The other 16 are a move
+// back of no line: each step phase, step among them, to retro or to merging, and retro to merging,
+// since the retro and the merge end every line; and implementing to testing, reviewing or
+// accepting, since every tester, reviewer and acceptance step comes after the implementer's
+// (stepReasons). A role of the deployment runs as step (RunsAs) and stands at any place, so a
+// move back leaves or reaches step from every phase but those, and one from such a step to an
+// earlier one is step-step. The configuration loader takes a hook's moves from this set alone
+// (config's readHookMoves), so no hook names a move that never fires. The answer is a fresh slice.
+func MovesBackPairs() []string {
+	return slices.Clone(movesBackPairs())
+}
+
+// CanMoveBack says whether from-to is a pair MovesBackPairs holds.
+func CanMoveBack(from, to phase.Phase) bool {
+	return slices.Contains(movesBackPairs(), phase.Pair(from, to))
+}
+
+// deploymentRoles are two roles a deployment could define, read beside Legion's own by
+// movesBackPairs: each runs as step, and its type, review, stands at any place of a task, so the
+// two give every place step can stand at, and step-step. No deployment's own roles are read, so
+// the set is one for every deployment.
+var deploymentRoles = []RoleDef{{Name: "deployment-a", Type: TypeReview}, {Name: "deployment-b", Type: TypeReview}}
+
+// movesBackPairs is MovesBackPairs, built at its first read.
+var movesBackPairs = sync.OnceValue(func() []string {
+	roles := append(slices.Clone(builtinRoles), deploymentRoles...)
+	d := Deployment{Roles: BuiltinRoles()}
+	for _, role := range deploymentRoles {
+		d.Roles[role.Name] = role
+	}
+	found := map[string]bool{}
+	var choose func(steps []Step)
+	choose = func(steps []Step) {
+		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
+		// Validate answers an error only once its context ends, and this one never does.
+		refused, _ := Validate(context.Background(), p, d)
+		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(refused) == 0 {
+			// The plan's one task is the one no task needs, so it merges, and its line ends with
+			// the retro and the merge; a task another task needs walks the same line without them.
+			line := Line(steps, true)
+			for at, from := range line {
+				for _, to := range line[:at] {
+					found[phase.Pair(from, to)] = true
+				}
+			}
+		}
+		for _, role := range roles {
+			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
+				continue
+			}
+			step := Step{Role: role.Name}
+			if role.Name == "acceptance" {
+				step.Key = "owner" // Supported takes acceptance with this key alone
+			}
+			choose(append(slices.Clone(steps), step))
+		}
+	}
+	choose(nil)
+	pairs := make([]string, 0, len(found))
+	for _, pair := range phase.MovePairs() {
+		if found[pair] {
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+})

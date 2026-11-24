@@ -75,8 +75,8 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionclaim.Roles, which is the order the workflow reaches them, then every role the
-// deployment defines by name. An issue where no session holds a role answers [].
+// the order of legionclaim.Roles, the order of the default steps, then every role the deployment
+// defines by name. An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`

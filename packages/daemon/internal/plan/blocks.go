@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -30,10 +31,12 @@ type Block struct {
 // block is a task and each `plan_role` block a role the plan defines, in the document's order, and
 // every other block is skipped. Each task's needs are the ids of the tasks they name, read against
 // issue (resolveNeeds), so no plan holds a need as a word. A document with no task block is read as
-// a plan with no task, which Validate refuses. It answers an error only for a block it cannot read
-// at all: a task or a role with no id, one id on two such blocks, and a task whose `steps` is
-// outside the grammar (ParseSteps); the error names the block.
-func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
+// a plan with no task, which Validate refuses. It answers an error for a block it cannot read at
+// all: a task or a role with no id, one id on two such blocks, and a task whose `steps` is outside
+// the grammar (ParseSteps); the error names the block. Its one other error is ctx's, once ctx ends
+// before every need is read: register_plan reads the plan an owner wrote before the fact lock,
+// where only the request's own end can stop it.
+func FromBlocks(ctx context.Context, issue, artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
 	for _, block := range blocks {
@@ -57,7 +60,7 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 		}
 		p.Tasks = append(p.Tasks, task)
 	}
-	return resolveNeeds(p, issue), nil
+	return resolveNeeds(p, issue, endedEvery(ctx))
 }
 
 // taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
@@ -88,37 +91,62 @@ func taskOf(block Block) (Task, error) {
 // `dispatch://` reference names a task of p only when it is of issue (issueOf): one into another
 // issue, and one that starts with no issue key, names no task of p, whatever its block id, and
 // stays in Task.OutsideIssue; any other word whose id is no task of p stays in Task.Unresolved.
-// Validate refuses both.
-func resolveNeeds(p Plan, issue string) Plan {
+// Each such word stays once however often the block writes it, and Validate refuses both. It reads
+// ended once for each word, and answers its error once it has one.
+func resolveNeeds(p Plan, issue string, ended func() error) (Plan, error) {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
 		ids[task.ID] = true
 	}
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
-		words := task.Needs
-		task.Needs, task.Unresolved, task.OutsideIssue = nil, nil, nil
-		for _, word := range words {
-			if of, reference := issueOf(word); reference && of != issue {
-				if !slices.Contains(task.OutsideIssue, word) {
-					task.OutsideIssue = append(task.OutsideIssue, word)
-				}
-				continue
-			}
-			id := neededID(word)
-			switch {
-			case !ids[id]:
-				if !slices.Contains(task.Unresolved, word) {
-					task.Unresolved = append(task.Unresolved, word)
-				}
-			case !slices.Contains(task.Needs, id):
-				task.Needs = append(task.Needs, id)
-			}
+		needs, unresolved, outside, err := resolved(task.Needs, ids, issue, ended)
+		if err != nil {
+			return Plan{}, err
 		}
+		task.Needs, task.Unresolved, task.OutsideIssue = needs, unresolved, outside
 		tasks[i] = task
 	}
 	p.Tasks = tasks
-	return p
+	return p, nil
+}
+
+// resolved is one task's `needs` words as the ids of the tasks of ids they name, the words that
+// name none, and the `dispatch://` references not of issue (issueOf), each kept once in the
+// block's order. Each word is looked up in a set of what is kept already, so the read takes time
+// linear in the words: a scan of the kept list for each word, which it replaced, was quadratic in
+// the words of one block, and register_plan reads a plan before the fact lock, where one `needs`
+// attribute within Dispatch's document limit holds tens of thousands of words. A word is a
+// reference not of issue or it is not, so one set holds the words kept in either list.
+func resolved(words []string, ids map[string]bool, issue string, ended func() error) (needs, unresolved, outside []string, err error) {
+	if len(words) == 0 {
+		return nil, nil, nil, nil
+	}
+	needed, left := map[string]bool{}, map[string]bool{}
+	for _, word := range words {
+		if err := ended(); err != nil {
+			return nil, nil, nil, err
+		}
+		if of, reference := issueOf(word); reference && of != issue {
+			if !left[word] {
+				left[word] = true
+				outside = append(outside, word)
+			}
+			continue
+		}
+		id := neededID(word)
+		switch {
+		case !ids[id]:
+			if !left[word] {
+				left[word] = true
+				unresolved = append(unresolved, word)
+			}
+		case !needed[id]:
+			needed[id] = true
+			needs = append(needs, id)
+		}
+	}
+	return needs, unresolved, outside, nil
 }
 
 // issueOf is the issue a `needs` word names when it is a `dispatch://` reference, as Dispatch reads

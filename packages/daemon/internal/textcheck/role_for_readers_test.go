@@ -55,11 +55,11 @@ type roleForReader struct {
 // while RoleFor named no role (phase.Of, and the completion route's answerCompletion, which reads
 // the phase LeftBy answers where the role does not work the issue's), or reads only the places of
 // a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.startAtFirstStep
-// and Engine.startReady, which read their task's first step: a planner's, an
-// implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
-// an implementer, and Engine.startAfterWait, which reads the step a task whose start waited stands
-// at, a step place: a first step whose join ended or is queued again, or a step whose freed agent
-// takes it, since only a step waits for its join or its agent), or reads the retro's own
+// and Engine.startReady, which read their task's first step: a planner's, an implementer's or a
+// role of the deployment's, as plan.Supported holds each tester, reviewer and acceptance step after
+// an implementer step, and Engine.startAfterWait, which reads the step a task whose start waited
+// stands at, a step place: a first step whose join ended or is queued again, or a step whose freed
+// agent takes it, since only a step waits for its join or its agent), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which

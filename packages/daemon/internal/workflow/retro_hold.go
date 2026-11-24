@@ -198,7 +198,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, held, status, ""); err != nil {
 		return err
 	}
-	from := record.StandsAt(s.issue)
 	s.issue.Phase, s.issue.Hold, s.issue.Status = phase.Retro, nil, status
 	if _, err := e.putScope(ctx, tx, &s); err != nil {
 		return err
@@ -215,8 +214,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
 		return err
 	}
-	// The pull request of the parent's task, read once: the start's task names it (readPull), and
-	// the merge forward of the release acts on it (releasedIntoPhase).
+	// The pull request of the parent's task, read once: the start's task names it (readPull).
 	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return err
@@ -227,10 +225,11 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	// The release moves the parent into its retro as the pass into the retro would have
-	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
-	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
-	// forward of the move.
-	return e.releasedIntoPhase(ctx, tx, s, from, pr)
+	// (transition), so it queues the reconcile of its tree's news as that pass does
+	// (queueMovedNews). It asks nothing of the merge forward, as the hold before it asked nothing
+	// (holdBeforeRetro): the retro is where the merge comes next (classify.MergeComesNext), where a
+	// move asks nothing (mergeForwardOnEntry).
+	return e.queueMovedNews(ctx, tx, held)
 }
 
 // heldForChildren is the scope of parent's task held for the issues beneath it: the task whose

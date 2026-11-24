@@ -23,10 +23,12 @@ func validated(t *testing.T, p Plan, d Deployment) []Refusal {
 }
 
 // What no release carries out, as this release checks it: a step that names a role neither the
-// deployment nor the plan defines is refused, naming the step, its task and the role. Legion
-// refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
-// steps it leaves out. The control is in the second half: a validator that also required a
-// reviewer step would refuse `implementer tester`, and one that required a tester would refuse
+// deployment nor the plan defines is refused, naming the step, its task and the role. Validate
+// refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
+// steps it leaves out; a task with no implementer step, and a tester, reviewer or acceptance step
+// with no implementer before it, are what this release does not carry out yet, and Supported
+// refuses them. The control is in the second half: a validator that also required a reviewer
+// step would refuse `implementer tester`, and one that required a tester would refuse
 // `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
@@ -67,7 +69,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 // control: a plan of one block with no `steps` is taken.
 func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	empty, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
+	empty, err := FromBlocks(t.Context(), "ACME-1", "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(no task block): %v", err)
 	}
@@ -81,7 +83,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Supported(empty, d); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
-	taken, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
+	taken, err := FromBlocks(t.Context(), "ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}

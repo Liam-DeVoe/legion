@@ -284,6 +284,45 @@ test("the daemon's own 502 or 503, which carries its code, is its answer and is 
   expect(updates).toEqual([]);
 });
 
+// register_plan's request can end while the daemon reads or checks the plan (contract 242), and
+// the daemon then answers 503 PLAN_CHECK_STOPPED, the golden its route test writes
+// (internal/api's TestRegisterPlanStopsItsCheckWhenTheRequestEnds): it decided nothing and
+// recorded nothing, and the same call can be sent again. The code makes the answer the daemon's
+// own, so the tool hands it to the agent after one attempt, with the daemon's sentence, and never
+// retries it as a dropped attempt or says it may have been applied. The fault is the 503 with no
+// code that contracts 219 and 220 answered, which the tool read as a proxy's dropped attempt:
+// retried for ten minutes, then reported as one that may have been applied.
+test("register_plan's stopped check is the daemon's answer: passed on once, and never as an attempt that may have been applied", async () => {
+  const stopped = JSON.parse(daemonFixture("plan-check-stopped.json")) as { error: string };
+  const live = liveDaemon({ path: "/legion/v1/plans/register", status: 503, body: stopped });
+  const clock = virtualClock();
+  const tool = toolFor(
+    "architect",
+    restartingClient(live.url, refusingOrigin(), 0),
+    clock,
+    [],
+    "LEGION-208"
+  );
+
+  const { result, updates } = await run(tool, {
+    op: "register_plan",
+    issue: "LEGION-209",
+    artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+    version: 4,
+  });
+
+  expect(result.isError).toBe(true);
+  expect(result.content).toEqual([
+    {
+      type: "text",
+      text: `POST /legion/v1/plans/register failed with 503 PLAN_CHECK_STOPPED: ${stopped.error}`,
+    },
+  ]);
+  expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/plans/register"]);
+  expect(clock.waits).toEqual([]);
+  expect(updates).toEqual([]);
+});
+
 test("register_gate waits out a restarting daemon", async () => {
   const live = liveDaemon();
   const clock = virtualClock();

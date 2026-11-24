@@ -55,10 +55,13 @@ type RegisteredTask struct {
 	Needs *[]string `json:"needs,omitempty"`
 }
 
-// PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
-// sentence every refusal carries (Failure), and one reason for each cause (intake.PlanRefused).
-// `reasons` arrived with register_plan at OwnerPlanContract, and a caller below it is served the
-// Failure alone (shaping.go's refusal row), as a PauseFailure is below pauseContract.
+// PlanRefusal is the answer to a plan whose content Legion does not take, 409 PLAN_REFUSED: the
+// code and the sentence every refusal carries (Failure), and one reason for each cause
+// (intake.PlanRefused). A plan of an issue whose experiment's group takes no plan from its owner
+// is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken), a Failure
+// with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a caller below
+// it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is below
+// pauseContract.
 type PlanRefusal struct {
 	Failure
 	Reasons []PlanReason `json:"reasons"`
@@ -83,7 +86,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number.
+// only with this change's own number, and it is a number of SupportedContracts, which names the
+// constant rather than its number for that reason.
 const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
@@ -169,8 +173,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// stops when the request ends, recording nothing.
 	invalid, err := plan.Validate(r.Context(), given, s.deployment)
 	if err != nil {
-		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
-		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+		s.planCheckStopped(w, r, err, req.Issue, artifactID, req.Version)
 		return
 	}
 	refusals := append(plan.Supported(given, s.deployment), invalid...)
@@ -236,11 +239,12 @@ type TaskStopRequest struct {
 // (architectForIssue) stops one task of it, answered 200 with no body. The stop is the
 // workflow's (intake.TaskStopped), at the generation the route read: the workflow judges the
 // owner and the generation again under the fact lock, since an adoption or a new run can commit
-// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound) and
-// one that is done (TaskDone). This route's own refusals are the early ones. Each request is its
-// own fact (requestFactID): a task the owner stops, starts again with a later version and stops
-// once more is stopped twice, and a retry of a stop already applied finds the task stopped, which
-// changes nothing.
+// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound), one
+// that is done (TaskDone), and every task of an issue whose experiment's group takes no plan from
+// its owner (intake.TaskNotStopped, PLAN_NOT_TAKEN). This route's own refusals are the early ones.
+// Each request is its own fact (requestFactID): a task the owner stops, starts again with a later
+// version and stops once more is stopped twice, and a retry of a stop already applied finds the
+// task stopped, which changes nothing.
 func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	var req TaskStopRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -261,12 +265,25 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim, Generation: recorded.Generation}, EmptyResponse{})
 }
 
+// planCheckStopped answers a register_plan whose request ended while the plan was read
+// (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
+// context: 503 PLAN_CHECK_STOPPED (version.go's 242). The request ended before the check of the
+// plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
+// again. The code is what tells a client this is the daemon's answer and not a proxy's dropped
+// attempt, which pi-shared's daemonUnreachable reads a 503 with no code as.
+func (s *server) planCheckStopped(w http.ResponseWriter, r *http.Request, err error, issue, artifactID string, version int) {
+	s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", issue, "artifact", artifactID, "version", version)
+	s.writeFailure(w, r, http.StatusServiceUnavailable, "PLAN_CHECK_STOPPED",
+		"register_plan stopped before it finished reading and checking the plan, because its request ended: Legion decided nothing and recorded nothing, and the same call can be sent again")
+}
+
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as the plan of issue (plan.FromBlocks), so a need that is a reference into another issue is
-// no need of a task of this plan. A block the plan's grammar cannot read is a refused plan whose
-// one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all.
-// Every refusal records nothing.
+// read as the plan of issue on the request's context (plan.FromBlocks), so a need that is a
+// reference into another issue is no need of a task of this plan. A block the plan's grammar cannot
+// read is a refused plan whose one reason names the block; a Dispatch that gives no blocks cannot
+// show Legion a plan at all; a request that ends during the read is answered as one that ends
+// during the check (planCheckStopped). Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -286,7 +303,11 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
 	}
-	given, err := plan.FromBlocks(issue, artifactID, version, blocks)
+	given, err := plan.FromBlocks(r.Context(), issue, artifactID, version, blocks)
+	if ended := r.Context().Err(); ended != nil && errors.Is(err, ended) {
+		s.planCheckStopped(w, r, err, issue, artifactID, version)
+		return plan.Plan{}, false
+	}
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false

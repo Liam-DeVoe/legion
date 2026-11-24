@@ -43,16 +43,21 @@ var All = []Phase{
 	Merging, Done, Held,
 }
 
-// Order is the line an issue walks forward, and the only phases a move back is read against. It
-// differs from All: All is every phase the daemon writes, admitted, awaiting_person, done and
-// held among them, while Order holds the seven working phases alone, in the order the workflow
-// advances them. A phase outside Order has no place in that line, so no move into it and no move
+// Order is the line an issue of the default steps walks forward, and the phases a move back is
+// read against for an issue with no plan rows; a task's own line reads its own moves back
+// (workflow's Walk.MovesBack). It differs from All: All is every phase the daemon writes, admitted,
+// awaiting_person, done and held among them, while Order holds the seven working phases alone, in
+// the order of the default steps. A phase outside Order has no place in that line, so no move into it and no move
 // out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
 // MovesBack answers false for it.
 //
-// Both internal/config and internal/workflow read this set: the loader refuses a hook written for
-// a move pair the daemon never counts, and the engine counts the rounds. It lives here, not in
-// internal/workflow, because internal/config cannot import internal/workflow. Measured with
+// Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
+// pair the daemon counts (MovePairs: the 42 ordered pairs of the seven, and the 15 pairs of step)
+// that some task's line makes as a move back (plan.MovesBackPairs, 41 of them), since it reads the
+// file with no plan, and refuses the other 16, which would never fire. The engine counts the pair
+// of each move back the task's own line reads (Walk.MovesBack), and a pass. It
+// lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
+// Measured with
 // `go list`: every test file of package workflow is `package workflow`, and 42 of its 57 test
 // files import internal/config (`go list -f '{{.TestImports}}' ./internal/workflow/` names
 // internal/config), so an edge from internal/config to internal/workflow would close a cycle in

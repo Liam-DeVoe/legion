@@ -22,7 +22,7 @@ import (
 // so the upgrade applies it after them. The nine versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
+// unmarked start of accepting, retro or merging (20261110233602), the kind of the rule that wrote a
 // release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
 // (20261111212544), are
@@ -116,6 +116,10 @@ import (
 // which each add a column at its default, nor the plan of an issue (20261117034837), which
 // creates the three tables of the plan and adds `phases.step_task` and `phases.step_place`, each
 // at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
+// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
+// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
+// above every version of this list but the tasks each version of a plan added (20261123200630),
+// and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -208,7 +212,8 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261119203047,
 	20261120012547, 20261120042902, 20261120055717, 20261121165047, 20261121170714, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123200630,
+	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123165139,
+	20261123200630,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -229,13 +234,13 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the claim
 // of each resume's 20261121183336, the claim of each backstop's 20261122072945, one open resume per
-// claim's 20261122074350, the branch of a pending delivery's 20261122131321, and the six the task
-// copies add, the working copies of a saved bundle (20261117204629), the held task
-// (20261117224125), the copies of a plan's tasks (20261121165047), the pull requests by task
-// (20261122122826), the removal of a removed task's working copy (20261123072431) and the tasks
-// each version of a plan added (20261123200630). That is why
-// the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's.
+// claim's 20261122074350, the branch of a pending delivery's 20261122131321, the plan of an
+// experiment's draw (20261123165139), and the six the task copies add, the working copies of a
+// saved bundle (20261117204629), the held task (20261117224125), the copies of a plan's tasks
+// (20261121165047), the pull requests by task (20261122122826), the removal of a removed task's
+// working copy (20261123072431) and the tasks each version of a plan added (20261123200630). That
+// is why the loop below holds the list rather than counting it, so that a version added above any
+// of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -173,6 +173,10 @@ const schemas: Record<string, z.ZodType> = {
   // The owner's plan (contract 219): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
+  // register_plan's answer to a request that ended while the daemon read or checked the plan
+  // (contract 242): the refusal with its code, PLAN_CHECK_STOPPED, which tells a client it is the
+  // daemon's own answer and no proxy's dropped attempt.
+  "plan-check-stopped.json": LegionErrorResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
@@ -957,7 +961,7 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
 // check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
@@ -1158,6 +1162,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   ]);
   // An issue no experiment has reached carries no key.
   expect(issueOf("LEGION-211").assignments).toBeUndefined();
+  // The group an experiment that sets how its issues are done gave the child, as its draw
+  // recorded it: the parse keeps it, and a group that is no string is refused.
+  const planned = LegionStateResponse.parse(state).issues["LEGION-209"]?.assignments?.find(
+    (row) => row.experiment === "planning"
+  );
+  expect(planned?.plan).toBe("default");
 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
@@ -1185,6 +1195,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
   drawn.assignments = [{ experiment: "memory", variant: "memory" }];
   expect(parses()).toBeTrue();
+  // A group that is no string, and an empty one: the daemon leaves the key off where the arm
+  // named no group.
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: 1 }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
+  expect(parses()).toBeFalse();
   drawn.assignments = held;
   expect(parses()).toBeTrue();
 });
@@ -1503,8 +1519,8 @@ test("register_plan answers the tasks its version added and each task with its s
 });
 
 // Contract 219 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
-// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
-// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// (its owner stopped its task with stop_task) or `children` (a parent whose task's last step is
+// not the owner's acceptance waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
 test("a state with a stopped task and a parent held for its children parses", () => {
   const state = fixture("state.json") as {
@@ -2853,16 +2869,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
-  // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
-  // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract 222), which
-  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), and the
-  // issues' tasks' (contract 224), which serves each issue without its `tasks` (`withoutTasks`).
-  // One value strip stands above 199 as well: `caches`, the source of the repository-cache-room
-  // row, arrived at contract 213, so that row is served here without its `source`, every other
-  // field of it and every other row as the state golden holds them. So the narrowing changes this
-  // one block and, beside it, only what those three bands and that strip change.
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Five bands stand
+  // above 199: the repositories block's, contract 220's, which takes `plan` off each assignment,
+  // so the golden's rows are compared without it, the roles of a deployment's (contract 221),
+  // which serves the state golden's issues at step and its claims of a role of the deployment as a
+  // caller below 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract
+  // 222), which serves each claim nothing will wake without its `token` (`withoutStrandedTokens`),
+  // and the issues' tasks' (contract 224), which serves each issue without its `tasks`
+  // (`withoutTasks`). One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them. So the
+  // narrowing changes this one block and, beside it, only what those four bands and that strip
+  // change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2886,7 +2904,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   } = fixtureBody("state.json");
   const below = belowDeploymentRoles(rest) as Record<string, unknown>;
   const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
-  const issues = below.issues as Record<string, Record<string, unknown>>;
+  const issues = Object.fromEntries(
+    Object.entries(below.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
+      key,
+      issue.assignments === undefined
+        ? issue
+        : {
+            ...issue,
+            assignments: (issue.assignments as Record<string, unknown>[]).map(
+              ({ plan: _plan, ...row }) => row
+            ),
+          },
+    ])
+  );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
   const withoutCachesSource = capabilities.map((row) => {

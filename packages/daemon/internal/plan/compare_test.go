@@ -9,7 +9,7 @@ import (
 // cannot.
 func planOf(t *testing.T, version int, blocks ...Block) Plan {
 	t.Helper()
-	p, err := FromBlocks("ACME-1", "plan-md", version, blocks)
+	p, err := FromBlocks(t.Context(), "ACME-1", "plan-md", version, blocks)
 	if err != nil {
 		t.Fatalf("FromBlocks(version %d): %v", version, err)
 	}
