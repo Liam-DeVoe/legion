@@ -2744,6 +2744,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cipher/githubname/**/*_test.go'
   - '!packages/envoy/internal/cipher/groups/**/*_test.go'
   - '!packages/envoy/internal/cipher/helper/**/*_test.go'
+  - '!packages/envoy/internal/cipher/identity/**/*_test.go'
   - '!packages/envoy/internal/cipher/judge/**/*_test.go'
   - '!packages/envoy/internal/cipher/leasetime/**/*_test.go'
   - '!packages/envoy/internal/cipher/logmask/**/*_test.go'

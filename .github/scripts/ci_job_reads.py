@@ -3324,6 +3324,11 @@ GATES = [
                  ["./agentloop/"], tags="modellive", mode="vet"),
         step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
                  ["./cmd/cipher/"], tags="moto", mode="vet"),
+        *(step_run("envoy-go", f"Vet the build with no {kind} identity provider",
+                   f"go vet -tags cipher_no_{kind} ./cmd/cipherd/ ./cmd/cipher/ ./cmd/cipher-helper/ ./internal/cipher/... ./internal/cipherclient/...",
+                   ENVOY, ["./cmd/cipherd/", "./cmd/cipher/", "./cmd/cipher-helper/", "./internal/cipher/...", "./internal/cipherclient/..."],
+                   tags=f"cipher_no_{kind}", mode="vet")
+          for kind in ("kubernetes", "google", "github")),
         ceiling_run("envoy-go"),
     ], exact=[
         # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
