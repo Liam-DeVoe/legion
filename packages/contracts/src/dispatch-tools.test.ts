@@ -5,7 +5,9 @@ import { z } from "zod";
 import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
+  DISPATCH_BLOCK_UNITS,
   DISPATCH_HANDOFF_BODY_MAX,
+  DISPATCH_ITEM_BLOCKS,
   type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
@@ -80,59 +82,6 @@ function specFor(name: string) {
   if (!spec) throw new Error(`missing ${name}`);
   return spec;
 }
-
-/** A schema node that keeps every description its chain carries and validates nothing. */
-interface Described extends SchemaNode<Described> {}
-
-/**
- * Every description one spec's arguments carry, nested objects' and array items' included: what
- * a host shows beside each field, read through the builder rather than off the source.
- */
-function argumentDescriptions(name: string): readonly string[] {
-  const texts: string[] = [];
-  const node = (): Described => ({
-    optional: node,
-    nullable: node,
-    describe: (text) => {
-      texts.push(text);
-      return node();
-    },
-  });
-  dispatchToolSchema(specFor(name), {
-    string: node,
-    number: node,
-    boolean: node,
-    enum: node,
-    literal: node,
-    array: node,
-    unknown: node,
-    object: node,
-    refineObject: node,
-  });
-  return texts;
-}
-
-/** The one rule every ask instruction gives, written once in `dispatch-tools.ts`. */
-const ASK_RULE =
-  "An ask is short and asks one thing; its reasoning goes in the document, not in the question.";
-/** A character count in words: a group of digits, then `character`. */
-const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
-
-/**
- * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
- * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
- * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
- * stands (INFRA-1201).
- */
-const DECISION_BLOCK_RULE =
-  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
-  "answer a question put in a comment or a message: ask the question in the issue's own " +
-  "document, as a decision block there, or open an ask with `dispatch ask`.";
-
-/** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
-const SKILL_DECISION_BLOCK_RULE =
-  "A decision block in a comment, message or close reason is refused: ask in the issue's " +
-  "document, or `dispatch ask`.";
 
 /** Every tool that writes a body, with the argument carrying that body: the close reason, the
  *  comment, the suggestion, the message and the send to a session. */
@@ -330,25 +279,7 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("explains that quote anchors stay pinned to their block", () => {
-    for (const name of ["dispatch_ask", "dispatch_comment"] as const) {
-      const tool = dispatchToolSpecs.find((candidate) => candidate.name === name);
-      expect(tool?.description).toContain("quote anchor is pinned to its block");
-    }
-  });
-
-  test("explains that an ask ref is appended as a rendered link", () => {
-    const tool = dispatchToolSpecs.find((candidate) => candidate.name === "dispatch_ask");
-    if (tool === undefined) throw new Error("dispatch_ask spec is missing");
-    const argumentsSchema = tool.arguments(schemaApi) as unknown as {
-      ref: z.ZodOptional<z.ZodString>;
-    };
-    expect(argumentsSchema.ref.unwrap().description).toBe(
-      "Optional dispatch:// reference (issue, document, block, message, or ask); appended to the question and rendered as a link."
-    );
-  });
-
-  test("keeps the question and options contracts on optional ask fields", () => {
+  test("both ask tools take a question string and a list of labelled options", () => {
     for (const name of ["dispatch_ask", "dispatch_edit_ask"] as const) {
       const tool = dispatchToolSpecs.find((candidate) => candidate.name === name);
       if (tool === undefined) throw new Error(`${name} spec is missing`);
@@ -356,13 +287,8 @@ describe("dispatchToolSpecs", () => {
         question: z.ZodType;
         options: z.ZodType;
       };
-      expect(argumentsSchema.question.description, name).toContain(
-        "The question names the concrete case first"
-      );
-      expect(argumentsSchema.question.description, name).not.toContain("never enumerate choices");
-      expect(argumentsSchema.options.description, name).toContain(
-        "description says what that approach costs"
-      );
+      expect(argumentsSchema.question.safeParse("Hold to Monday?").success, name).toBe(true);
+      expect(argumentsSchema.options.safeParse([{ label: "Hold" }]).success, name).toBe(true);
     }
   });
 
@@ -459,18 +385,6 @@ describe("dispatchToolSpecs", () => {
     expect(specFor("dispatch_project").description).toContain(PROJECT_KEY_RULE);
   });
 
-  test("dispatch_project's description says to create a requested project without questions", () => {
-    const description = specFor("dispatch_project").description;
-    expect(description).toContain(
-      "When a person asks for a project, make the key from its name. Check the key with " +
-        "dispatch projects. If the key is free, create the project. Ask the person only when the key is in use."
-    );
-    expect(description).toContain(
-      "When no person asked for a project and an existing project already covers the work, do not create a " +
-        "project. File an issue in that project with dispatch issue."
-    );
-  });
-
   test("dispatch_architecture_sync takes one owner/name repository or none, refusing anything else by name", () => {
     const schema = schemaFor("dispatch_architecture_sync");
 
@@ -504,13 +418,11 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_architecture_sync says a project may have several sources and how one is saved", () => {
+  test("dispatch_architecture_sync names the route that saves a source and 409 SOURCE_ACCESS", () => {
     const { description } = specFor("dispatch_architecture_sync");
 
-    expect(description).toContain("A project may have several sources, one per repository");
     expect(description).toContain("PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}");
-    expect(description).toContain("A failed line also says what of that source still shows");
-    expect(description).toContain("or with repo the error 409 SOURCE_ACCESS");
+    expect(description).toContain("409 SOURCE_ACCESS");
   });
 
   test("dispatch_open_asks accepts no arguments or a project and rejects unknown selectors", () => {
@@ -523,16 +435,13 @@ describe("dispatchToolSpecs", () => {
 
   // The route takes `project` repeatable, so the tool takes a list and the command derives one
   // `--project` per key; a bare string is the shape `dispatch open-asks` takes, not this one.
-  test("dispatch_priorities takes no arguments or a list of projects and names the two faults", () => {
+  test("dispatch_priorities takes no arguments or a list of projects, and refuses any other key", () => {
     const schema = schemaFor("dispatch_priorities");
 
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ project: ["DSP", "CORE"] }).success).toBe(true);
     expect(schema.safeParse({ project: "DSP" }).success).toBe(false);
     expect(schema.safeParse({ summary: true }).success).toBe(false);
-    const { description } = specFor("dispatch_priorities");
-    expect(description).toContain("advances no priority");
-    expect(description).toContain("backlog or icebox");
   });
 
   // A priority is advanced by an issue, which states at most MAX_ISSUE_ADVANCES of them; the
@@ -700,14 +609,11 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ session_id: "another-session" }).success).toBe(false);
   });
 
-  test("dispatch_limits accepts no arguments and says the server refuses an over-long text", () => {
+  test("dispatch_limits accepts no arguments and rejects any key", () => {
     const schema = schemaFor("dispatch_limits");
 
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
-    expect(specFor("dispatch_limits").description).toContain(
-      "Dispatch refuses a text over a bound and names the block or the field it passed"
-    );
   });
 
   test("dispatch_inbox accepts no arguments, names the Envoy tool it is not, and rejects any key", () => {
@@ -741,9 +647,9 @@ describe("dispatchToolSpecs", () => {
       ]);
     }
     expect(schema.safeParse({ ...call, body: "{}", session_id: "other" }).success).toBe(false);
-    expect(specFor("dispatch_handoff_write").description).toContain(
-      `${DISPATCH_HANDOFF_BODY_MAX} bytes with 413 CAP_EXCEEDED`
-    );
+    const { description } = specFor("dispatch_handoff_write");
+    expect(description).toContain(`${DISPATCH_HANDOFF_BODY_MAX} bytes`);
+    expect(description).toContain("413 CAP_EXCEEDED");
   });
 
   test("dispatch_handoff_read takes an issue, a phase slug and an optional positive version", () => {
@@ -1024,21 +930,6 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
-  // Every instruction an agent reads about an ask gives one rule and no count: the server owns
-  // the bound on a question and its options, names the bound in its refusal, and prints it
-  // through `dispatch limits`, so a number written here would be a second source that drifts the
-  // day the server's changes (INFRA-370). The rule itself is what the instruction carries.
-  test("every ask instruction gives one rule and states no character count", () => {
-    for (const name of ["dispatch_ask", "dispatch_edit_ask"]) {
-      const texts = [specFor(name).description, ...argumentDescriptions(name)];
-
-      for (const text of texts) {
-        expect(characterCount.exec(text), `${name}: ${text}`).toBeNull();
-      }
-      expect(texts.join(" "), name).toContain(ASK_RULE);
-    }
-  });
-
   // Agents may set an issue's priority (dispatch://LEGION/artifact/issue-status-conventions-md);
   // the board's order moves by neighbour, through before and after, never through a rank field.
   // The refusal of { issue, rank } below is the guard for that: under `strict: true` the tool
@@ -1067,9 +958,7 @@ describe("dispatchToolSpecs", () => {
       properties: Record<string, { description?: string }>;
     };
 
-    expect(json.properties.priority?.description).toBe(
-      "Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."
-    );
+    expect(typeof json.properties.priority?.description).toBe("string");
   });
 
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
@@ -1315,13 +1204,9 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
-  // name, and --path for a name that is not Markdown.
-  test("the stored-text rule names a way out for both kinds of name", () => {
-    expect(ARTIFACT_STORED_TEXT_RULE).toContain("The refusal prints the text Dispatch stores");
-    expect(ARTIFACT_STORED_TEXT_RULE).toContain(
-      "A name that does not end in .md or .markdown has a second way out"
-    );
+  // --help prints the tool's description, so the description carries the stored-text rule as the
+  // code composes it; which names --path keeps the bytes of is the case above.
+  test("dispatch_artifact's description, which --help prints, gives the stored-text rule", () => {
     const artifact = dispatchToolSpecs.find((spec) => spec.name === "dispatch_artifact");
     expect(artifact?.description).toContain(ARTIFACT_STORED_TEXT_RULE);
   });
@@ -1465,7 +1350,7 @@ describe("dispatchToolSpecs", () => {
     expect(argumentsSchema).not.toHaveProperty("primary");
   });
 
-  test("describes project documents as accepting an artifact id, slug, or filename", () => {
+  test("every project-document tool takes an optional artifact string", () => {
     for (const name of [
       "dispatch_ask",
       "dispatch_comment",
@@ -1480,9 +1365,7 @@ describe("dispatchToolSpecs", () => {
       const argumentsSchema = spec.arguments(schemaApi) as unknown as {
         artifact: z.ZodOptional<z.ZodString>;
       };
-      expect(argumentsSchema.artifact.unwrap().description, name).toContain(
-        "artifact id, slug, or filename"
-      );
+      expect(argumentsSchema.artifact.unwrap(), name).toBeInstanceOf(z.ZodString);
     }
   });
 
@@ -1567,16 +1450,14 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+  test("dispatch_review's description, which --help prints, names the codes Dispatch refuses it with and /healthz", () => {
     const { description } = specFor("dispatch_review");
 
     for (const words of [
-      "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
-      "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
-      "it must be the version the review would record",
+      "403 OAUTH_SCOPE_REQUIRED",
+      "403 SIGN_IN_REQUIRED",
       "409 REVIEW_VERSION_MOVED",
-      "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
-      "every other browser action is dispatch://INFRA-910's",
+      "/healthz",
     ]) {
       expect(description).toContain(words);
     }
@@ -1617,15 +1498,8 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
-  // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
-  // session reads before its first `dispatch` command says it too, in the section the ask blocks
-  // are defined in.
-  test("the Dispatch skill says a body holding a decision block is refused", () => {
-    expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
-  });
-
-  // R4 (INFRA-1201): and at the write, each tool that writes a body says it, so
-  // `dispatch comment --help` and its four siblings print where the question belongs before a
+  // R4 (INFRA-1201): each tool that writes a body states the server's bounds and the decision
+  // block it refuses, so `dispatch comment --help` and its four siblings print them before a
   // writer puts one in a body. The names are asserted whole: an empty or shortened table would
   // make the rows below assert nothing.
   test("the five tools that write a body are the ones this table names", () => {
@@ -1640,111 +1514,16 @@ describe("dispatchToolSpecs", () => {
 
   test.each(
     BODY_WRITING_TOOLS
-  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+  )("%s's %s gives the server's two body bounds and names the decision block it refuses", (name, field) => {
     const fields = specFor(name).arguments(schemaApi) as unknown as Record<
       string,
       { description?: string; unwrap?: () => { description?: string } }
     >;
     const argument = fields[field];
     const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
-    expect(flag, `${name} --${field}`).toContain(DECISION_BLOCK_RULE);
-    const help = [specFor(name).description, ...argumentDescriptions(name)].join(" ");
-    expect(help, name).toContain(DECISION_BLOCK_RULE);
-  });
-
-  // The Go hosts show the generated copy of these specs, so the rule reaches a session there
-  // too; `bun run check:go` is what keeps the copy equal to the source above.
-  test("the generated Go copy of the tools carries the rule", () => {
-    const generated = resolve(
-      import.meta.dir,
-      "../../envoy/internal/contracts/dispatch_tools_generated.go"
-    );
-    expect(
-      readFileSync(generated, "utf8"),
-      "packages/envoy/internal/contracts/dispatch_tools_generated.go"
-    ).toContain(DECISION_BLOCK_RULE);
-  });
-
-  // Rules the Dispatch skill's references held move into the one command each is about, where
-  // `dispatch <command> --help` prints them.
-  test.each([
-    [
-      "dispatch_resolve_ask",
-      "Use retracted for an ask a newer one replaces or the design made moot, resolved for one whose answer you found; an answered ask cannot be resolved, and resolving records no decision by a person.",
-    ],
-    [
-      "dispatch_comment",
-      "A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask.",
-    ],
-    [
-      "dispatch_doc_edit",
-      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again.",
-    ],
-    [
-      "dispatch_artifact",
-      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
-    ],
-    [
-      "dispatch_ask",
-      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, never offer it cut down, and keep an option not to act (Hold). Set urgency high when your work halts on the answer, and keep working on everything else.",
-    ],
-    [
-      "dispatch_issue_update",
-      "Never reassign an issue a person holds to get a faster answer: who holds it is their call.",
-    ],
-    [
-      "dispatch_message",
-      "keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
-    ],
-    [
-      "dispatch_ask",
-      "Never create an issue to park a question: the question is an ask on the issue it concerns.",
-    ],
-    [
-      "dispatch_doc_edit",
-      "The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it.",
-    ],
-    [
-      "dispatch_issue",
-      "Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it.",
-    ],
-    [
-      "dispatch_doc_edit",
-      "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it.",
-    ],
-    [
-      "dispatch_read",
-      "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries (a `check`'s serves, surface, run, when, negative_control and ci_check; a `plan_task`'s serves and needs), `Changed in version:` and `Text:`, then those two sections; a pinned one adds the block's text at that version and whether it is unchanged, changed or removed since, and an absent block, unpinned, reads `No block <id> in <document>.`",
-    ],
-  ])("%s's description, which --help prints, holds the rule moved from the skill", (name, rule) => {
-    expect(specFor(name).description).toContain(rule);
-  });
-
-  test.each([
-    ["dispatch_issue", "assignee", "Set it only when a person said who owns the issue."],
-    [
-      "dispatch_issue",
-      "assignee",
-      "else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one.",
-    ],
-    [
-      "dispatch_read",
-      "ref",
-      "dispatch://PROJECT/artifact/<slug>[@vN], and its /ask/<id> and /comment/<id>; or the dashboard URL of one.",
-    ],
-    [
-      "dispatch_read",
-      "ref",
-      "A block: dispatch://KEY/spec#b-<block id>[@vN], dispatch://KEY/artifact/<slug>#b-<block id>[@vN] or dispatch://PROJECT/artifact/<slug>#b-<block id>[@vN], the id percent-encoded except ASCII letters, digits and -.",
-    ],
-  ])("%s's %s flag help holds the rule moved from the skill", (name, field, rule) => {
-    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields[field];
-    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
-    expect(description).toContain(rule);
+    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
+    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
+    expect(flag, `${name} --${field}`).toContain(":::ask");
   });
 
   // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a

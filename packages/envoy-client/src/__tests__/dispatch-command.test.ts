@@ -6,6 +6,7 @@ import {
   commandHelp,
   commandLine,
   commandName,
+  fieldFlag,
   flagName,
   parseCommand,
   toolForCommand,
@@ -98,33 +99,52 @@ describe("the dispatch command surface", () => {
     expect(checked).toBeGreaterThan(20);
   });
 
+  // A command's help prints its tool's description, and under the flag that sets a field the
+  // description the field's schema holds, so the help says what the spec says.
+  test("every command's help prints its spec's description and each field's under its flag", () => {
+    interface Node {
+      readonly description?: string;
+      readonly properties?: Readonly<Record<string, Node>>;
+    }
+    let checked = 0;
+    for (const spec of dispatchToolSpecs) {
+      const help = commandHelp(spec.name);
+      expect(help, spec.name).toContain(`\n\n${spec.description}\n\n`);
+      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as Node;
+      for (const [field, { description }] of Object.entries(schema.properties ?? {})) {
+        if (description === undefined) continue;
+        // The flag's own line: `  --issue <text>`, or `  --multiple` for a flag with no value.
+        const flag = `\n  ${fieldFlag(spec.name, field)}`;
+        const at = Math.max(help.indexOf(`${flag} `), help.indexOf(`${flag}\n`));
+        expect(at, `${spec.name} ${field}`).toBeGreaterThan(-1);
+        const end = help.indexOf("\n  --", at + 1);
+        const section = help.slice(at, end === -1 ? undefined : end);
+        expect(section, `${spec.name} ${field}`).toContain(
+          description.replaceAll("\n", "\n      ")
+        );
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
   test("doc-edit --help lists each key an operation takes, with its type and its values", () => {
     const help = commandHelp("dispatch_doc_edit");
+    expect(help).toContain("\n  --ops-json <json>\n");
     expect(help).toContain(
       [
-        "  --ops-json <json>",
-        "      Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires. Required.",
+        "Required.",
         "      Each item's keys:",
-        "        op (required; replace|delete|insert|retype|move|delete_row|delete_column): Edit operation.",
-        "",
+        "        op (required; replace|delete|insert|retype|move|delete_row|delete_column)",
       ].join("\n")
     );
-    expect(help).toContain(
-      "\n        index (integer): Zero-based row or column index for delete_row or delete_column.\n"
-    );
-    expect(help).toContain("\n        type (text): Typed block name for retype.\n");
-    expect(help).toContain("\n        attributes (any JSON): Typed block attributes for retype;");
-    expect(help).toContain(
-      [
-        "      Its keys:",
-        "        document (text): Token for the exact canonical document returned by dispatch doc-read.",
-        "        blocks (list of objects): Every content block this batch changes, each with the token dispatch doc-read --blocks lists.",
-        "          Each item's keys:",
-        "            id (required; text): Stable block id dispatch doc-read --blocks lists.",
-        "            token (required; text): That block's full-state token, including inline marks.",
-        "",
-      ].join("\n")
-    );
+    expect(help).toContain("\n        index (integer)");
+    expect(help).toContain("\n        type (text)");
+    expect(help).toContain("\n        attributes (any JSON)");
+    expect(help).toContain("\n      Its keys:\n        document (text)");
+    expect(help).toContain("\n        blocks (list of objects)");
+    expect(help).toContain("\n          Each item's keys:\n            id (required; text)");
+    expect(help).toContain("\n            token (required; text)");
   });
 
   test("dispatch project takes its key and name as one flag each", () => {

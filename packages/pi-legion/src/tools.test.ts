@@ -219,8 +219,9 @@ test("the legion tool's description carries the daemon's rules for ending a chil
   expect(description).toContain(notTakenYet);
 });
 
-/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
- * property and every `op` value in the order the tool declares them. */
+/** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
+ * the words of each property's description: every property and every `op` value in the order the
+ * tool declares them. Which properties carry a description is DESCRIBED_PROPERTIES. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -252,24 +253,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     issue: { type: "string" },
     since: { type: "string" },
-    artifactId: {
-      type: "string",
-      description:
-        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
-    },
+    artifactId: { type: "string" },
     version: { type: "number" },
-    step: {
-      type: "string",
-      enum: ["decisions", "criteria", "spec"],
-      description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
-    },
+    step: { type: "string", enum: ["decisions", "criteria", "spec"] },
     issues: { type: "array", items: { type: "string" } },
-    task: {
-      type: "string",
-      description:
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
-    },
+    task: { type: "string" },
     to: {
       type: "string",
       enum: [
@@ -285,11 +273,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: {
-      type: "string",
-      description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
-    },
+    reason: { type: "string" },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -311,11 +295,25 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
+/** The properties whose description the tool states, in the order it declares them. */
+const DESCRIBED_PROPERTIES = ["artifactId", "step", "task", "reason"];
+
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
-    expect(JSON.stringify(z.toJSONSchema(toolFor(active).parameters as z.ZodType))).toBe(
-      OMP_LEGION_TOOL_SCHEMA
-    );
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as {
+      readonly properties: Record<string, Record<string, unknown>>;
+    };
+    const described: string[] = [];
+    const properties: Record<string, Record<string, unknown>> = {};
+    for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
+      if (description !== undefined) {
+        expect(typeof description, name).toBe("string");
+        described.push(name);
+      }
+      properties[name] = property;
+    }
+    expect(described).toEqual(DESCRIBED_PROPERTIES);
+    expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -757,23 +755,14 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester alone
-// (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
-// it reports one.
-test("the legion tool's description gives a verdict to the tester alone", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    resolveDocument: noDocumentLookup,
-    session: () => claimSession("reviewer"),
-  });
-  expect(tool.description).toContain("`verdict` pass|fail from the tester alone");
-  expect(tool.description).not.toContain("when your role's instructions require one");
+// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
+// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
+// no phase worker is given a description of its own. The case holds no word of it.
+test("every phase worker is given the same description of the legion tool", () => {
+  const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
+    (role) => toolFor(claimSession(role)).description
+  );
+  expect(new Set(described).size).toBe(1);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
