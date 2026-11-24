@@ -129,6 +129,14 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
+	// suspendedOver is every pod whose Sandbox a replacement's suspension landed on, as the
+	// Sandbox runtime leaves it whether or not the pod is still there to see: a ReplacePod or a
+	// ReplaceIssuePod of such a pod replaces nothing and answers nil, as that runtime answers a
+	// suspended Sandbox (FailReplacePodAfterItsSuspension, ScriptSuspendedOver).
+	suspendedOver map[string]bool
+	// onRead runs at the start of every WorkspaceWork and PodWorkspaceWork, with no lock of the
+	// fake held (OnWorkspaceWork).
+	onRead func()
 	// replaced is every pod a replacement by issue (ReplaceIssuePod) or a launch (RoundPodEnds)
 	// replaced, by uid, with the uid of the pod a launch built in its place, "" while none has:
 	// the issue's Sandbox no longer holds it, as IssuePod then answers, and a launch scripted into
@@ -159,6 +167,8 @@ func NewRuntime() *Runtime {
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
 		replaced:    map[string]string{},
+		// suspendedOver starts empty: no replacement has landed on any pod.
+		suspendedOver: map[string]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -322,10 +332,30 @@ func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("Workspace
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
 // ScriptWorkspaceWork set, else no work.
 func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	r.reading()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
 	return r.workspaceWork(issue)
+}
+
+// OnWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork run during first, before it
+// answers, with no lock of the fake held, so during may drive the daemon and the fake again: a test
+// starts a turn of a role there, as a turn can start while the read runs in the pod. nil clears it.
+func (r *Runtime) OnWorkspaceWork(during func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onRead = during
+}
+
+// reading runs what OnWorkspaceWork set, if anything, with no lock of the fake held.
+func (r *Runtime) reading() {
+	r.mu.Lock()
+	during := r.onRead
+	r.mu.Unlock()
+	if during != nil {
+		during()
+	}
 }
 
 // PodWorkspaceWork is the read the Sandbox runtime has the issue pod's launcher make: it records
@@ -334,6 +364,7 @@ func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role
 // Sandbox runtime names the pod its launcher read, error or not. An issue no ScriptIssuePod named
 // names no pod.
 func (r *Runtime) PodWorkspaceWork(_ context.Context, issue string) (runtime.WorkspaceWork, error) {
+	r.reading()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "PodWorkspaceWork", Issue: issue})
@@ -363,6 +394,24 @@ func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
 
 // FailReplacePod makes every later ReplacePod return err; nil clears it.
 func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
+
+// FailReplacePodAfterItsSuspension makes every later ReplacePod that due lets through land its
+// suspension and then return err, as the Sandbox runtime answers a replacement whose wait for the
+// pod to go ran out once the suspension was written (replaceRoundPod's awaitPodGone): the call is
+// recorded as ReplacePod, and the pod's Sandbox stands suspended over the pod from then on
+// (suspendedOver). nil clears it.
+func (r *Runtime) FailReplacePodAfterItsSuspension(err error) {
+	r.fail("ReplacePodAfterItsSuspension", err)
+}
+
+// ScriptSuspendedOver has the issue's Sandbox stand suspended over pod, as a replacement whose
+// suspension landed leaves the cluster for a daemon that did not make it, one restarted since
+// among them: a ReplacePod or a ReplaceIssuePod of pod replaces nothing and answers nil.
+func (r *Runtime) ScriptSuspendedOver(pod string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.suspendedOver[pod] = true
+}
 
 // HoldReplacePod makes every later ReplacePod run hold before it asks whether the replacement is
 // still due, which is where the Sandbox runtime waits out the pod's launch turn. A test holds
@@ -790,7 +839,9 @@ func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 // replacement was made, so no ReplacePod call stands for one — and its error is returned as the
 // runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
 // it named is gone, and the one built in its stead is built from the configuration the runtime
-// has now — and what FailReplacePod set is answered, nil by default.
+// has now — and what FailReplacePod set is answered, nil by default. A pod whose Sandbox stands
+// suspended over it (suspendedOver) is a pod no longer there to replace, as FindNoPodToReplace's
+// is; one that FailReplacePodAfterItsSuspension holds lands its suspension and returns that error.
 func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdReplace
@@ -798,8 +849,12 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if hold != nil {
 		hold()
 	}
+	pod := ""
+	if k.Locator != nil && k.Locator.Sandbox != nil {
+		pod = k.Locator.Sandbox.PodUID
+	}
 	r.mu.Lock()
-	if r.replaceNoPod {
+	if r.replaceNoPod || r.suspendedOver[pod] {
 		r.calls = append(r.calls, Call{Method: "ReplacePodNoPod", Pod: copyKnown(k)})
 		r.mu.Unlock()
 		return nil
@@ -814,6 +869,10 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "ReplacePod", Pod: copyKnown(k)})
+	if err := r.failures["ReplacePodAfterItsSuspension"]; err != nil {
+		r.suspendedOver[pod] = true
+		return err
+	}
 	if err := r.failures["ReplacePod"]; err != nil {
 		return err
 	}
@@ -844,6 +903,7 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	call := Call{Issue: issue, PodUID: podUID}
 	r.mu.Lock()
 	_, gone := r.replaced[podUID]
+	gone = gone || r.suspendedOver[podUID]
 	if pod, read := r.issuePods[issue]; read {
 		now, live := r.podNow(pod)
 		gone = gone || !live || now != podUID
