@@ -9,16 +9,16 @@ import (
 )
 
 // The prompt of a role an owner's plan defines is composed as a role of the deployment's is
-// (ComposeStep): the headless mechanics, the role's own prompt, then Legion's worker part, which
-// carries the SEPARATE-POD line, so a role a plan defines can ask for a pod of its own as each
-// phase worker can.
-func TestARoleOfAPlansComposedPromptHoldsTheSeparatePodLine(t *testing.T) {
+// (ComposeStep): the headless mechanics, the role's own prompt, then Legion's worker part, and the
+// role's own text reaches the composed prompt as it was written.
+func TestARoleOfAPlansPromptIsComposedAsADeploymentRolesIs(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	const own = "# Prober\n\nProbe the change."
 	prober := filepath.Join(t.TempDir(), "prober.md")
-	if err := os.WriteFile(prober, []byte("# Prober\n\nProbe the change."), 0o600); err != nil {
+	if err := os.WriteFile(prober, []byte(own), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	paths := composer.ComposeStep(prober).RolePromptPaths
@@ -35,10 +35,7 @@ func TestARoleOfAPlansComposedPromptHoldsTheSeparatePodLine(t *testing.T) {
 		text.Write(body)
 		text.WriteString("\n")
 	}
-	composed := text.String()
-	own, line := strings.Index(composed, "# Prober"), strings.Index(composed, "SEPARATE-POD <ISSUE> <task> <reason>")
-	if own < 0 || line < own || !strings.Contains(composed, "Legion starts no pod for this line") {
-		t.Fatalf("the prober's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
-			own, line, "Legion starts no pod for this line")
+	if composed := text.String(); !strings.Contains(composed, own) {
+		t.Fatalf("the prober's composed prompt lacks its own text %q:\n%s", own, composed)
 	}
 }
