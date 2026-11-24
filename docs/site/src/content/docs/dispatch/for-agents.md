@@ -66,8 +66,9 @@ goes through a `dispatch` command.
 Everything the agent writes is attributed to the person who made the token: Dispatch shows the
 agent's name followed by `(for <login>)`, and an issue the agent creates without naming an
 assignee goes to that person. An agent on the shared token has no such person, so its issue takes
-its parent's assignee instead, and where no parent names one, the project's default assignee, set
-on the Settings page. Every project names a default assignee, so every issue has one.
+its parent's assignee instead, and where no parent names one, or the parent is in another
+project, the project's default assignee, set on the Settings page. Every project names a default
+assignee, so every issue has one.
 `dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
 tells the agent who Dispatch takes it for.
 
@@ -79,7 +80,7 @@ tells the agent who Dispatch takes it for.
 | Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
 | Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
-| Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch edit-comment` replaces the body of a comment the agent wrote, and `dispatch delete-comment` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. `dispatch resolve-comment` resolves a thread. |
+| Comments | `dispatch comment` comments on a document or replies in a thread; `--mention-role <name>`, repeated, mentions a role, so Dispatch delivers the comment to the session that holds it, and `--mention role:<name>` or `--mention session:<id>` names a target whole. `dispatch suggest` proposes replacement text. `dispatch edit-comment` replaces the body of a comment the agent wrote, and `dispatch delete-comment` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. `dispatch edit-message` replaces the body of an issue message the agent wrote, and `dispatch delete-message` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `--history`, with a `--ref` naming one comment or message, lists the bodies an edit of that post replaced; a delete writes an entry of its own, and a deleted post's entries carry no body ([the command reference](/legion/dispatch/reference/tools/)). `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
@@ -210,8 +211,9 @@ whole spec with your text. Use `dispatch artifact` for real files, such as a rep
 draft to send as-is.
 
 An upload that does replace a document the owner already holds under that name says which version it replaces.
-Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and the token is what Dispatch itself asks of every replacement.
-An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`; nothing is written either way, and the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and Dispatch checks the token against the live document under the write's own lock.
+An upload naming a token the document has moved past is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
+An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; name it anyway, because Dispatch will refuse a replacement naming none again once every deployed command sends one.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
@@ -395,31 +397,32 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
-one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
-last five minutes, whatever its status; any other would make a repeated write twice. An attempt
-that reached nothing (a refused connection, a credential whose trade goes on) is asked again
-without that check, since its repeat is no second write. Dispatch makes the write once per key, so
-the command never makes a write twice. A repeat of a comment's or an issue message's create, a
-broadcast or a message to a session is answered with what the write made, read now; a repeat of a
-comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit or reply,
-with that post as it stands now. Any other repeat gets the first answer, or, where Dispatch gives
-no copy (a first answer over 1 MiB, a success holding a comment or an issue message deleted since
-or a document version a delete renamed, or one holding a related-item hit for a document in which
-a comment's insert suggestion, deleted since, was made at any time, so it may hold that
-suggestion's words), the first answer's status and the code `ANSWER_NOT_KEPT`. When the write
-landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
-reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
-call that writes nothing (`dispatch related`, the check an
-upload runs first) is asked once more under a new key, and exits 1 if Dispatch keeps no answer
-again. When an attempt may have reached Dispatch and the command got no answer Dispatch's keyed
-layer gave (no attempt answered, a page something in Dispatch's place wrote, a 2xx that is empty,
-not typed JSON or not JSON, but a bodiless 204 or 205), the command says the write may or may not
-have taken effect: read it back before you run the command again, since a new command is a new key.
-Reads, the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE`
-of `dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
-only where Dispatch did nothing with it: once more after Dispatch calls the token it presented dead,
-and on an old build's "no route" during a rolling release. A script that calls
+Every Dispatch that carries `b1c42d1d7d` judges the key on every `POST` and `PATCH` route, so the
+command asks nothing before it asks again. Dispatch makes the write once per key, so the command
+never makes a write twice. A repeat of a comment's or an issue message's create, a broadcast or a
+message to a session is answered with what the write made, read now; a repeat of a comment's edit,
+resolve, reopen, accept, reject or reply, or of an issue message's edit or reply, with that post as
+it stands now. Any other repeat gets the first answer, or, where Dispatch gives no copy (a first
+answer over 1 MiB, or a success holding a comment or an issue message deleted before the repeat or
+a document version a delete renamed), the first answer's status and the code `ANSWER_NOT_KEPT`.
+When the write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed
+2xx reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
+call that writes nothing (`dispatch related`, `dispatch result --dry-run`, the check an upload runs
+first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key, and exits 1 if
+Dispatch keeps no answer again. When an attempt may have
+landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
+non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key once an
+earlier answer to the same write carried it), or on a final refusal: `Idempotency-Replayed: ?1`
+(also a recovery replay), `422 KEY_REUSED` that echoes exactly its request key (every attempt of
+one command sends the same bytes, so a key held for another request was never claimed by this
+one), or a fresh answer that echoes exactly its request key, has a stored 4xx other than 401, 408
+or 429, and is none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every
+Dispatch replica runs `b1c42d1d7d`. Every other answer says the write may or may not have taken
+effect: read it back before you run the command again, since a new command is a new key. Reads,
+the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE` of
+`dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
+only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
+dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

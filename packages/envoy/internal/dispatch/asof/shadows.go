@@ -115,10 +115,9 @@ func ownedBy(event, row string) string {
 // in its own transaction.
 const postHistoryMigration = "20261110224508"
 
-// PostHistoryBegan is the time post_body_history began, as a SQL expression. The keyword table's
-// fill reads the same time (textversions), so the two pair a post's history rows with its edits
-// alike.
-const PostHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = ` + postHistoryMigration + `)`
+// postHistoryBegan is the time post_body_history began, as a SQL expression: the shadows pair a
+// post's history rows with its edit and delete events from this time on.
+const postHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = ` + postHistoryMigration + `)`
 
 // historyEventsCount is the number of the edit and delete events (types, a SQL list) of the post
 // whose row the alias post names that began at or after post_body_history began and that bound
@@ -131,7 +130,7 @@ const PostHistoryBegan = `(select m.applied_at from public.schema_migrations m w
 func historyEventsCount(events, post, types, bound string) string {
 	return `(select count(*) from ` + events + ` e
 		where e.payload->>'id' = ` + post + `.id::text and e.type in ` + types + `
-			and e.created_at >= ` + PostHistoryBegan + bound + `)`
+			and e.created_at >= ` + postHistoryBegan + bound + `)`
 }
 
 // postBodyAtCut is the body a comment or a message had at the cut, by decision 2's one clock,
@@ -153,7 +152,7 @@ func postBodyAtCut(post, column, newest, later, types, cut string) string {
 	return `case
 			when ` + post + `.deleted_at is not null then ''
 			when ` + later + `.id is null then ` + post + `.body
-			when ` + later + `.created_at >= ` + PostHistoryBegan + ` then coalesce((
+			when ` + later + `.created_at >= ` + postHistoryBegan + ` then coalesce((
 				select h.body from public.post_body_history h
 				where h.` + column + ` = ` + post + `.id
 				order by h.edited_at, h.id
@@ -274,6 +273,9 @@ var CutReadTables = map[string]string{
 	"document_search":           "Only the documents whose newest version at the cut is their present newest version.",
 	"embeddings": "Only the windows of items that did not change after the cut, " +
 		"embedded at or before the cut.",
+	"graph_nodes": "Only a node's visibility, through the predicate refs.VisibleKind and refs.VisibleEnd bind: " +
+		"which nodes the acting person may see is read as it stands now, so an answer at a cut gives no node " +
+		"that person may not see today. The node and tuple store keeps no history of a node's visibility.",
 	"post_body_history": "Only the body that the first comment.edited, comment.deleted, message.edited or message.deleted event " +
 		"of the post after the cut replaced, for an event at or after the time schema_migrations records for 20261110224508: " +
 		"the row of the post, in edited_at and id order, after as many rows as the post has such events at the cut at or after that time. " +

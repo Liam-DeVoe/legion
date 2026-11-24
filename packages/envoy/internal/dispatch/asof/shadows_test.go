@@ -774,6 +774,57 @@ func TestTheProjectDefaultIsUnknownBeforeItsFirstEvent(t *testing.T) {
 	}
 }
 
+// Migration 20261119000230 added projects.default_repo and filled it from each project's
+// repository mapping, whose default row named the project's default repository before it. From
+// that migration on, each change of the default appends a project.updated that carries the
+// project, which leaves default_repo out where the default is cleared. So at a cut the default is
+// the newest such event's since the migration; else the present one, when no such event is later
+// than the cut; else the mapping's default row, at the cut or, for a later cut, at the migration.
+func TestTheProjectDefaultRepositoryAtACut(t *testing.T) {
+	w := newWorld(t)
+	w.exec(`update schema_migrations set applied_at = '2026-11-19T00:00:00Z' where version = 20261119000230`)
+	made := when(t, "2026-11-01T00:00:00Z")
+	w.project("MAPPED", "carol", made)
+	w.project("CHANGED", "carol", made)
+	for _, mapping := range []struct{ repo, at string }{
+		{"acme/first", "2026-11-10T00:00:00Z"},
+		{"acme/second", "2026-11-12T00:00:00Z"},
+	} {
+		w.event(projectOwned("MAPPED"), "settings.repo_project.updated", alice,
+			map[string]any{"mapping": map[string]any{"repo": mapping.repo, "project": "MAPPED", "default": true}}, when(t, mapping.at))
+	}
+	// The second mapping took the default, so its switch demoted the first, as the writer does.
+	w.event(projectOwned("MAPPED"), "settings.repo_project.updated", alice,
+		map[string]any{"mapping": map[string]any{"repo": "acme/first", "project": "MAPPED", "default": false}}, when(t, "2026-11-12T00:00:00Z"))
+	w.exec(`update projects set default_repo = 'acme/second' where key = 'MAPPED'`)
+	w.event(projectOwned("CHANGED"), "project.updated", alice,
+		map[string]any{"key": "CHANGED", "name": "CHANGED", "default_repo": "acme/set"}, when(t, "2026-11-20T00:00:00Z"))
+	w.event(projectOwned("CHANGED"), "project.updated", alice,
+		map[string]any{"key": "CHANGED", "name": "CHANGED"}, when(t, "2026-11-21T00:00:00Z"))
+	for _, row := range []struct {
+		cut, project string
+		want         *string
+		why          string
+	}{
+		{"2026-11-11T00:00:00Z", "MAPPED", new("acme/first"), "the mapping's default row at the cut, before the migration"},
+		{"2026-11-13T00:00:00Z", "MAPPED", new("acme/second"), "the mapping's default row moved before the cut"},
+		{"2026-11-20T00:00:00Z", "MAPPED", new("acme/second"), "no change since the migration: the present value"},
+		{"2026-11-19T12:00:00Z", "CHANGED", nil, "a change after the cut, none before it: the mapping, which names none, at the migration"},
+		{"2026-11-20T12:00:00Z", "CHANGED", new("acme/set"), "the newest change at the cut"},
+		{"2026-11-22T00:00:00Z", "CHANGED", nil, "a change that leaves default_repo out clears it"},
+	} {
+		t.Run(row.project+" at "+row.cut, func(t *testing.T) {
+			var got *string
+			if err := w.database.Pool.QueryRow(atCut(t, row.cut), `select default_repo from projects where key = $1`, row.project).Scan(&got); err != nil {
+				t.Fatalf("read the project at the cut: %v", err)
+			}
+			if (got == nil) != (row.want == nil) || (got != nil && *got != *row.want) {
+				t.Errorf("default_repo = %v at the cut, want %v (%s)", deref(got), deref(row.want), row.why)
+			}
+		})
+	}
+}
+
 func deref(value *string) string {
 	if value == nil {
 		return "null"

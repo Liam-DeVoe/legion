@@ -77,13 +77,12 @@ type commentMarksContextKey struct{}
 // comment's own mark where an edit projects it.
 //
 // For the delete of a comment it is also the reject of the comment's pending suggestion
-// (RejectDeletedCommentSuggestion), the read of the document by which the anchors that reject took
-// text from are written again (RewriteTakenAnchors), and the version that settles the document
-// without an insert's words (SettleVersion). A closed issue still takes that delete, so its
-// document takes that reject, which carries the suggestion's text out of it with the comment's
-// body, and that version, which holds the document without it. Every other way a suggestion's mark
-// is placed or settled, and a content edit, a named version or a rebuild made under this context,
-// is still refused on a closed issue.
+// (RejectDeletedCommentSuggestion) and the version that settles the document without an insert's
+// words (SettleVersion). A closed issue still takes that delete, so its document takes that
+// reject, which carries the suggestion's text out of it with the comment's body, and that version,
+// which holds the document without it. Every other way a suggestion's mark is placed or settled,
+// and a content edit, a named version or a rebuild made under this context, is still refused on a
+// closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
@@ -686,8 +685,14 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
 	// takes it up (withSettlementLoad, retireSettlementRoom). It is known by this load's token as
 	// well as its document, so an earlier room's unload, which may run before ygo hands this room
-	// to anyone, does not read as this room's end (warmedRoom).
-	if isSettlementLoad(ctx) {
+	// to anyone, does not read as this room's end (warmedRoom). A writer that holds the writer slot
+	// now took it before this load took the record, so its take-up (openLiveWrite) cleared the mark
+	// before this load could set one, and this load sets none under it: the writer may publish into
+	// this room once the room has loaded (publishLiveWrite), so it takes the room up as a writer
+	// that takes the slot after the load does. A writer that let the slot go before this point
+	// published into no room of this load: a write with updates holds its slot until its publish's
+	// Apply, which waits for this load, returns.
+	if isSettlementLoad(ctx) && state.liveWriter == nil {
 		state.warmed = &warmedRoom{doc: doc, load: counted}
 	}
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its

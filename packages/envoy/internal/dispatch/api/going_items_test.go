@@ -140,9 +140,10 @@ func addItemTextVersion(t *testing.T, pool *store.Pool, artifactID string, numbe
 // the answer, and so is one whose text is only white space, which matches nothing by meaning
 // either.
 func TestGoingItemTextAnswersEachKindsOwnText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
-	texts, _, err := goingItemText(context.Background(), database.Pool, seeded.hits, contracts.GoingHitRuneMax)
+	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, contracts.GoingHitRuneMax)
 	if err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
@@ -160,10 +161,11 @@ func TestGoingItemTextAnswersEachKindsOwnText(t *testing.T) {
 // The cut is by runes and not by bytes, so an answer shown a text of two-byte and four-byte
 // characters is shown the characters asked for.
 func TestGoingItemTextCutsToRunes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	const runes = 7
-	texts, _, err := goingItemText(context.Background(), database.Pool, seeded.hits, runes)
+	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, runes)
 	if err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
@@ -183,6 +185,7 @@ func TestGoingItemTextCutsToRunes(t *testing.T) {
 // landed on: left counts characters in a UTF-8 database, so a budget falling between one-, two-,
 // three- and four-byte characters answers the bytes text.HeadRunes answered of the whole value.
 func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	// A text whose characters are of all four widths, so a cut inside it says which unit the
@@ -197,7 +200,7 @@ func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
 	hits := append(seeded.hits, going.Hit{Kind: "comment", ID: wide})
 	seeded.texts["comment:"+wide] = satellites
 	for _, runes := range []int{1, 2, 9, 10, 11, 12, 13} {
-		texts, _, err := goingItemText(context.Background(), database.Pool, hits, runes)
+		texts, err := goingItemText(context.Background(), database.Pool, hits, runes)
 		if err != nil {
 			t.Fatalf("goingItemText cut to %d runes: %v", runes, err)
 		}
@@ -214,17 +217,18 @@ func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
 // A page of hits costs one statement whatever kinds it names, and a page naming none makes no
 // statement at all.
 func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	recorder := &storetest.StatementRecorder{}
 	pool := storetest.Traced(t, database.Pool, recorder, nil)
-	if _, _, err := goingItemText(context.Background(), pool, seeded.hits, 100); err != nil {
+	if _, err := goingItemText(context.Background(), pool, seeded.hits, 100); err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
 	if statements := recorder.Statements(); len(statements) != 1 {
 		t.Fatalf("one page of %d hits made %d statements (%v), want one", len(seeded.hits), len(statements), statements)
 	}
-	texts, _, err := goingItemText(context.Background(), pool, nil, 100)
+	texts, err := goingItemText(context.Background(), pool, nil, 100)
 	if err != nil || len(texts) != 0 {
 		t.Fatalf("goingItemText over no hits = %v, %v; want an empty answer and no error", texts, err)
 	}
@@ -237,7 +241,8 @@ func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
 // lateral reads a hit's text with: the two must stay in sync, so that the text a model is given
 // for a hit is the text search ranked and showed the reader a snippet of.
 func TestGoingItemTextCoversSearchsOwnKinds(t *testing.T) {
-	page := searchPageAndTailSQL("legs")
+	t.Parallel()
+	page := searchPageAndTailSQL("legs", searchSeenParam)
 	for _, kind := range []string{"issue", "document", "comment", "ask", "message"} {
 		arm := "when '" + kind + "' then"
 		if !strings.Contains(goingItemTextQuery, arm) {

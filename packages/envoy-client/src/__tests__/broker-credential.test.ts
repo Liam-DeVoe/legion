@@ -8,7 +8,7 @@
 // machine is broker-credential-signins.test.ts's; a pod session whose registration has not landed
 // is broker-credential-registration.test.ts's.
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -403,8 +403,9 @@ test("with no bearer at all, the session's credential is its own identity traded
 });
 
 test("a session past its token's life trades again, with nothing restarted", async () => {
-  // One second of life is the broker's own minimum (BROKER_ACCESS_TOKEN_SECONDS), so every
-  // request after the first is inside the renewal window.
+  // One second of life is the broker's own minimum (BROKER_ACCESS_TOKEN_SECONDS). The client holds
+  // a token until its renewal (`renewalAt`), half its life for a token this short, so the clock
+  // moves a whole life on between the two requests: the second finds the token lapsed.
   const broker = stubBroker(1);
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
@@ -413,7 +414,12 @@ test("a session past its token's life trades again, with nothing restarted", asy
   const client = new DispatchClient(resolution.url, resolution.credential);
 
   await client.listAllIssues({});
-  await client.listAllIssues({});
+  setSystemTime(new Date(Date.now() + 1_000));
+  try {
+    await client.listAllIssues({});
+  } finally {
+    setSystemTime();
+  }
 
   expect(broker.trades.length).toBe(2);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([

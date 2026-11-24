@@ -30,7 +30,7 @@ import (
 // it catches up stops. A fill in a second process, with a pool and a horizon of its own, starts at
 // the cursor the first left: its first batch reads the event after the cursor first. At the end
 // every event has exactly the rows it starts, none twice and none missing, and the cursor row says
-// rules version 1 wrote them.
+// this build's rules version (rulesVersion) wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
@@ -595,23 +595,19 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 }
 
 // TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt holds the cursor row's rules to the
-// lowest rules version that wrote the rows up to the cursor. A fill that creates the cursor row
-// writes this build's, rulesVersion. Set to rulesVersion-1, as a build of an older rules version
-// leaves it (the column has no check), it stays rulesVersion-1 when this build's advance moves the
-// cursor past later events. After a reset of the event log the fill writes the cursor row again,
-// with rulesVersion.
-//
-// The test sends the advance statement itself (advanceCursorQuery) as this build's batch sends it,
-// and not a batch: a batch that finds the cursor row below rulesVersion reads the passed events
-// again and records its own version before it writes above the cursor (filler.reread, which
-// TestTheFillReadsAgainThePostEventsItPassed holds), so no batch of this build reaches the advance
-// over a lower version. The advance must keep that version all the same, never raise it.
+// lowest rules version that wrote the rows up to the cursor, until this build's re-read raises it.
+// A fill that creates the cursor row writes this build's version. A fill of rules version 1
+// (rulesVersion1) that writes the next events keeps its lower version there, and passes over the
+// events of the types version 2 added. The next fill of this build reads them again before
+// anything else, so every event has its rows, and raises the version. After a reset of the event
+// log the fill writes the cursor row again, with this build's version.
 func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
 	ctx := t.Context()
-	fill := testFiller(database, events.NewHorizon(database.Pool), io.Discard)
+	horizon := events.NewHorizon(database.Pool)
+	fill := testFiller(database, horizon, io.Discard)
 	first := textversionstest.WriteIssue(t, database, broker, 1)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("fill the first events: %v", err)
@@ -621,22 +617,23 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 			created.eventID, created.rules, first[len(first)-1].ID, rulesVersion)
 	}
 
-	if _, err := database.Pool.Exec(ctx, `update search_text_versions_fill set rules = $1`, rulesVersion-1); err != nil {
-		t.Fatalf("set the cursor row's rules to an older build's: %v", err)
-	}
+	older := testFiller(database, horizon, io.Discard)
+	older.rules = &rulesVersion1
 	later := textversionstest.WriteIssue(t, database, broker, 2)
-	last := later[len(later)-1].ID
-	var lastAt time.Time
-	if err := database.Pool.QueryRow(ctx, `select created_at from events where id = $1`, last).Scan(&lastAt); err != nil {
-		t.Fatalf("read the time of event %d: %v", last, err)
+	if err := older.toHorizon(ctx); err != nil {
+		t.Fatalf("fill the later events with rules version 1: %v", err)
 	}
-	var reach *time.Time
-	if err := database.Pool.QueryRow(ctx, advanceCursorQuery, last, lastAt, nil, nil, rulesVersion).Scan(&reach); err != nil {
-		t.Fatalf("move the cursor to event %d as this build's batch does: %v", last, err)
+	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].ID || got.rules != 1 {
+		t.Fatalf("after a fill of rules version 1 wrote past this build's cursor the row is at event %d with rules %d; want event %d and rules 1, the older fill's",
+			got.eventID, got.rules, later[len(later)-1].ID)
 	}
-	if got := readCursorRow(t, database); got.eventID != last || got.rules != rulesVersion-1 {
-		t.Fatalf("after this build's advance past an older build's cursor the row is at event %d with rules %d; want event %d and rules %d, the older build's",
-			got.eventID, got.rules, last, rulesVersion-1)
+	if err := fill.toHorizon(ctx); err != nil {
+		t.Fatalf("read again what the fill of rules version 1 passed over: %v", err)
+	}
+	textversionstest.RequireOnlyRowsOf(t, database, append(first, later...))
+	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].ID || got.rules != rulesVersion {
+		t.Fatalf("after this build read again what rules version 1 passed over the row is at event %d with rules %d; want event %d and rules %d",
+			got.eventID, got.rules, later[len(later)-1].ID, rulesVersion)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {

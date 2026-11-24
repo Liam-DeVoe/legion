@@ -5,16 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
-	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -66,16 +61,12 @@ const (
 const fillHoldName = "search-text-versions-fill"
 
 // The lines of the fill's batches that tests and measurements read: each batch's (filler.record),
-// and that of a batch that found the event log reset under the cursor.
+// each re-read batch's, and that of a batch that found the event log reset under the cursor.
 const (
-	batchMessage = "dispatch: the keyword fill wrote a batch"
-	resetMessage = "dispatch: the event log was reset under the keyword fill's cursor; the fill emptied its table and starts again from the first event"
+	batchMessage  = "dispatch: the keyword fill wrote a batch"
+	rereadMessage = "dispatch: the keyword fill read again what a fill of a lower rules version passed over"
+	resetMessage  = "dispatch: the event log was reset under the keyword fill's cursor; the fill emptied its table and starts again from the first event"
 )
-
-// rulesReadMessage is the line of the batch that read again the last of the events that earlier
-// rules passed and records rulesVersion in the cursor row (filler.reread).
-var rulesReadMessage = "dispatch: the keyword fill read again every event that earlier rules passed, and records rules version " +
-	strconv.Itoa(rulesVersion)
 
 // FillToHorizon writes the rows of every event up to the event log's safe horizon once, from the
 // fill's cursor, in batches with their rest, and returns: with no hold, so two fills that run at
@@ -115,13 +106,16 @@ type filler struct {
 	// maxEvents and maxBytes are the bounds of one batch (batchEvents, batchBytes).
 	maxEvents int
 	maxBytes  int64
+	// rules is the rules the fill decides by: this build's (currentRules), or in a test a lower
+	// version's, standing for a fill of an earlier build.
+	rules *ruleSet
+	// reread is where the re-read under way stands (rereadBatch): the cursor it reads up to and
+	// the last event its committed batches read. It is the zero value while none is under way.
+	reread rereadProgress
 	// progress is what the batches since the last progress line wrote, and breaches the events
 	// this fill wrote at or before a reach it had stored.
 	progress progress
 	breaches int
-	// rereadAfter is the id after which this fill's next reading again of the events earlier
-	// rules passed begins (filler.reread), 0 for the first.
-	rereadAfter int64
 }
 
 // progress counts the batches' work since the last progress line, which since names.
@@ -130,7 +124,8 @@ type progress struct {
 	events, rows, cut int
 }
 
-// newFiller is a fill on pool, up to horizon, with no hold, no pause and the production bounds.
+// newFiller is a fill on pool, up to horizon, with this build's rules, no hold, no pause and the
+// production bounds.
 func newFiller(pool txBeginner, horizon *events.Horizon) *filler {
 	return &filler{
 		pool:      pool,
@@ -139,6 +134,7 @@ func newFiller(pool txBeginner, horizon *events.Horizon) *filler {
 		rest:      sleep,
 		maxEvents: batchEvents,
 		maxBytes:  batchBytes,
+		rules:     &currentRules,
 	}
 }
 
@@ -210,9 +206,10 @@ func (f *filler) pass(ctx context.Context) (int64, error) {
 }
 
 // batchesTo writes batches up to safe until one reads no event or reads every event left up to
-// safe, and answers whether the horizon must be read again, the log having been reset. A batch
-// that reads again the events earlier rules passed (filler.reread) is followed by the next batch
-// whatever it read.
+// safe, and answers whether the horizon must be read again, the log having been reset. A re-read
+// batch (rereadBatch) is followed by the next batch whatever it read, after its rest: the batches
+// of the re-read run until one raises the rules version, and then the batches of the events above
+// the cursor.
 func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 	for {
 		if f.pause != nil {
@@ -221,7 +218,7 @@ func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 			}
 		}
 		result, err := f.batch(ctx, safe)
-		if result.events > 0 {
+		if result.events > 0 || result.reread {
 			f.record(result)
 		}
 		switch {
@@ -229,13 +226,18 @@ func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 			return false, err
 		case result.reset || result.oldHorizon:
 			return true, nil
-		case result.events == 0 && !result.reread:
+		case result.reread:
+			if err := f.rest(ctx, result.took); err != nil {
+				return false, err
+			}
+			continue
+		case result.events == 0:
 			return false, nil
 		}
 		if err := f.rest(ctx, result.took); err != nil {
 			return false, err
 		}
-		if !result.full && !result.reread {
+		if !result.full {
 			return false, nil
 		}
 	}
@@ -260,10 +262,12 @@ type batchResult struct {
 	// oldHorizon one that found the horizon above the log's newest id, read from a log since
 	// reset, and wrote nothing.
 	reset, oldHorizon bool
-	// reread is a batch that read again events at or below the cursor that earlier rules passed
-	// (filler.reread), from first to last, and left the cursor where it was.
-	reread bool
-	last   int64
+	// reread is a re-read batch (rereadBatch): events is then how many events of the types it
+	// reads it read, from first, rows the versions it decided of those it read again, redone
+	// the rows it decided again and changed, and raised whether it read everything and raised the
+	// cursor row's rules version, so the next batch writes the events above the cursor.
+	reread, raised bool
+	redone         int
 }
 
 // The statements of a batch's transaction (filler.batch) but its read of the events.
@@ -279,7 +283,8 @@ const (
 	// that holds no text keeps the time batchBoundsQuery set, which is the same.
 	batchStatementQuery = `select set_config('statement_timeout', $1, true)`
 	// lockCursorQuery locks the fill's cursor row for the batch's transaction, so two fills write
-	// one after the other: the second reads the cursor the first moved.
+	// one after the other: the second reads the cursor the first moved. It reads the rules
+	// version stored too, which a batch of a later rules version reads again from (rereadBatch).
 	lockCursorQuery = `select event_id, event_at, reach, rules from public.search_text_versions_fill where id = 1 for update`
 	// createCursorQuery creates the cursor row where none is: no event written, no reach, the
 	// holder $1 and this build's rules version $2.
@@ -304,17 +309,18 @@ const (
 	// a reach computed now never lowers the stored one, and none computed leaves it), records the
 	// holder $4 that wrote it, and keeps in rules the lowest rules version that wrote the rows up
 	// to the cursor: the one stored, or this batch's $5 where that is lower. So a batch of a later
-	// build after an older build's leaves the older version there, and a later build that reads
-	// more event types still finds the events the older rules wrote, to read them again; only
-	// that read again may raise it.
+	// build after an older build's leaves the older version there, and the next batch of the later
+	// build reads again what the older rules passed over (rereadBatch); only that read again
+	// raises it (raiseRulesQuery).
 	advanceCursorQuery = `update public.search_text_versions_fill
 	   set event_id = $1, event_at = $2, reach = greatest(reach, $3::timestamptz), holder = $4,
 	       rules = least(rules, $5::smallint), updated_at = now()
 	 where id = 1
 	returning reach`
-	// rulesReadQuery records, once the fill has read again every event earlier rules passed
-	// (filler.reread), the rules version $1 in the cursor row, and the holder $2 that read them.
-	rulesReadQuery = `update public.search_text_versions_fill set rules = $1, holder = $2, updated_at = now() where id = 1`
+	// raiseRulesQuery raises the cursor row's rules to $1 once a re-read has read again
+	// everything the lower version stored passed over up to the cursor, in the transaction of its
+	// last batch, which holds the cursor row (rereadBatch). The cursor stays where it is.
+	raiseRulesQuery = `update public.search_text_versions_fill set rules = $1::smallint, updated_at = now() where id = 1`
 )
 
 // askBodySQL is the body of the ask event e, as the ask's own search column makes it of the
@@ -325,16 +331,42 @@ const (
 // by the function the ask's column reads.
 const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.payload->'options', e.payload->'answer')`
 
-// eventColumns are the columns that readEventsQuery and readPassedEventsQuery read of each event
-// e of their CTE candidates: its row, the ask's body of an event of the types $6 (askBodySQL), and
-// for an event of the types $5 the bytes they count of it, those of its payload and, of a post
-// whose event cut its body, those of the body the post's present row holds. Each read of a
-// payload's value as a uuid is guarded by Postgres's own uuid input (pg_input_is_valid), so a
-// payload no rule can read reaches the rules, which name it, rather than failing the statement.
+// readEventsQuery reads one batch's events: those above the cursor ($1) and at or below the safe
+// horizon ($2), in id order, at most $3 of them, and of those the first whose bytes come to at
+// most $4, the first one whatever its size. Of an event of a type a rule reads ($5) it counts the
+// bytes of its payload and, of a post whose event cut its body, that body as the post's present
+// row holds it: the read's part of the batch's bound, which batchBytes states. Of an ask's event
+// ($6, askTypes) it reads the ask's body (askBodySQL), and null of every other event. Each read
+// of a payload's value as a uuid is guarded by Postgres's own uuid input (pg_input_is_valid), so
+// a payload no rule can read reaches the rules, which name it, rather than failing the statement.
 // The rules' guard (isUUID) passes only the canonical form, a subset of the forms Postgres reads
 // that holds each form a Dispatch writer writes: an id of any other form, even one Postgres
-// reads, stops the fill at its event, named.
-const eventColumns = `e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
+// reads, stops the fill at its event, named. Its project is the one the log names for it: its
+// own, its issue's or its document's. Its document is the one that owns it, for an event of a
+// document of no issue, through which presentBody finds the later events of a comment on that
+// document.
+const readEventsQuery = eventsCandidatesSQL + eventsSizedSQL
+
+// rereadLogTypes is the event types a re-read batch reads of the log, as the SQL list its
+// statement names (rereadEventsQuery): the types that change a post's text after the event that
+// wrote it (changeTypes), version 2's three among them. The partial index events_post_text_changes
+// (migration 20261121160853) holds the events of exactly these types, in id order, and the list is
+// written into the statement rather than bound, so even the generic plan a cached statement
+// settles on proves the index's predicate from it. TestTheReReadsLogReadUsesItsIndex holds the
+// list to changeTypes and to the migration's text, and the plan to the index.
+const rereadLogTypes = `'comment.deleted', 'comment.edited', 'message.deleted', 'message.edited'`
+
+// rereadEventsQuery is readEventsQuery over the events of rereadLogTypes alone, which a re-read
+// batch reads (filler.rereadBatch): the types that change a post's text, of which those a lower
+// stored rules version passed over are read again. It reads them through events_post_text_changes
+// from the id above $1, until it has $3 of them or meets $2.
+const rereadEventsQuery = eventsCandidatesSQL + ` and e.type in (` + rereadLogTypes + `)` + eventsSizedSQL
+
+// eventsCandidatesSQL and eventsSizedSQL are readEventsQuery up to its filter on the events and
+// after it.
+const eventsCandidatesSQL = `
+with candidates as (
+       select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
               case when e.type = any($6::text[]) then ` + askBodySQL + ` end as ask_body,
               case when e.type = any($5::text[]) then octet_length(e.payload::text) else 0 end as payload_size,
               case when e.type = any($5::text[])
@@ -347,13 +379,13 @@ const eventColumns = `e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e
                                         then (select octet_length(m.body) from public.messages m
                                                where m.id = (e.payload->>'id')::uuid)
                                  end, 0)
-                   else 0 end as row_body_size`
+                   else 0 end as row_body_size
+         from public.events e
+        where e.id > $1 and e.id <= $2`
 
-// sizedEvents ends a read of one batch's events after its CTE candidates (in id order, each with
-// the columns eventColumns names): of those, the first whose bytes come to at most $4, the first
-// one whatever its size, each with its project, the one the log names for it (its own, its
-// issue's or its document's), and how many candidates there were.
-const sizedEvents = `
+const eventsSizedSQL = `
+        order by e.id
+        limit $3),
      sized as (
        select c.*, sum(c.payload_size + c.row_body_size) over (order by c.id) as running,
               row_number() over (order by c.id) as n, count(*) over () as candidates
@@ -367,54 +399,20 @@ select s.id, s.type, s.issue_key, s.artifact_id::text,
  where s.n = 1 or s.running <= $4
  order by s.id`
 
-// readEventsQuery reads one batch's events: those above the cursor ($1) and at or below the safe
-// horizon ($2), in id order, at most $3 of them, and of those the first whose bytes come to at
-// most $4, the first one whatever its size (sizedEvents). Of an event of a type a rule reads ($5)
-// it counts the bytes of its payload and, of a post whose event cut its body, that body as the
-// post's present row holds it (eventColumns): the read's part of the batch's bound, which
-// batchBytes states. Of an ask's event ($6, askTypes) it reads the ask's body (askBodySQL), and
-// null of every other event. Its project is the one the log names for it: its own, its issue's or
-// its document's. Its document is the one that owns it, for an event of a document of no issue,
-// through which presentBody finds the later events of a comment on that document.
-const readEventsQuery = `
-with candidates as (
-       select ` + eventColumns + `
-         from public.events e
-        where e.id > $1 and e.id <= $2
-        order by e.id
-        limit $3),` + sizedEvents
-
-// readPassedEventsQuery reads one batch of the events the fill reads again (filler.reread): those
-// of the types $5 above $1 and at or below the cursor $2 that have no row yet, in id order, at
-// most $3 of them, and of those the first whose bytes come to at most $4, each with what
-// readEventsQuery reads of it ($6, askTypes). Only an event that began at or after the post body
-// history did can be of those types, which bounds the read to the events since then.
-const readPassedEventsQuery = `
-with candidates as (
-       select ` + eventColumns + `
-         from public.events e
-        where e.id > $1 and e.id <= $2 and e.type = any($5::text[])
-          and e.created_at >= ` + asof.PostHistoryBegan + `
-          and not exists (select from public.search_text_versions v
-                           where v.kind = split_part(e.type, '.', 1) and v.id = e.payload->>'id'
-                             and v.event_seq = e.seq)
-        order by e.id
-        limit $3),` + sizedEvents
-
 // batch writes one batch, up to safe, in one READ COMMITTED transaction: it locks the cursor row
 // (creating it at no event where none is); under a hold, checks that the hold is still this
 // holder's and writes nothing otherwise (duty.ErrHoldLost); checks the log against the cursor
-// (events.EventLogWasReset) and empties both tables of a log that was reset; reads again, while
-// the cursor row records rules earlier than rulesVersion, the events those rules passed
-// (filler.reread), and otherwise reads the events above the cursor up to safe within the batch's
-// bounds on what that read counts (readEventsQuery); decides their versions with the rules, which
-// count what the versions read and end the batch where its bytes reach the bound
-// (decideVersions, batchBytes); bounds its statements by the bytes the rules counted
-// (statementTimeout) and writes the versions; moves the cursor to the last event decided;
-// computes the reach (store.ComputeTextVersionsReach) and stores it where it is later than the
-// one stored; and commits. A batch that reads no event still stores the reach, so a fill caught
-// up keeps it current. An event whose payload the rules cannot read stops the batch there: the
-// events before it are written and answered, with the error that names it.
+// (events.EventLogWasReset) and empties both tables of a log that was reset; where the cursor row
+// holds a lower rules version than the fill's, writes a re-read batch in place of this one
+// (rereadBatch), and nothing above the cursor until the re-read raises it; reads the events above
+// the cursor up to safe within the batch's bounds on what that read counts (readEventsQuery);
+// decides their versions with the rules, which count what the versions read and end the batch
+// where its bytes reach the bound (decideVersions, batchBytes); bounds its statements by the bytes
+// the rules counted (statementTimeout) and writes the versions; moves the cursor to the last event
+// decided; computes the reach (store.ComputeTextVersionsReach) and stores it where it is later
+// than the one stored; and commits. A batch that reads no event still stores the reach, so a fill
+// caught up keeps it current. An event whose payload the rules cannot read stops the batch there:
+// the events before it are written and answered, with the error that names it.
 func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	started := time.Now()
 	ctx = store.WithTransactionTracking(ctx)
@@ -426,7 +424,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if _, err := tx.Exec(ctx, batchBoundsQuery, statementTimeout(0)); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: bound the batch: %w", err)
 	}
-	cursor, cursorAt, stored, rules, err := f.lockCursor(ctx, tx)
+	cursor, cursorAt, stored, storedRules, err := f.lockCursor(ctx, tx)
 	if err != nil {
 		return batchResult{}, err
 	}
@@ -454,21 +452,20 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 		if err := tx.Commit(ctx); err != nil {
 			return batchResult{}, fmt.Errorf("keyword fill: commit the emptied table: %w", err)
 		}
-		f.rereadAfter = 0
 		f.logger.Warn(resetMessage, "cursor", cursor, "newest", newest)
 		return batchResult{reset: true}, nil
 	}
-	if rules < rulesVersion {
-		return f.reread(ctx, tx, started, cursor, rules)
-	}
 	if safe > newest {
 		return batchResult{oldHorizon: true}, nil
+	}
+	if storedRules < f.rules.version {
+		return f.rereadBatch(ctx, tx, started, cursor, storedRules)
 	}
 	read, candidates, err := f.readEvents(ctx, tx, cursor, safe)
 	if err != nil {
 		return batchResult{}, err
 	}
-	got, n, err := decideVersions(ctx, tx, f.logger, read, f.maxBytes)
+	got, n, err := decideVersions(ctx, tx, f.logger, f.rules, read, f.maxBytes)
 	if err != nil && !errors.Is(err, errUnreadablePayload) {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
@@ -493,7 +490,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 		last := read[len(read)-1]
 		result.first, result.cursor, eventAt = read[0].ID, last.ID, &last.CreatedAt
 	}
-	if err := insertVersions(ctx, tx, got.Versions); err != nil {
+	if err := insertVersions(ctx, tx, got.Versions, false); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
 	reach, computed, err := store.ComputeTextVersionsReach(ctx, tx, result.cursor)
@@ -504,7 +501,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if computed {
 		reachArg = &reach
 	}
-	if err := tx.QueryRow(ctx, advanceCursorQuery, result.cursor, eventAt, reachArg, f.holderArg(), rulesVersion).
+	if err := tx.QueryRow(ctx, advanceCursorQuery, result.cursor, eventAt, reachArg, f.holderArg(), f.rules.version).
 		Scan(&result.reach); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: move the cursor to event %d: %w", result.cursor, err)
 	}
@@ -550,11 +547,16 @@ const insertVersionsQuery = `
 	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
 	             spec_artifact_id, spec_version)`
 
+// insertAgainSQL ends insertVersionsQuery for a re-read batch, whose versions the table can hold
+// already: those an earlier re-read wrote, of a pass a later rules version 1 batch made run again.
+const insertAgainSQL = `
+	    on conflict (kind, id, event_seq) do nothing`
+
 // insertVersions writes versions as rows of the keyword table in tx, in one statement
 // (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
-// row is never written twice: a version whose (kind, id, event_seq) the table holds fails the
-// statement.
-func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
+// batch's row is never written twice: a version whose (kind, id, event_seq) the table holds fails
+// the statement. A re-read batch's (again) writes nothing for such a version and keeps the row.
+func insertVersions(ctx context.Context, tx pgx.Tx, versions []version, again bool) error {
 	if len(versions) == 0 {
 		return nil
 	}
@@ -569,21 +571,25 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
 		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
 		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
 	}
-	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
+	query := insertVersionsQuery
+	if again {
+		query += insertAgainSQL
+	}
+	tag, err := tx.Exec(ctx, query, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
 		bodyFroms, specArtifacts, specVersions)
 	if err != nil {
 		return fmt.Errorf("write %d keyword versions: %w", n, err)
 	}
-	if tag.RowsAffected() != int64(n) {
+	if !again && tag.RowsAffected() != int64(n) {
 		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
 	}
 	return nil
 }
 
-// lockCursor locks the cursor row for tx, creating it at no event where none is, and answers the
-// cursor, the created_at of the event at it, the reach stored and the version of the rules that
-// wrote it. A row a reset emptied and wrote again while this lock waited is gone from the lock's
-// snapshot, so it is read again.
+// lockCursor locks the cursor row for tx, creating it at no event where none is, with the fill's
+// rules version, and answers the cursor, the created_at of the event at it, the reach stored and
+// the rules version stored. A row a reset emptied and wrote again while this lock waited is gone
+// from the lock's snapshot, so it is read again.
 func (f *filler) lockCursor(ctx context.Context, tx pgx.Tx) (cursor int64, cursorAt, reach *time.Time, rules int, err error) {
 	for attempt := 0; ; attempt++ {
 		err = tx.QueryRow(ctx, lockCursorQuery).Scan(&cursor, &cursorAt, &reach, &rules)
@@ -593,7 +599,7 @@ func (f *filler) lockCursor(ctx context.Context, tx pgx.Tx) (cursor int64, curso
 		case !errors.Is(err, pgx.ErrNoRows) || attempt > 0:
 			return 0, nil, nil, 0, fmt.Errorf("keyword fill: lock the cursor: %w", err)
 		}
-		if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), rulesVersion); err != nil {
+		if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), f.rules.version); err != nil {
 			return 0, nil, nil, 0, fmt.Errorf("keyword fill: create the cursor: %w", err)
 		}
 	}
@@ -607,7 +613,7 @@ func (f *filler) empty(ctx context.Context, tx pgx.Tx) error {
 			return fmt.Errorf("keyword fill: empty the table of a reset log: %w", err)
 		}
 	}
-	if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), rulesVersion); err != nil {
+	if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), f.rules.version); err != nil {
 		return fmt.Errorf("keyword fill: start the cursor of a reset log: %w", err)
 	}
 	return nil
@@ -629,33 +635,28 @@ func statementTimeout(bytes int64) string {
 	return fmt.Sprintf("%dms", timeout.Milliseconds())
 }
 
-// ruleTypes is the event types a rule reads (versionRules), sorted: the types whose payload
-// readEventsQuery counts.
-var ruleTypes = slices.Sorted(maps.Keys(versionRules))
+// ruleTypes is the event types a rule of this build reads (versionRules), sorted: the types whose
+// payload readEventsQuery counts.
+var ruleTypes = currentRules.types
 
 // askTypes is the types of ruleTypes that are an ask's (ask.*), whose rule is askVersion: the
 // types readEventsQuery reads the ask's body of (askBodySQL).
-var askTypes = slices.DeleteFunc(slices.Clone(ruleTypes), func(eventType string) bool {
-	return !strings.HasPrefix(eventType, "ask.")
-})
+var askTypes = currentRules.askTypes
 
 // readEvents reads the batch's events above cursor up to safe (readEventsQuery), each with the
 // bytes the read counted of it, and how many events the read took before its bound on bytes, so
 // a batch cut short by its bytes is known to leave events for the next one.
 func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) ([]event, int, error) {
-	read, candidates, err := f.scanEvents(tx.Query(ctx, readEventsQuery, cursor, safe, f.maxEvents, f.maxBytes, ruleTypes, askTypes))
-	if err != nil {
-		return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
-	}
-	return read, candidates, nil
+	return f.readLog(ctx, tx, readEventsQuery, cursor, safe, f.rules.types, f.rules.askTypes)
 }
 
-// scanEvents scans the rows of readEventsQuery or readPassedEventsQuery (sizedEvents): the events,
-// each with the bytes the read counted of it, and how many candidates the read took before its
-// bound on bytes.
-func (f *filler) scanEvents(rows pgx.Rows, err error) ([]event, int, error) {
+// readLog reads events above after up to through with query, readEventsQuery or its re-read's
+// shape (rereadEventsQuery), within the batch's bounds, counting the payloads of types and reading
+// the ask's body of asks.
+func (f *filler) readLog(ctx context.Context, tx pgx.Tx, query string, after, through int64, types, asks []string) ([]event, int, error) {
+	rows, err := tx.Query(ctx, query, after, through, f.maxEvents, f.maxBytes, types, asks)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", after, err)
 	}
 	defer rows.Close()
 	read := make([]event, 0, f.maxEvents)
@@ -666,97 +667,29 @@ func (f *filler) scanEvents(rows pgx.Rows, err error) ([]event, int, error) {
 		var taken int64
 		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.ArtifactID, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody,
 			&e.PayloadBytes, &e.RowBodyBytes, &taken); err != nil {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", after, err)
 		}
 		e.Payload = payload
 		read = append(read, e)
 		candidates = int(taken)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", after, err)
 	}
 	return read, candidates, nil
-}
-
-// reread reads again, in tx, one batch of the events that the rules of the version the cursor row
-// records passed without reading: the events at or below the cursor, of the types the later
-// versions of the rules added (addedSince), that have no row yet (readPassedEventsQuery). It
-// decides and writes their versions as a batch writes the events above the cursor, within the
-// same bounds (decideVersions), and leaves the cursor and the reach as they are. The batch that
-// reads the last of them records rulesVersion in the cursor row in its own transaction
-// (rulesReadQuery), and every batch after it reads above the cursor again. Each event comes
-// after every row of its item that the earlier rules wrote, so its rule reads the item's text
-// before it (decideVersions).
-//
-// rereadAfter keeps the place of this process's reading. A fill in another process, or after a
-// restart, reads from the first again, and passes over each event that has its row.
-func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, cursor int64, rules int) (batchResult, error) {
-	read, candidates, err := f.scanEvents(tx.Query(ctx, readPassedEventsQuery,
-		f.rereadAfter, cursor, f.maxEvents, f.maxBytes, addedSince(rules), askTypes))
-	if err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: read again the events at or below event %d that rules version %d passed: %w", cursor, rules, err)
-	}
-	got, n, err := decideVersions(ctx, tx, f.logger, read, f.maxBytes)
-	if err != nil && !errors.Is(err, errUnreadablePayload) {
-		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-	}
-	unreadable := err
-	read = read[:n]
-	if got.Bytes > 0 {
-		if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(got.Bytes)); err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: bound the batch's statements: %w", err)
-		}
-	}
-	result := batchResult{
-		reread: true,
-		events: len(read),
-		bytes:  got.Bytes,
-		rows:   len(got.Versions),
-		cut:    got.Cut,
-		cursor: cursor,
-	}
-	if len(read) > 0 {
-		result.first, result.last = read[0].ID, read[len(read)-1].ID
-	}
-	if err := insertVersions(ctx, tx, got.Versions); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-	}
-	done := unreadable == nil && n == candidates && candidates < f.maxEvents
-	if done {
-		if _, err := tx.Exec(ctx, rulesReadQuery, rulesVersion, f.holderArg()); err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: record rules version %d: %w", rulesVersion, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: commit the events read again: %w", err)
-	}
-	switch {
-	case done:
-		f.rereadAfter = 0
-		f.logger.Info(rulesReadMessage,
-			"cursor", cursor, "earlier_rules", rules)
-	case len(read) > 0:
-		f.rereadAfter = result.last
-	}
-	result.took = time.Since(started)
-	if unreadable != nil {
-		return result, fmt.Errorf("keyword fill: %w", unreadable)
-	}
-	return result, nil
 }
 
 // record logs a batch that wrote events: a debug line for each batch, which a measurement reads;
 // a progress line at most each progressEvery while the fill catches up, with what the batches
 // since the last one wrote; and an error for events written at or before the reach stored before,
-// each a breach of what the reach said. A batch that read again events earlier rules passed
-// (filler.reread) gets a line of its own and counts in neither: its events are below the cursor,
-// and no reach was answered over them while the cursor row recorded those rules
-// (store.TextVersionsAt).
+// each a breach of what the reach said. A re-read batch is logged at INFO alone (rereadMessage):
+// it runs only after a fill of a lower rules version wrote, and a search at a cut up to the reach
+// missed the versions it writes, which the line counts.
 func (f *filler) record(r batchResult) {
 	if r.reread {
-		f.logger.Info("dispatch: the keyword fill read again events that earlier rules passed",
-			"events", r.events, "first_event", r.first, "last_event", r.last, "cursor", r.cursor, "rows", r.rows,
-			"cut_bodies", r.cut, "bytes", r.bytes, "batch_ms", r.took.Milliseconds())
+		f.logger.Info(rereadMessage,
+			"events", r.events, "first_event", r.first, "cursor", r.cursor, "rows", r.rows, "redone", r.redone,
+			"cut_bodies", r.cut, "bytes", r.bytes, "raised", r.raised, "batch_ms", r.took.Milliseconds())
 		return
 	}
 	f.logger.Debug(batchMessage,

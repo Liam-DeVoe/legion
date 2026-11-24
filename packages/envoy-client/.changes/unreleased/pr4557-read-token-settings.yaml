@@ -11,7 +11,8 @@ body: |-
   the P-256 key that the token is bound to, in PKCS#8 PEM. The command reads both files before each
   request and sends the token only to `DISPATCH_URL`. It refuses to start when one file setting is
   set alone, when `DISPATCH_URL` is not set, or when another Dispatch credential setting is set
-  beside them.
+  beside them. `dispatch login` refuses while either file setting is set, so a copy given the
+  files starts no device login and keeps no login file.
 
   Under a read-only token, a write command prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and
   exits 1. `dispatch whoami` says that the credential may only read, and names its cut.

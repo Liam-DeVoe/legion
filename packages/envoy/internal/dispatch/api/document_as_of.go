@@ -108,7 +108,7 @@ func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, bl
 	if !blocks {
 		return markdown, deref(token), nil, nil
 	}
-	rendered, listed, err := docs.VersionBlocks(markdown)
+	rendered, listed, err := docs.VersionRenderingBlocks(markdown)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -126,7 +126,7 @@ func (s *server) artifactBlocksAtTheCut(ctx context.Context, artifactID string) 
 	if err != nil {
 		return nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
-	rendered, blocks, err := docs.VersionBlocks(markdown)
+	rendered, blocks, err := docs.VersionRenderingBlocks(markdown)
 	if err != nil {
 		return nil, err
 	}

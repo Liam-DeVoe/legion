@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // rowDrive is how a drive sends one GET row of the table on the seeded store (newDriveWorld) and
@@ -108,6 +109,12 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
 	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+email\s+from\s+people\s+order\s+by\s+email\b`)},
+	// P's page lists P's reply (the seed's comments), so the route runs its list, the statement
+	// that runs only once the page is shown. Every credential of the drive acts as P, so a page
+	// shown to nobody would answer P, its own reader, an empty 200, which the list's absence alone
+	// tells apart.
+	"GET /api/v1/people/{login}/nodes": {target: "/api/v1/people/$person/nodes",
+		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+r\.from_kind\b`)},
 	"GET /api/v1/whoami": {target: "/api/v1/whoami", fromMemory: "it answers the credential the request resolved", credential: &credentialAnswer{
 		reason:  "whoami answers the credential's own scopes: a read-only one's hold read and never approve, its writer's do not hold read",
 		members: []string{"scopes"},
@@ -121,7 +128,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
 	"GET /api/v1/issues/{key}/events":     {target: "/api/v1/issues/$issue/events", statement: statementOf(`\bselect\s+last_seq,\s*created_at\s+from\s+issues\b`)},
-	"GET /api/v1/issues/{key}/references": {target: "/api/v1/issues/$issue/references", statement: statementOf(`\bwith\s+recursive\s+closure\s+as\b`)},
+	// refs.Closure tags each statement it runs (refs.ClosureTag), its one-hop reads in each direction.
+	"GET /api/v1/issues/{key}/references": {target: "/api/v1/issues/$issue/references", statement: statementOf(regexp.QuoteMeta(refs.ClosureTag))},
 	"GET /api/v1/issues/{key}/collaborators": {target: "/api/v1/issues/$issue/collaborators",
 		statement: statementOf(`\bselect\s+assignee\s+from\s+issues\s+where\s+key\b`)},
 	"GET /api/v1/references":           {target: "/api/v1/references?to=$issueRef&since=0", statement: statementOf(`\bfrom\s+graph_edges\s+g\b`)},
@@ -202,6 +210,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/artifacts/{id}/text": {target: "/api/v1/artifacts/$notes/text?blocks=true", statement: statementOf(`\bselect\s+max\(number\)\s+from\s+artifact_versions\b`)},
 	"GET /api/v1/artifacts/{id}/versions/{number}": {target: "/api/v1/artifacts/$notes/versions/1",
 		statement: statementOf(`\bfrom\s+artifact_versions\s+v\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`)},
+	"GET /api/v1/artifacts/{id}/changes": {target: "/api/v1/artifacts/$notes/changes?from=1&to=2",
+		statement: statementOf(`\bfrom\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1::uuid\s+and\s+number\s*=\s*any\(\$2::int\[\]\)`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}": {target: "/api/v1/issues/$issue/artifacts/$notesSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {target: "/api/v1/issues/$issue/artifacts/$notesSlug/text",
 		statement: statementOf(`\bselect\s+max\(number\)\s+from\s+artifact_versions\b`)},
@@ -286,6 +296,7 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 // write. Every problem is collected first and the test fails once, naming each of them, so one
 // run lists all that is missing.
 func TestEveryGETRowHasADrive(t *testing.T) {
+	t.Parallel()
 	patterns := map[string]string{}
 	var problems []string
 	for _, route := range readOnlyTable() {
@@ -483,7 +494,9 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // token (read-person, P, session S) and the same answer with the project scope person and no
 // read; and P's personal token holding read and person, and P's holding person. In each pair the
 // read-only credential is sent first, so nothing its writer writes is what the read-only request
-// read.
+// read. Before the personal pair, P's read-only token is left with no last use and P's writer with
+// one now (startPersonalPair): the read-only request makes its last-use write, under both answers,
+// and the writer's request, sent within agentTokenUse's minute, makes none.
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
 // statement on any context (poolStatements), and each read-only request is sent in a window: it
@@ -510,6 +523,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
+	// Not parallel: it holds every window and every personal pair to a wall-clock bound
+	// (driveWindowLimit, agentTokenUse's minute) for minutes, and run among this package's parallel
+	// tests on CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
+	// missed its 3 s beside it (envoy-go-race-api job 137929719893).
 	rows, drives := drivenRows(t, readWritesNothing)
 	world := newDriveWorld(t)
 	world.calibrate(t)
@@ -618,6 +635,9 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 		readOnly, writer := pair[0], pair[1]
 		what := readOnly.who + " on " + target
 		w.tracer.quiet(t, "before "+what)
+		if readOnly.personal {
+			w.startPersonalPair(t)
+		}
 		var answer *httptest.ResponseRecorder
 		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
@@ -678,6 +698,7 @@ func statementList(statements []drivenStatement) string {
 // the row's rows before it and one after. The rows run in the table's order, which is the order
 // getWriteDrives's runs need.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
+	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
 	world := newDriveRig(t)
 	world.seedWrites(t)

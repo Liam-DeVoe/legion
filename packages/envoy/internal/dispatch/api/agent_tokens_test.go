@@ -39,6 +39,7 @@ type agentTokenRow struct {
 }
 
 func TestAgentTokensArePrivateRevocableAndAttributeSessionWrites(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -199,6 +200,7 @@ func TestAgentTokensArePrivateRevocableAndAttributeSessionWrites(t *testing.T) {
 // The mint is still made once: a repeat under the key, its answer lost or not, is 409
 // KEY_COMMITTED - the token was made and is not shown again - and no second token is minted.
 func TestAKeyedTokenMintKeepsNoPlaintextAndMintsOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	mint := func() *httptest.ResponseRecorder {
 		t.Helper()
@@ -304,6 +306,7 @@ func listedScopes(t *testing.T, handler http.Handler, login string) [][]string {
 // read beside approve is 400 TOKEN_SCOPES_INPUT and mints nothing, since settling what a person
 // settles is a write.
 func TestAPersonalTokenMayHoldReadBesidePersonOrAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "READ", "name": "Reading",
@@ -405,6 +408,7 @@ func TestAPersonalTokenMayHoldReadBesidePersonOrAlone(t *testing.T) {
 // keeps the scopes it held. Another person's read-only token is 404 NOT_FOUND, as any token not
 // the caller's is. The control: the token that writes still changes between person and approve.
 func TestAnExistingTokenCannotBeChangedToRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	writer := mintPersonalToken(t, handler, "alice", "writer", []string{model.ScopePerson})
 	reader := mintPersonalToken(t, handler, "alice", "reader", []string{model.ScopeRead, model.ScopePerson})
@@ -453,6 +457,7 @@ func TestAnExistingTokenCannotBeChangedToRead(t *testing.T) {
 // 204 as the first did. From then on whoami and a read answer it 401 TOKEN_REVOKED, and the list
 // shows it revoked. Another person's DELETE of it is 404 and leaves it working.
 func TestRevokingAReadOnlyPersonalTokenEndsIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "REVOKE", "name": "Revoking",
@@ -508,6 +513,7 @@ func TestRevokingAReadOnlyPersonalTokenEndsIt(t *testing.T) {
 // last_used_at; another within the minute writes nothing; once the minute has passed the next
 // one writes it again. Neither writes the row of the person's token that writes.
 func TestAReadOnlyPersonalTokenRecordsItsLastUse(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	writer := mintPersonalToken(t, handler, "alice", "writer", []string{model.ScopePerson})
 	reader := mintPersonalToken(t, handler, "alice", "reader", []string{model.ScopeRead, model.ScopePerson})

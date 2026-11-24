@@ -434,15 +434,20 @@ export async function readCommand(
     };
   }
   const readPromise = client.read(issueKey, readEvents, cut);
-  // Start the independent, non-fatal closure lookup with the issue read. `read` retains
+  // Start the independent, non-fatal references lookup with the issue read. `read` retains
   // its internal issue-then-events order because event pagination starts at issue.last_seq.
   const referencesPromise = issueReferencesOrUnavailable(client, issueKey, cut);
   const read = await readPromise;
+  const issueRef = dispatchIssueRef(read.issue.key);
   // The claim's holder must read the same here as on the issue page, so the label comes
-  // from the live registry — asked for only when a session holds this issue.
-  const [references, graph, agents, pictures, coverage] = await Promise.all([
+  // from the live registry — asked for only when a session holds this issue. The issue node's
+  // graph is read in both directions here rather than through `graphSections`: the summary
+  // prints `Referenced by:` from the references read's `linked_from` and the structural edges
+  // in, and leaves a node under `Links:` or at a structural edge's source out of `References:`.
+  const [references, incoming, outgoing, agents, pictures, coverage] = await Promise.all([
     referencesPromise,
-    graphSections(client, dispatchIssueRef(read.issue.key), cut),
+    graphReferences(client, { to: issueRef }, cut),
+    graphReferences(client, { from: issueRef }, cut),
     liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue), cut),
     picturesOf([
       ...(read.issue.open_asks ?? []).map((ask) => ({ text: ask.question, at: ask.created_at })),
@@ -455,7 +460,8 @@ export async function readCommand(
       read.issue,
       read.events,
       references,
-      [...pictures.lines, ...graph],
+      pictures.lines,
+      { incoming, outgoing },
       linkBase,
       coverage,
       agents,

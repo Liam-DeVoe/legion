@@ -21,6 +21,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -694,8 +695,8 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 
 // ReplaceText replaces the entire live document tree so connected clients
 // receive document uploads as a regular server-side transaction. The precondition names the
-// token of the version the caller believes it is replacing, which every replacement names, and
-// is checked under the write's own locks.
+// token of the version the caller believes it is replacing and is checked under the write's own
+// locks; a replacement that names none is taken unchecked (see below).
 func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined
@@ -713,10 +714,6 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	var canonical string
 	var read pmdoc.WrittenReadBack
 	var unchanged bool
-	// unchangedTree is the live tree a write that changes nothing found rendering as the
-	// replacement, the markdown its caller's version stores (unchangedStampOf), and nil for every
-	// other write.
-	var unchangedTree *pmdoc.Node
 	// The rendering of the replacement, which this write makes to tell whether the upload changes
 	// the document and answers its caller with: the write leaves that very tree in the fork,
 	// unless it has anchors to carry over, so applyLive takes this rendering for the fork it
@@ -745,21 +742,25 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		// The token the upload names is checked here, inside the write's own locks and before
 		// the replacement is parsed, so no other writer can land between the check and the
-		// write, as a conditional edit checks it (ApplyOps); a replacement that names none is
-		// refused here, since every replacement says which version it replaces. A repair turns
-		// that around: the live tree is outside the Proof schema, so it renders no markdown and
-		// has no token at all, and this upload is the only way to repair the document, so a
-		// repair names no token, and one that names a token names a token this document has
-		// never had. That token is refused rather than dropped, since a dropped guard tells the
-		// caller its write was conditional when nothing had checked it.
+		// write, as a conditional edit checks it (ApplyOps). A replacement that names no token
+		// is taken unchecked, as every replacement was before #3000: no deployed `dispatch`
+		// client can name one on `dispatch artifact`, so refusing it refused every agent's
+		// replacement (INFRA-4980). The upload route counts and logs each one it stores (api's
+		// noteUnguardedReplacement), and the refusal comes back in a later change, once every
+		// deployed client sends the token. A repair turns the check around: the live tree is
+		// outside the Proof schema, so it renders no markdown and has no token at all, and this
+		// upload is the only way to repair the document, so a repair names no token, and one
+		// that names a token names a token this document has never had. That token is refused
+		// rather than dropped, since a dropped guard tells the caller its write was conditional
+		// when nothing had checked it.
 		if repairing {
 			if precondition != nil {
 				return ErrPreconditionUnavailable
 			}
-		} else if precondition == nil {
-			return ErrPreconditionRequired
-		} else if _, err := checkEditPrecondition(current, *precondition); err != nil {
-			return err
+		} else if precondition != nil {
+			if _, err := checkEditPrecondition(current, *precondition); err != nil {
+				return err
+			}
 		}
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)
@@ -786,7 +787,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
-			unchanged, unchangedTree = true, current
+			unchanged = true
 			return nil
 		}
 		type reanchor struct {
@@ -893,13 +894,6 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// markdown back as one the fragment took.
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		return "", wrapUnlessTooLarge(err, "replace live document")
-	}
-	// A write that changed nothing recorded no operation, so this transaction holds no tree of the
-	// markdown its caller's version stores (writtenRendering, Ledger.QueueVersion). The live tree
-	// it found renders as that markdown, a pending insert's words included, so that version stores
-	// its insert tree (RenderStampOf).
-	if unchanged {
-		ledgerFrom(ctx).wroteUnchanged(artifactID, canonical, unchangedStampOf(artifactID, unchangedTree))
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
@@ -1304,18 +1298,37 @@ func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
 	return rendered.markdown, rendered.blocks, nil
 }
 
-// VersionBlocks is the blocks of markdown, the stored rendering of a document version, read back
-// (pmdoc.ParseRendering) and rendered once (documentBlocks): the canonical markdown of that tree,
-// and the blocks whose byte ranges index into it. The markdown names the id of a typed block only,
-// so the parse makes a new id for each other block, which no reader knows, and each block's token
-// is of the tree that holds those ids. A read of a document at a past time reads its version so
-// (api's artifactBlocksAtTheCut), since the live document holds the present only.
-func VersionBlocks(markdown string) (string, []model.ArtifactBlock, error) {
-	tree, err := pmdoc.ParseRendering(markdown)
+// VersionRenderingBlocks is every block of a stored document version, read from that version's
+// own markdown rather than the live tree: the version parsed as a rendering (pmdoc.ParseRendering),
+// then rendered once into its markdown and its blocks (documentBlocks). The markdown it answers is
+// that rendering, which the blocks' byte ranges index. Only a typed block's opening line writes its
+// id into the stored text, so the parse mints a new id, which no reader knows, for each other block
+// each time, and each block's token is of the tree that holds those ids: a reader that names an
+// untyped block gives it an id from a record of its own (api's blocksAtTheCut, for a read of a
+// document at a past time, since the live document holds the present only). A version holding an
+// element this build does not know is a NewerContentError, any other refusal an
+// OutsideSchemaError (documentSchemaError).
+func VersionRenderingBlocks(stored string) (string, []model.ArtifactBlock, error) {
+	tree, err := pmdoc.ParseRendering(stored)
 	if err != nil {
 		return "", nil, documentSchemaError(err)
 	}
 	return documentBlocks(tree)
+}
+
+// VersionBlocks is the typed blocks of a stored document version (VersionRenderingBlocks), with
+// the rendering their byte ranges index; it is stored unless a renderer before this build's wrote
+// the version otherwise. Only typed blocks are listed, because only a typed block has the same id
+// in every read of the version and in every later version that keeps it.
+func VersionBlocks(stored string) (string, []model.ArtifactBlock, error) {
+	markdown, blocks, err := VersionRenderingBlocks(stored)
+	if err != nil {
+		return "", nil, err
+	}
+	typed := slices.DeleteFunc(blocks, func(block model.ArtifactBlock) bool {
+		return !pmdoc.IsTypedBlock(block.Type)
+	})
+	return markdown, typed, nil
 }
 
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
@@ -1578,7 +1591,7 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 	if err := s.settledEditNotice(ctx, tx, artifactID, closedIssue, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
@@ -2075,7 +2088,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
 }
 
 // serviceTransact wraps Server.Apply's transact so the room's update observer can tell the
@@ -2433,10 +2446,13 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 
 // versionWriteResult is a written version together with the counted reference targets its body
 // moved: the caller that appends the version event names them, so a reader holding those
-// nodes' batched backlink counts refreshes exactly their rows.
+// nodes' batched backlink counts refreshes exactly their rows. blocks is what the version's
+// block index stated in the node and tuple store, which that same caller appends under the
+// event it appends (graphstore.Caused).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
+	blocks  graphstore.Uncaused
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
@@ -2505,7 +2521,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
@@ -2546,7 +2562,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 			ledger.recordVersion(artifactID, version, *spec.capture)
 		}
 	}
-	return versionWriteResult{version: version, changes: changes}, nil
+	return versionWriteResult{version: version, changes: changes, blocks: blocks}, nil
 }
 
 // queueVersionInsert is how every document version is written: it numbers and dates the next
@@ -2577,7 +2593,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, insertTree: stamp.InsertTree, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
 	}
 	return version, nil
 }
@@ -2587,10 +2603,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 // what the markdown was rendered from, stored with the head this insert meets, so a text read of
 // a document still standing there serves the stored markdown rather than rendering the document
 // again (storedText): the head and the transaction standing at it are read in the insert itself,
-// which the write phase runs after the appends this transaction queued before it. The same insert
-// stores the stamp's insert tree (artifact_versions.insert_tree, null where the tree holds no
-// insert suggestion's mark), which every read of the version's text masks it by
-// (MaskedVersionText).
+// which the write phase runs after the appends this transaction queued before it.
 func versionInsert(artifactID, markdown string, authors []model.Actor, number int, createdAt time.Time, named bool, summary *string, docUpdateVersion int64, stamp RenderStamp) (model.Version, WriteStep, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
@@ -2602,9 +2615,9 @@ func versionInsert(artifactID, markdown string, authors []model.Actor, number in
 		return model.Version{}, nil, fmt.Errorf("decode document version authors: %w", err)
 	}
 	return version, execStep("write document version", RenderStampHead+`
-		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`, insert_tree)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10, $11)
-	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer, stamp.InsertTree), nil
+		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10)
+	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer), nil
 }
 
 // versionSlot numbers and dates the next version of artifactID tx writes: through the ledger tx's

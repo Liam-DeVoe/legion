@@ -26,10 +26,10 @@ type TextVersions struct {
 }
 
 // TextVersionsRules is the version of the fill's event rules that the relation needs
-// (textversions' versionRules): version 2 reads the edit of an issue message and the delete of
-// a comment or a message, which version 1 passed. A cursor row that an earlier version wrote
-// lacks the rows of those events below its cursor, until the fill reads them again, so no time
-// is reached while the cursor row records an earlier version.
+// (textversions' rulesVersion): version 2 reads the edit of an issue message and the delete of a
+// comment or a message, which version 1 passed. A cursor row that an earlier version wrote lacks
+// the rows of those events below its cursor until the fill reads them again, and only that read
+// raises the row's rules, so no time is reached while the cursor row records an earlier version.
 const TextVersionsRules = 2
 
 // SQL is the relation as one parenthesised select, for a statement to join as `from <SQL> v`
@@ -39,9 +39,13 @@ const TextVersionsRules = 2
 // project_key text, event_id bigint, event_seq integer, started_at timestamptz, body text,
 // spec_artifact_id uuid, spec_version integer, search tsvector and deleted_at timestamptz.
 //
-// deleted_at is the post's present deleted_at, on every version of a comment or a message, and
-// null for an issue and an ask: a reader hides a post deleted after the cut at the cut too, as
-// soon as its delete commits and before the fill reads the delete.
+// deleted_at is the post's own delete mark as it stands now (comments.deleted_at for a comment,
+// messages.deleted_at for a message), on every version of a deleted post whatever the cut, and
+// null on every version of a post that stands and of an issue or an ask: no read gives a deleted
+// post's words (R3 of dispatch://INFRA-1523), the words it held before its delete included, so a
+// reader leaves out or marks each version that carries it, as the present search stamps a
+// deleted post's hit. It is read by the post's primary key, only for a row the reader takes, and
+// an id that is no uuid, which names no post, answers null rather than failing the cast.
 //
 // A version holds at the cut when it started at or before the cut and no later version of the
 // same item, in its owner's seq order, started at or before the cut; so an item has at most one
@@ -53,8 +57,11 @@ func (v TextVersions) SQL() string {
 	cut := "'" + textVersionsTime(v.Cut) + "'::timestamptz"
 	return `(select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at, v.body,
         v.spec_artifact_id, v.spec_version, v.search,
-        case v.kind when 'comment' then (select c.deleted_at from public.comments c where c.id = ` + CastableUUID(`v.id`) + `)
-                    when 'message' then (select m.deleted_at from public.messages m where m.id = ` + CastableUUID(`v.id`) + `)
+        case v.kind
+          when 'comment' then (select c.deleted_at from public.comments c
+                                where c.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+          when 'message' then (select m.deleted_at from public.messages m
+                                where m.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
         end as deleted_at
    from public.search_text_versions v
   where v.started_at <= ` + cut + `
@@ -135,7 +142,7 @@ func (s *Store) TextVersionsAt(ctx context.Context, cut time.Time) (TextVersions
 
 // TextVersionsReach answers how far the keyword table's fill has reached: the latest time at or
 // before which every event, one a transaction still open will commit included, has its rows.
-// reached is false while the fill has written no cursor row, while the row records rules earlier
+// reached is false while the fill has written no cursor row, while that row records rules earlier
 // than TextVersionsRules, and while it has stored no reach and none can be computed now.
 //
 // It reads the cursor row and computes the reach again (ComputeTextVersionsReach) in one

@@ -240,6 +240,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 // and logs it, and a pass of the first program's keeper, whose binary does not compile the subject,
 // leaves it there.
 func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	const added = "notifications.newer.>"
 	limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
@@ -290,6 +291,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 // before the start's move. Its next pass, on the stream the start moved them off, restores the
 // byte limit with no role lane in the list.
 func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	roleLane := contracts.RoleTopicPrefix + ">"
 	legacy := *streamCfg
@@ -330,6 +332,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 // lacks and that overlap none deployed: it keeps every deployed subject, a foreign one, a widened
 // one and a narrowed one included.
 func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		deployed, own []string
@@ -353,6 +356,7 @@ func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T)
 // adds its new subject once and leaves the first's wide subject in place, and from then on neither
 // keeper sends an update, with both new subjects in the list.
 func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	alpha := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	alpha.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.alpha.>")
@@ -553,6 +557,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // keeper's own connection sends after them has reached the watch, so every update those passes
 // sent is in the count.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
+	t.Parallel()
 	const marker = "envoy.keeper.test.marker"
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))
@@ -640,6 +645,13 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 				<-closed
 			}}
 			client.mu.Unlock()
+			// A pass takes the client's JetStream context once, as it starts (keepPass), so a pass
+			// in flight at the swap still holds the context with no gate: had it read the stream
+			// after the lowering below, it would raise the stream again unheld, every later pass
+			// would find nothing to restore, and the row would wait for an update that never comes.
+			// This wait sees that pass end, and a whole pass after it, so every pass that reads
+			// the lowered stream took the gated context.
+			keeperPasses(t, []*Client{client}, 1)
 			lowered := info.Config
 			lowered.Replicas = 1
 			if _, err := js.UpdateStream(&lowered); err != nil {
@@ -732,6 +744,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 // An owning client that connects in the background and stops before its server ever answered
 // started no keeper, and Close and Drain return at once rather than wait for one.
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -769,6 +782,7 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 // has a stream with no cap on a server that caps no such stream itself, which the keeper leaves
 // as it is.
 func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		deployed int

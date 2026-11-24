@@ -167,8 +167,9 @@ func validateNode(n *Node, depth int) error {
 	if err := treeDepthError(depth); err != nil {
 		return err
 	}
-	if !active.nodes[n.Type] {
-		if _, typed := typedBlock(n.Type); !typed {
+	manifest := active.Load()
+	if !manifest.nodes[n.Type] {
+		if _, typed := manifest.types[n.Type]; !typed {
 			return unknownElement(fmt.Errorf("%w: node %q", ErrSchema, n.Type), n.Type)
 		}
 	}
@@ -176,7 +177,7 @@ func validateNode(n *Node, depth int) error {
 		return fmt.Errorf("%w: node %q cannot have marks", ErrSchema, n.Type)
 	}
 	for _, m := range n.Marks {
-		if !active.marks[m.Type] {
+		if !manifest.marks[m.Type] {
 			return unknownElement(fmt.Errorf("%w: mark %q", ErrSchema, m.Type), m.Type)
 		}
 		if err := attrNestingError("mark", m.Type, m.Attrs, maxMarkAttrNesting); err != nil {
@@ -706,31 +707,4 @@ func (n *Node) JSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(n.toJSON())
-}
-
-// FromJSON decodes ProseMirror JSON, the inverse of Node.JSON: the tree a document version stores
-// beside its markdown when that tree holds an insert suggestion's mark (docs.InsertTree, read back
-// by docs.MaskedVersionText), and the trees the TypeScript fixture generator emits for the tests.
-func FromJSON(b []byte) (*Node, error) {
-	var j jsonNode
-	if err := json.Unmarshal(b, &j); err != nil {
-		return nil, fmt.Errorf("pmdoc: decode json: %w", err)
-	}
-	n := j.toNode()
-	sortNodeMarks(n)
-	if err := n.Validate(); err != nil {
-		return nil, err
-	}
-	return n, nil
-}
-
-func (j *jsonNode) toNode() *Node {
-	n := &Node{Type: j.Type, Attrs: j.Attrs, Text: j.Text}
-	for _, m := range j.Marks {
-		n.Marks = append(n.Marks, Mark{Type: m.Type, Attrs: m.Attrs})
-	}
-	for _, c := range j.Content {
-		n.Children = append(n.Children, c.toNode())
-	}
-	return n
 }

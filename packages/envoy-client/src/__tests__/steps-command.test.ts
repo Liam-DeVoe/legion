@@ -13,7 +13,7 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchNoRouteError } from "../dispatch-http";
 import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
@@ -457,7 +457,6 @@ describe("dispatch steps on the command line", () => {
   let stateDir = "";
   beforeEach(() => {
     stateDir = makeDirectory();
-    forgetKeyedLayerMemory();
   });
 
   /** A fake Dispatch on a loopback port of its own, answering as `options` say, which the hook

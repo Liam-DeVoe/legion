@@ -15,7 +15,7 @@
 
 import type { BrokerEnvironment } from "@legion/cipher-client/environment";
 import { SIGNIN_COMMAND } from "@legion/cipher-client/signins";
-import { DEFAULT_RENEW_BEFORE_MS } from "@legion/cipher-client/token-client";
+import { DEFAULT_RENEW_BEFORE_MS, renewalAt } from "@legion/cipher-client/token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
@@ -180,9 +180,9 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
  * HTTP status, OAuth code and what it said where that is one of its known refusals, else "(its
  * text is withheld)" (`BrokerRefusedError.said`: a peer at AGENT_SECRETS_URL can put the subject
  * token it was sent in its text); a trade the token client's retry loop is still trading again is
- * broker-client's own line for its last failure, naming the session where its registration is
+ * cipher-client's own line for its last failure, naming the session where its registration is
  * pending (`RegistrationPendingError`, `TradeRetryingError`); a trade that got no answer, or an
- * answer that is not the grant's, is broker-client's own text, which names the broker as
+ * answer that is not the grant's, is cipher-client's own text, which names the broker as
  * `urlForText` does and the failure by its class (`BrokerTradeFailedError`); a closed client is
  * its own words (`TokenClientClosedError`); an ended sign-in is its remedy; and any other failure
  * goes by `natsFailureReason`'s allowlist, which prints this package's own reasons
@@ -385,9 +385,6 @@ export function brokerNatsCredential(
   };
 }
 
-/** The least the keeper waits between two renewals, where the token in hand lives long enough for
- *  it: the wait is never longer than half the token's remaining life. */
-const RENEW_FLOOR_MS = 1_000;
 /** The keeper's retry after a renewal that landed no new token: doubling from the first to the
  *  last. */
 const RETRY_FIRST_MS = 2_000;
@@ -506,16 +503,12 @@ function warnedEvery(warn: (text: string) => void): {
   };
 }
 
-/** How long after `now` the keeper renews a token that lapses at `expiry`: the token client's
- *  window ahead of it (`DEFAULT_RENEW_BEFORE_MS`, inside which it trades), or halfway there for
- *  a token that lives less than twice that window; at least `RENEW_FLOOR_MS`, unless that is
- *  past half the token's remaining life (the broker allows one-second tokens), and at once for a
- *  token already lapsed. */
+/** How long after `now` the keeper renews a token that lapses at `expiry`: the token client's own
+ *  renewal moment as of `now` (`renewalAt` under its window, `DEFAULT_RENEW_BEFORE_MS`), which
+ *  comes no sooner than that client trades again, so the renewal lands a new token rather than the
+ *  one in hand; at once for a token already lapsed. */
 function renewDelay(expiry: number, now: number): number {
-  const remaining = expiry - now;
-  if (remaining <= 0) return 0;
-  const ahead = remaining - Math.min(DEFAULT_RENEW_BEFORE_MS, remaining / 2);
-  return Math.max(Math.min(RENEW_FLOOR_MS, remaining / 2), ahead);
+  return renewalAt(expiry, now, DEFAULT_RENEW_BEFORE_MS) - now;
 }
 
 /**

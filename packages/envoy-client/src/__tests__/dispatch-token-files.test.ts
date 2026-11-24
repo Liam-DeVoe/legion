@@ -20,13 +20,14 @@ import {
 } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { stubDeviceLoginBroker } from "@legion/cipher-client/test/device-logins";
 import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispatch";
 import { runDispatchCli } from "../dispatch-cli";
 import { activeDispatchSettings } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 import { sessionDispatchSettings, sessionSettings } from "../session-settings";
 import { brokerStandIns } from "./broker-stand-ins";
 import { WHOAMI_NO_CUT } from "./whoami-stand-in";
@@ -39,7 +40,6 @@ const KEY_FILE = "DISPATCH_BROKER_DPOP_KEY_FILE";
 beforeEach(() => {
   // Each command is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 /** Dispatch's refusal of a write under a read-only token, worded as its gate words it. */
@@ -415,7 +415,10 @@ function wordsOf(named: string, copy: Copy, cwd: string): string {
 
 describe("the dispatch command's token files", () => {
   test("the token files refuse every setting beside them", async () => {
-    const broker = stubBroker(900);
+    // The broker's address is a name only: a trade needs AGENT_SECRETS_URL and an identity
+    // beside DISPATCH_URL, and no command here sets all three ("the stand-in broker gets no
+    // request" does).
+    const brokerUrl = "http://broker.test";
     // One stand-in Dispatch and listener for every row: a row sends nothing when neither hears
     // more than it had heard before the row ran.
     const dispatch = standInDispatch();
@@ -424,9 +427,8 @@ describe("the dispatch command's token files", () => {
     const problems: string[] = [];
     for (const { row, named, change } of REFUSED) {
       const copy = copyFiles();
-      const traded = broker.trades.length;
       const heard = dispatch.presented.length + listener.presented.length;
-      const changed = change({ copy, brokerUrl: broker.url });
+      const changed = change({ copy, brokerUrl });
       const cwd = changed.cwd ?? copy.dir;
       const env = commandEnvironment(copy, dispatch.url, {
         ENVOY_URL: listener.url,
@@ -443,7 +445,6 @@ describe("the dispatch command's token files", () => {
           (other) => other.named !== named && stdout.includes(wordsOf(other.named, copy, cwd))
         ).map((other) => `also says "${other.named}"`),
         sent === 0 ? [] : [`sends ${sent} requests`],
-        broker.trades.length === traded ? [] : ["trades at the broker"],
         changed.ranNothing?.() === false ? ["runs the envoy.json's command"] : [],
       ].flat();
       if (wrong.length > 0) problems.push(`${row}: ${wrong.join("; ")}`);
@@ -456,7 +457,7 @@ describe("the dispatch command's token files", () => {
     // nothing.
     const copy = copyFiles();
     const together = REFUSED.filter(({ row }) => row !== "DISPATCH_BROKER_DPOP_KEY_FILE alone");
-    const changes = together.map(({ change }) => change({ copy, brokerUrl: broker.url }));
+    const changes = together.map(({ change }) => change({ copy, brokerUrl }));
     const cwd = changes.find((changed) => changed.cwd !== undefined)?.cwd ?? copy.dir;
     const env = commandEnvironment(
       copy,
@@ -466,7 +467,6 @@ describe("the dispatch command's token files", () => {
     const { code, stdout } = await run(["projects"], env, cwd);
     expect(code).toBe(2);
     for (const { named } of together) expect(stdout).toContain(wordsOf(named, copy, cwd));
-    expect(broker.trades).toEqual([]);
 
     // A checkout's file that cannot be read is refused too: whether it sets dispatch.token
     // cannot be told.
@@ -552,6 +552,10 @@ describe("the dispatch command's token files", () => {
     const projected = path.join(copy.dir, "projected");
     writeFileSync(projected, `${fixtureSecret("proj")}\n`);
 
+    // The case where a trade could happen: AGENT_SECRETS_URL and an identity the broker takes,
+    // a kubernetes identity with the projected token it presents, beside DISPATCH_URL. Its
+    // broker check is what holds a Dispatch call beside the token files to trading nothing,
+    // so it comes first: it fails if the files stop refusing.
     const refused = await run(
       ["projects"],
       commandEnvironment(copy, dispatch.url, {
@@ -562,10 +566,10 @@ describe("the dispatch command's token files", () => {
       }),
       copy.dir
     );
+    expect([broker.trades, dispatch.presented, listener.presented]).toEqual([[], [], []]);
     expect(refused.code).toBe(2);
     expect(refused.stdout).toContain("AGENT_SECRETS_URL is set");
     expect(refused.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY is set");
-    expect([broker.trades, dispatch.presented, listener.presented]).toEqual([[], [], []]);
 
     const env = commandEnvironment(copy, dispatch.url, { ENVOY_URL: listener.url });
     expect((await run(["projects"], env, copy.dir)).code).toBe(0);
@@ -576,6 +580,64 @@ describe("the dispatch command's token files", () => {
     expect(dispatch.presented.length).toBeGreaterThan(2);
     expect(listener.presented.length).toBeGreaterThan(0);
     expect(broker.trades).toEqual([]);
+  });
+
+  test("`dispatch login` refuses beside the token files", async () => {
+    // A broker that approves a device login at its first poll: beside the files the command asks
+    // it nothing, so no device grant starts and no login is kept on the copy.
+    const broker = stubDeviceLoginBroker();
+    servers.push(broker);
+    const copy = copyFiles();
+    const loginFile = path.join(tempDir(), "legion", "device-login.json");
+    const env = commandEnvironment(copy, "http://dispatch.test", {
+      HOME: tempDir(),
+      AGENT_SECRETS_URL: broker.url,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: loginFile,
+    });
+    const beside = ["AGENT_SECRETS_URL is set", "AGENT_SECRETS_MACHINE_IDENTITY is set"];
+
+    const login = await run(["login", "--device", "--person", "ada@example.com"], env, copy.dir);
+    expect(login.code, login.stdout).toBe(2);
+    expect([login.stdout.includes(TOKEN_FILE), login.stdout.includes(KEY_FILE)]).toEqual([
+      true,
+      true,
+    ]);
+    // Each setting set beside the files is named as every other command's refusal names it, and
+    // no setting that is not set.
+    for (const { named } of REFUSED) {
+      expect([named, login.stdout.includes(named)]).toEqual([named, beside.includes(named)]);
+    }
+    expect([broker.authorizations, broker.polls, broker.refreshes, broker.trades]).toEqual([
+      [],
+      [],
+      [],
+      [],
+    ]);
+    // No login file, no lock and no copy of a login: not even the login's directory is made.
+    expect(existsSync(path.dirname(loginFile))).toBe(false);
+
+    // `dispatch login --help` answers as before.
+    const help = await run(["login", "--help"], env, copy.dir);
+    expect(help.code, help.stdout).toBe(0);
+    expect(help.stdout).toContain("Usage: dispatch login --device [--person <address>]");
+  });
+
+  test("a tool's dry run beside the token files prints the arguments", async () => {
+    // Beside the settings the token files refuse, a dry run that does not ask Dispatch prints the
+    // arguments, as it does with Dispatch off. It returns before any request.
+    const copy = copyFiles();
+    const env = commandEnvironment(copy, "http://dispatch.test", {
+      AGENT_SECRETS_URL: "http://broker.test",
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+    });
+    const dry = await run(
+      ["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"],
+      env,
+      copy.dir
+    );
+    expect(dry.code, dry.stdout).toBe(0);
+    expect(JSON.parse(dry.stdout)).toEqual({ issue: "DSP-1", body: "hi" });
   });
 
   test("a loop of reads sees the renamed token", async () => {

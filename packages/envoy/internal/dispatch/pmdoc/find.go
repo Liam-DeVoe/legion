@@ -990,7 +990,7 @@ func MarkSpans(doc *Node, markType, id string) []Range {
 		if node.Type != "text" {
 			return true
 		}
-		if !NodeHasMarkID(node, markType, id) {
+		if !nodeHasMarkID(node, markType, id) {
 			between = true
 			return true
 		}
@@ -1273,10 +1273,10 @@ func MarkAttrs(doc *Node, markType, id string) (Attrs, bool) {
 	return cloneAttrs(f.Attrs), ok
 }
 
-// NodeHasMarkID reports whether node carries a markType mark whose id is id. A record mark's type
+// nodeHasMarkID reports whether node carries a markType mark whose id is id. A record mark's type
 // does not exclude itself (anchorMarkTypes), so a run may carry two of one type, and the mark asked
 // for need not be the first of them.
-func NodeHasMarkID(node *Node, markType, id string) bool {
+func nodeHasMarkID(node *Node, markType, id string) bool {
 	for _, mark := range node.Marks {
 		if markHasID(mark, markType, id) {
 			return true
@@ -1322,7 +1322,7 @@ func (w *MarkWriter) Mark(txn *crdt.Transaction, r Range, mark Mark) error {
 	if txn == nil || w.frag == nil || r.From >= r.To {
 		return fmt.Errorf("%w: invalid mark range", ErrSchema)
 	}
-	if !active.marks[mark.Type] {
+	if !active.Load().marks[mark.Type] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, mark.Type)
 	}
 	if err := attrNestingError("mark", mark.Type, mark.Attrs, maxMarkAttrNesting); err != nil {
@@ -1518,7 +1518,7 @@ func Unmark(txn *crdt.Transaction, frag *crdt.YXmlFragment, markType, id string)
 	if txn == nil || frag == nil {
 		return fmt.Errorf("%w: Unmark requires transaction and fragment", ErrSchema)
 	}
-	if !active.marks[markType] {
+	if !active.Load().marks[markType] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, markType)
 	}
 

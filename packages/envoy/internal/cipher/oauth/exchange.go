@@ -461,7 +461,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // library stores the token, so the stored row, the introspection's jkt and the answer's token type
 // all follow the holder's key. Its expiry is bounded by its subject's (subjectBound), and its
 // answer names no credential.
-func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
+//
+// trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
+// the library has validated the request, before the exchange decides anything, and a *Refusal it
+// answers is written as that refusal. Nil runs nothing.
+func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade func(context.Context, map[string]any) error) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
 		p.writeError(ctx, w, nil, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -479,6 +483,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectTokenType := request.GetRequestForm().Get(FormSubjectTokenType)
+	if subjectTokenType == tokenTypeAccessToken && trade != nil {
+		if err := trade(ctx, session.GetSubjectToken()); err != nil {
+			var refused *Refusal
+			if errors.As(err, &refused) {
+				WriteRefusal(w, refused)
+				return
+			}
+			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		}
+	}
 	read := oauthstore.NarrowedRequest(request)
 	if read {
 		// Before anything below can move the session's access-token expiry, which for a machine
@@ -629,8 +644,9 @@ const holderProofRefused = "The DPoP-Holder proof was refused: a trade sends one
 // holderKey reads a trade's holder proof (oauthwire.HeaderDPoPHolder) and answers the thumbprint
 // of the key it proves, or "" for a trade that sends none. The proof is verified with the
 // library's own DPoP strategy (Provider.holderProofs) against the request's own method and URL,
-// which the broker's route has already set to BROKER_PUBLIC_URL and the path, as the DPoP proof's
+// which the broker's route has already set to api.Deps.PublicURL and the path, as the DPoP proof's
 // check reads them, with the same skew and replay table, so a holder proof is spent once.
+// api.Deps.PublicURL is BROKER_PUBLIC_URL, or BROKER_EDGE_URL at the edge (api.RegisterEdge).
 //
 // Each refusal is invalid_request naming the header: a holder proof on a trade that does not ask
 // for oauthwire.ScopeRead; a holder proof that does not verify; a holder key that is the DPoP

@@ -4,7 +4,7 @@
 // minting Dispatch access tokens. It keeps the device codes, the access and refresh token
 // sessions, DPoP proof replay records and nonces, the provider's HMAC secret, which identity
 // holds a session name, and the exchange's replay records, in the tables migrations 0016 and
-// 0018 create, and the tokens a trade narrowed to reading in the table migration 0041 creates.
+// 0018 create, and the tokens a trade narrowed to reading in the table migration 0042 creates.
 //
 // A stored request is the JSON of its oauth2.Request fields plus its client's id; reading it back
 // re-hydrates the client with GetClient and the session into the kind the caller hands it, an
@@ -25,8 +25,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"authelia.com/provider/oauth2"
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
@@ -67,7 +70,7 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's, 0021's or 0041's *_expires index on
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index on
 // the predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
@@ -325,12 +328,33 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 	return nil, fmt.Errorf("oauthstore stores *oauth2.DefaultSession and *ExchangeSession sessions, got %T", request.GetSession())
 }
 
+// ErrUnstorableText is a request the store keeps no row of, because text it would write holds a
+// control character: a key or value of the form a stored request carries, or a DPoP proof's jti.
+// Postgres writes U+0000 in neither text nor jsonb, so such a write failed and answered 500 where
+// the caller sent a request nobody could serve; the other control characters are refused with it,
+// since no client of the broker writes one in any of those fields. The provider answers it 400
+// invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is written.
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, which the store does not keep")
+
+// holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
+// them).
+func holdsControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
 // flatten is the request as a row's JSON, its session the one the request holds rather than the
-// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip.
+// *oauth2.DefaultSession inside it, so an exchanged token's claims survive the round trip. A form
+// whose key or value holds a control character is ErrUnstorableText: every row a request is stored
+// as passes through here, so the refusal holds for each of them, before anything is written.
 func flatten(request oauth2.Requester) (storedRequest, error) {
 	client := request.GetClient()
 	if client == nil {
 		return storedRequest{}, errors.New("oauthstore: the request names no client")
+	}
+	for key, values := range request.GetRequestForm() {
+		if holdsControl(key) || slices.ContainsFunc(values, holdsControl) {
+			return storedRequest{}, ErrUnstorableText
+		}
 	}
 	return storedRequest{
 		ClientID: client.GetID(),
@@ -579,7 +603,7 @@ func sessionJSON(request oauth2.Requester) ([]byte, *oauth2.DefaultSession, any,
 }
 
 // CreateAccessTokenSession stores an access token's session: a token a trade narrowed to reading
-// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0041
+// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0042
 // reads, and every other one in oauth_access_tokens.
 //
 // A read token, which is any token granted oauthwire.ScopeRead (a narrowed one, and a read
@@ -757,7 +781,7 @@ const NarrowedLive = `n.active and n.expires_at > now()
 // oauth_access_tokens is live while its row is active. A narrowed token is live while
 // NarrowedLive holds, which is decided again at every read, an introspection's among them, rather
 // than written onto the narrowed row when its credential or its subject ends: a revoke, a retire
-// or a sweep made by a broker build before migration 0041, which never touches this table, ends
+// or a sweep made by a broker build before migration 0042, which never touches this table, ends
 // it too, and the broker rolls one replica at a time.
 func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, session oauth2.Session) (oauth2.Requester, error) {
 	return s.getToken(ctx, `select request, active from oauth_access_tokens where signature = $1
@@ -1002,7 +1026,7 @@ func keyHoldsLauncherCredential(ctx context.Context, db Querier, thumbprint stri
 // KeyHoldsReadToken takes the key's lock (lockKey) in the transaction db runs in and reports
 // whether a read token is bound to thumbprint: an active, unexpired narrowed token, read through
 // its key's index, or an active, unexpired read entry's token, whose project scope is none, read
-// through the partial expression index migration 0041 adds to oauth_access_tokens. A read entry's
+// through the partial expression index migration 0042 adds to oauth_access_tokens. A read entry's
 // token an older broker minted is covered too, since its row has the same shape. A narrowed row
 // counts while it is active and unexpired even if what it was traded from has ended
 // (NarrowedLive): that refuses a credential on its key a little longer than it must, until the
@@ -1062,8 +1086,12 @@ const jtiRetentionMargin = time.Minute
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
 // on its jti and target URI (htu), and reports whether it already was. The insert, or the takeover
 // of an expired record of the same key, is one statement, so two requests presenting the same
-// proof cannot both see it unused. Sweep deletes expired records.
+// proof cannot both see it unused. Sweep deletes expired records. A jti holding a control character
+// is ErrUnstorableText, and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
+	if holdsControl(jti) {
+		return false, ErrUnstorableText
+	}
 	var recorded bool
 	err := s.db(ctx).QueryRow(ctx, `insert into oauth_dpop_proofs (jti, htu, expires_at) values ($1, $2, $3)
 		on conflict (jti, htu) do update set expires_at = excluded.expires_at

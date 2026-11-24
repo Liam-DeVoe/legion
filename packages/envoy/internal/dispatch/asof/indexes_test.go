@@ -206,9 +206,14 @@ func indexedTypes(t *testing.T, index string) []string {
 // and a document, and the events their writers append: per issue an issue.created, a
 // message.created, 18 comment.created, an issue.claimed, an issue.updated, an ask.opened, an
 // ask.answered and an ask.follower_added, one a second from n × 30 seconds after
-// 2026-11-01T00:00Z for issue n; and one mapping of a repository to IDX. So most of an issue's
-// events are not the ones its state is read from, as in production, and the events run to 03:20,
-// past the test's cut. It vacuums and analyzes the tables, so the planner reads these counts.
+// 2026-11-01T00:00Z for issue n, then six comment.edited, a comment.deleted and a message.edited;
+// and one mapping of a repository to IDX. So most of an issue's events are not the ones its state
+// is read from, as in production, and the events run to 03:20, past the test's cut. The edits and
+// deletes fill events_post_text_changes (20261121160853), the index of every post's text change,
+// keyed by the event's id: empty, it reads cheapest of all, and the planner would scan it whole
+// for the edits of a few posts, filtering each row by the post's id, where production holds every
+// edit and delete of every post in it. It vacuums and analyzes the tables, so the planner reads
+// these counts.
 func seedIndexedReads(t *testing.T, w world) {
 	t.Helper()
 	w.exec(`insert into projects (key, name, default_assignee, created_at) values ('IDX', 'IDX', 'carol', '2026-11-01T00:00:00Z')`)
@@ -255,10 +260,20 @@ func seedIndexedReads(t *testing.T, w world) {
 			timestamptz '2026-11-01T00:00:00Z' + make_interval(secs => n * 30 + s)
 		from generate_series(1, 400) n, generate_series(1, 25) s`)
 	w.exec(`
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select 'IDX-' || n, s,
+			case when s <= 31 then 'comment.edited' when s = 32 then 'comment.deleted' else 'message.edited' end,
+			'{"kind":"user","id":"alice"}',
+			case when s <= 32 then jsonb_build_object('id', md5('comment-' || n || '-' || (s - 23))::uuid)
+				else jsonb_build_object('id', md5('message-' || n)::uuid) end,
+			false,
+			timestamptz '2026-11-01T00:00:00Z' + make_interval(secs => n * 30 + s)
+		from generate_series(1, 400) n, generate_series(26, 33) s`)
+	w.exec(`
 		insert into events (project_key, seq, type, actor, payload, notify, created_at)
 		values ('IDX', 1, 'settings.repo_project.updated', '{"kind":"user","id":"alice"}',
 			'{"mapping": {"repo": "example/repo", "project": "IDX"}}', false, '2026-11-01T00:00:30Z')`)
-	w.exec(`update issues set last_seq = 25`)
+	w.exec(`update issues set last_seq = 33`)
 	w.exec(`update projects set last_seq = 1`)
 	w.exec(`vacuum analyze events, issues, asks, comments, messages, artifacts`)
 }

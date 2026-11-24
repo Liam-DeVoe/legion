@@ -9,6 +9,17 @@ import "slices"
 // present one only for a cut from this time on (decision 2).
 const projectDefaultsRecordedFrom = `'2026-11-15T07:01:28Z'::timestamptz`
 
+// projectDefaultRepoMigration is migration 20261119000230, which added projects.default_repo and
+// filled it from the default row of each project's repository mapping. projectDefaultRepoBegan is
+// the time schema_migrations records for it, as a SQL expression: from then on every write of the
+// column appends a project.updated that carries the project (api/project_default_repository.go),
+// whose payload names default_repo, or leaves it out where the default is cleared (omitempty);
+// before then a project's default repository was its mapping's default row.
+const (
+	projectDefaultRepoMigration = "20261119000230"
+	projectDefaultRepoBegan     = `(select m.applied_at from public.schema_migrations m where m.version = ` + projectDefaultRepoMigration + `)`
+)
+
 // projectTypes are the events of a project's create and update, which carry the project, and
 // defaultAssigneeTypes the event of its default assignee's change: the events of a project's own
 // settings that projectsShadow reads. The predicate of the partial index events_project_setting
@@ -39,6 +50,11 @@ func ProjectSettingTypes() []string { return slices.Clone(projectSettingTypes) }
 //   - gated_steps: the newest project.created or project.updated at the cut (each carries the
 //     project, api/project_gated_steps.go), '{}' in a payload written before the column existed;
 //     else the present value when no such event is later than the cut; else '{}'.
+//   - default_repo: the newest project.created or project.updated at the cut written at or after
+//     projectDefaultRepoBegan, its default_repo (null where the payload leaves it out); else, for a
+//     cut at or after that time, the present value when no such event is later than the cut; else
+//     the default row of the project's repository mapping (repoProjectsShadow) at the cut, or at
+//     that time for a later cut, which is the value the migration filled the column with.
 //   - next_number: the present value less the project's issue.created events after the cut,
 //     since each create numbers its issue in the transaction that appends it (api/issue_create.go).
 //   - last_seq: the newest seq of the project's own events at the cut, as the append sets it.
@@ -71,7 +87,23 @@ func projectsShadow(cut string) string {
 			case when not exists (
 				select from public.events e
 				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at > ` + cut + `)
-			then p.gated_steps else '{}'::text[] end) as gated_steps
+			then p.gated_steps else '{}'::text[] end) as gated_steps,
+		case
+			when exists (
+				select from public.events e
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at <= ` + cut + `
+					and e.created_at >= ` + projectDefaultRepoBegan + `)
+			then (select e.payload->>'default_repo' from public.events e
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at <= ` + cut + `
+					and e.created_at >= ` + projectDefaultRepoBegan + `
+				order by e.seq desc limit 1)
+			when ` + cut + ` >= ` + projectDefaultRepoBegan + ` and not exists (
+				select from public.events e
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at > ` + cut + `)
+			then p.default_repo
+			else (select r.repo from (` + repoProjectsShadow(`least(`+cut+`, `+projectDefaultRepoBegan+`)`) + `) r
+				where r.project = p.key and r.is_default limit 1)
+		end as default_repo
 	from public.projects p
 	where p.created_at <= ` + cut
 }

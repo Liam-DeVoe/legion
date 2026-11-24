@@ -107,6 +107,8 @@ interface DispatchEventBase {
 export type DispatchEvent =
   | (DispatchEventBase & { readonly type: "project.created"; readonly payload: Project })
   | (DispatchEventBase & { readonly type: "project.updated"; readonly payload: Project })
+  /** A retained event: no build writes it now. The type stays for the events an earlier build
+   *  stored, which a reader of the event log still reads. */
   | (DispatchEventBase & {
       readonly type: "settings.repo_project.updated";
       readonly payload: RepoProjectUpdatedEventPayload;
@@ -387,8 +389,8 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.anchor_refreshed": true,
   "comment.answered": true,
   "comment.created": true,
-  "comment.delivery": true,
   "comment.deleted": true,
+  "comment.delivery": true,
   "comment.edited": true,
   "comment.reopened": true,
   "comment.resolved": true,

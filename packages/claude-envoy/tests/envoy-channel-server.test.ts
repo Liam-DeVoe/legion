@@ -1,9 +1,10 @@
-import { expect, spyOn, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
+import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -44,6 +45,8 @@ import {
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
+import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 isolatePaneEnvironment()
 
@@ -617,11 +620,12 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
 // `HOME`, `PATH` and a few more it passes every server (README.md, "Codex hands a plugin's server
 // only `HOME`, `PATH`…"). A Codex session given `NATS_AUTH=broker` in its environment, with
 // NATS_AUTH missing from the list, dialled NATS with no credential, and a pool pod's trade threw
-// for want of AGENT_SECRETS_POOL_*. The list is taken from the code's own names, so a variable the
-// broker path comes to read fails this row until the manifest names it.
+// for want of AGENT_SECRETS_POOL_*; one given `ENVOY_INBOUND=listener` with it missing would dial
+// NATS rather than the listener's relay socket. The list is taken from the code's own names, so a
+// variable the broker path comes to read fails this row until the manifest names it.
 test("the Codex manifest names every variable the broker-token path reads", () => {
   const passedToEveryServer = new Set(["HOME"])
-  const read = [NATS_AUTH_VAR, ...BROKER_VARIABLES, METADATA_HOST_VAR].filter(
+  const read = [NATS_AUTH_VAR, ENVOY_INBOUND_VAR, ...BROKER_VARIABLES, METADATA_HOST_VAR].filter(
     (name) => !passedToEveryServer.has(name),
   )
   const listed = new Set<string>(codexPlugin.mcpServers.envoy.env_vars)
@@ -943,6 +947,15 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
+// The rows below run the channel server as a child process of its own, with Bun's transpiler cache
+// off (`./transpiler-cache.ts`), and wait for what it answers or does: one that ends first is
+// named with its exit, and an answer or an exit that never comes fails the row by name before the
+// hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A
+// fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
+// its empty HOME first had not answered its `initialize` in 20 s.
+beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
+
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
  * it initializes over MCP, lists the tools, calls `envoy_whoami`, then each of `calls` (request ids
@@ -958,12 +971,15 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   })
+  const stderr = collected(server.stderr)
   const responses = new Map<number, Record<string, unknown>>()
+  const state = () =>
+    `it answered requests [${[...responses.keys()].join(", ")}] and wrote to stderr: ${stderr.text()}`
   const waiters = new Map<number, () => void>()
   // A response, or the server's exit naming the request it never answered.
   const answered = (id: number): Promise<void> => {
@@ -1003,7 +1019,7 @@ async function runChannelServer(
         clientInfo: { name: "test", version: "0" },
       },
     })
-    await answered(1)
+    await beforeTheGuard(answered(1), "the channel server's answer to initialize", state)
     send({ jsonrpc: "2.0", method: "notifications/initialized" })
     send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
     send({
@@ -1015,14 +1031,18 @@ async function runChannelServer(
     for (const [index, call] of calls.entries()) {
       send({ jsonrpc: "2.0", id: 4 + index, method: "tools/call", params: call })
     }
-    await Promise.all([answered(2), answered(3), ...calls.map((_, index) => answered(4 + index))])
+    await beforeTheGuard(
+      Promise.all([answered(2), answered(3), ...calls.map((_, index) => answered(4 + index))]),
+      "the channel server's answers to requests 2 and on",
+      state,
+    )
     await server.stdin.end()
-    const [exitCode, stderr] = await Promise.all([
-      server.exited,
-      new Response(server.stderr).text(),
-      reading,
-    ])
-    return { exitCode, responses, stderr }
+    const [exitCode] = await beforeTheGuard(
+      Promise.all([server.exited, stderr.ended, reading]),
+      "the channel server's exit once stdin ended",
+      state,
+    )
+    return { exitCode, responses, stderr: stderr.text() }
   } finally {
     server.kill("SIGKILL")
   }
@@ -1064,7 +1084,7 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
-}, 20_000)
+})
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined
@@ -1077,7 +1097,8 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
       join(configDirectory, "envoy.json"),
       JSON.stringify({ envoy: { enabled: false } }),
     )
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.2" })
     stopBroker = () => broker.stop()
     const listenerCalls: string[] = []
     listener = Bun.serve({
@@ -1104,7 +1125,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
@@ -1165,7 +1186,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         },
       }),
     )
-    server = Bun.spawn(["bun", channelEntry], {
+    const running = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -1173,25 +1194,42 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         CLAUDE_CONFIG_DIR: configDirectory,
         CLAUDE_CODE_SESSION_ID: "ses_credentials",
         CLAUDE_PLUGIN_DATA: home,
+        ...NO_TRANSPILER_CACHE,
       },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     })
+    server = running
+    const stderr = collected(running.stderr)
+    const state = () => `stderr: ${stderr.text()}`
 
-    await Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)])
+    await beforeTheGuard(
+      Promise.race([
+        Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)]),
+        running.exited.then(async (code) => {
+          throw new Error(
+            `the channel server exited ${code} before it registered: ${await stderr.ended}`,
+          )
+        }),
+      ]),
+      "the channel server's registration and its NATS sign-in",
+      state,
+    )
     expect(broker.connects[0]).toMatchObject({ nkey: user.getPublicKey() })
     expect(new Set(auth)).toEqual(new Set([`Bearer ${listenerToken}`]))
     // The bundle runs from this checkout, outside Claude Code's plugin cache.
     expect(plugins[0]).toEqual({ plugin: "@sjawhar/claude-envoy", plugin_version: "source" })
     server.kill("SIGTERM")
-    expect(await server.exited).toBe(0)
+    expect(
+      await beforeTheGuard(running.exited, "the channel server's exit on SIGTERM", state),
+    ).toBe(0)
   } finally {
     server?.kill("SIGKILL")
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 /** A listener that answers `GET /v1/sessions` with no session and records every call. */
 function recordingListener(calls: string[]) {
@@ -1258,7 +1296,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
   const sentence =
@@ -1320,7 +1358,7 @@ test("a tool call the listener refused because its sender is rate limited answer
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
   let listener: Server<undefined> | undefined
@@ -1331,7 +1369,8 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     await mkdir(configDirectory)
     const calls: string[] = []
     listener = recordingListener(calls)
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.3" })
     stopBroker = () => broker.stop()
     const file = join(configDirectory, "envoy.json")
     await writeFile(
@@ -1366,7 +1405,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
   // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW

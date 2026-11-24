@@ -169,6 +169,24 @@ func (w *driveWorld) mintTokens(t *testing.T) {
 	}
 }
 
+// startPersonalPair leaves P's personal tokens with the last uses a personal pair needs: the
+// read-only token's none, so the read-only request makes its last-use write (agentTokenUse, at
+// most once a minute), and the writer's now, so the writer's request, sent within that minute,
+// makes none. Both answers then read one state: the read-only request's own write is under each,
+// and the writer's request writes nothing a token list (GET /api/v1/me/agent-tokens) shows. It
+// writes through the untraced store, before the window opens.
+func (w *driveWorld) startPersonalPair(t *testing.T) {
+	t.Helper()
+	for _, statement := range []string{
+		`update agent_read_tokens set last_used_at = null where owner = $1`,
+		`update agent_tokens set last_used_at = now() where owner = $1`,
+	} {
+		if _, err := w.raw.Pool.Exec(context.Background(), statement, drivePerson); err != nil {
+			t.Fatalf("set the last use of %s's personal tokens (%s): %v", drivePerson, statement, err)
+		}
+	}
+}
+
 // as is one write of the seed, as login through the header identity, which must answer want.
 func (w *driveWorld) as(t *testing.T, login, method, target string, body any, want int) *httptest.ResponseRecorder {
 	t.Helper()
@@ -214,16 +232,18 @@ func (w *driveWorld) seed(t *testing.T) {
 	t.Helper()
 	alice, ada := "alice", drivePerson
 	w.values["session"] = driveSession
+	w.values["person"] = drivePerson
 	w.values["project"] = driveProject
 	w.values["relatedProject"] = driveRelatedProject
 	w.values["precheckProject"] = precheckRelatedProject
 
-	// The projects: the drive project, mapped to its repository, defaulting to P and reading its
-	// architecture from legion/arch; and the two projects with no work and no term statistics.
+	// The projects: the drive project, whose default repository is driveRepo, defaulting to P and
+	// reading its architecture from legion/arch; and the two projects with no work and no term
+	// statistics.
 	for _, project := range []string{driveProject, driveRelatedProject, precheckRelatedProject} {
 		w.as(t, alice, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": "The " + project + " project"}, http.StatusCreated)
 	}
-	w.as(t, alice, http.MethodPut, "/api/v1/settings/repo-projects/"+driveRepo, map[string]any{"project": driveProject, "default": true}, http.StatusOK)
+	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/default-repository", map[string]any{"repo": driveRepo}, http.StatusOK)
 	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/default-assignee", map[string]any{"assignee": ada}, http.StatusOK)
 	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/architecture-sources/legion/arch", map[string]any{"branch": "main"}, http.StatusOK)
 	w.as(t, alice, http.MethodPost, "/api/v1/projects/"+driveProject+"/architecture-sources/legion/arch/sync", nil, http.StatusOK)
@@ -306,7 +326,8 @@ func (w *driveWorld) seed(t *testing.T) {
 		t.Fatalf("the drive issue's spec holds no requirement block: %+v", blocks)
 	}
 
-	// Comments: a remark, P's reply to it and a comment anchored on the spec.
+	// Comments: a remark, P's reply to it and a comment anchored on the spec. P's reply is what
+	// ties P to a node of the graph, so P's page (GET /api/v1/people/{login}/nodes) lists it.
 	remark := createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "A remark on the drive."}, alice)
 	w.values["comment"] = remark.ID
 	createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "P's reply to the remark.", "in_reply_to": remark.ID}, ada)

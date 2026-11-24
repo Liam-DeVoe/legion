@@ -132,6 +132,7 @@ func sendFrame(t *testing.T, send map[string]any) (string, *model.ReplyBlock) {
 // that removes the block leaves the reply reading it removed, with its last text and the edit's
 // mark.
 func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -312,6 +313,7 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 // delivery; a follow-up names no block; and a message whose stored body differs from the one its
 // blocks were indexed from is indexed first.
 func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -480,6 +482,7 @@ func requireQuotedPostMark(t *testing.T, step string, block *model.ReplyBlock, d
 // block with the post's delete mark, on the thread's read and on the reply's own, so the quote
 // says the parent is deleted rather than showing the block as merely removed.
 func TestAReplysQuoteOfADeletedPostCarriesThePostsMark(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quotes of a deleted post", "before")
 
@@ -560,6 +563,7 @@ func requireQuotedEdit(t *testing.T, handler http.Handler, step, path string, wa
 // /api/v1/issues/{key}/messages/{id} of the reply - still say the parent was edited: no
 // edited_at while nobody edited the parent, and the parent's own edited_at once its author did.
 func TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quotes of an edited post", "before")
 
@@ -589,6 +593,7 @@ func TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit(t *testing.T) {
 // reconciliation indexes it: under the comment it answers and under the ask, on the comment read,
 // the ask read and ?to=, each naming no block.
 func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Older replies", "before")
 	x := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")

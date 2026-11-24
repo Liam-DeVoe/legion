@@ -311,6 +311,26 @@ const BESIDE_TOKEN_FILES = [
   IDENTITY_VAR,
 ] as const;
 
+/** The clause the token files' refusals open with, naming each file whose setting `env` sets:
+ *  "X is set" or "X and Y are set", or undefined when neither is. A plugin's refusal
+ *  (`tokenFilesTarget` with `taken` false) and `dispatch login`'s (`loginCommand`) alike. */
+export function tokenFilesSet(env: DispatchEnvironment): string | undefined {
+  const set = [
+    ...(nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE) === undefined ? [] : [TOKEN_FILE_VAR]),
+    ...(nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE) === undefined ? [] : [DPOP_KEY_FILE_VAR]),
+  ];
+  if (set.length === 0) return undefined;
+  return `${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set`;
+}
+
+/** Each of `BESIDE_TOKEN_FILES` that `env` sets, as the token files' refusal names it: a Dispatch
+ *  call's (`tokenFilesTarget`) and `dispatch login`'s (`loginCommand`) alike. */
+export function settingsBesideTokenFiles(env: DispatchEnvironment): readonly string[] {
+  return BESIDE_TOKEN_FILES.filter((name) => nonEmpty(env[name]) !== undefined).map(
+    (name) => `${name} is set`
+  );
+}
+
 /**
  * The token files as `dispatchTarget` takes them, or undefined when neither is set. A caller that
  * does not take them (`taken` false: every plugin) is refused while either is set. The `dispatch`
@@ -321,34 +341,30 @@ const BESIDE_TOKEN_FILES = [
  * `DISPATCH_URL` set, and a `!` value is found by the field's presence and never run. A checkout's
  * file that cannot be read is refused too, since whether it holds a token cannot be told. The
  * URL is `DISPATCH_URL`'s alone, which must be Dispatch's public origin: Dispatch checks each
- * proof's URL against it.
+ * proof's URL against it. `dispatch login`, which asks the broker and keeps a login in a file,
+ * refuses while either is set, before any request (`loginCommand`).
  */
 function tokenFilesTarget(
   env: DispatchEnvironment,
   config: ReadEnvoyConfig,
   taken: boolean
 ): SectionOff | DispatchTarget | undefined {
-  const tokenFile = nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE);
-  const keyFile = nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE);
-  if (tokenFile === undefined && keyFile === undefined) return undefined;
+  const set = tokenFilesSet(env);
+  if (set === undefined) return undefined;
   if (!taken) {
-    const set = [
-      ...(tokenFile === undefined ? [] : [TOKEN_FILE_VAR]),
-      ...(keyFile === undefined ? [] : [DPOP_KEY_FILE_VAR]),
-    ];
     return offWithError(
-      `${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set, and only the dispatch command reads the token files: Dispatch is off here rather than written with another credential beside them`
+      `${set}, and only the dispatch command reads the token files: Dispatch is off here rather than written with another credential beside them`
     );
   }
+  const tokenFile = nonEmpty(env.DISPATCH_BROKER_TOKEN_FILE);
+  const keyFile = nonEmpty(env.DISPATCH_BROKER_DPOP_KEY_FILE);
   const explicitUrl = nonEmpty(env.DISPATCH_URL);
   const { checkout } = config;
   const problems = [
     ...(tokenFile === undefined ? [`${TOKEN_FILE_VAR} is not set`] : []),
     ...(keyFile === undefined ? [`${DPOP_KEY_FILE_VAR} is not set`] : []),
     ...(explicitUrl === undefined ? ["DISPATCH_URL is not set"] : []),
-    ...BESIDE_TOKEN_FILES.filter((name) => nonEmpty(env[name]) !== undefined).map(
-      (name) => `${name} is set`
-    ),
+    ...settingsBesideTokenFiles(env),
     ...(config.dispatch.token === undefined ? [] : [`dispatch.token is set in ${config.path}`]),
     ...(checkout?.kind === "valid" && checkout.dispatch.token !== undefined
       ? [`dispatch.token is set in ${checkout.path}`]

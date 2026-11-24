@@ -6,7 +6,7 @@ import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import type { DispatchToolResult } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 import {
   forgetShownPictures,
   readPictures,
@@ -100,7 +100,11 @@ function dispatch(
   return { requests, uploads, posted, fetchImpl: fetchImpl as typeof fetch };
 }
 
-/** The call as the host session `sessionId` makes it: the session reads and posts as itself. */
+/**
+ * The call as the host session `sessionId` makes it: the session reads and posts as itself. A
+ * write the test's Dispatch fails is asked again on the production schedule, with pauses that
+ * take no time.
+ */
 function run(
   tool: string,
   args: Record<string, unknown>,
@@ -119,6 +123,7 @@ function run(
       throw new Error("no repository");
     },
     fetchImpl,
+    writeRetry: { ...DISPATCH_WRITE_RETRY, pause: async () => undefined },
   });
 }
 
@@ -439,7 +444,6 @@ describe("sending pictures", () => {
   test("an upload that may have reached Dispatch is not said to have failed", async () => {
     let uploads = 0;
     const server = dispatch((pathname, init) => {
-      if (pathname === "/healthz") return json({ idempotency_keys: true });
       if (pathname !== "/api/v1/issues/DSP-41/artifacts" || init.method !== "POST") return;
       uploads += 1;
       const status = uploads === 1 ? 502 : 429;
@@ -466,9 +470,6 @@ describe("sending pictures", () => {
         writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [0], pause: async () => undefined },
       })
     );
-    // The /healthz answer above is remembered per process and origin; later files' tests drive
-    // the same origin as a Dispatch of their own.
-    forgetKeyedLayerMemory();
 
     expect(uploads).toBe(2);
     expect(failure.message).toStartWith(`images: ${shot} may or may not have been uploaded: `);
@@ -478,8 +479,8 @@ describe("sending pictures", () => {
     expect(server.posted).toEqual([]);
   });
 
-  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, even
-  // where the write is not asked again (no keyed layer is known here).
+  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, once the
+  // write's attempts are spent.
   test("an upload a gateway answered 502 is not said to have failed", async () => {
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST"
@@ -510,9 +511,7 @@ describe("sending pictures", () => {
     const lost = {
       ANSWER_NOT_KEPT:
         "Dispatch gives no copy of its answer, which was too large to keep or holds a comment or " +
-        "a message that was deleted, or a document version name a delete replaced, or a " +
-        "related-item hit for a document in which a comment's insert suggestion, deleted since, " +
-        "was made at any time",
+        "a message that was deleted, or a document version name a delete replaced",
       KEY_COMMITTED: "its answer was lost on the way back",
     };
     for (const [code, landing] of [
@@ -538,7 +537,6 @@ describe("sending pictures", () => {
     ] as const) {
       let uploads = 0;
       const server = dispatch((pathname, init) => {
-        if (pathname === "/healthz") return json({ idempotency_keys: true });
         if (pathname !== "/api/v1/issues/DSP-41/artifacts" || init.method !== "POST") return;
         uploads += 1;
         return uploads === 1
@@ -563,7 +561,6 @@ describe("sending pictures", () => {
           writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [0], pause: async () => undefined },
         })
       );
-      forgetKeyedLayerMemory();
 
       expect(uploads).toBe(2);
       expect(failure.message).toBe(

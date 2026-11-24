@@ -28,20 +28,12 @@ var messageStateTypes = []string{"message.created", "message.answered", "message
 func MessageStateTypes() []string { return slices.Clone(messageStateTypes) }
 
 // commentRewriteTypes and messageRewriteTypes are the events of a post's edit and of its delete.
-// From the time post_body_history began (PostHistoryBegan), the transaction of each one writes one
+// From the time post_body_history began (postHistoryBegan), the transaction of each one writes one
 // post_body_history row, which keeps the body that the edit or the delete replaced.
 var (
 	commentRewriteTypes = []string{"comment.edited", "comment.deleted"}
 	messageRewriteTypes = []string{"message.edited", "message.deleted"}
 )
-
-// CommentRewriteTypes are the event types of a comment's edit and of its delete, each of which
-// writes one post_body_history row from the time post_body_history began (PostHistoryBegan).
-func CommentRewriteTypes() []string { return slices.Clone(commentRewriteTypes) }
-
-// MessageRewriteTypes are the event types of a message's edit and of its delete, each of which
-// writes one post_body_history row from the time post_body_history began (PostHistoryBegan).
-func MessageRewriteTypes() []string { return slices.Clone(messageRewriteTypes) }
 
 // The type lists of the posts' shadows as SQL lists (sqlList), each quoted once.
 var (
@@ -75,7 +67,7 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 			select f.created_at from public.events f
 			where f.payload->>'id' = c.id::text and f.type in ` + commentRewriteList + `
 				and f.created_at > $2::timestamptz
-			order by f.id limit 1) < ` + PostHistoryBegan
+			order by f.id limit 1) < ` + postHistoryBegan
 
 // ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
 // that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete
@@ -116,6 +108,9 @@ var (
 // created_at is not that clock: the insert takes clock_timestamp(), later than its transaction's
 // start. Columns no write changes after the insert are the row's (id, issue_key, author,
 // reply_to, created_at, ask_id, artifact_id, turn, written_version, replies_to_block, answers).
+//   - node_kind and node_address: the row's, the address of the comment's node in graph_nodes
+//     (20261109022248). It names the comment, not anything it holds, so it is the same at every
+//     time; a writer of an older build left it null, and a later pass fills it.
 //   - body: the body at the cut by the one-clock rule (postBodyAtCut).
 //   - anchor, resolved, resolved_by, resolved_at, suggestion and edited_at: the newest payload
 //     at the cut, by event id (one owner's events commit in id order).
@@ -149,6 +144,8 @@ func commentsShadow(cut string) string {
 		c.written_version as written_version,
 		c.replies_to_block as replies_to_block,
 		c.answers as answers,
+		c.node_kind as node_kind,
+		c.node_address as node_address,
 		c.deleted_at as deleted_at,
 		c.deleted_by as deleted_by
 	from public.comments c

@@ -16,7 +16,7 @@ body: |-
   a live read token is bound to. A read trade whose proof key holds a launcher credential, such as
   a person's sign-in, sends a second proof in the `DPoP-Holder` header. A key made for the token's
   holder signs that proof, and the broker binds the token to that key. The broker keeps a narrowed
-  token in a table of its own (migration 0041), so an older broker answers it inactive.
+  token in a table of its own (migration 0042), so an older broker answers it inactive.
 
   A person can make a personal token that only reads: Settings → Agent tokens offers "Read only".
   Such a token holds `read` alone or beside `person`, and never beside `approve`. No existing token
@@ -24,18 +24,24 @@ body: |-
   token, and its cut.
 
   A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub exactly what a
-  writer's read made at the same moment asks, and gives the same answer. It stores no row and
-  keeps no answer after its request: it reads the writers' claims, holds and default-branch cache
-  without writing them, and, as a writer's read does, it fills the GitHub client's token cache,
-  deletes lapsed holds and records a rate limit GitHub answers. So each read-only read makes a
-  writer's GitHub reads on the same installation's rate limit: a pulls read for each result
-  commit that no stored head and no writer's claim or settle covers, the commit-message pages of each pull
-  request it names that nothing else attributes, the compare reads of a branch check, the
-  check-runs read of a check CI proves and the default-branch read. A poll every N seconds of a
-  read that makes R of them costs R × 3600 / N an hour against the installation's limit (at least
-  5,000 an hour), and while a limit is recorded the client sends nothing on that installation's
-  token for any caller. Nothing caps a read-only caller's reads; ending the poll or revoking the
-  token undoes it.
+  writer's read made at the same moment asks, and gives the same answer. It stores no pull request
+  head, branch commit or event and keeps no answer after its request: it reads the writers'
+  claims, holds and default-branch cache without writing them, and, as a writer's read does, it
+  fills the GitHub client's token cache, deletes lapsed holds and records a rate limit GitHub
+  answers. So each read-only read makes a writer's GitHub reads on the same installation's rate
+  limit: a pulls read for each result commit that no stored head and no writer's claim or settle
+  covers, the commit-message pages of each pull request it names that nothing else attributes, the
+  compare reads of a branch check, the check-runs read of a check CI proves and the default-branch
+  read. A poll every N seconds of a read that makes R of them costs R × 3600 / N an hour against
+  the installation's limit (at least 5,000 an hour), and while a limit is recorded the client
+  sends nothing on that installation's token for any caller. Nothing caps a read-only caller's
+  reads. The undo is ending the poll, or ending the token: revoking a personal token, or the
+  sign-in or the dev box's machine login a narrowed token came from; or, for a read entry's token
+  and one narrowed from a pod's, a GitHub workflow's or a Google machine's identity, which no
+  person's revoke ends, taking its entry out of the broker's settings and waiting for the token to
+  expire, at most `BROKER_ACCESS_TOKEN_SECONDS` after its trade. Dispatch stops serving a
+  read-only broker token at most ten seconds after the broker ends it: it reuses a live answer
+  for `ciphertoken.AffirmativeCacheTTL`, five seconds, after an introspection that may take five.
 time: 2026-11-20T02:56:20Z
 custom:
   Issue: pr4557

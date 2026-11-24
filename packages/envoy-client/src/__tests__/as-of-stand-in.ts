@@ -11,7 +11,6 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 import {
   AT,
@@ -729,7 +728,6 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
       const calls: Call[] = [];
       runs.set(`Bearer ${bearer}`, { calls, options });
       resetAdviceMemory();
-      forgetKeyedLayerMemory();
       forgetShownPictures(SESSION);
       const stateDir = makeDirectory();
       let stdout = "";

@@ -256,10 +256,11 @@ type issueResolveQuery struct {
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
 // share: one page of an event log.
 type eventListQuery struct {
-	// After reads the events above this event id, oldest first; it combines with neither
-	// Before nor order=desc.
+	// After reads the events above this position in the owner's event sequence (an event's seq),
+	// oldest first, 0 to 2147483647; it combines with neither Before nor order=desc.
 	After int `query:"after"`
-	// Before reads the events below this event id.
+	// Before reads the events below this position in the owner's event sequence, 0 to
+	// 2147483647.
 	Before int `query:"before"`
 	// IDs reads exactly these event ids, comma-separated.
 	IDs string `query:"ids"`
@@ -363,7 +364,10 @@ type inboxQuery struct {
 	AsOf string `query:"as_of"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -525,6 +529,15 @@ type artifactTextAsOfQuery struct {
 	AsOf string `query:"as_of"`
 }
 
+// artifactChangesQuery is GET /api/v1/artifacts/{id}/changes's query: the two versions of the
+// document compared. Both are required.
+type artifactChangesQuery struct {
+	// From is the earlier version, a positive number below To.
+	From int `query:"from"`
+	// To is the later version.
+	To int `query:"to"`
+}
+
 // artifactVersionQuery is the query the three version reads by slug share: GET
 // /api/v1/issues/{key}/artifacts/{slug}/versions/{number}, GET
 // /api/v1/projects/{key}/artifacts/{slug}/versions/{number} and GET
@@ -535,6 +548,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // artifactVersionAsOfQuery is GET /api/v1/artifacts/{id}/versions/{number}'s query:
@@ -542,6 +562,9 @@ type artifactVersionQuery struct {
 type artifactVersionAsOfQuery struct {
 	// Download is artifactVersionQuery's Download.
 	Download bool `query:"download"`
+	// Blocks is artifactVersionQuery's Blocks: a version's blocks are read from its own text,
+	// which no later write changes, so a cut changes no block, only which versions exist.
+	Blocks bool `query:"blocks"`
 	// AsOf is the cut the route answers as of (asOfQuery). A version made after the cut is 404.
 	AsOf string `query:"as_of"`
 }
@@ -643,14 +666,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
 	},
-	"GET /api/v1/settings/repo-projects": {Status: http.StatusOK, Response: []model.RepoProject{}},
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {
-		Status: http.StatusOK, Response: model.RepoProject{}, Request: putRepoProjectInput{},
-	},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
-	"GET /api/v1/github/app-installation/{owner}/{repo}":   {Status: http.StatusOK, Response: appInstallationResponse{}},
-	"GET /api/v1/settings/architecture-sources":            {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
-	"GET /api/v1/projects/{key}/architecture-sources":      {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/settings/repo-projects":                 {Status: http.StatusOK, Response: []model.RepoProject{}},
+	"GET /api/v1/github/app-installation/{owner}/{repo}": {Status: http.StatusOK, Response: appInstallationResponse{}},
+	"GET /api/v1/settings/architecture-sources":          {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/projects/{key}/architecture-sources":    {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"GET /api/v1/projects/{key}/architecture-source": {
 		Status: http.StatusOK, Response: model.ArchitectureSource{},
 		// A project with no source answers 200 and the JSON literal `null`
@@ -676,6 +695,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
+	},
+	"PUT /api/v1/projects/{key}/default-repository": {
+		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
 	},
 	"GET /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},
@@ -769,6 +791,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
+		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+		// over an open child of another project (refuseOpenForeignChildren).
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -834,6 +859,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
@@ -874,6 +900,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -1022,6 +1049,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionAsOfQuery{},
 		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
 		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
+	},
+	"GET /api/v1/artifacts/{id}/changes": {
+		Status: http.StatusOK, Response: artifactChanges{}, Params: artifactChangesQuery{},
 	},
 	"POST /api/v1/artifacts/{id}/versions": {
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},

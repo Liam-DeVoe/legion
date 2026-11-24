@@ -6,7 +6,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // The priority surface of the `dispatch` command: the relation an issue states (`--advance`,
@@ -219,7 +218,6 @@ beforeEach(() => {
   ownAdvances = ["ship-the-daemon"];
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {

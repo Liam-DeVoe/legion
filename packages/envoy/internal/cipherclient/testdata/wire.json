@@ -108,7 +108,7 @@
     },
     {
       "name": "a trade that wants no launcher credential",
-      "about": "A caller that wants a Dispatch access token and nothing else sends launcher_credential=false, and the broker mints or moves no launcher credential for it: the answer carries no credential_id and no credential_expires_at, and the client reads the credential it was given as none. Every TypeScript client's machine trade is this one, since none of them enrols a session or reads a secret and a machine's key is one process's and one session's, so a trade that asked would leave a launcher_credentials row and a token_login audit row behind for each of them. The parameter is absent from every other entry here because an absent parameter asks: that is what agent-secrets, the helper and a person's sign-in send, a TypeScript client's trade of a sign-in included, since the broker refuses a person's trade that declines, and what a client written before this parameter sends. The two read trades below are the exception: a read trade makes, moves and extends no launcher credential, so the broker reads its absent parameter as declined.",
+      "about": "A caller that wants a Dispatch access token and nothing else sends launcher_credential=false, and the broker mints or moves no launcher credential for it: the answer carries no credential_id and no credential_expires_at, and the client reads the credential it was given as none. Every TypeScript client's machine trade is this one, since none of them enrols a session or reads a secret and a machine's key is one process's and one session's, so a trade that asked would leave a launcher_credentials row and a token_login audit row behind for each of them. The parameter is absent from every other entry here because an absent parameter asks: that is what agent-secrets, the helper and a person's sign-in send, a TypeScript client's trade of a sign-in included, since the broker refuses a person's trade that declines, and what a client written before this parameter sends. The two read trades below are one exception: a read trade makes, moves and extends no launcher credential, so the broker reads its absent parameter as declined. The device login's trade below is another: it sends no parameter either, since a trade of a machine login's access token mints no launcher credential.",
       "subject": {
         "kind": "google-metadata",
         "token": "google.machine.identity.token",
@@ -325,6 +325,47 @@
           "access_token": "broker-access-token-reading-at-a-cut-not-a-secret",
           "token_type": "DPoP",
           "expires_in": 600,
+          "credential_id": ""
+        }
+      }
+    },
+    {
+      "name": "a device login trades its machine login's access token",
+      "about": "A machine with no platform identity of its own, such as a person's laptop, logs in once through the broker's device grant and keeps that login (AGENT_SECRETS_MACHINE_IDENTITY=device-login). It presents the access token the login holds under RFC 8693's own access_token type, with no actor: the login already names the person who approved it. The proof is signed with the login's own key, since the access token is bound to it. The trade names the projects its session works on, and sends no launcher_credential parameter: a trade of a machine login's token mints no launcher credential, so the answer names none.",
+      "subject": {
+        "kind": "machine-login-access-token",
+        "token": "not-a-secret-machine-login-access-token",
+        "token_type": "urn:ietf:params:oauth:token-type:access_token"
+      },
+      "session": "ada-laptop-1",
+      "projects": ["EXAMPLE"],
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "session": "${session}",
+        "projects": "${projects}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 200,
+        "body": {
+          "access_token": "not-a-secret-broker-access-token-for-the-device-login",
+          "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+          "token_type": "DPoP",
+          "expires_in": 900
+        }
+      },
+      "expect": {
+        "outcome": "accept",
+        "token": {
+          "access_token": "not-a-secret-broker-access-token-for-the-device-login",
+          "token_type": "DPoP",
+          "expires_in": 900,
           "credential_id": ""
         }
       }

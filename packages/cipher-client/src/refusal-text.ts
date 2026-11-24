@@ -3,10 +3,11 @@
 // What this package prints of a refusal the broker or an issuer answered: the broker's own
 // sentences it prints as written (`isKnownBrokerRefusal`), the stand-in for any other text
 // (`REFUSAL_TEXT_WITHHELD`), and the OAuth codes it shows (`shownOAuthCode`). A refusal's text is
-// a peer's choice of characters, so it prints only where it is one of these. The token client
-// (`token-client.ts`) and the person-identity client (`person-identity.ts`) read this policy; the
-// corpus the broker's own library writes (packages/envoy/internal/cipher/oauth/testdata) holds it
-// to what the broker sends.
+// a peer's choice of characters, so it prints only where it is one of these. The token client's
+// errors (`token-errors.ts`, which its broker requests in `broker-request.ts` throw) and the
+// person-identity client (`person-identity.ts`) read this policy; the corpus the broker's own
+// library writes (packages/envoy/internal/cipher/oauth/testdata) holds it to what the broker
+// sends.
 
 import { POD_SESSION_NOT_REGISTERED, SESSION_NAME_NOT_THIS_REGISTRARS } from "./wire";
 
@@ -54,7 +55,7 @@ const CLAIM = "[A-Za-z0-9_.:-]{1,64}";
 const URI = "[A-Za-z0-9:/._-]{1,200}";
 /** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
 const SESSION_RULE =
-  "a session name is printable, carries no whitespace, and is at most [0-9]{1,4} bytes";
+  "a session name is printable, carries no whitespace, '\\*' or '>', and is at most [0-9]{1,4} bytes";
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

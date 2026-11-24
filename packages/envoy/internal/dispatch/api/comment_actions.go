@@ -204,7 +204,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -320,7 +320,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -347,7 +347,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -370,7 +370,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 //
 // Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
 // would write back every other key of the column as this transaction read it, which is not what
-// orphaning an anchor means. The narrow write says what it changes.
+// orphaning an anchor means. The narrow write says what it changes, and the artifact the
+// comment's anchored_to tuple names stays among the rest, so this write restates nothing the
+// store holds.
 func recordOrphanedCommentAnchor(ledger *docs.Ledger, comment *model.Comment) error {
 	comment.Anchor.Orphaned = true
 	return queueExec(ledger, `
@@ -480,15 +482,12 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if kindErr == nil {
 			projectionKind = kind
 		}
-		// What a reject's removal of an insert's text took from other anchors' marks
-		// (docs.TakenAnchorMarks), which the column keeps below for the comment's delete.
-		var taken docs.TakenAnchorMarks
 		if comment.Anchor != nil {
 			var markErr error
 			if action == "accept" {
 				markErr = s.deps.Docs.AcceptSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, comment.Suggestion.ReplaceWith, actor)
 			} else {
-				taken, markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+				markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			}
 			if markErr != nil {
 				if !errors.Is(markErr, docs.ErrAnchorOrphaned) {
@@ -518,11 +517,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// The decision is merged into the column (jsonb ||), so every key the create stored and
 		// this write does not name stays: the kind, which the delete of a rejected suggestion reads
 		// to tell an insert's quote, the comment's own words, from document text (deleteComment).
-		// The write names the suggestion's own keys and the anchor marks a reject's removal took
-		// text from, which that delete reads to take the inserted words out of the quotes of the
-		// asks and comments on them. Nothing but the reject records those marks: once the words
-		// are out of the document, no fact of it tells which anchors lay on them.
-		suggestion, err := encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Taken: taken})
+		suggestion, err := encodeJSON(comment.Suggestion)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -557,7 +552,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	s.registerCommentAnchor(ledger, comment, actor, true)
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -614,7 +609,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	events = append(events, event)
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

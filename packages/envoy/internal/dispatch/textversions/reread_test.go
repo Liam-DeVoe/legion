@@ -1,189 +1,153 @@
 package textversions
 
 import (
-	"errors"
+	"context"
+	"io"
+	"maps"
 	"testing"
-	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// TestTheFillReadsAgainThePostEventsItPassed holds the fill to the events that rules version 1
-// passed with no row: the edit of an issue message and the delete of a comment and of a message
-// (dispatch://INFRA-1523), written while the cursor row recorded version 1 and below its cursor.
-// While the row records version 1 the keyword table has reached no time, since it lacks their
-// rows. The next fill reads them again before it goes on: the edit starts a version with the
-// edited text, each delete a version with empty text and the vector of empty text, and the
-// versions before them keep their text; it writes the event above the cursor too, and records
-// version 2. A fill that meets version 1 again, as a batch of an older build writes it during a
-// rolling deploy, writes no row twice.
-func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
-	database := storetest.Open(t)
-	textversionstest.SeedIssue(t, database)
-	broker := events.NewBroker()
+// rulesVersion1 stands for the rules of version 1, which the fill of the build before this one
+// ran: versionRules without the types version 2 added (rulesAdded), a comment's present row read
+// past its later edits alone and a message's past no later event, and no body history. A test
+// runs it on a filler (filler.rules) to write the rows a fill of that build wrote during a roll.
+var rulesVersion1 = newRuleSet(1, rulesBefore(2), map[string]postBodyRead{
+	kindComment: postBodyReadOf("comments", "comment_id", "comment.edited"),
+	kindMessage: postBodyReadOf("messages", "message_id"),
+}, false)
 
-	const firstMessage = "Can the rotation wait for the freeze?"
-	const editedMessage = "Can the rotation wait until the freeze ends on Friday?"
-	const commentBody = "The verifiers read the old key until Monday."
-	comment := writeComment(t, database, broker, commentBody, true)
-	message, created := writeMessage(t, database, broker, firstMessage)
-	edit := changePost(t, database, broker, "message", "message.edited", message, editedMessage)
-	commentDelete := changePost(t, database, broker, "comment", "comment.deleted", comment.id, "")
-	messageDelete := changePost(t, database, broker, "message", "message.deleted", message, "")
-	passed := []int64{edit, commentDelete, messageDelete}
-
-	var logs logtest.Buffer
-	if err := testFiller(database, events.NewHorizon(database.Pool), &logs).toHorizon(t.Context()); err != nil {
-		t.Fatalf("the first fill: %v", err)
+// rulesBefore is versionRules without the types rules version version added (rulesAdded).
+func rulesBefore(version int) map[string]rule {
+	rules := maps.Clone(versionRules)
+	for _, eventType := range rulesAdded[version] {
+		delete(rules, eventType)
 	}
-	// The table as a fill of rules version 1 leaves it: the rows of every event but the three
-	// that version passed, its cursor past them, and the version in the cursor row.
-	if _, err := database.Pool.Exec(t.Context(), `delete from search_text_versions where event_id = any($1)`, passed); err != nil {
-		t.Fatalf("take out the rows rules version 1 never wrote: %v", err)
-	}
-	if _, err := database.Pool.Exec(t.Context(), `update search_text_versions_fill set rules = 1`); err != nil {
-		t.Fatalf("record rules version 1 in the cursor row: %v", err)
-	}
-	if cursor := readCursorRow(t, database); cursor.eventID < messageDelete {
-		t.Fatalf("the cursor is at event %d, below the passed events %v", cursor.eventID, passed)
-	}
-	after := time.Now()
-	var refusal *store.TextVersionsNotReachedError
-	if _, err := database.TextVersionsAt(t.Context(), after); !errors.As(err, &refusal) || refusal.Reached {
-		t.Fatalf("TextVersionsAt while the cursor row records rules version 1 = %v, want a refusal that has reached no time", err)
-	}
-
-	later := commitComment(t, database, broker, textversionstest.Issue)
-	var rereadLogs logtest.Buffer
-	if err := testFiller(database, events.NewHorizon(database.Pool), &rereadLogs).toHorizon(t.Context()); err != nil {
-		t.Fatalf("the fill that reads again: %v", err)
-	}
-	requireVersion(t, database, edit, "message", message, editedMessage)
-	requireVersion(t, database, commentDelete, "comment", comment.id, "")
-	requireVersion(t, database, messageDelete, "message", message, "")
-	requireVersion(t, database, comment.event, "comment", comment.id, commentBody)
-	requireVersion(t, database, created, "message", message, firstMessage)
-	if rows := textversionstest.RowsOf(t, database, later.id); rows != 1 {
-		t.Fatalf("the comment written above the cursor has %d rows, want 1", rows)
-	}
-	if cursor := readCursorRow(t, database); cursor.rules != rulesVersion || cursor.eventID < later.id {
-		t.Fatalf("the cursor row records rules %d at event %d, want rules %d at or past event %d", cursor.rules, cursor.eventID, rulesVersion, later.id)
-	}
-	if !loggedMessage(t, &rereadLogs, rulesReadMessage) {
-		t.Errorf("the fill that read again logged no line saying so:\n%s", rereadLogs.String())
-	}
-	awaitReachPast(t, database, after)
-	if _, err := database.TextVersionsAt(t.Context(), after); err != nil {
-		t.Fatalf("TextVersionsAt once the fill read the passed events again: %v", err)
-	}
-
-	// An older build's batch records rules version 1 again; the next fill reads again from the
-	// first event and passes over each one that has its row.
-	rows := countRows(t, database)
-	if _, err := database.Pool.Exec(t.Context(), `update search_text_versions_fill set rules = 1`); err != nil {
-		t.Fatalf("record rules version 1 again: %v", err)
-	}
-	if err := testFiller(database, events.NewHorizon(database.Pool), &logs).toHorizon(t.Context()); err != nil {
-		t.Fatalf("the fill that meets rules version 1 again: %v", err)
-	}
-	if again := countRows(t, database); again != rows {
-		t.Fatalf("the keyword table holds %d rows after a second reading again, want the %d it held", again, rows)
-	}
-	if cursor := readCursorRow(t, database); cursor.rules != rulesVersion {
-		t.Fatalf("the cursor row records rules %d after a second reading again, want %d", cursor.rules, rulesVersion)
-	}
+	return rules
 }
 
-// requireVersion holds the row event started to a version of item (kind, id) whose body is body,
-// from the event's payload, with the vector the item's own search column is made from that body
-// (search_vector over search_text, 0087): for an empty body, the vector of empty text.
-func requireVersion(t *testing.T, database *store.Store, event int64, kind, id, body string) {
-	t.Helper()
-	var gotKind, gotID, gotBody, bodyFrom string
-	var vectorOfBody bool
-	if err := database.Pool.QueryRow(t.Context(), `
-		select kind, id, body, body_from, search = search_vector('', search_text($2))
-		  from search_text_versions where event_id = $1`, event, body).Scan(&gotKind, &gotID, &gotBody, &bodyFrom, &vectorOfBody); err != nil {
-		t.Fatalf("read the version event %d started: %v", event, err)
-	}
-	if gotKind != kind || gotID != id || gotBody != body || bodyFrom != bodyFromEvent || !vectorOfBody {
-		t.Fatalf("event %d started %s %s with body %q from %s (its vector that of %q: %v), want %s %s with body %q from the event",
-			event, gotKind, gotID, abridged(gotBody, 80), bodyFrom, abridged(body, 80), vectorOfBody, kind, id, abridged(body, 80))
-	}
-}
-
-// writeMessage writes an issue message of body on textversionstest.Issue with its message.created
-// event, in one transaction, as the create route does, and answers its id and the event's id.
-func writeMessage(t *testing.T, database *store.Store, broker *events.Broker, body string) (string, int64) {
-	t.Helper()
-	tx, err := database.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin the message's transaction: %v", err)
-	}
-	defer tx.Rollback(t.Context())
-	var id string
-	if err := tx.QueryRow(t.Context(), `
-		insert into messages (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2)
-		returning id::text`, textversionstest.Issue, body).Scan(&id); err != nil {
-		t.Fatalf("insert the message: %v", err)
-	}
-	issue := textversionstest.Issue
-	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "message.created",
-		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": id, "issue_key": issue, "body": body}})
-	if err != nil {
-		t.Fatalf("append message.created: %v", err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit the message: %v", err)
-	}
-	return id, appended.ID
-}
-
-// changePost writes one change of post id of kind (a comment or a message) on
-// textversionstest.Issue in one transaction, as the edit and delete routes write it: for an edit,
-// body as the row's body and edited_at the transaction's now(); for a delete (an empty body), the
-// cleared body and deleted_at; and the event of eventType, whose payload carries the new body, and
-// none for a delete. It answers the event's id.
-func changePost(t *testing.T, database *store.Store, broker *events.Broker, kind, eventType, id, body string) int64 {
-	t.Helper()
-	tx, err := database.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin the %s: %v", eventType, err)
-	}
-	defer tx.Rollback(t.Context())
-	update := `update ` + kind + `s set body = $2, edited_at = now() where id = $1::uuid`
-	payload := map[string]any{"id": id, "issue_key": textversionstest.Issue, "body": body}
-	if body == "" {
-		update = `update ` + kind + `s set body = $2, deleted_at = now(), deleted_by = '{"kind":"user","id":"alice"}' where id = $1::uuid`
-		delete(payload, "body")
-	}
-	if _, err := tx.Exec(t.Context(), update, id, body); err != nil {
-		t.Fatalf("write the %s: %v", eventType, err)
-	}
-	issue := textversionstest.Issue
-	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: eventType,
-		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: payload})
-	if err != nil {
-		t.Fatalf("append %s: %v", eventType, err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit the %s: %v", eventType, err)
-	}
-	return appended.ID
-}
-
-// loggedMessage reports whether logs, a JSON handler's output, holds a line whose message is msg.
-func loggedMessage(t *testing.T, logs *logtest.Buffer, msg string) bool {
-	t.Helper()
-	for _, line := range logLines(t, logs) {
-		if line.Msg == msg {
-			return true
+// TestTheReReadLeavesTheRowsAFillOfThisBuildAloneWrites writes, on one issue, the posts a fill of
+// rules version 1 decides otherwise than this build's: a comment and a message, each with a body an
+// event cuts, then edited, then deleted; and a message with such a body, then edited to another
+// such body.
+//
+// A fill of rules version 1 (rulesVersion1) writes them: it passes over the deletes and the
+// message's edits, and reads the cut bodies from rows those changed. A fill of this build then
+// reads them again and raises the rules version. A fill of rules version 1 writes again, the edited
+// message's second edit and its delete and a new message with a cut body, then edited, and lowers
+// the version again; and a fill of this build reads again once more. At the end the table holds,
+// column for column, body and body_from included, the rows a fill of this build alone writes of
+// the same log from an empty table.
+func TestTheReReadLeavesTheRowsAFillOfThisBuildAloneWrites(t *testing.T) {
+	for _, eventType := range rulesAdded[2] {
+		if _, ok := versionRules[eventType]; !ok {
+			t.Fatalf("rules version 2 adds %s, which versionRules does not read", eventType)
 		}
 	}
-	return false
+	database := storetest.Open(t)
+	textversionstest.SeedProject(t, database)
+	broker := events.NewBroker()
+	ctx := t.Context()
+	horizon := events.NewHorizon(database.Pool)
+	older := testFiller(database, horizon, io.Discard)
+	older.rules = &rulesVersion1
+	this := testFiller(database, horizon, io.Discard)
+	fill := func(f *filler, what string, want int) {
+		t.Helper()
+		if err := f.toHorizon(ctx); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if got := readCursorRow(t, database).rules; got != want {
+			t.Fatalf("after %s the cursor row holds rules version %d, want %d", what, got, want)
+		}
+	}
+
+	createIssue(t, database, broker, 1, "Rotate the signing keys", "The brown fox jumps")
+	long := longCommentBody()
+	comment := writePost(t, database, broker, kindComment, long)
+	correctPost(t, database, broker, kindComment, comment.id, "The rotation moved to the spec.", false)
+	correctPost(t, database, broker, kindComment, comment.id, "", true)
+	message := writePost(t, database, broker, kindMessage, long)
+	correctPost(t, database, broker, kindMessage, message.id, "Can the rotation wait for Friday?", false)
+	correctPost(t, database, broker, kindMessage, message.id, "", true)
+	edited := writePost(t, database, broker, kindMessage, "The edited message's first plan.\n\n"+long)
+	correctPost(t, database, broker, kindMessage, edited.id, "The edited message's second plan.\n\n"+long, false)
+
+	fill(older, "a fill of rules version 1", 1)
+	// The control: the rows the re-read changes are wrong before it.
+	if body := createdBody(t, database, message.event); body == long {
+		t.Fatal("the message's created row the fill of rules version 1 wrote holds its whole first body, so the check of the redo cannot fail")
+	}
+	fill(this, "a fill of this build after rules version 1's", rulesVersion)
+
+	correctPost(t, database, broker, kindMessage, edited.id, "Friday is fine.", false)
+	correctPost(t, database, broker, kindMessage, edited.id, "", true)
+	third := writePost(t, database, broker, kindMessage, "The third message's plan.\n\n"+long)
+	correctPost(t, database, broker, kindMessage, third.id, "The third plan moved to the spec.", false)
+	fill(older, "a second fill of rules version 1", 1)
+	fill(this, "a second fill of this build", rulesVersion)
+	got := keywordRows(t, database)
+
+	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
+		t.Fatalf("empty the keyword table: %v", err)
+	}
+	fill(testFiller(database, events.NewHorizon(database.Pool), io.Discard), "a fill of this build alone", rulesVersion)
+	want := keywordRows(t, database)
+	if len(want) == 0 {
+		t.Fatal("the fill of this build alone wrote no row")
+	}
+	wanted := make(map[string]bool, len(want))
+	for _, row := range want {
+		wanted[row] = true
+	}
+	held := make(map[string]bool, len(got))
+	for _, row := range got {
+		held[row] = true
+		if !wanted[row] {
+			t.Errorf("the table holds a row a fill of this build alone does not write:\n\t%s", row)
+		}
+	}
+	for _, row := range want {
+		if !held[row] {
+			t.Errorf("the table lacks a row a fill of this build alone writes:\n\t%s", row)
+		}
+	}
+}
+
+// createdBody is the body of the keyword row event started.
+func createdBody(t *testing.T, database *store.Store, event int64) string {
+	t.Helper()
+	var body string
+	if err := database.Pool.QueryRow(t.Context(), `select body from search_text_versions where event_id = $1`, event).Scan(&body); err != nil {
+		t.Fatalf("read the row of event %d: %v", event, err)
+	}
+	return body
+}
+
+// keywordRows is every keyword row, each as one line of every column, in the table's key order:
+// the body and the vector as their lengths and md5 digests, so a line stays short and a change of
+// either changes it.
+func keywordRows(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select format('%s %s seq %s event %s issue %s project %s at %s body %s (%s bytes) from %s spec %s/%s search %s (%s bytes)',
+		              kind, id, event_seq, event_id, coalesce(issue_key, '-'), project_key, started_at, md5(body), octet_length(body),
+		              body_from, coalesce(spec_artifact_id::text, '-'), coalesce(spec_version::text, '-'),
+		              md5(search::text), octet_length(search::text))
+		  from search_text_versions
+		 order by kind, id, event_seq`)
+	if err != nil {
+		t.Fatalf("read the keyword rows: %v", err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword rows: %v", err)
+	}
+	return lines
 }

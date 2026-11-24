@@ -13,6 +13,7 @@ import (
 // would be refused at that moment, and records nothing: no entry for a pair nothing holds, and no
 // moment moved for one a claim holds.
 func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	if reads.Refuses("acme/widgets", "abc", start) {
@@ -53,6 +54,7 @@ func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
 // the last CommitPullReadStaleAfter and not every commit it ever asked about. The entries inside
 // the span stay, bound and all. A read of a claim sweeps nothing, since it writes nothing.
 func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	for number := range commitPullReadSweepAt {
@@ -87,6 +89,7 @@ func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
 // that commit — so the claim is granted and the sweep drops what is left. A read of the claim
 // answers as the claim does at each of those moments.
 func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	if !reads.Claim("acme/widgets", "abc", start) || !reads.Claim("acme/widgets", "def", start) {
