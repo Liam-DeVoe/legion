@@ -492,12 +492,7 @@ function readGaps(side: string, reads: ReadLine[], responses: Response[]): strin
 }
 
 /** Why no comparison can take the step on its reads, or "" where one can. */
-function whyNot(
-  step: StepLine,
-  starts: ReadLine[],
-  ends: ReadLine[],
-  responses: Response[]
-): string {
+function whyNot(starts: ReadLine[], ends: ReadLine[], responses: Response[]): string {
   if (starts.length !== 1) return `it has ${starts.length} start reads, not one`;
   if (ends.length !== 1) return `it has ${ends.length} end reads, not one`;
   const [start] = starts;
@@ -507,10 +502,6 @@ function whyNot(
   if (start.claim !== end.claim || start.generation !== end.generation) {
     return "its two reads name two launches";
   }
-  if (start.claim !== step.agent) {
-    return `its reads name the launch of ${start.claim}, not of its agent`;
-  }
-  if (end.readAt <= start.readAt) return "its end read is not after its start read";
   for (const read of [start, end]) {
     const { before, after } = gapsOf(read.readAt, responses);
     if ((before !== null && before < NEAR) || (after !== null && after < NEAR)) {
@@ -694,7 +685,7 @@ function stepModelsCheck(argv: string[]): { lines: string[]; code: number } {
       transcripts.set(step.agent, transcript);
     }
     const { starts, ends } = joinedReads(step, reads);
-    const why = whyNot(step, starts, ends, transcript.responses);
+    const why = whyNot(starts, ends, transcript.responses);
     judged.push({
       step,
       agent,

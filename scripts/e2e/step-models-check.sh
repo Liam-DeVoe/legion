@@ -23,7 +23,7 @@
 # Its last two lines are `c-real: PASS|FAIL|UNKNOWN` and `live-at-both-reads: PASS|FAIL|UNKNOWN`.
 # It exits with the c-real verdict's code: 0, 1 or 2. It answers UNKNOWN, exit 2, for a harness
 # with no step to take, and when it could read nothing to judge. That is a failed command, a line
-# of fewer than 16 words, a log with no read line, or a record whose agent the agents file lacks.
+# of other than 16 words, a log with no read line, or a record whose agent the agents file lacks.
 # A usage error is exit 2 too, with the usage on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential: the

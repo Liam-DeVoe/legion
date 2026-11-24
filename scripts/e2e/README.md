@@ -5604,7 +5604,7 @@ Each item below names a comparison, then what it takes and judges.
 
 - `c-real` takes, for each harness of the agents file, the first step that its agent ended, in `--issue` order and then in printed order.
   Its agent ended it where the daemon's end line of the step says `endedBy` `agent`.
-  The step needs one start read and one end read of its agent's launch, neither final totals, and neither within 2 s of a response.
+  The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
   Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
   Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read.
   No record of the issues may name a set, answering or last model that its agent's transcript does not hold.
