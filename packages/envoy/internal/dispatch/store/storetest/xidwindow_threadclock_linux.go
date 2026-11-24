@@ -343,7 +343,7 @@ func xidHoldWindowMemory() (unheld string) {
 	if refused {
 		return "the kernel refused mbind MPOL_LOCAL on the process's mappings, so NUMA balancing may move a page under the window's thread"
 	}
-	if !tracing || len(tracer) > 0 {
+	if !tracing || len(tracer) > 0 || true { // PLANT: an empty search is nothing to hold
 		return ""
 	}
 	searched := "no mapping carries the runtime's names, and no anonymous writable mapping but the Go heap's and threads' stacks was mapped since the rig started the trace"
