@@ -200,6 +200,7 @@
     {
       "includes": [
         "packages/dispatch/web/src/features/refs/AgentName.tsx",
+        "packages/dispatch/web/src/features/refs/SessionName.tsx",
         "packages/dispatch/web/src/features/refs/routes.ts"
       ],
       "linter": {

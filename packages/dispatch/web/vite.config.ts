@@ -228,6 +228,12 @@ export default defineConfig({
     // The other sizes here were measured the same way at `53286717` the same day: the largest
     // chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the Delivery page
     // loads.
+    // The loading box and the alert of the surfaces a key opens
+    // (`features/shell/asked-surface.tsx`, review 6034817973) then took the entry to 500,530
+    // bytes, over the budget again. The rail's pinned agents answered it: they draw a session
+    // from `AgentName.tsx`'s session half alone (`features/refs/SessionName.tsx`), so the rest of
+    // that module is a chunk the pages' chunks share, and the entry read 497,401 bytes with the
+    // 40-character `DISPATCH_BUILD` on 2026-11-24.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
     // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.

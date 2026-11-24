@@ -8,10 +8,11 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-import { card, dangerText, inputClasses } from "../../theme/classes";
+import { inputClasses, surfaceBg } from "../../theme/classes";
 import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
 import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";
+import { ERROR_ACTION_CLASS, ErrorView } from "./ErrorBoundary";
 import { DIALOG_SCOPE, useKeymapScope } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
@@ -173,38 +174,34 @@ export function askedSurface<P extends AskedSurfaceProps>(
 
 /** Where the box and the alert stand: in the top middle of the window, over the page. */
 const FLOATING =
-  "fixed top-20 left-1/2 z-50 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-lg border px-3 py-2 text-sm shadow-2xl";
-
-/** The alert's Close and Reload. */
-const ACTION = "ml-3 font-medium underline";
+  "fixed top-20 left-1/2 z-50 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 shadow-2xl";
 
 /**
  * What stands in a surface's place once a render under it has thrown: the reader is told that
- * the surface could not open, and can close this or reload the tab. It is a dialog, as the
- * surface was (`useDialog`): it takes the focus and the keys, so a key typed after the throw
- * reaches no shortcut of the page under it. Close and Escape close the surface, and the focus goes
- * back to where the open found it: the surface's opener, which a surface that was open hands to
- * this as it goes (`handOverFocus` in `useDialog.ts`).
+ * the surface could not open, and can close this or reload the tab. It looks as a region that
+ * stopped rendering looks (`ErrorView`), over the page. It is a dialog, as the surface was
+ * (`useDialog`): it takes the focus and the keys, so a key typed after the throw reaches no
+ * shortcut of the page under it. Close and Escape close the surface, and the focus goes back to
+ * where the open found it: the surface's opener, which a surface that was open hands to this as
+ * it goes (`handOverFocus` in `useDialog.ts`).
  */
 function CouldNotOpen({ name, onClose }: { name: string; onClose: () => void }): ReactNode {
-  const { containerRef } = useDialog<HTMLDivElement>({ onClose, open: true });
-  const text = `Could not open ${name}.`;
+  const { containerRef } = useDialog<HTMLElement>({ onClose, open: true });
+  const heading = `Could not open ${name}.`;
   return (
-    <div
-      aria-label={text}
+    <ErrorView
+      aria-label={heading}
       aria-modal="true"
-      className={`${FLOATING} ${card} ${dangerText}`}
+      className={`${FLOATING} ${surfaceBg}`}
+      heading={heading}
       ref={containerRef}
+      reload="Reload"
       role="alertdialog"
     >
-      {text}
-      <button className={ACTION} onClick={onClose} type="button">
+      <button className={`${ERROR_ACTION_CLASS} mr-3`} onClick={onClose} type="button">
         Close
       </button>
-      <button className={ACTION} onClick={() => window.location.reload()} type="button">
-        Reload
-      </button>
-    </div>
+    </ErrorView>
   );
 }
 
@@ -267,7 +264,7 @@ function Placeholder({
     <input
       aria-busy="true"
       aria-label={`${name} (loading)`}
-      className={`${FLOATING} ${inputClasses(false)}`}
+      className={`${FLOATING} rounded-lg border px-3 py-2 text-sm ${inputClasses(false)}`}
       onBlur={() => {
         if (held.opener !== null && document.hasFocus()) onCancel();
       }}
