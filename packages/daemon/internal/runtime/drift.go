@@ -155,10 +155,11 @@ func (rs DriftReasons) Texts() []string {
 
 // BreakingDrift starts each reason of a kind that breaks in the reasons a round records
 // (DriftReasons.String, supervise.Claim.UpdateReasons), and no reason of a kind that drains carries
-// it. A round records its reasons as one string at its open, and the daemon reads a round as one
-// over a drift that breaks the pod where that string holds this mark (dispatch://INFRA-3271's R7,
-// internal/daemon's roundBreaksPod in cybermonklabs/legion#5285, which defines the same constant
-// with the same value: whichever of the two lands second keeps one).
+// it. A round records its reasons as one string at its open, so the mark is what tells a reader of
+// that string a round over a drift that breaks the pod from one its roles could keep working
+// under. Nothing in this package or internal/daemon reads it yet: dispatch://INFRA-3271's R7 is the
+// reader (internal/daemon's roundBreaksPod in cybermonklabs/legion#5285, which defines the same
+// constant with the same value; whichever of the two lands second keeps one).
 const BreakingDrift = "[breaks the pod] "
 
 // String is the reasons as a round's terms record them, each phrase in order, each reason of a kind

@@ -6,9 +6,11 @@ package daemon
 // R1, R3, R4). A round still open at a boot over drift that only drains ends with no replacement.
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,4 +337,147 @@ func TestAFloorKindOpensAPacedRoundAtOnce(t *testing.T) {
 	rig.clock.advance(time.Minute)
 	rig.tick()
 	rig.awaitRounds("a sweep a minute after the first", keys[:2]...)
+}
+
+// A role's start at a daemon's boot, before the boot's first sweep has read the pod's drift, keeps
+// the pod of a round an older daemon left open with no role process in it, though nothing else
+// holds the pod: that reading may end the round with no replacement, and no start of a role
+// replaces a pod whose drift only drains (R1, R4). The first sweep then ends the round with no
+// replacement, and the role goes on working in the pod.
+func TestALaunchBeforeTheBootsFirstReadingKeepsTheRoundsPod(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleImplementer))
+	image := driftOf(runtime.DriftImage)
+	rig.driftsBy(image)
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.rt.ScriptIssuePodDrift(podUpdateIssue, image)
+
+	token := rig.tokens[claim.RoleImplementer]
+	rig.intoPod(claim.RoleImplementer, podUpdatePod)
+	rig.sup.post(token, supervise.RequestResume{Claim: token})
+	c := rig.awaitClaim(claim.RoleImplementer, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+	if pod := podOf(c.Locator); pod != podUpdatePod {
+		t.Fatalf("the implementer was launched into pod %s, want the round's pod %s kept: no sweep has read its drift since the boot", pod, podUpdatePod)
+	}
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("a launch replaced the round's pod %+v before the boot's first reading of its drift", replaced)
+	}
+	rig.registerInto(claim.RoleImplementer, podUpdatePod)
+	rig.awaitSwept(claim.RoleImplementer, "the round to end with no replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.sweepsSettled(2)
+	rig.wantNoRound("the sweeps after the round open at the boot ended")
+	if replaced := rig.issueReplacements(); len(replaced) != 0 {
+		t.Errorf("the pod was replaced by issue %+v, want never: its drift only drains", replaced)
+	}
+}
+
+// A round whose claims record no pod, open at the boot over drift that breaks the pod, goes on,
+// and the replacement by issue that the same sweep decides names the reasons written again at that
+// first reading, each breaking one with the marker, not the older daemon's unmarked text, so a
+// reader of the replacement's reasons sees the marker. The sweep's own decision is read here, since
+// a later sweep reads the restated reasons from the claims whatever this one passed on.
+func TestAPodlessRoundGoingOnAtTheBootIsReplacedWithTheMarkedReasons(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleTester),
+		podlessMember(claim.RoleReviewer, supervise.StateSuspended, supervise.SuspendedByReleased, false))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	claims := rig.snapshot()
+	rig.s.noteBootRounds(claims)
+	group := claimsOf(claims, podUpdateIssue)
+	now := rig.clock.Now()
+	sweep := rig.s.beginPodUpdateSweep(now, map[string][]supervise.Claim{podUpdateIssue: group})
+	replace := rig.s.reconcileIssuePodUpdate(rig.ctx, podUpdateIssue, group, &sweep, rig.s.roundClockAt(now, nil))
+	if replace == nil {
+		t.Fatal("the first sweep since the boot decided no replacement by issue of a round over drift that breaks its pod, which nothing holds")
+	}
+	if want := recorded(podUpdateDrift); replace.reasons != want {
+		t.Errorf("the replacement by issue names reasons %q, want the reasons written again with the marker, %q", replace.reasons, want)
+	}
+}
+
+// A failed read by the issue of a round whose claims record no pod, open at the boot, decides
+// nothing: the round is neither ended nor replaced at that sweep, since nobody read whether its
+// drift drains. The next sweep that reads it decides, and over drift that drains ends the round
+// with no replacement.
+func TestAFailedBootReadOfAPodlessRoundDecidesNothing(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleTester),
+		podlessMember(claim.RoleReviewer, supervise.StateSuspended, supervise.SuspendedByReleased, false))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.rt.ScriptIssuePodDrift(podUpdateIssue, driftOf(runtime.DriftImage))
+	rig.rt.FailPodDrift(errors.New("the api server did not answer"))
+	for range 3 {
+		rig.tick()
+	}
+	rig.settleAll()
+	if asked := rig.byIssueAsks(); len(asked) != 0 {
+		t.Fatalf("the runtime was asked to replace the pod by issue %+v while nobody could read its drift, want nothing", asked)
+	}
+	if c := rig.claimOf(claim.RoleTester); c.UpdateRound != podUpdateRound {
+		t.Fatalf("the tester is in round %q after failed reads, want the round kept open", c.UpdateRound)
+	}
+
+	rig.rt.FailPodDrift(nil)
+	rig.tick()
+	rig.awaitClaim(claim.RoleTester, "the round to end with no replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if asked := rig.byIssueAsks(); len(asked) != 0 {
+		t.Errorf("the runtime was asked to replace the pod by issue %+v, want never: its drift only drains", asked)
+	}
+}
+
+// A round this daemon opened is never one found open at its boot, however long its post takes to
+// reach the claims. The round's post waits in a machine held inside a relaunch; meanwhile the pod's
+// breaking drift is mended and only drift that drains is left. Once the machine takes the post, the
+// round is the one this daemon opened, its terms fixed at its open, and it goes on: a sweep never
+// reads it as a boot round and ends it with no replacement.
+func TestARoundThisDaemonOpenedIsNeverABootRound(t *testing.T) {
+	t.Parallel()
+	const issue = "LEGION-1"
+	relaunching := limitIssue(1, issue)
+	relaunching.roles = []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
+	relaunching.unregistered = []claim.Role{claim.RoleImplementer}
+	rig := newFleetRig(t, relaunching)
+	rig.drifts(issue, limitDrift)
+
+	architect := rig.token(issue, claim.RoleArchitect)
+	died := *rig.claimOf(issue, claim.RoleArchitect).Locator
+	rig.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(architect, issue, rig.pods[issue])})
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseMachine := sync.OnceFunc(func() { close(release) })
+	rig.rt.HoldResume(func() {
+		rig.rt.HoldResume(nil)
+		close(entered)
+		<-release
+	})
+	defer releaseMachine()
+	go func() {
+		m, _ := rig.sup.Machine(architect)
+		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the architect's machine never reached the Resume this test holds it in")
+	}
+
+	// The first sweep opens the round over drift that breaks; its post waits in the held machine.
+	rig.tick()
+	// The breaking drift is mended while the post is in flight.
+	rig.driftsBy(issue, driftOf(runtime.DriftImage))
+	for range 2 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+	}
+
+	releaseMachine()
+	rig.awaitRounds("the held machine took the round it was posted", issue)
+	for range 2 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+	}
+	if c := rig.claimOf(issue, claim.RoleArchitect); !supervise.IsPodRound(c.UpdateRound) {
+		t.Errorf("the architect records round %q after the sweeps, want the round this daemon opened kept open: it is no boot round", c.UpdateRound)
+	}
 }

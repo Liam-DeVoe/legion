@@ -1560,17 +1560,20 @@ type supervision struct {
 	// of its own, for the reason podUpdateWorkspaceMu has one.
 	podUpdateEndedMu sync.Mutex
 	podUpdateEnded   map[string]string
-	// podUpdateDriftReadMu guards podUpdateDriftRead, the rounds whose pod's drift this daemon has
-	// read since its boot (firstDriftRead): every round it opens, which it opened on a reading of
-	// a kind that breaks, and every round it found open at its boot once a sweep has read that
-	// round's pod, by claim or by issue. A round found open at the boot, an older daemon's, ends
-	// with no replacement at that first reading where the pod's drift only drains
-	// (endRoundOverDrainingDrift, dispatch://INFRA-4754 R1); every later reading leaves the round
-	// to the rule that its terms are fixed at its open. An entry goes at the first sweep where no
-	// claim records its round (forgetDriftReads). Nothing of it is in the store: a restart is the
-	// boot this memory is for. A mutex of its own, for the reason podUpdateWorkspaceMu has one.
-	podUpdateDriftReadMu sync.Mutex
-	podUpdateDriftRead   map[string]bool
+	// podUpdateBootMu guards podUpdateBootSwept and podUpdateBootRounds: whether the daemon's first
+	// sweep has run, and the rounds that sweep found open, an older daemon's, whose pod's drift no
+	// sweep has read since (noteBootRounds). Such a round ends with no replacement at its first
+	// reading where the pod's drift only drains, and goes on with its reasons written again where it
+	// breaks (endRoundOverDrainingDrift, restateRoundReasons, dispatch://INFRA-4754 R1); a launch
+	// into its pod before that reading reads the drift itself and keeps the pod unless a kind of
+	// it breaks (bootReadingAtLaunch), and before the first sweep every round is such a round. A
+	// round this daemon opens is never one. An entry goes at its reading
+	// (takeBootRound), or at the first sweep where no claim records it (forgetBootRounds). Nothing
+	// of it is in the store: a restart is the boot it is for. A mutex of its own, for the reason
+	// podUpdateWorkspaceMu has one.
+	podUpdateBootMu     sync.Mutex
+	podUpdateBootSwept  bool
+	podUpdateBootRounds map[string]bool
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
 	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
 	// round, whether a launch replaced its pod as the round's own replacement and what that launch
@@ -2268,9 +2271,11 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // registration is the second relaunch in a row — which staleRegistration would charge, until the
 // launch budget fails the claim. The contract decides nothing: a claim at this release's own
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
-// that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
-// what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// that claim to failed. Nothing here can move such a worker's plugin; a new image can, which the
+// pod its issue gets after its idle release carries: a pod on an older image opens no update round
+// and keeps working (dispatch://INFRA-4754). So it is left running, and where a round over its pod
+// does open, for drift that breaks the pod, it is asked that round like any other worker, on its
+// role's own Envoy topic (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //
@@ -2493,7 +2498,7 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // worker image's own claude-envoy. No install reaches it (specs.stalePluginInstall installs none
 // for that backend, and no workflow releases claude-envoy) and no relaunch moves it, because the
 // launch keeps the pod the claim already runs in: only a new image carries another claude-envoy,
-// which is what the pod round replaces the pod for.
+// which the pod its issue gets after its idle release brings.
 //
 // Under tmux a Claude Code role is exempt from nothing. Its pane loads the claude-envoy held at
 // LEGION_CLAUDE_PLUGIN_DIR (resolveClaude; tmux's ClaudeLaunch, whose MCP configuration and

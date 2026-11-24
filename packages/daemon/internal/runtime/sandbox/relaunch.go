@@ -339,11 +339,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	if !replace {
 		// The pod is kept, so this role is started as that pod was built rather than as the
-		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
-		// carries neither an enrollment nor an overlay the configuration gained after it was
-		// created, and a start naming either would refuse to run, never register, and so never
-		// answer the round that is to replace it (INFRA-484). Where the stored template says
-		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
+		// configuration now reads (keptBy): a drifted pod carries neither an enrollment nor an
+		// overlay the configuration gained after it was created, and a start naming either would
+		// refuse to run and never register — never working in a pod kept until its release, nor
+		// answering a round over drift that breaks the pod (INFRA-484). Where the stored template
+		// says nothing the daemon can read, it cannot tell what the pod carries, and the launch
 		// replaces the pod where it stands, which is what every launch into a drifted pod did
 		// before the round existed.
 		kept, readable := r.keptBy(s, string(pod.UID), l)
@@ -510,9 +510,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // its install hashes to). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
-// runs degraded until the update round replaces the pod — able to do the steps of that round's
-// update message (supervise.UpdateTask) and answer it, where a start naming what its pod cannot
-// carry would refuse to run at all (keptPod, INFRA-484).
+// works without what the pod lacks — until a release of the pod where its drift only drains, or
+// its update round where a kind of it breaks, whose update message (supervise.UpdateTask) it can
+// do and answer — where a start naming what its pod cannot carry would refuse to run at all
+// (keptPod, INFRA-484).
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //

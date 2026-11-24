@@ -3249,13 +3249,16 @@ func (m *Machine) dropUpdateTask(ctx context.Context) error {
 // for a round that is already over, and ending whichever round it stands in now would end a
 // round nobody has weighed.
 //
-// A pod's round ends only once the pod it was opened over is gone: the replacement the round
-// itself made, a pod replaced under it, or a pod that went for a failure of its own. Each role's
-// process died with that pod, and the displaced path brings each one back on its own session, so
-// nothing is launched here, whatever state the claim is in: a claim that failed while the round
-// ran is left failed for the workflow's retry to decide, and sendPending hands a claim with no
-// agent nothing (delivery.go). Leaving the round on it instead would outlive the pod the round
-// was opened over, and the sweep reads the round of every claim.
+// A pod's round ends once the pod it was opened over is gone: the replacement the round itself
+// made, a pod replaced under it, or a pod that went for a failure of its own. Each role's process
+// died with that pod, and the displaced path brings each one back on its own session, so nothing
+// is launched here, whatever state the claim is in: a claim that failed while the round ran is
+// left failed for the workflow's retry to decide, and sendPending hands a claim with no agent
+// nothing (delivery.go). Leaving the round on it instead would outlive the pod the round was
+// opened over, and the sweep reads the round of every claim. The one round that ends with its pod
+// still there is one found open at the daemon's boot over drift the pod's roles keep working under
+// (internal/daemon's endRoundOverDrainingDrift): each role goes on in that pod, and the task the
+// round held back is sent to it here.
 //
 // A plugin round is the other round this can find, and it leaves the claim the same way. No
 // daemon on this release opens one — the stale-plugin lane replaces a stale process and asks its
@@ -3284,7 +3287,8 @@ func endPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 // nothing read goes with the mark a restart armed for it (dropUpdateTask), every field the round
 // wrote goes (clearUpdate), the claim is written, and the task the round was holding back is
 // sent. It is the whole of every round's end: a pod's round, whose pod is gone by the time that
-// end is posted (endPodUpdate), and a plugin round, which no daemon on this release opens and
+// end is posted, or which was found open at the boot over drift its pod keeps working under
+// (endPodUpdate), and a plugin round, which no daemon on this release opens and
 // which ends wherever an earlier daemon's is found — at a registration that speaks this daemon's
 // contract (endCurrentPluginRound), or at the end the sweep posts. They differ only in what they
 // log. sendPending hands nothing to a claim that is not ready or idle, so a failed or suspended

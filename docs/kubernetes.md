@@ -7546,12 +7546,13 @@ It comes back on the new pod in its own session, through the displaced path, wit
 
 A round still open at a daemon's boot, which an older daemon opened over drift this daemon leaves to the idle release, ends with no replacement at the first sweep after the boot that reads its pod's drift, by claim or by issue, when that drift holds only kinds that drain.
 Each claim the round asked gets the task the round held back, and the pod keeps working until one of its other ends.
-A round still open at the boot whose claims record no pod ends the same way.
+A round still open at the boot whose claims record no pod ends the same way; a read of its pod by the issue that fails decides nothing, and the next sweep reads it again.
+A launch into the pod of such a round before a sweep has read it reads the pod's drift itself: it keeps the pod where the drift only drains or cannot be read, so a role started before the boot's first sweep comes up in the pod it was in, and it goes on to the usual rule of a launch into a round's pod where the drift breaks.
 A round whose pod has drift of a kind that breaks stays open, and ends as any round does; its recorded reasons are written again from that first reading, so the reason of each kind that breaks carries the marker below.
 
 Each round the daemon opens records its reasons as one string (`update_reasons` on each claim of the round), and the reason of each kind that breaks starts with the marker `[breaks the pod] ` (`runtime.BreakingDrift`); no reason of a kind that drains carries it.
 A round opened over an image change and an account change, for example, records `image <old>, now <new>, [breaks the pod] account <old>, now <new>`.
-The round's replacement reads the marker as a round over a drift that breaks the pod.
+The marker tells a reader of the round's reasons a round over a drift that breaks the pod from one the pod's roles could keep working under.
 
 A round open when the release that brought the bound is deployed starts its bound and its ask at the deploy.
 That release's migration `20261113110610_drop_claim_update_answer_marks` sets the opening of every claim in a pod round to the moment of the migration, and clears the claim's ask mark (`update_tasked_at`) and its notice mark (`update_told_at`).

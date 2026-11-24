@@ -431,7 +431,8 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 // (podKind.launcherContainer, workloadIdentityVolumes), and the metadata endpoint's variables are
 // the launcher's to set — so a start into the kept gVisor pod names nothing of a microVM. Nor does
 // the launch write one onto the pod: it patches no template, so the Sandbox still records the
-// gVisor pod it runs until the update round PodDrift opens over it replaces that pod.
+// gVisor pod it runs, which keeps working until a release of it (the sandbox kind drains), and the
+// issue's next pod is built in the microVM.
 func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *testing.T) {
 	spec := workerSpec(t)
 	// resumed is a resume of the tester at generation 2 into its issue pod, built under no sandbox

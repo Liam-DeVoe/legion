@@ -112,15 +112,16 @@ type podShapeRecord struct {
 // its encoding (omitempty), which changes no issue pod's, whose class is never empty (New refuses
 // an empty one while an issue pod runs in a microVM). A gVisor pod records none
 // (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
-// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor pods'
-// storage class stays out of every shape as it always was. KeepVolume is written only when it is
-// true, so a shape with keep_volume off, and the controller's, which ignores the setting
-// (keptVolume), encodes byte for byte as it did before that setting existed. A change of the
-// microVM block's storage class, keep_volume or metadata endpoint opens a round over each microVM
-// issue pod and no other, and a change of an issue's sandbox one over that issue's pod, from null
-// to a microVM or back; a change of the block's metadata endpoint or compute class, or of the
-// project's type, has the controller's next launch that installs nothing replace its pod, and a
-// change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
+// setting existed and the setting's arrival drifts no gVisor pod, and the gVisor pods' storage
+// class stays out of every shape as it always was. KeepVolume is written only when it is true, so
+// a shape with keep_volume off, and the controller's, which ignores the setting (keptVolume),
+// encodes byte for byte as it did before that setting existed. A change of the microVM block's
+// storage class, keep_volume or metadata endpoint drifts each microVM issue pod and no other, and a
+// change of an issue's sandbox drifts that issue's pod, from null to a microVM or back: drift of
+// the sandbox kind, which drains, so each such pod keeps working until a release of it and its
+// next pod takes the new block. A change of the block's metadata endpoint or compute class, or of
+// the project's type, has the controller's next launch that installs nothing replace its pod, and
+// a change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
