@@ -446,7 +446,11 @@ func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
 // loses the one read that would answer it: the fact - a check that concluded, a push, a review -
 // is what changes GitHub's answer, and the running ladder can already be past its last read, as
 // it is here, where its first answer is one it ends on. The running ladder climbs again for the
-// request instead, and that climb is the read that moves the issue.
+// request instead, and that climb is the read that moves the issue. The first answer is `behind`:
+// a state the ladder ends on that ends no review round (classify's mergeStateEndsRound), so the
+// issue reaches accepting only on the second climb's answer, and that move marks the end of the
+// climbs. `blocked` would not do: with every check of the head concluded it ends the round
+// itself, so the issue reached accepting on the first answer while the second climb still ran.
 func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -462,7 +466,7 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 		if reads.Add(1) == 1 {
 			// The first read is held until the second request has been queued, so the request
 			// lands while this ladder is reading rather than before or after it.
-			state = "blocked"
+			state = "behind"
 			<-release
 		}
 		w.Write([]byte(`{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"` + state + `"}`))
