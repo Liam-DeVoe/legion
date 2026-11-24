@@ -83,7 +83,10 @@ import (
 // where Go's coverage counters count ygo's walks wherever pmdoc makes them
 // (TestUpdateIsLinearInTheBlockCount, "replacing a quote of headings with a quote of rules"), and
 // not here: the count pmdoc keeps of itself (UpdateWork) is taken where the fix put its walks, so a
-// revert to inserts made one index at a time walks ygo past it.
+// revert to inserts made one index at a time walks ygo past it. pmdoc's row counts Update and ygo
+// alone. The rest of the upload route's replacement, the docs service's work around Update, is
+// counted by no row: a ladder that timed the route in its request thread's CPU held a quadratic
+// step there too, and this test reads no clock.
 //
 // Settlement is held off. A document's settlement runs on a goroutine of its own after the save,
 // beside the counts a rung reads, and the test server's shutdown, which would otherwise spend its

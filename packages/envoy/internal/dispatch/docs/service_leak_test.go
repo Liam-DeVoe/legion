@@ -36,6 +36,11 @@ import (
 // had (INFRA-2963). The registry holds each service through a weak pointer, so it pins nothing
 // itself.
 
+// leakCheckStarted is closed when the end-of-run check begins (reportLeakedServices), so a test
+// of the check can time what it holds from the check's start rather than from its own end: the
+// database drops storetest.Main waits for come between the two.
+var leakCheckStarted = make(chan struct{})
+
 // builtService is one service New built, named by the test that built it, and whether it has
 // ended: whether its own Shutdown has reported that it finished.
 type builtService struct {
@@ -141,8 +146,10 @@ func collect() {
 // second, and reports the ones still alive if that wait gives up at the test binary's deadline.
 // The fix for a service whose Shutdown never finished is a t.Cleanup on the test named that
 // shuts it down, or building it with newTestServiceWith, which does that; one held after its
-// Shutdown is held by something that outlives it, which the fix lets go.
+// Shutdown is held by something that outlives it, which the fix lets go. It closes
+// leakCheckStarted as it begins.
 func reportLeakedServices() bool {
+	close(leakCheckStarted)
 	start := time.Now()
 	collect()
 	built, running, held := liveServices()
