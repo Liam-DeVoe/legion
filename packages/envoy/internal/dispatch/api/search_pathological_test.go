@@ -7,6 +7,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Saving a pathological body costs work linear in it (LEGION-465). Before the fix Postgres's
@@ -79,14 +84,14 @@ import (
 // took work that grew with the square of its blocks (LEGION-465): pmdoc wrote each new block at its
 // own index, and ygo walks the fragment to each index it is given. A quote of n headings replaced
 // with a quote of n rules took 34 ms of server CPU at 682 blocks and 10.5 s at 21,844 before the
-// fix and 27 ms and 1.5 s after it. That replacement is held in pmdoc, at 2,730 and 21,845 blocks,
-// where Go's coverage counters count ygo's walks wherever pmdoc makes them
-// (TestUpdateIsLinearInTheBlockCount, "replacing a quote of headings with a quote of rules"), and
-// not here: the count pmdoc keeps of itself (UpdateWork) is taken where the fix put its walks, so a
-// revert to inserts made one index at a time walks ygo past it. pmdoc's row counts Update and ygo
-// alone. The rest of the upload route's replacement, the docs service's work around Update, is
-// counted by no row: a ladder that timed the route in its request thread's CPU held a quadratic
-// step there too, and this test reads no clock.
+// fix and 27 ms and 1.5 s after it. pmdoc holds its Update alone, at 2,730 and 21,845 blocks, where
+// Go's coverage counters count ygo's walks wherever pmdoc makes them
+// (TestUpdateIsLinearInTheBlockCount, "replacing a quote of headings with a quote of rules"). This
+// test holds the whole upload route's replacement, at the sizes of the CPU-timed ladder its row
+// replaces ("replacing many blocks"): the statements that the route, the document service around
+// Update, pmdoc and ygo each run in it, which Go's coverage counters count in a build of this
+// package's tests that carries them (countReplacements), and the bytes it allocates, each held to
+// linear growth.
 //
 // Settlement is held off. A document's settlement runs on a goroutine of its own after the save,
 // beside the counts a rung reads, and the test server's shutdown, which would otherwise spend its
@@ -291,6 +296,36 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			return indexingBuffers(t, database, `update comments set body = body where id = $1`, comment.ID)
 		})
 	})
+	// The replacement the header names last: a quote of n headings replaced with a quote of n
+	// rules, at the sizes of the CPU-timed ladder this row replaces (replacementSizes). Its work is
+	// counted in a build of this package's tests with Go's coverage counters in the packages
+	// countedReplacementPackages names - the upload route (internal/dispatch/api), the document
+	// service (internal/dispatch/docs), pmdoc, and every package of ygo - where the counted child
+	// runs this row (replaceManyBlocksCounted), and this run reads what it counted
+	// (countReplacements). The statements each of those four ran in the replacement, and the bytes
+	// the replacement allocated, are each held to linear growth (growsLinearly): a step that grows
+	// with the square of the blocks in one of them fails the row even where the linear work of the
+	// others would outweigh it at the first rung in a sum of them all. In this run the row uses
+	// nothing of this test's server: the child's run of it uses the server of its own process.
+	t.Run("replacing many blocks", func(t *testing.T) {
+		if replace := os.Getenv(countedReplacementEnv); replace != "" {
+			replaceManyBlocksCounted(t, handler, issue, replace)
+			return
+		}
+		const what = "replacing a quote of headings with a quote of rules"
+		runs := countReplacements(t)
+		readings := make([]string, len(replacementSizes))
+		for i, size := range replacementSizes {
+			readings[i] = fmt.Sprintf("%s (%d rules): %s", sizeText(size), size/len(replacingBlock), runs[size])
+		}
+		t.Logf("%s counted %s", what, strings.Join(readings, "; "))
+		for _, counted := range countedReplacementPackages {
+			statements := func(size int) uint64 { return runs[size].statements[counted.name] }
+			growsLinearly(t, what+", in "+counted.name+"'s statements ("+ladderCounts(statements)+")", "statements", replacementSizes, statements)
+		}
+		allocated := func(size int) uint64 { return runs[size].bytes }
+		growsLinearly(t, what+", in the bytes it allocated ("+ladderCounts(allocated)+")", "bytes", replacementSizes, allocated)
+	})
 }
 
 // indexingBuffers is how many shared buffers PostgreSQL reads to index a stored text once more:
@@ -391,6 +426,297 @@ func requireShortVectorRuns(t *testing.T, database *store.Store, what, stored st
 		t.Fatalf("the vector stored for %s holds a run of %d underscore-joined segments, past the %d search_text breaks a run at (0056_search_text): its trigger handed Postgres's parser text no search_text read first, so the `a_` run after the probe reached the parser whole too, which reads such a run in time that grows with the square of its length",
 			what, longest, searchTextRun)
 	}
+}
+
+// replacedBlock and replacingBlock are the blocks of the "replacing many blocks" row: the document
+// it replaces is a quote of replacedBlock, a heading each, and its replacement a quote of as many
+// replacingBlock, a rule each, so every block in the quote changes type and the quote stays.
+const replacedBlock, replacingBlock = "> #\n", "> ***\n"
+
+// replacementSizes are the row's rungs, in bytes of the replacement: 2,184, 10,922 and 21,844
+// rules, the sizes of the CPU-timed ladder the row replaces, the largest the most rules one
+// write's element limit allows in the quote. Each holds more blocks than a write indexes in its
+// own request (docs' deferBlockIndexBlocks, 2,000; the quote is a block of its own), so every
+// rung's replacement leaves its blocks to the block-index reconciliation and does the same kinds
+// of work. The ladder grows 5 and 10 times: work linear in the blocks grows about that much,
+// inside growsLinearly's bounds of 20 and 40 times, and work that grows with their square 25 and
+// 100 times.
+var replacementSizes = []int{2_184 * len(replacingBlock), 10_922 * len(replacingBlock), 21_844 * len(replacingBlock)}
+
+// countedReplacementPackages are the packages whose statements the row counts, each by the name
+// its readings and its verdict give it and the -coverpkg pattern that instruments it: the upload
+// route; the document service, every statement of internal/dispatch/docs the upload runs, its
+// ReplaceText's reads, checks and render of the replacement around pmdoc.Update and its ledger's
+// writes among them; pmdoc, which parses, renders and writes the replacement (Update); and every
+// package of ygo, the document they read and write, so that ygo's walks are counted wherever docs
+// or pmdoc makes them. Work in a package outside them - the standard library, goldmark, pgx, this
+// module's other packages - counts as the statement that calls it, and is seen beside that only
+// by the bytes it allocates.
+var countedReplacementPackages = []struct{ name, pattern string }{
+	{"api", "github.com/sjawhar/envoy/internal/dispatch/api"},
+	{"docs", "github.com/sjawhar/envoy/internal/dispatch/docs"},
+	{"pmdoc", "github.com/sjawhar/envoy/internal/dispatch/pmdoc"},
+	{"ygo", "github.com/reearth/ygo/..."},
+}
+
+// countedReplacementEnv, set in the counted child's environment, makes the "replacing many blocks"
+// row run as the counted child (replaceManyBlocksCounted). Its value is the size of the rung the
+// run replaces, or countedPreparingOnly for the run that replaces none.
+const countedReplacementEnv = "DISPATCH_COUNTED_REPLACEMENT"
+
+// countedPreparingOnly is countedReplacementEnv's value for the counted child's run that prepares
+// every rung and replaces none.
+const countedPreparingOnly = "none"
+
+// countedReplacementMark begins the line the counted child prints when it replaces a rung: the
+// rung's size and the bytes its replacement allocated.
+const countedReplacementMark = "counted replacement: "
+
+// replacementBlockLimit is the count at which a block's coverage counter, 32 bits wide, is half way
+// to wrapping. A block one run counted this often may have wrapped in a run that did more, and the
+// statements read from it would then count nothing that ran, so countedChild fails the row there,
+// naming the block.
+const replacementBlockLimit = 1 << 31
+
+// replaceManyBlocksCounted is the "replacing many blocks" row as the counted child runs it, in the
+// test binary countReplacements builds, on this process's test server, replace being the value of
+// countedReplacementEnv. It uploads a quote of headings at each rung's size and reads each one's
+// token, then replaces one more such quote, at the first rung's size, with a quote of as many
+// rules, so that work the process does only the first time it runs the path is done in every run.
+// Unless replace is countedPreparingOnly, it then replaces the quote of headings at the rung
+// replace names with a quote of as many rules under that quote's token, and prints the rung's size
+// and the bytes the process allocated while it did (runtime.MemStats's TotalAlloc, which grows by
+// each allocation's size and which no collection or load of the machine moves). The coverage
+// counters the run writes when it exits count all it did; the run that replaced none counts all of
+// that but the one replacement (countReplacements). Of the server's own work beside its requests,
+// what would read the blocks again does not run: it settles no document within the hour its
+// settle delay is, and it runs no block-index reconciliation, which only a server's boot starts.
+func replaceManyBlocksCounted(t *testing.T, handler http.Handler, issue model.Issue, replace string) {
+	owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+	upload := func(fields map[string]string, body []byte, block string, blocks int) {
+		t.Helper()
+		response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("upload a quote of %d blocks of %q: status=%d body=%.200s", blocks, block, response.Code, response.Body.String())
+		}
+	}
+	// A prepared rung is a quote of headings, uploaded, and what replaces it: the upload's fields,
+	// the quote's token among them, and the quote of as many rules.
+	type prepared struct {
+		fields map[string]string
+		rules  []byte
+	}
+	documents := 0
+	prepare := func(size int) prepared {
+		t.Helper()
+		blocks := size / len(replacingBlock)
+		documents++
+		name := fmt.Sprintf("many-blocks-%d.md", documents)
+		upload(map[string]string{"name": name}, []byte(strings.Repeat(replacedBlock, blocks)), replacedBlock, blocks)
+		return prepared{
+			fields: map[string]string{"name": name, "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, owner, name))},
+			rules:  []byte(strings.Repeat(replacingBlock, blocks)),
+		}
+	}
+	rungs := make(map[string]prepared, len(replacementSizes))
+	for _, size := range replacementSizes {
+		rungs[strconv.Itoa(size)] = prepare(size)
+	}
+	warm := prepare(replacementSizes[0])
+	upload(warm.fields, warm.rules, replacingBlock, replacementSizes[0]/len(replacingBlock))
+	if replace == countedPreparingOnly {
+		return
+	}
+	rung, ok := rungs[replace]
+	if !ok {
+		t.Fatalf("%s = %q names no rung of replacementSizes and is not %q", countedReplacementEnv, replace, countedPreparingOnly)
+	}
+	blocks := len(rung.rules) / len(replacingBlock)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	upload(rung.fields, rung.rules, replacingBlock, blocks)
+	runtime.ReadMemStats(&after)
+	fmt.Printf("%s%s %d\n", countedReplacementMark, replace, after.TotalAlloc-before.TotalAlloc)
+}
+
+// countedReplacement is what the counted child read of one rung's replacement: the statements it
+// ran in each of countedReplacementPackages, by name, and the bytes the process allocated while it
+// ran.
+type countedReplacement struct {
+	statements map[string]uint64
+	bytes      uint64
+}
+
+func (run countedReplacement) String() string {
+	parts := make([]string, len(countedReplacementPackages))
+	for i, counted := range countedReplacementPackages {
+		parts[i] = fmt.Sprintf("%s %d", counted.name, run.statements[counted.name])
+	}
+	return fmt.Sprintf("%s statements, %d bytes", strings.Join(parts, ", "), run.bytes)
+}
+
+// ladderCounts is what counted reads at each of replacementSizes, for a verdict's text.
+func ladderCounts(counted func(size int) uint64) string {
+	parts := make([]string, len(replacementSizes))
+	for i, size := range replacementSizes {
+		parts[i] = fmt.Sprintf("%d at %s", counted(size), sizeText(size))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// countReplacements builds this package's test binary with Go's coverage counters, in count mode,
+// in the packages countedReplacementPackages names, and runs the "replacing many blocks" row in it
+// as the counted child (replaceManyBlocksCounted): once replacing none of the rungs, then once for
+// each rung, replacing it. A rung's statements in a package are the package's blocks' statements,
+// each times the times the block ran in the rung's run less the times it ran in the run that
+// replaced none, summed: what the binary's start, the server and the preparing cost is in both
+// runs, and counts in no rung. A test binary writes its counters only when it exits (runtime/coverage
+// writes them mid-run only in a program that is no test binary), so each count takes a run of its
+// own. The build passes -race=false: the go command reads GOFLAGS from the test's environment, a
+// GOFLAGS holding -race would make it refuse -covermode=count, and the counts need no detector.
+// The build, each run and each read are bounded only by the shared wait (countedCommand). A
+// package that ran fewer statements in a rung's run than in the run that replaced none fails the
+// row, naming the package: work that differed between the two runs beside the replacement then
+// outweighed the replacement's own.
+func countReplacements(t *testing.T) map[int]countedReplacement {
+	t.Helper()
+	goCmd, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal("go is not on PATH: the row builds this package's test binary with Go's coverage counters, so it needs the go command, " +
+			"which go test puts first on a test's PATH; a test binary run by hand needs Go's bin directory on PATH")
+	}
+	bin := filepath.Join(t.TempDir(), "api.test")
+	patterns := make([]string, len(countedReplacementPackages))
+	for i, counted := range countedReplacementPackages {
+		patterns[i] = counted.pattern
+	}
+	countedCommand(t, "the build of the counted test binary", nil, goCmd, "test", "-c", "-race=false", "-cover",
+		"-covermode=count", "-coverpkg="+strings.Join(patterns, ","), "-o", bin, ".")
+	prepared, _ := countedChild(t, goCmd, bin, countedPreparingOnly)
+	runs := make(map[int]countedReplacement, len(replacementSizes))
+	for _, size := range replacementSizes {
+		replaced, allocated := countedChild(t, goCmd, bin, strconv.Itoa(size))
+		statements := make(map[string]int64, len(countedReplacementPackages))
+		for position, block := range replaced {
+			statements[countedPackageOf(t, position)] += int64(block.statements) * (int64(block.count) - int64(prepared[position].count))
+		}
+		run := countedReplacement{statements: make(map[string]uint64, len(statements)), bytes: allocated}
+		for name, count := range statements {
+			if count < 0 {
+				t.Fatalf("the run that replaced the quote at %s ran %d fewer statements in %s than the run that replaced none: work that differed between the two runs beside the replacement outweighed the replacement's own",
+					sizeText(size), -count, name)
+			}
+			run.statements[name] = uint64(count)
+		}
+		runs[size] = run
+	}
+	return runs
+}
+
+// coverBlock is one block of a coverage profile: its statements, and the times it ran.
+type coverBlock struct{ statements, count uint64 }
+
+// countedChild runs the counted child with countedReplacementEnv set to replace, and reads the
+// coverage counters it writes when it exits (-test.gocoverdir) through go tool covdata textfmt,
+// each block of a counted package by the position the profile names it at, and the bytes it
+// prints that its replacement allocated, where it made one. The child runs with the garbage
+// collector off (GOGC=off, GOMEMLIMIT=off), so that no collection runs in it: the document service
+// holds a document's room and rendering through weak pointers, so a collection that falls in one
+// run and not in the other can change what the replacement and its preparing read and render
+// again. With the collector on, three runs of this row read pmdoc's statements at the first rung as
+// 3,074,383, 231,242 and 7,903,214, where the api's read 33,274 in each; with it off, eleven read
+// 4,804,890 to 5,529,310. covdata reads -i as a comma-separated list of directories, and no
+// directory the row names holds a comma: t.TempDir names its directory from the test's name,
+// "TestSavingAPathologicalBodyIsBounded/replacing_many_blocks", which holds none. A block the run
+// counted replacementBlockLimit times or more fails the row, naming the block.
+func countedChild(t *testing.T, goCmd, bin, replace string) (blocks map[string]coverBlock, allocated uint64) {
+	t.Helper()
+	coverDir, profile := t.TempDir(), filepath.Join(t.TempDir(), "profile.txt")
+	what := fmt.Sprintf("the counted child's run of the row with %s=%s", countedReplacementEnv, replace)
+	out := countedCommand(t, what, []string{countedReplacementEnv + "=" + replace, "GOGC=off", "GOMEMLIMIT=off"}, bin,
+		"-test.run=^TestSavingAPathologicalBodyIsBounded$/^replacing_many_blocks$", "-test.gocoverdir="+coverDir)
+	if replace != countedPreparingOnly {
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			if values, ok := strings.CutPrefix(line, countedReplacementMark); ok {
+				var size string
+				if _, err := fmt.Sscanf(values, "%s %d", &size, &allocated); err != nil || size != replace {
+					t.Fatalf("%s printed %q, not the rung's size %s and the bytes its replacement allocated (%v)", what, line, replace, err)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s printed no %q line; its output:\n%s", what, countedReplacementMark, out)
+		}
+	}
+	countedCommand(t, "go tool covdata textfmt of "+what, nil, goCmd, "tool", "covdata", "textfmt", "-i="+coverDir, "-o="+profile)
+	data, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if lines[0] != "mode: count" {
+		t.Fatalf("the profile of %s begins %q, not mode: count", what, lines[0])
+	}
+	blocks = make(map[string]coverBlock, len(lines)-1)
+	for _, line := range lines[1:] {
+		position, counts, _ := strings.Cut(line, " ")
+		var block coverBlock
+		if _, err := fmt.Sscanf(counts, "%d %d", &block.statements, &block.count); err != nil {
+			t.Fatalf("the profile line %q is not a block, its statements and its count: %v", line, err)
+		}
+		if block.count >= replacementBlockLimit {
+			t.Fatalf("%s ran the block %s %d times: its counter is 32 bits wide, and past %d a run that did more may have wrapped it, so what it reads is no count of what ran",
+				what, position, block.count, uint64(replacementBlockLimit))
+		}
+		blocks[position] = block
+	}
+	return blocks, allocated
+}
+
+// countedPackageOf is the name, in countedReplacementPackages, of the package a profile's block is
+// in, read from the import path of its file.
+func countedPackageOf(t *testing.T, position string) string {
+	t.Helper()
+	file, _, _ := strings.Cut(position, ":")
+	pkg := path.Dir(file)
+	for _, counted := range countedReplacementPackages {
+		prefix, tree := strings.CutSuffix(counted.pattern, "/...")
+		if pkg == prefix || tree && strings.HasPrefix(pkg, prefix+"/") {
+			return counted.name
+		}
+	}
+	t.Fatalf("the profile's block %s is in %s, which no pattern of countedReplacementPackages names", position, pkg)
+	return ""
+}
+
+// countedCommand runs name with args, and env added to the test's own, its output to one file read
+// once it exits, and returns that output. A run that does not exit before the shared wait's end
+// (testwait.Context), or that exits with an error, fails t with its output.
+func countedCommand(t *testing.T, what string, env []string, name string, args ...string) string {
+	t.Helper()
+	out, err := os.Create(filepath.Join(t.TempDir(), "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	ctx := testwait.Context(t)
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = out, out
+	runErr := cmd.Run()
+	text, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("testwait: %s: gave up waiting for %s at the shared wait's margin before the test binary's deadline; its output:\n%s", t.Name(), what, text)
+	}
+	if runErr != nil {
+		t.Fatalf("%s: %v; its output:\n%s", what, runErr, text)
+	}
+	return string(text)
 }
 
 // TestGrowsLinearlyRejectsQuadraticFinalRung proves the final rung's bound stays anchored to the
