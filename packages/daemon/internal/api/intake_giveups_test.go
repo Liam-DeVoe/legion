@@ -734,9 +734,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	// The caller stands below every row of stateNarrowings above the give-ups' row too, the project
-	// release's (projectReleaseContract), so the log holds the give-ups' line first and then one
-	// line for each of those rows, each naming the caller's contract (narrowingsExpected).
+	// The caller stands below every row of stateNarrowings above the give-ups' row too, the pod
+	// hold's (podHoldContract) and the project release's (projectReleaseContract), so the log holds
+	// the give-ups' line first and then one line for each of those rows, each naming the caller's
+	// contract (narrowingsExpected).
 	lines := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
 	if len(lines) == 0 || lines[0] != "intakeGiveUps" || len(narrowings) != len(lines) {
 		t.Fatalf("the daemon logged %+v for a caller at %d, want one line for each of %v, the first saying it dropped intakeGiveUps",
@@ -748,6 +749,7 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 				i, intakeGiveUpsContract-1, line, lines[i])
 		}
 	}
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(populatedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")

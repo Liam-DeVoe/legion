@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -126,6 +127,10 @@ type idleWakeRig struct {
 	baseline map[string]int
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
+	// apiSocket and streamSocket are the rig's descriptors of the listening sockets on cfg's port
+	// and worker stream port, held from the rig's start to the test's end, nil unless the test
+	// asked the rig to hold its ports (idleRigOptions.holdStream).
+	apiSocket, streamSocket *os.File
 
 	// stop ends the running daemon, and done answers when it has.
 	stopMu sync.Mutex
@@ -152,10 +157,13 @@ type idleRigIssue struct {
 // left off by those tests: one daemon on one cluster, its machines on a clock whose timers never
 // fire, whose pods hold no workspace.
 type idleRigOptions struct {
-	// holdStream gives the worker stream one port every boot binds again, and the API one port
-	// every restart holds again, as a deployment's worker_stream_port and port are fixed in its
+	// holdStream holds the API's port and the worker stream's from the rig's start to the test's
+	// end (takeHeldSocket, heldSocket), and every boot listens on those sockets
+	// (heldSocketListen), as a deployment's port and worker_stream_port are fixed in its
 	// configuration: a launcher of a pod a restart did not end reconnects to the restarted daemon,
 	// and its role process reaches the restarted daemon's API, which is how a restart adopts a pod.
+	// No other program can take either port while the daemon is down, as every rig of this
+	// package holds the ports it hands out (docs/testing.md).
 	holdStream bool
 	// wallClock boots the daemon on the wall clock, as a deployment runs, so a timer a machine
 	// arms fires: a suspension held for a turn ends at its deadline.
@@ -248,9 +256,6 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(seeds) + 4
-	if options.holdStream {
-		cfg.WorkerStreamPort = idleRigFreePort(t)
-	}
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -278,6 +283,10 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), kubeconfigs: map[*issueSandboxAPI]string{}, agents: newIdleRigAgents(t, pool),
 		listener: listener, records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, options: options}
+	if options.holdStream {
+		rig.apiSocket = takeHeldSocket(t, net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
+		rig.streamSocket, rig.cfg.WorkerStreamPort = heldSocket(t)
+	}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
@@ -422,13 +431,13 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		// A durable consumer this daemon has just created starts at the next message
 		// (intake's createConsumer), so the report the listener published at its own start is
-		// behind it. The listener is started again on the same port, which publishes a fresh
-		// one that the consumer does see and leaves every URL already handed out valid.
+		// behind it. The listener is started again on the socket the test holds, which publishes
+		// a fresh one that the consumer does see and leaves every URL already handed out valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
-			port := r.listener.port
+			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
 		}
 		return false
 	})
@@ -687,6 +696,10 @@ func (r *idleWakeRig) boot() {
 	if r.options.wallClock {
 		o.clock = nil
 	}
+	if r.options.holdStream {
+		o.listen = heldSocketListen(r.apiSocket, r.cfg.Port)
+		o.streamListen = heldSocketListen(r.streamSocket, r.cfg.WorkerStreamPort)
+	}
 	go func() {
 		done <- run(ctx, r.cfg, logger, o)
 	}()
@@ -826,14 +839,12 @@ func (r *idleWakeRig) stopDaemon() {
 // restart stops the daemon and boots it again on the same store, as a deployment's restart does.
 // The wakes the listener reported while it was down are on its durable consumer, which is what
 // makes them wait for it rather than be lost. A rig that holds its ports (idleRigOptions.holdStream)
-// boots again on the API port the stopped daemon served, which its role processes still name;
-// any other boots on a fresh one.
+// boots again on the sockets it holds, the API port the stopped daemon served, which its role
+// processes still name, among them; any other boots on a fresh one.
 func (r *idleWakeRig) restart() {
 	r.t.Helper()
 	r.stopDaemon()
-	if r.options.holdStream {
-		holdPort(r.t, r.owner(), "127.0.0.1", r.cfg.Port)
-	} else {
+	if !r.options.holdStream {
 		rebindHeldPorts(r.t, &r.cfg)
 	}
 	r.boot()
