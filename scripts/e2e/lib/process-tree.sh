@@ -10,8 +10,10 @@
 # (/proc/<pid>/exe).
 #
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
-# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
-# packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
+# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, by
+# envoy-session-delivery.sh and nats-callout-sessions.sh, which source no rig either (for
+# group_signalable), and by packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of
+# its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -26,18 +28,15 @@ record_pid_sh='started() { set -- ${1##*) }; printf "%s" "${20}"; }; read -r sta
 # the pid's start time is the one FILE holds, so a pid the kernel has since given to another
 # process, of EXE or of any other program, is not it, and it runs EXE by the kernel's record
 # (/proc/<pid>/exe, which a zombie no longer has). It fails otherwise: before the pane wrote FILE,
-# once the process has ended, and for a reused pid. It is also the poll that waits for the process
-# to start or end.
+# once the process has ended (proc_stat_fields), and for a reused pid. It is also the poll that
+# waits for the process to start or end.
 recorded_pid() {
-  local pid start stat want seen
+  local pid start want seen
   local -a fields
   { read -r pid start <"$1"; } 2>/dev/null || return 1
   case $pid in '' | *[!0-9]*) return 1 ;; esac
   case $start in '' | *[!0-9]*) return 1 ;; esac
-  stat=
-  { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
-  [ -n "$stat" ] || return 1
-  read -r -a fields <<<"${stat##*) }"
+  proc_stat_fields "$pid" fields || return 1
   [ "${fields[19]-}" = "$start" ] || return 1
   want=$(realpath -e -- "$2" 2>/dev/null || :)
   seen=$(readlink "/proc/$pid/exe" 2>/dev/null || :)
@@ -78,8 +77,9 @@ recorded_pid() {
 # deadline.
 #
 # proc_stat_text PID NAME reads /proc/PID/stat whole into the variable NAME, and empties NAME when
-# there is no such entry. It is the one read of a stat behind proc_stat_field and proc_start, so a
-# test plants a stat by redefining it.
+# there is no such entry. It is the one read of a stat behind proc_stat_fields, and so behind
+# proc_stat_field, proc_start, recorded_pid and proc_describe, so a test plants a stat by
+# redefining it.
 proc_stat_text() {
   printf -v "$2" '%s' ''
   { IFS= read -r -d '' "$2" <"/proc/$1/stat"; } 2>/dev/null || :
@@ -674,10 +674,10 @@ stop_marked_processes() {
 # read from that process alone and from /proc/stat, whose btime turns a start into a clock time.
 # The command line's words are joined by spaces, and each control character becomes a space, which
 # keeps one process on one line; procps-ng prints a control character as `?` instead, so a line of
-# this and a line of ps are not the same bytes. A PID that is gone prints nothing, as ps prints no
-# line for it. A host with no /proc asks ps.
+# this and a line of ps are not the same bytes. A PID that is gone (proc_stat_fields) prints
+# nothing, as ps prints no line for it. A host with no /proc asks ps.
 proc_describe() {
-  local pid stat boot ticks IFS=' '
+  local pid boot ticks IFS=' '
   local -a fields words
   if [ ! -d /proc/self ]; then
     IFS=,
@@ -687,10 +687,7 @@ proc_describe() {
   boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
   ticks=$(getconf CLK_TCK)
   for pid in "$@"; do
-    stat=
-    { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
-    [ -n "$stat" ] || continue
-    read -r -a fields <<<"${stat##*) }"
+    proc_stat_fields "$pid" fields || continue
     words=()
     { mapfile -d '' -t words <"/proc/$pid/cmdline"; } 2>/dev/null || true
     words=(${words[@]+"${words[@]//[[:cntrl:]]/ }"})

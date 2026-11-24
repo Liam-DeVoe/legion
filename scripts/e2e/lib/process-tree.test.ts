@@ -921,8 +921,9 @@ done
 // line for its instance, pid 31806, on 2026-11-24, took 0 for the instance's group, and its start
 // loop polled `kill -0 -0`, which always succeeds, to its deadline. No kernel here serves that line
 // on demand, so each row plants a stat through proc_stat_text, the one read of /proc/PID/stat
-// behind proc_stat_field and proc_start (lib/process-tree.sh), and asks for pid 31806. The live
-// entry has the same layout, with its own pid, state S, and a group and session of its own.
+// behind proc_stat_field, proc_start and proc_describe (lib/process-tree.sh), and asks for pid
+// 31806. The live entry has the same layout, with its own pid, state S, and a group and session of
+// its own.
 const deadStat =
   "0 (bash) X 31618 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 0 0 16659 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
 const liveStat = deadStat.replace(/^0 \(bash\) X 31618 0 0 /, "31806 (bash) S 31618 31806 31806 ");
@@ -965,6 +966,25 @@ describe.skipIf(skip)(
     );
   }
 );
+
+// proc_describe reads each PID's stat through proc_stat_fields as well, so the dead task's stat is
+// a PID that is gone and prints no line, as ps prints none, where it printed one with group 0
+// before. The live entry of the same layout is the control: its line says proc_describe read the
+// planted stat, which a pid 31806 the machine does not run would not show.
+describe.skipIf(skip)("proc_describe on a stat that is not the live entry asked for", () => {
+  test(
+    "prints no line for a dead task's stat as gVisor serves it, and the fields of a live entry of the same layout",
+    () => {
+      const describePlanted = (stat: string) => `planted=${JSON.stringify(stat)}
+proc_stat_text() { printf -v "$2" '%s\\n' "$planted"; }
+echo "[$(proc_describe 31806)]"`;
+      const r = run(`${describePlanted(deadStat)}\n${describePlanted(liveStat)}`);
+      expect(r.err).toBe("");
+      expect(r.out).toMatch(/^\[\]\n\[31806 ppid 31618 pgid 31806 sid 31806 started [^\n]+\]\n$/);
+    },
+    slow
+  );
+});
 
 // kill reads group 0 as the caller's own group and group 1 as -1, every process the caller may
 // signal, so group_signalable (lib/process-tree.sh) refuses both however they reach it, as an

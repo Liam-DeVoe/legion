@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { type LegRows, legRowFaults } from "../leg-rows";
 import {
   ALONE_LEGS,
   annotations,
@@ -552,12 +553,19 @@ function sixRows(file: string): string {
   ].join("\n");
 }
 
+/** Each testcase of `junit`, its file and its name, in the order Bun ran them. */
+function testcasesIn(junit: JunitText): { readonly file: string; readonly name: string }[] {
+  if (!("text" in junit)) throw new Error(junit.unreadable);
+  return [...junit.text.matchAll(/<testcase name="([^"]*)"[^>]*\bfile="([^"]*)"/g)].map(
+    (testcase) => ({ file: testcase[2], name: testcase[1] })
+  );
+}
+
 /** The names of the testcases of `file` in `junit`, in the order Bun ran them. */
 function orderIn(junit: JunitText, file: string): string[] {
-  if (!("text" in junit)) throw new Error(junit.unreadable);
-  return [...junit.text.matchAll(/<testcase name="([^"]*)"[^>]*\bfile="([^"]*)"/g)]
-    .filter((testcase) => testcase[2] === file)
-    .map((testcase) => testcase[1]);
+  return testcasesIn(junit)
+    .filter((testcase) => testcase.file === file)
+    .map((testcase) => testcase.name);
 }
 
 test(
@@ -732,31 +740,18 @@ async function plantPackage(
 
 /** Each row `junit` holds, as `<file> > <name>`, once however many runs of it it holds. */
 function rowsIn(junit: JunitText): Set<string> {
-  if (!("text" in junit)) throw new Error(junit.unreadable);
-  return new Set(
-    [...junit.text.matchAll(/<testcase name="([^"]*)"[^>]*\bfile="([^"]*)"/g)].map(
-      (testcase) => `${testcase[2]} > ${testcase[1]}`
-    )
-  );
+  return new Set(testcasesIn(junit).map(({ file, name }) => `${file} > ${name}`));
 }
 
-/** Each way the legs of a lane, the junit files of its legs in order, fail to run each of `rows`,
- *  the lane's rows as `rowsIn` writes them, in exactly one leg: a row that ran in two legs or in
- *  none, and a row a leg ran that is no row of the lane. */
-function legRowFaults(rows: readonly string[], legs: readonly JunitText[]): string[] {
-  const ran = legs.map(rowsIn);
-  const faults = rows.flatMap((row) => {
-    const of = ran.flatMap((each, index) => (each.has(row) ? [index + 1] : []));
-    if (of.length === 1) return [];
-    return [`${row}: in ${of.length === 0 ? "no leg" : `legs ${of.join(" and ")}`}`];
-  });
-  const lane = new Set(rows);
-  for (const [index, each] of ran.entries()) {
-    for (const row of each) {
-      if (!lane.has(row)) faults.push(`${row}: in leg ${index + 1}, and no row of the lane`);
-    }
-  }
-  return faults;
+/** The legs of a lane as `legRowFaults` (e2e/leg-rows.ts) reads them, from the junit files of its
+ *  legs in order: leg N read the lane's `rows`, as `rowsIn` writes them, and ran each row its
+ *  junit file holds. */
+function laneLegs(rows: readonly string[], legs: readonly JunitText[]): LegRows[] {
+  return legs.map((junit, index) => ({
+    leg: `leg ${index + 1}`,
+    ran: [...rowsIn(junit)],
+    selection: rows,
+  }));
 }
 
 /** What a run of the tool left in its `--out`: its report, as JSON and as markdown, and Bun's
@@ -769,6 +764,19 @@ interface LegOut {
 
 /** One matrix row of the workflow, as YAML parses it. */
 type WorkflowRow = Record<string, unknown>;
+
+/** .github/workflows/dispatch-unit-repeat.yaml as YAML parses it, for each reader to cast to the
+ *  part it reads. */
+function unitRepeatWorkflow(): unknown {
+  return Bun.YAML.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
+      ),
+      "utf8"
+    )
+  );
+}
 
 test(
   "the two harness legs run each row of the lane in exactly one of them, and each failing row's command runs its file as its leg did",
@@ -852,7 +860,7 @@ test(
       [alone],
       planted.slice(1).sort(),
     ]);
-    expect(legRowFaults(rows, [legs[0].junit, legs[1].junit])).toEqual([]);
+    expect(legRowFaults(laneLegs(rows, [legs[0].junit, legs[1].junit]))).toEqual([]);
 
     // Each failing row's command, run as it reads, runs its file in the order the file ran in its
     // leg. The command names the file as Bun's filter, as docs/testing.md gives it, so the file
@@ -892,12 +900,12 @@ test(
     expect(wholeCode).toBe(1);
     const lane = readLeg(whole);
     expect(lane.report.command).toBe(commands[1].replace(` --path-ignore-patterns=${alone}`, ""));
-    expect(legRowFaults(rows, [legs[0].junit, lane.junit])).toEqual(
-      aloneRows.map((row) => `${row}: in legs 1 and 2`)
-    );
-    expect(legRowFaults(rows, [legs[1].junit])).toEqual(
-      aloneRows.map((row) => `${row}: in no leg`)
-    );
+    expect(legRowFaults(laneLegs(rows, [legs[0].junit, lane.junit]))).toEqual([
+      `${aloneRows.length} rows ran on more than one leg: ${aloneRows.map((row) => `${row} (on leg 1, leg 2)`).join("; ")}`,
+    ]);
+    expect(legRowFaults(laneLegs(rows, [legs[1].junit]))).toEqual([
+      `${aloneRows.length} rows of the selection ran on no leg: ${aloneRows.join("; ")}`,
+    ]);
     // A file alone that is no file of the package is refused for either leg, before Bun starts:
     // the first would run nothing, and the second, which leaves it out, the whole lane.
     const bare = scratch();
@@ -920,14 +928,7 @@ test(
     }
 
     // The workflow runs as many harness legs a round as the lane has, one matrix row each.
-    const workflow = Bun.YAML.parse(
-      readFileSync(
-        fileURLToPath(
-          new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
-        ),
-        "utf8"
-      )
-    ) as {
+    const workflow = unitRepeatWorkflow() as {
       jobs?: {
         repeat?: {
           strategy?: {
@@ -1858,14 +1859,9 @@ driverRow(
       `${JSON.stringify({ name: "cancelled-step", private: true, scripts: { "test:repeat": scripts["test:repeat"], "test:harness": scripts["test:harness"], "build:contracts": "true" } })}\n`
     );
     await Bun.write(join(rows, "spins.test.ts"), `${spinningHead}${spinningRow("spins", mark)}`);
-    const workflow = Bun.YAML.parse(
-      readFileSync(
-        fileURLToPath(
-          new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
-        ),
-        "utf8"
-      )
-    ) as { jobs: { repeat: { steps: { name?: string; run?: string }[] } } };
+    const workflow = unitRepeatWorkflow() as {
+      jobs: { repeat: { steps: { name?: string; run?: string }[] } };
+    };
     const step = workflow.jobs.repeat.steps.find((each) => each.name?.startsWith("Run the lane"));
     // The step's SHARD is unset here, as the workflow leaves it for a lane of one shard, so the
     // step passes no `--shard` and the copy's one file runs as its lane whole: a harness leg's

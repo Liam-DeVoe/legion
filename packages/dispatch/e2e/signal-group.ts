@@ -1,6 +1,7 @@
-/** The one way the e2e code and its rows signal a process group: `signalGroup`. It imports
- *  nothing, so `e2e/local-instance-support.ts` and `e2e/tools/unit-repeat.ts` both import it
- *  without a cycle. */
+/** The one way the e2e code and its rows signal a process group: `signalGroup`, which
+ *  `signalUnlessGone` calls for a row's process or group that may have ended. It imports nothing,
+ *  so `e2e/local-instance-support.ts` and `e2e/tools/unit-repeat.ts` both import it without a
+ *  cycle. */
 
 /** The refusal `signalGroup` throws. A caller whose catch reads every other error as a group
  *  that has already ended (ESRCH) throws this one on, so a refusal is never read as that. */
@@ -12,7 +13,7 @@ export class RefusedGroup extends Error {}
  *  runner holds the runner too, and group 1 as -1, every process this one may signal; a negative
  *  `leader` would name the one process of its absolute value. On gVisor the group of a process
  *  that had just exited once read as 0. The errors `process.kill` throws, ESRCH among them, are
- *  the caller's, as they were before. */
+ *  the caller's. */
 export function signalGroup(leader: number, signal: NodeJS.Signals | number): void {
   if (!Number.isInteger(leader) || leader <= 1) {
     throw new RefusedGroup(
@@ -21,4 +22,21 @@ export function signalGroup(leader: number, signal: NodeJS.Signals | number): vo
     );
   }
   process.kill(-leader, signal);
+}
+
+/** Sends `signal` to the process `target`, or to every process of the group `target.group` leads
+ *  (`signalGroup`, which refuses a group that kill would read as no group a row started). A
+ *  process that ended before this kill answers ESRCH, which is no failure of the row, so it does
+ *  not replace the assertion the row is making; any other error, a refused group among them, is
+ *  thrown on. */
+export function signalUnlessGone(
+  target: number | { readonly group: number },
+  signal: NodeJS.Signals
+): void {
+  try {
+    if (typeof target === "number") process.kill(target, signal);
+    else signalGroup(target.group, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 }

@@ -333,8 +333,9 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
+# reads its caller's DSN with, lib/port-file.sh for read_port_file, which this proof's own
+# await_port_file waits with, and lib/process-tree.sh for group_signalable, which kill_label holds
+# a process group to. None of the three reads a variable of this shell. This proof sources no
 # rig: its await_port_file and keep_port, written for the pid map below, are its own, and
 # lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
 # sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
@@ -343,6 +344,8 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/process-tree.sh
+. "$repo_root/scripts/e2e/lib/process-tree.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -373,28 +376,16 @@ running() {
 }
 # kill_label LABEL SIGNAL: the process started under LABEL, and when it leads its own process group
 # (the proxies and the sessions run under setsid), everything in that group. A group that cannot be
-# one the run started is refused and named, and nothing is signalled, since the pid is the same
-# value: kill reads group 0 as the group it is called from and group 1 as every process it may
-# signal. This script does not source lib/process-tree.sh, so its group_signalable is written here.
+# one the run started is refused and named (group_signalable), and nothing is signalled, since the
+# pid is the same value: kill reads group 0 as the group it is called from and group 1 as every
+# process it may signal.
 kill_label() {
-  local label=$1 signal=$2 p=${pid[$1]:-} group why
+  local label=$1 signal=$2 p=${pid[$1]:-} group
   [[ "$p" =~ ^[1-9][0-9]*$ ]] || return 0
   group=""
   if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
   if [[ "$group" == "$p" ]]; then
-    case $p in
-      '') why='it is empty' ;;
-      *[!0-9]*) why='it is not a number' ;;
-      0) why='kill reads group 0 as the group it is called from' ;;
-      1) why='kill reads group 1 as -1, every process it may signal' ;;
-      0*) why='no group is written with a leading zero' ;;
-      *) why='' ;;
-    esac
-    if [[ -n "$why" ]]; then
-      echo "refusing to signal process group '$p': $why" >&2
-    else
-      kill "-$signal" -- "-$p" 2>/dev/null || true
-    fi
+    if group_signalable "$p"; then kill "-$signal" -- "-$p" 2>/dev/null || true; fi
   else
     kill "-$signal" "$p" 2>/dev/null || true
   fi

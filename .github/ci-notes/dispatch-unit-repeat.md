@@ -16,8 +16,8 @@ harness lane's two legs', writes the measurement beside the budgets:
 
 - `slowest_seconds`: the slowest test step of the row's measured legs;
 - `other_steps_seconds`: the slowest the job's other steps took together in one leg (the job's
-  time minus its test step's), the checkout, Bun, the install, and for the harness lane zsh's
-  install and PostgreSQL's start;
+  time minus its test step's), the checkout, Bun, the install, and for the harness lane's second
+  leg zsh's install and PostgreSQL's start;
 - `deadline_seconds`: twice `slowest_seconds`, up to the next whole minute, the time at which the
   step's `timeout` stops the tool (the next section);
 - `step_minutes`: the deadline, the 60 s `timeout --kill-after` leaves the tool to report, and
@@ -278,8 +278,10 @@ rule:
   229 s, up to the next whole minute, 235 minutes.
 
 Both legs keep the harness lane's 229 s of other steps (run 44709413418, round 1, most of it zsh's
-install): each harness leg installs zsh and starts PostgreSQL as the one leg did. In run
-45178675944 they took 43 s in each leg.
+install). Only the second leg installs zsh and starts PostgreSQL, as the one leg did: the first
+runs the Codex file alone, which needs neither. The first leg's budgets are left as they are, so
+the part of its 229 s those two steps took is margin now. In run 45178675944, where each leg still
+did both, the other steps took 43 s in each leg.
 
 ### Why the old budgets stopped legs that were passing
 

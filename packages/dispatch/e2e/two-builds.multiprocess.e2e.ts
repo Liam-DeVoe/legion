@@ -230,13 +230,14 @@ interface Seeded {
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
- *  project with an architecture source, an issue with a spec, a child, a comment `reader` wrote,
- *  a message holding a Mermaid diagram and a document artifact, a project document, a live
- *  session with a broadcast, a replayed conversation and a picture, a priority with a description
- *  and an issue in flight that advances it, and the delivery timeline's runs, in the row's own
- *  place. */
-async function seedEveryRoute(delivery: DeliveryPlace, reader: string): Promise<Seeded> {
+ *  project with an architecture source, an issue with a spec, a child, a comment the row's own
+ *  reader (`rowPerson`) wrote, a message holding a Mermaid diagram and a document artifact, a
+ *  project document, a live session with a broadcast, a replayed conversation and a picture, a
+ *  priority with a description and an issue in flight that advances it, and the delivery
+ *  timeline's runs, in the row's own place. */
+async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
   const core = rowKey("CORE");
+  const reader = rowPerson("alice");
   const session = rowSession();
   await setLiveSessions([session]);
   await createProject({ key: core, name: "Core" });
@@ -621,7 +622,7 @@ async function walk(
   pageProcess: DispatchProcess,
   assetProcess: DispatchProcess
 ): Promise<void> {
-  const seed = await seedEveryRoute(delivery, rowPerson("alice"));
+  const seed = await seedEveryRoute(delivery);
   const planned = visits(seed);
   expect(
     walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
-import { signalGroup } from "../signal-group";
+import { signalUnlessGone } from "../signal-group";
 import {
   bounds,
   eventually,
@@ -84,21 +84,11 @@ function holding(word: string): [number, string][] {
   );
 }
 
-/** Sends `signal` to the process `target`, or to every process of the group `target.group` leads
- *  (`signalGroup`, which refuses a group that kill would read as no group a row started). A
- *  process that ended between the read of the table and this kill answers ESRCH, which is no
- *  failure of the row, so it does not replace the assertion the row is making; any other error, a
- *  refused group among them, is thrown on. */
-function kill(target: number | { readonly group: number }, signal: NodeJS.Signals): void {
-  try {
-    if (typeof target === "number") process.kill(target, signal);
-    else signalGroup(target.group, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
-}
+/** Whether this machine lists its processes' command lines (`commandLines`), read once for every
+ *  row that reads them. */
+const commandLinesListed = commandLines() !== undefined;
 
-test.skipIf(commandLines() === undefined)(
+test.skipIf(!commandLinesListed)(
   "an interrupted `bun test --parallel` takes every bounded child its workers wait for with it",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
@@ -141,7 +131,7 @@ test.skipIf(commandLines() === undefined)(
           : `both sleeps did not start inside the short bound of ${bounds.short} ms:\n${runnerLog()}`
       ).toBe(true);
 
-      kill({ group: runner.pid }, "SIGINT");
+      signalUnlessGone({ group: runner.pid }, "SIGINT");
       expect(
         await whether(exited),
         `the runner did not exit inside the short bound of ${bounds.short} ms after SIGINT:\n${runnerLog()}`
@@ -156,7 +146,7 @@ test.skipIf(commandLines() === undefined)(
       // its sleep outlasts every wait of this row.
       await whether(() => holding(seconds).length === 0);
       const survivors = holding(seconds);
-      for (const [pid] of survivors) kill(pid, "SIGKILL");
+      for (const [pid] of survivors) signalUnlessGone(pid, "SIGKILL");
       expect(
         survivors.map(([pid, line]) => `${pid} ${line}`),
         "processes a bounded child started outlived the interrupted runner: still listed after " +
@@ -164,9 +154,9 @@ test.skipIf(commandLines() === undefined)(
       ).toEqual([]);
     } finally {
       if (runner !== undefined && runner.exitCode === null && runner.signalCode === null) {
-        kill({ group: runner.pid }, "SIGKILL");
+        signalUnlessGone({ group: runner.pid }, "SIGKILL");
       }
-      for (const [pid] of holding(seconds)) kill(pid, "SIGKILL");
+      for (const [pid] of holding(seconds)) signalUnlessGone(pid, "SIGKILL");
       rmSync(directory, { force: true, recursive: true });
     }
   },
@@ -197,7 +187,7 @@ test.skipIf(!present("/proc/self/stat"))(
     // its sleep outlasts every wait of this row.
     await whether(() => holding(seconds).length === 0);
     const survivors = holding(seconds);
-    for (const [pid] of survivors) kill(pid, "SIGKILL");
+    for (const [pid] of survivors) signalUnlessGone(pid, "SIGKILL");
     expect(
       survivors.map(([pid, line]) => `${pid} ${line}`),
       "processes a bounded child started outlived its normal end: still listed after the short " +
@@ -213,7 +203,7 @@ test.skipIf(!present("/proc/self/stat"))(
 // before a made-up password, and then sleeps past every wait of this row, so only its bound ends
 // it. The markers and the password reach it in its environment, whose values its name never
 // prints, so only what the failure says the child wrote can carry them into the message.
-test.skipIf(commandLines() === undefined)(
+test.skipIf(!commandLinesListed)(
   "a bounded child its bound kills fails with the last lines it wrote to each pipe",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
@@ -245,7 +235,7 @@ test.skipIf(commandLines() === undefined)(
     // its sleep outlasts every wait of this row.
     await whether(() => holding(seconds).length === 0);
     const survivors = holding(seconds);
-    for (const [pid] of survivors) kill(pid, "SIGKILL");
+    for (const [pid] of survivors) signalUnlessGone(pid, "SIGKILL");
     expect(
       survivors.map(([pid, line]) => `${pid} ${line}`),
       "processes of a bounded child its bound killed were still listed after the short bound of " +
@@ -929,7 +919,7 @@ test.skipIf(!userScopes)(
         "the sleep, as the kill's table lists it"
       ).toMatchObject({ pid, unknown: false });
     } finally {
-      kill({ group: stranger.pid }, "SIGKILL");
+      signalUnlessGone({ group: stranger.pid }, "SIGKILL");
     }
   },
   rowLimit("short", "short")

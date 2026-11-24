@@ -254,34 +254,34 @@ test(
 // `grepInvert` - the one `quarantined` adds - and from which the reporter only takes rows away.
 // So the planted listing under `exclude`, split over the job's four legs through the reporter,
 // must hold each row it holds on exactly one leg (`legRowFaults`, the merge job's check), and no
-// leg a quarantined row. The legs are listed one after another, each of the planted file alone.
+// leg a quarantined row. The four legs are listed at once, each of the planted file alone.
 test(
   "the shard legs place the rows the pattern leaves, each on one leg, and no quarantined row",
   async () => {
     const left = rowsOfListing(await plantedExcluded).map(rowName);
     const quarantinedNames = plantedQuarantine.map(rowName);
-    const legs = [];
-    for (let leg = 1; leg <= 4; leg += 1) {
-      const listed = await listing(
-        import.meta.url,
-        plantedConfig,
-        { DISPATCH_E2E_QUARANTINE: "exclude" },
-        [`--shard=${leg}/4`, "--pass-with-no-tests"],
-        ["./e2e/shard-reporter.ts"]
-      );
-      legs.push({ leg: `shard-${leg}`, ran: rowsOfListing(listed).map(rowName), selection: left });
-    }
+    const legs = await Promise.all(
+      [1, 2, 3, 4].map(async (leg) => {
+        const listed = await listing(
+          import.meta.url,
+          plantedConfig,
+          { DISPATCH_E2E_QUARANTINE: "exclude" },
+          [`--shard=${leg}/4`, "--pass-with-no-tests"],
+          ["./e2e/shard-reporter.ts"]
+        );
+        return { leg: `shard-${leg}`, ran: rowsOfListing(listed).map(rowName), selection: left };
+      })
+    );
     expect(left.length).toBeGreaterThan(0);
     expect(legRowFaults(legs)).toEqual([]);
     expect(
       legs.flatMap((leg) => leg.ran.filter((name) => quarantinedNames.includes(name)))
     ).toEqual([]);
   },
+  // The planted listing under `exclude`, one of the five the file starts at once when it loads,
+  // then the four legs at once.
   rowLimit(
     { atOnce: ["listing", "listing", "listing", "listing", "listing"] },
-    "listing",
-    "listing",
-    "listing",
-    "listing"
+    { atOnce: ["listing", "listing", "listing", "listing"] }
   )
 );

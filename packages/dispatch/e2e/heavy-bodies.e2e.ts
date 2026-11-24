@@ -173,10 +173,14 @@ async function expectTheBodyFilledAcrossTasks(page: Page): Promise<void> {
   ).toBeGreaterThan(1);
 }
 
-async function seedIssue(title: string): Promise<{ key: string }> {
+/** An issue titled `title` in a project of the row's own, both written with `options`. */
+async function seedIssue(
+  title: string,
+  options: { readonly login?: string } = {}
+): Promise<{ key: string }> {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  return await createIssue({ project: core, title });
+  await createProject({ key: core, name: "Core" }, options);
+  return await createIssue({ project: core, title }, options);
 }
 
 interface Row {
@@ -352,9 +356,7 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
   // draws a card for its first row alone, in its reading column, and that row is this row's
   // question only in a list that holds no other row's.
   const me = rowPerson("alice");
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" }, { login: me });
-  const issue = await createIssue({ project: core, title: "A heavy ask thread" }, { login: me });
+  const issue = await seedIssue("A heavy ask thread", { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which shape should the list take?", urgency: "med" },

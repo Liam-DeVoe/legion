@@ -71,6 +71,9 @@ const exitAfterRows = 60_000;
  *  21.8 s: rounded up, plus the 1 s the leg's whole-second clock can take off a window, 23 s. A
  *  run whose record comes waits no longer for it, since the leg's poll ends at the read. */
 const listSeconds = 23;
+/** OUTSIDE_CODEX_START_SECONDS for a run that names none: the leg's own default, 90 s
+ *  (`start_seconds` in e2e/acceptance/outside-agent-codex.sh). */
+const startSeconds = 90;
 /** The screens a run that passes answers, as each row's evidence names them: the folder trust of a
  *  first start in a git repository, the two first-run screens, and the envoy_send approval. */
 const answeredScreens =
@@ -138,10 +141,10 @@ interface CodexScenario {
   readonly tarballMismatch?: boolean;
   /** The integrity npm records for @openai/codex is not the pinned one. */
   readonly codexIntegrity?: "other";
-  /** OUTSIDE_CODEX_START_SECONDS (default 90, the real leg's own: `start_seconds` in
-   *  e2e/acceptance/outside-agent-codex.sh): how long each start may hold before its turn. The
-   *  leg's `drive` ends at the turn's first logged request, so only a run held by a screen waits
-   *  the window out, and a run whose start nothing holds ends as soon under 90 s as under 30.
+  /** OUTSIDE_CODEX_START_SECONDS (default `startSeconds`, the real leg's own): how long each start
+   *  may hold before its turn. The leg's `drive` ends at the turn's first logged request, so only
+   *  a run held by a screen waits the window out, and a run whose start nothing holds ends as
+   *  soon under 90 s as under 30.
    *  Under a loaded lane 30 s was too short: in k5's loaded Job at 1582cf67
    *  (infra983-k5-head32c-68z46), the row "answering the first start otherwise than the outside
    *  person is told to fails the rows it breaks..." failed when the screen 'Hooks need review'
@@ -642,7 +645,7 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
       OUTSIDE_LEGION_CHECKOUT: repo.dir,
       // The window `listSeconds` states its reading; a run that files no record takes its own.
       OUTSIDE_CODEX_LIST_SECONDS: String(scenario.listSeconds ?? listSeconds),
-      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 90),
+      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? startSeconds),
       OUTSIDE_CODEX_TSV: rows,
       // An input the leg no longer takes: the pass row reads that its provenance helper got none.
       OUTSIDE_NPM_REGISTRY: "http://registry.invalid",
@@ -1064,8 +1067,9 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   test(
     "a first-run menu that draws each move late is answered with the entry it names, never one past it",
     async () => {
-      // The leg's own default start window, 90 s: four screens drawn 2.5 s late are no start held.
-      const run = await codexStandInRun({ slowScreens: true, startSeconds: 90 });
+      // The leg's own default start window (`startSeconds`): four screens drawn 2.5 s late are no
+      // start held.
+      const run = await codexStandInRun({ slowScreens: true });
       expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
         verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
       });

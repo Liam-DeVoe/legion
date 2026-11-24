@@ -242,9 +242,10 @@ jobs:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
       # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
       # and name bash; each skips that row where zsh is missing. The runner image has no zsh (dash,
-      # the other shell they run under, is Ubuntu's /bin/sh).
+      # the other shell they run under, is Ubuntu's /bin/sh). Both files are the second harness
+      # leg's: the first runs the Codex file alone, which needs no zsh.
       - name: Install zsh
-        if: matrix.lane == 'harness'
+        if: matrix.lane == 'harness' && matrix.shard == 2
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
@@ -255,7 +256,8 @@ jobs:
       # superuser (dropDatabase's doc comment says why). They need a database the DSN names:
       # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
       # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
-      # head says. psql is on the runner already.
+      # head says. psql is on the runner already. All three files are the second harness leg's:
+      # the first runs the Codex file alone, which needs no database.
       #
       # The runner's own PostgreSQL. GitHub's runner-images readme for Ubuntu 24.04
       # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "#### PostgreSQL", read on
@@ -275,7 +277,7 @@ jobs:
       # names a Postgres, and this job sets neither: the runner's PostgreSQL has no pgvector, and
       # the job builds no server and installs no browser.
       - name: Start PostgreSQL for the harness rows that need a database
-        if: matrix.lane == 'harness'
+        if: matrix.lane == 'harness' && matrix.shard == 2
         run: |
           sudo systemctl start postgresql.service
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 \

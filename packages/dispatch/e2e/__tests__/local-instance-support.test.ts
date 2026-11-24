@@ -21,7 +21,7 @@ import {
   Supervisor,
   shellQuote,
 } from "../local-instance-support";
-import { RefusedGroup, signalGroup } from "../signal-group";
+import { RefusedGroup, signalGroup, signalUnlessGone } from "../signal-group";
 import { bounds, eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
@@ -80,15 +80,10 @@ const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000
 
 /** Sends SIGKILL, where it is still alive, to what a stop under test left behind, so a failed row
  *  leaves no sleep running: the process `target`, or every process of the group `target.group`
- *  leads (`signalGroup`). A process the stop ended answers ESRCH, which is no failure; any other
- *  error is the row's own, a group `signalGroup` refuses among them. */
+ *  leads (`signalUnlessGone`). A process the stop ended answers ESRCH, which is no failure; any
+ *  other error is the row's own, a group `signalGroup` refuses among them. */
 function killLeft(target: number | { readonly group: number }): void {
-  try {
-    if (typeof target === "number") process.kill(target, "SIGKILL");
-    else signalGroup(target.group, "SIGKILL");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
+  signalUnlessGone(target, "SIGKILL");
 }
 
 /** One macrotask turn. It resolves on a `setImmediate`, which comes only once the microtask

@@ -17,7 +17,7 @@ export class RefusedGroup extends Error {}
  * calls it, which under a test runner holds the runner too, and group 1 as -1, every process this
  * one may signal; a negative leader would name the one process of its absolute value. On gVisor the
  * group of a process that had just exited once read as 0. The errors process.kill throws, ESRCH
- * among them, are the caller's, as they were before.
+ * among them, are the caller's.
  */
 export function signalGroup(leader: number, signal: NodeJS.Signals | number): void {
   if (!Number.isInteger(leader) || leader <= 1) {

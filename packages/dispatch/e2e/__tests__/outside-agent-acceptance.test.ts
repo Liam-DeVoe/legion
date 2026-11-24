@@ -354,10 +354,9 @@ background="$background $stranger"
 other=$( '${sleep}' ${base}7 >/dev/null 2>&1 & echo $! )
 background="$background $other"
 # Every leaf runs before any is stopped: a subshell stopped before it starts its leaf leaves no
-# leaf to survive, so the stops wait for each leaf, not for a second a loaded box can outrun.
-for n in 1 2 3 4 5 6 7; do
-  until pgrep -f "^${sleep} ${base}$n\\$" >/dev/null; do sleep 0.05; done
-done
+# leaf to survive, so the stops wait for the count of the seven leaves running, one read of the
+# process table a poll, not for a second a loaded box can outrun.
+until [ "$(pgrep -fc "^${sleep} ${base}[1-7]\\$")" = 7 ]; do sleep 0.05; done
 stop_child "$stranger"
 reap
 sleep 1

@@ -639,9 +639,10 @@ export function commentAuthor(
   wanted: string
 ): Record<string, string | boolean | null> {
   const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
-  const found = (Array.isArray(comments) ? comments : [])
-    .map((each: unknown) => fieldsOf<ListedComment>(each))
-    .find((each) => String(each.body ?? "").includes(wanted));
+  const match: unknown = (Array.isArray(comments) ? comments : []).find((each: unknown) =>
+    String(fieldsOf<ListedComment>(each).body ?? "").includes(wanted)
+  );
+  const found = match === undefined ? undefined : fieldsOf<ListedComment>(match);
   const author = fieldsOf<ListedComment["author"]>(found?.author);
   return {
     found: found !== undefined,
