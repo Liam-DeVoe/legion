@@ -182,18 +182,20 @@ type IdleView struct {
 	LingerUntil *time.Time
 	Root        IdleRoot
 	Claims      []IdleClaim
-	// Phases is each role's phases row of the issue as the record holds it, keyed by the row's
-	// role: the claim the row names and the task of the plan's step it runs. The worker of the open
-	// phase is read from it as every reader of a role's worker reads it, through record.WorkerClaim
-	// (workflow's idlePhaseOpen): two claims of one issue can hold one role, and
-	// only one of them works the role's phase. This package sits below record, so the view carries
-	// the row's fields rather than the rule.
+	// Phases is each role's phases row now of the issue (record.PhaseRowOf, the row with the
+	// highest entry: a role that stands at two steps has a row for each), keyed by the row's role:
+	// the claim the row names and the task of the plan's step it runs. The worker of the open phase
+	// is read from it as every reader of a role's worker reads it, through record.WorkerClaim
+	// (workflow's idlePhaseOpen): two claims of one issue can hold one role, and only one of them
+	// works the role's phase. This package sits below record, so the view carries the row's fields
+	// rather than the rule.
 	Phases map[claim.Role]IdlePhase
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
-	// start that waits because the pod lacks the slot of its claim or the role of its step
-	// (StartWaitsForPodPrefix) is no such delivery: the pod cannot run it, so it is counted in
-	// StartsWaitingForPod instead.
+	// role of its pod. A start queued for news of the approved design alone is not counted: it
+	// wakes the claim a release suspends (store's idleWaitingRow). A start that waits because the
+	// pod lacks the slot of its claim or the role of its step (StartWaitsForPodPrefix) is no such
+	// delivery either: the pod cannot run it, so it is counted in StartsWaitingForPod instead. The
+	// rule reads only whether there is one, so the store reads only that.
 	Waiting bool
 	// StartsWaitingForPod are the start rows, each pair once and in the order the rows were
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of

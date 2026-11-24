@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -107,7 +108,7 @@ func (r *outbox) stepStanding(ctx context.Context, row record.OutboxRow, payload
 // lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := r.records.Issue(ctx, tx, row.Issue)
 		if err != nil || issue == nil || issue.Generation != payload.Generation || issue.Phase != payload.Phase {
 			return err

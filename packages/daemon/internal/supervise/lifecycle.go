@@ -89,7 +89,9 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // is of still resumes it at its own next start.
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd).
+// process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
+// request, which the pod's start gate puts first among the starts waiting in the claim's pod
+// (launchAfter's requested, podQueue.next).
 func (m *Machine) revive(ctx context.Context, request string, exempt bool, start StartWork, admitted func()) error {
 	another := m.claim.SessionOfAnotherAgent(start.Agent)
 	if another {
@@ -121,7 +123,7 @@ func (m *Machine) revive(ctx context.Context, request string, exempt bool, start
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, noEnd, start)
+	return m.launchAfter(ctx, false, exempt, true, noEnd, start)
 }
 
 // SessionOfAnotherAgent is whether the claim's session is the session of another agent than agent,
@@ -213,7 +215,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // refreshStalePlugins in internal/daemon).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
-// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
 // retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
 // back as they run and raise the same launch anew from the top, whose own lifecycle check is
 // refused here (launchAfter, retryHolding).

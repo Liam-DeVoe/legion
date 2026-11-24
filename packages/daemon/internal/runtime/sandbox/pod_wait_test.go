@@ -36,8 +36,8 @@ func podBuiltBeforeChecker(t *testing.T, g *rig) runtime.Locator {
 // A launch into a live pod that lacks the slot of its claim or the role of its step, both
 // `checker` here (a claim named for its role), writes nothing and waits: it neither replaces the
 // pod nor suspends its Sandbox, since that would delete the issue's disk with everything a role
-// did not push, and only the pod's update round or its release replaces it (ruling 18). The
-// runtime answers which issue's pod lacks which name.
+// did not push, and only the pod's update round or its release replaces it. The runtime answers
+// which issue's pod lacks which name.
 func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) {
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
@@ -86,17 +86,17 @@ func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	restarted := secondRuntime(t, g, withChecker)()
-	if drifted := driftOf(t, g.ctx, restarted, loc); !slices.Equal(drifted, want) {
+	if drifted := driftOf(t, g, restarted, loc); !slices.Equal(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q", drifted, want)
 	}
 	forgetPodShape(t, g, restarted, loc.Sandbox.Name)
-	if drifted := driftOf(t, g.ctx, restarted, loc); !slices.Equal(drifted, want) {
+	if drifted := driftOf(t, g, restarted, loc); !slices.Equal(drifted, want) {
 		t.Errorf("PodDrift of a pod written before the shape record = %q, want %q", drifted, want)
 	}
 
 	built := deploymentRig(t)
 	withRole := built.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
-	for _, reason := range driftOf(t, built.ctx, built.r, withRole) {
+	for _, reason := range driftOf(t, built, built.r, withRole) {
 		if strings.HasPrefix(reason, "roles ") {
 			t.Errorf("PodDrift of a pod built with every role names %q, want no roles reason", reason)
 		}
@@ -104,7 +104,7 @@ func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
 }
 
 // A launch the supervisor makes itself — an operator's resume of a deployment role's claim, which
-// reaches the runtime with no outbox row to wait on (ruling 20) — meets the same refusal through
+// reaches the runtime with no outbox row to wait on — meets the same refusal through
 // Resume, and its text names the pod and the role, so the operator who reads the claim's last
 // start failure can tell which pod holds the role back.
 func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingThePodAndTheRole(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,10 +29,10 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): every claim of it is closed
-// but the claim of the worker on the checking role's step (record.WorkerClaim), no IssueSuspend
-// is written, and the check opens in that claim's live session; the check's close writes the
-// suspension (closeCheck). A project whose
+// production check, where the project opens one (Engine.checkRole): every claim of it is closed,
+// a role of the deployment's among them, but the claim of the worker on the checking role's step
+// (record.WorkerClaim), no IssueSuspend is written, and the check opens in that claim's live
+// session; the check's close writes the suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
@@ -150,7 +151,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		kind = "child-closed"
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is %s", issue.Key, status)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, pr, members)}); err != nil {
 		return err
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not
@@ -161,7 +162,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
 	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
 	// it.
 	for _, ancestor := range above {
@@ -227,6 +228,36 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
+}
+
+// leftNotice is the reason of the child-closed or child-status notice that tells the architect
+// above child that it left the workflow at status (leave). It starts with "<KEY> is <status>",
+// and it names after that what the move leaves for that architect to act on
+// (dispatch://INFRA-3178/spec R4). The first is the child's pull request while it is open: the
+// daemon closes no pull request, and a merge of it later closes nothing (merged). The second is
+// each recorded issue under the child that is not done, with its status, in key order: the move
+// ends the child alone, so an issue under it in the workflow runs on, and one out of the workflow
+// stays out (record.Beneath, over members, the tree's records). A child with nothing to name gets
+// the first sentence alone, so every reader of that bare reason stays valid. The record holds no
+// state that says a pull request is in the merge queue (the daemon hears only GitHub's removal
+// from it, intake.PullRequestDequeued), so the notice cannot say so.
+func leftNotice(child record.Issue, status string, pr *record.PullRequest, members []record.Issue) string {
+	reason := fmt.Sprintf("%s is %s", child.Key, status)
+	if pr != nil && pr.State == record.PullRequestOpen {
+		reason += fmt.Sprintf(". Its pull request #%d is open", pr.Number)
+	}
+	under := record.Beneath(child, members)
+	slices.SortFunc(under, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })
+	var open []string
+	for _, member := range under {
+		if member.Status != record.DoneStatus {
+			open = append(open, fmt.Sprintf("%s (%s)", member.Key, member.Status))
+		}
+	}
+	if len(open) > 0 {
+		reason += ". Under it, not done: " + strings.Join(open, ", ")
+	}
+	return reason
 }
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
@@ -309,8 +340,8 @@ func awaitsMerge(issue record.Issue) bool {
 
 // InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
 // its phase short of done. One still admitted counts, since it will run — a root reopened inside
-// its linger (admit's readmit) stands in `admitted` with no role's phase until its architect
-// reaches planning, and is running again from the reopen. It is the production check's "runs
+// its linger (admit's readmit) stands in `admitted` with no role's phase until its gate opens its
+// task's first step, and is running again from the reopen. It is the production check's "runs
 // again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue that runs
 // again would resume the implementer and relaunch its Sandbox under the run, so none starts.
 //

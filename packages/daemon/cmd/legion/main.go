@@ -190,8 +190,8 @@ func pluginsLine(cfg config.Config) string {
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
-	// the order the workflow reaches them, then each role of the deployment it puts there, in the
-	// file's order; the loader refuses any other.
+	// claim.Roles' order (the default steps' order), then each role of the deployment it puts
+	// there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
@@ -435,6 +435,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
@@ -488,13 +489,11 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
-// theirs on the operator's terminal without it.
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
@@ -1341,8 +1340,9 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
 // named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// that role was given (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running
+// step, the role the state's two numbers are of), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
