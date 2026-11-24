@@ -256,12 +256,16 @@ var (
 	// one index scan answers the narrowing, the order and the cursor
 	// (user_agent_thread_dismissed_login_dismissed_at). Every test a mark has to pass to be a row
 	// is above the cut, so the page the index cuts is the page the read answers.
-	myAgentDismissedRootsHead = myAgentMarks + `
-	roots as (
+	// myAgentDismissedRootsSelect is that read of the marks, which GET /api/v1/me/inbox cuts and
+	// merges with the Reply rows' own (meInboxDismissedKeys), and myAgentDismissedRootsHead opens
+	// the roots set with it.
+	myAgentDismissedRootsSelect = `
 		select d.message_id as root_id, d.dismissed_at
 		from user_agent_thread_dismissed d
 		where d.login = $1
 		  and ` + myAgentRootIsOneOff
+	myAgentDismissedRootsHead = myAgentMarks + `
+	roots as (` + myAgentDismissedRootsSelect
 	myAgentDismissedCursor = `
 		  and (d.dismissed_at, d.message_id) < ($5::text::timestamptz, $6::uuid)`
 	// The list's own cut. A write route over the same marks appends a narrowing of its own
