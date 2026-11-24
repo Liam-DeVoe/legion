@@ -536,8 +536,7 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, by claim.Token, r
 			issue.Key, word)
 	}
 	_, held, err := mergeForwardHold(issue, *asked)
-	pending := err == nil && held && asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported &&
-		(asked.Agent == "" || by != asked.Agent)
+	pending := err == nil && held && asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && by != ""
 	var next string
 	if pending {
 		next = awaitedMergeForward(pr, again)
