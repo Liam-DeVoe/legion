@@ -15,9 +15,8 @@ import { useNavigate } from "react-router-dom";
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
-import { filterChips } from "../../components/filter-chips";
 import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
+import type { PanelTriggerProps } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -342,10 +341,11 @@ const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
 type FilterListName = "project" | "status";
 
 /**
- * The four narrowings the bar offers, in the panel its one trigger opens: a project, an issue
- * status, an author and the day since which the item was last written. Each is a control in the
- * panel while it is unset and a chip in the row once the person has chosen, and pressing that
- * chip drops that narrowing alone and brings its control back.
+ * The four narrowings the bar offers, as the props of the control bar's one trigger (`ControlRow`,
+ * **Filter**) and the content of the panel it opens: a project, an issue status, an author and
+ * the day since which the item was last written. Each is a control in the panel while it is unset
+ * and a chip in the bar once the person has chosen, which the panel lists at its top too, and
+ * pressing that chip drops that narrowing alone and brings its control back.
  *
  * The project and the status are each picked from the shared list's single-pick mode
  * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
@@ -362,7 +362,7 @@ type FilterListName = "project" | "status";
  * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
  * rather than call an unread list empty.
  */
-function SearchNarrowing({
+function useSearchNarrowing({
   filters,
   onFilters,
   projects,
@@ -370,7 +370,7 @@ function SearchNarrowing({
   filters: SearchBarFilters;
   onFilters: (filters: SearchBarFilters) => void;
   projects: UseQueryResult<Project[]>;
-}): ReactNode {
+}): Omit<PanelTriggerProps, "control"> {
   const projectList = projects.data ?? emptyProjects;
   const [open, setOpen] = useState(false);
   const filterList = useNestedPanels<FilterListName>(open);
@@ -384,96 +384,96 @@ function SearchNarrowing({
     }
   };
 
-  return (
-    <PanelTrigger
-      label="Filter"
-      onOpenChange={(next) => {
-        // Shutting the panel is leaving the author box as much as moving off it is: a press
-        // outside takes the box away with the panel, before it could lose focus on its own.
-        if (!next) takeAuthor();
-        setOpen(next);
-      }}
-      open={open}
-      stacked
-    >
-      {() => (
-        <>
-          {filters.project === undefined ? (
-            <MultiSelect
-              {...filterList("project")}
-              emptyMessage={
-                projects.isPending
-                  ? "Loading projects…"
-                  : projects.isError || projectList.length > 0
-                    ? "No project matches that."
-                    : "No projects yet"
+  return {
+    // The bar's Filter counts what is on, as every bar's trigger does: on a tint while any is,
+    // and below 640 px of the bar's width as the badge that stands for the chips (R8).
+    count: searchFilterChips(filters).length,
+    label: "Filter",
+    onOpenChange: (next) => {
+      // Shutting the panel is leaving the author box as much as moving off it is: a press
+      // outside takes the box away with the panel, before it could lose focus on its own.
+      if (!next) takeAuthor();
+      setOpen(next);
+    },
+    open,
+    stacked: true,
+    children: () => (
+      <>
+        {filters.project === undefined ? (
+          <MultiSelect
+            {...filterList("project")}
+            emptyMessage={
+              projects.isPending
+                ? "Loading projects…"
+                : projects.isError || projectList.length > 0
+                  ? "No project matches that."
+                  : "No projects yet"
+            }
+            error={projects.isError ? "Could not load projects." : null}
+            label="Project"
+            mode="single"
+            onPick={(project) => set({ project })}
+            options={projectList.map((project) => project.key)}
+            searchLabel="Search projects"
+          />
+        ) : null}
+        {filters.status === undefined ? (
+          <MultiSelect
+            {...filterList("status")}
+            emptyMessage="No status matches that."
+            label="Status"
+            mode="single"
+            onPick={(status) => set({ status })}
+            optionLabel={statusText}
+            options={issueStatuses}
+            searchLabel="Search statuses"
+          />
+        ) : null}
+        {filters.author === undefined ? (
+          <SearchBox
+            className="w-full"
+            label="Author"
+            onBlur={takeAuthor}
+            onChange={setAuthor}
+            onKeyDown={(event) => {
+              // An Enter that ends or moves an input method's composition is the composition's.
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                takeAuthor();
               }
-              error={projects.isError ? "Could not load projects." : null}
-              label="Project"
-              mode="single"
-              onPick={(project) => set({ project })}
-              options={projectList.map((project) => project.key)}
-              searchLabel="Search projects"
-            />
-          ) : null}
-          {filters.status === undefined ? (
-            <MultiSelect
-              {...filterList("status")}
-              emptyMessage="No status matches that."
-              label="Status"
-              mode="single"
-              onPick={(status) => set({ status })}
-              optionLabel={statusText}
-              options={issueStatuses}
-              searchLabel="Search statuses"
-            />
-          ) : null}
-          {filters.author === undefined ? (
-            <SearchBox
-              className="w-full"
-              label="Author"
-              onBlur={takeAuthor}
-              onChange={setAuthor}
-              onKeyDown={(event) => {
-                // An Enter that ends or moves an input method's composition is the composition's.
-                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  takeAuthor();
-                }
-              }}
-              placeholder="Author"
-              value={author}
-            />
-          ) : null}
-          {/* The date box carries its words on screen: a browser draws an empty one as its own
+            }}
+            placeholder="Author"
+            value={author}
+          />
+        ) : null}
+        {/* The date box carries its words on screen: a browser draws an empty one as its own
               date format and nothing else, so without them a reader cannot tell what the box
               narrows. */}
-          {filters.updatedSince === undefined ? (
-            <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              Updated since
-              <input
-                className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-                onChange={(event) => {
-                  // A date the reader types is taken once its year is whole: an engine reports a
-                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
-                  // and taking that would narrow to a year the reader is still typing and draw
-                  // the box away from under their next keys. The box holds no `value` of its
-                  // own: React puts a controlled empty value back after every change it hands
-                  // here, so Chromium's date would be emptied at each digit before its year is
-                  // whole.
-                  const { value } = event.target;
-                  if (Number(value.slice(0, 4)) >= 1000) {
-                    set({ updatedSince: value });
-                  }
-                }}
-                type="date"
-              />
-            </label>
-          ) : null}
-        </>
-      )}
-    </PanelTrigger>
-  );
+        {filters.updatedSince === undefined ? (
+          <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+            Updated since
+            <input
+              className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+              onChange={(event) => {
+                // A date the reader types is taken once its year is whole: an engine reports a
+                // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                // and taking that would narrow to a year the reader is still typing and draw
+                // the box away from under their next keys. The box holds no `value` of its
+                // own: React puts a controlled empty value back after every change it hands
+                // here, so Chromium's date would be emptied at each digit before its year is
+                // whole.
+                const { value } = event.target;
+                if (Number(value.slice(0, 4)) >= 1000) {
+                  set({ updatedSince: value });
+                }
+              }}
+              type="date"
+            />
+          </label>
+        ) : null}
+      </>
+    ),
+  };
 }
 
 export function SearchPalette({
@@ -586,6 +586,7 @@ function PaletteDialog({
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
   const projects = useQuery(projectsQuery());
+  const narrowing = useSearchNarrowing({ filters, onFilters: setFilters, projects });
   const results = search.data?.results ?? emptyResults;
   // What search made of the words, read from its own answer rather than parsed a second time
   // here, and whether meaning search ran at all. A Dispatch that predates either field answers
@@ -850,46 +851,41 @@ function PaletteDialog({
           role="dialog"
         >
           {scope.header}
-          {/* The bar's one row of controls, which is the dialog's own strip rather than a row
-              added to it: the box the words are typed in, the panel the four narrowings are
-              added from, and a chip for each narrowing that is on. */}
-          <ControlRow
-            chips={filterChips(
-              narrowings.map(({ label, name }) => ({
+          {/* The search bar's control bar, in the dialog's own strip rather than a row added to
+              it: the box the words are typed in, the panel the four narrowings are added from,
+              and a chip for each narrowing that is on. The strip keeps the dialog's padding and
+              its rule, so the bar itself is one line as tall as its controls. */}
+          <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
+            <ControlRow
+              chips={narrowings.map(({ label, name }) => ({
                 key: name,
                 label,
                 remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
-              }))
-            )}
-            className={`shrink-0 border-b p-3 ${borderDefault}`}
-            search={
-              <SearchBox
-                className="w-full"
-                combobox={{
+              }))}
+              search={{
+                combobox: {
                   activeId: activeRow?.id,
                   controls: "search-results",
                   expanded: rows.length > 0,
-                }}
-                label="Search"
+                },
+                label: "Search",
                 // The bar names the limit rather than cutting the words a reader typed, so its
                 // box takes a query over it (the message below the list says so).
-                maxLength={null}
-                onChange={(value) => {
+                maxLength: null,
+                onChange: (value) => {
                   setQuery(value);
-                  // A new query is a new list, so the highlight is undecided again and the
-                  // first hits to answer it take the head.
+                  // A new query is a new list, so the highlight is undecided again and the first
+                  // hits to answer it take the head.
                   setActive({ hits: "", id: null });
-                }}
-                onKeyDown={handleKeyDown}
-                placeholder="Search Dispatch"
-                ref={inputRef}
-                value={query}
-              />
-            }
-            trigger={
-              <SearchNarrowing filters={filters} onFilters={setFilters} projects={projects} />
-            }
-          />
+                },
+                onKeyDown: handleKeyDown,
+                placeholder: "Search Dispatch",
+                ref: inputRef,
+                value: query,
+              }}
+              trigger={narrowing}
+            />
+          </div>
           {/* What the words themselves can do, between the controls and the hits: the three
               operator forms. The line saying that meaning search did not run is NOT here: it
               arrives with an answer, so a narrowing that degraded the search would push every

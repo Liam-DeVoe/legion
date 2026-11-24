@@ -74,6 +74,7 @@ import {
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
+  barAction,
   control,
   controlRow,
   displayChoice,
@@ -126,7 +127,9 @@ import { expandedState, settledState } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
-  heightOf,
+  expectBarDesign,
+  expectNoGrowth,
+  expectOneBarOn,
   INBOX_TOP,
   isPhoneProject,
   openDisplay,
@@ -139,7 +142,6 @@ import {
   SURFACE_SESSION,
   seedSurfaces,
   setBoardLanes,
-  straysBetween,
   topOf,
   widthsOf,
 } from "./table-controls";
@@ -183,116 +185,54 @@ async function seedRealStackSurfaces(): Promise<{
   return { deliveryQuery: DELIVERY_WINDOW, issue, project: "CORE" };
 }
 
-// SLOW(>=2s): two pages opened at each of this project's widths, over two seeded fixtures.
-test("the Agents page and the Delivery page each draw one row of controls, with nothing else between the title and the first row @phone", async ({
+// SLOW(>=2s): two pages at each of this project's widths over two seeded fixtures, each read with
+// no narrowing and with six.
+// k-one-row on the Agents page and the Delivery page (`expectOneBarOn`, `table-controls.ts`): one
+// bar of one line above each list, with nothing else between the title and the first row.
+test("k-one-row: the Agents page and the Delivery page each draw one bar of one line above their list, its search box first and its placeholder whole, and nothing else between the title and the first row @phone", async ({
   page,
 }, testInfo) => {
+  test.setTimeout(180_000);
   const scene = await seedRealStackSurfaces();
   const phone = isPhoneProject(testInfo);
-  const measured: string[] = [];
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
-    for (const name of REAL_STACK_SURFACES) {
-      const surface = await openSurface(page, name, scene, { phone });
-      const where = `${name} at ${size.width}x${size.height}`;
-      await expect(surface.row, `${where}: not exactly one control row`).toHaveCount(1);
-      const height = Math.round(await heightOf(surface.row));
-      measured.push(`${where}: control row ${height}px`);
-      expect(height, `${where}: the control row has no height`).toBeGreaterThan(0);
-      const strays = await straysBetween(
-        surface.root,
-        await topOf(surface.head),
-        await topOf(surface.firstRow)
-      );
-      expect(
-        strays,
-        `${where} (control row ${height}px): ${strays.join("; ")} is drawn between the title and the first row and is outside the control row`
-      ).toEqual([]);
-      if (phone) await assertPageFits(page);
-    }
+    for (const name of REAL_STACK_SURFACES) await expectOneBarOn(page, name, scene, size, phone);
   }
-  await testInfo.attach("control row heights", {
-    body: measured.join("\n"),
-    contentType: "text/plain",
-  });
 });
 
-// SLOW(>=2s): the same two pages, each narrowed and opened at each of this project's widths, and
-// the Agents page's rows selected.
-test("no narrowing, panel or selection on the Agents page or the Delivery page moves the first row @phone", async ({
+// SLOW(>=2s): two pages over two seeded fixtures, each read at rest and under one, three or six
+// narrowings.
+// k-bar on the Agents page and the Delivery page (`expectBarDesign`, `table-controls.ts`): the
+// search box, Filter and the chips, and no other control.
+test("k-bar: the Agents page and the Delivery page draw the search box, Filter and the chips and no other control, quiet at rest, with Filter's count, its chips and its panel's list @phone", async ({
   page,
 }, testInfo) => {
+  test.setTimeout(180_000);
+  const scene = await seedRealStackSurfaces();
+  const phone = isPhoneProject(testInfo);
+  const size = phone
+    ? (page.viewportSize() ?? { height: 664, width: 390 })
+    : { height: 800, width: 1280 };
+  if (!phone) await page.setViewportSize(size);
+  for (const name of REAL_STACK_SURFACES) await expectBarDesign(page, name, scene, size, phone);
+});
+
+// SLOW(>=2s): the same two pages, each narrowed, opened and - on the Agents page - selected at
+// each of this project's widths.
+// k-no-growth on the Agents page and the Delivery page (`expectNoGrowth`, `table-controls.ts`).
+// The Delivery page's list marks no row: `PRList` hands `useDataTable` no `selection`
+// (`features/delivery/PRList.tsx`), and a press on a row opens that one pull request's details,
+// which marks nothing for an action.
+test("k-no-growth: no narrowing, panel or selection on the Agents page or the Delivery page moves the first row, in the layout its bar's width gives @phone", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(180_000);
   const scene = await seedRealStackSurfaces();
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
-    for (const name of REAL_STACK_SURFACES) {
-      const surface = await openSurface(page, name, scene, { phone });
-      const where = `${name} at ${size.width}x${size.height}`;
-      await resetScroll(page, surface.firstRow);
-      const first = await topOf(surface.firstRow);
-
-      // Selecting rows, on the page whose list allows it, before any narrowing, so the top is
-      // held to the first reading itself. The Agents page marks rows for a broadcast: a
-      // checkbox on each row (`Select <name> for broadcast`) and one over the list for every row
-      // the filters match (`Select all matching agents`, `features/agents/AgentsPage.tsx`). A
-      // mark draws the broadcast composer, which follows the list and sticks to the bottom of
-      // the viewport rather than standing above the rows. The Delivery page's list marks no
-      // row: `PRList` hands `useDataTable` no `selection` (`features/delivery/PRList.tsx`), and
-      // a table without one selects nothing (`components/DataTable.tsx`); a press on a row opens
-      // that one pull request's details, which marks nothing for an action.
-      if (name === "Agents page") {
-        const composer = surface.root.getByRole("region", { name: "Broadcast" });
-        for (const [act, box] of [
-          [
-            "one row's checkbox ticked",
-            surface.firstRow.getByRole("checkbox", { name: /^Select .+ for broadcast$/ }),
-          ],
-          [
-            "the select-all checkbox ticked",
-            surface.root.getByRole("checkbox", { exact: true, name: "Select all matching agents" }),
-          ],
-        ] as const) {
-          await box.check();
-          await expect(composer, `${where}: ${act} drew no broadcast composer`).toBeVisible();
-          await resetScroll(page, surface.firstRow);
-          const selected = await topOf(surface.firstRow);
-          expect(
-            selected,
-            `${where}: ${act} moved the first row from ${Math.round(first)}px to ${Math.round(selected)}px`
-          ).toBeCloseTo(first, 0);
-        }
-        // Unmarked again, so the narrowing below is read on the page as it opened.
-        await surface.root.getByRole("button", { exact: true, name: "Clear selection" }).click();
-        await expect(composer, `${where}: Clear selection left the composer drawn`).toHaveCount(0);
-      }
-
-      await surface.narrow();
-      await expect(surface.firstRow).toBeVisible();
-      await resetScroll(page, surface.firstRow);
-      const narrowed = await topOf(surface.firstRow);
-      expect(
-        narrowed - first,
-        `${where}: one narrowing moved the first row from ${Math.round(first)}px to ${Math.round(narrowed)}px, which is more than the one line of chips the rule allows`
-      ).toBeLessThanOrEqual(CHIP_LINE);
-      expect(
-        narrowed,
-        `${where}: one narrowing moved the first row up, from ${Math.round(first)}px to ${Math.round(narrowed)}px`
-      ).toBeGreaterThanOrEqual(first - 0.5);
-
-      // Neither page draws a display menu, so the panel is the one act left: it is portalled
-      // over the page and takes no room in the layout.
-      if (surface.panel !== undefined) {
-        await surface.panel();
-        await resetScroll(page, surface.firstRow);
-        const after = await topOf(surface.firstRow);
-        expect(
-          after,
-          `${where}: the filter panel opened moved the first row from ${Math.round(narrowed)}px to ${Math.round(after)}px`
-        ).toBeCloseTo(narrowed, 0);
-        await closeControlPanel(surface.root);
-      }
-    }
+    for (const name of REAL_STACK_SURFACES) await expectNoGrowth(page, name, scene, size, phone);
   }
 });
 
@@ -2640,7 +2580,7 @@ test("k-keep: the priorities page keeps its search, column filter and chip, grou
   await expect(control(main, CONTROL.selectionBar), "x again left it marked").toHaveCount(0);
 });
 
-test("the Delivery list still answers the keyboard and stays windowed, and each page's own bindings still run", async ({
+test("k-keep: the Delivery list still answers the keyboard and stays windowed, and each page's own bindings still run", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1600 });
@@ -2821,7 +2761,7 @@ async function expectAgentGroups(
 //   Dispatch; the page kept nothing in the browser (no `useUserPreference`, no storage). Both are
 //   found again after a reload.
 // SLOW(>=2s): five seeded sessions worked through every narrowing, count, key, pin and a send.
-test("the Agents page keeps every narrowing, grouping, count, key, pin and broadcast it had @phone", async ({
+test("k-keep: the Agents page keeps every narrowing, grouping, count, key, pin and broadcast it had @phone", async ({
   page,
 }, testInfo) => {
   const phone = isPhoneProject(testInfo);
@@ -2908,9 +2848,16 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
     await pickAgentFilter(page, field, option);
     await expect(titles, `the ${field} narrowing`).toHaveText(shown);
     await expectAgentGroups(page, headings, `the ${field} narrowing`);
-    await expect(chips, `the ${field} narrowing's chip`).toHaveCount(1);
-    await chips.click();
+    // The chip stands in the bar's line where the bar is 640 px wide or wider; below it, as at
+    // the phone's width, Filter's badge stands for it and the open panel lists it at its top (R8).
+    const chip = phone
+      ? (await openFilterPanel(page, main)).getByRole("button", { name: /^Remove .+ filter$/ })
+      : chips;
+    await expect(chip, `the ${field} narrowing's chip`).toHaveCount(1);
+    await chip.click();
     await expect(titles, `the ${field} narrowing's chip taken off`).toHaveText(everyRow);
+    // Shut as a reader shuts it, so the next press lands on the page rather than on the panel.
+    if (phone) await closeControlPanel(main);
   }
 
   // The read mark: the count's own press opens the conversation, which reads it. The row is
@@ -3017,7 +2964,15 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   await expect(composer, "select-all drew no broadcast composer").toBeVisible();
   await main.getByRole("button", { exact: true, name: "Clear selection" }).click();
   await expect(composer, "Clear selection").toHaveCount(0);
-  await chips.click();
+  // The role chip, in the bar's line, or at the phone's width at the open panel's top (R8).
+  if (phone) {
+    await (await openFilterPanel(page, main))
+      .getByRole("button", { name: /^Remove .+ filter$/ })
+      .click();
+    await closeControlPanel(main);
+  } else {
+    await chips.click();
+  }
   await expect(titles).toHaveText(pinned);
   await reviewer.getByRole("checkbox", { name: "Select Reviewer for broadcast" }).check();
   await tester.getByRole("checkbox", { name: "Select Tester for broadcast" }).check();
@@ -3057,14 +3012,15 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
 // - Views: the references, shut until opened (:121-127). Opened.
 // - Bulk action: none; a row's own controls (copy, approval, Download, Remove, :211-231) act on
 //   that row alone.
-// - The strip's two controls that add to the list: New document (:318-323,
-//   `features/artifacts/CreateDocument.tsx`) and Upload (:324, `features/artifacts/ArtifactUpload.tsx`).
-//   Each used, and what it added read in the list.
+// - The two controls that add to the list, now the control bar's actions (R8): New document
+//   (`features/artifacts/CreateDocument.tsx`) and Upload (`features/artifacts/ArtifactUpload.tsx`),
+//   each an item of More below 640 px of the bar's width, as at the phone's width. Each used, and
+//   what it added read in the list.
 // - Keys: the tab's list answers none; `t a`, the issue page's binding that opens the tab
 //   (`features/issue/IssuePage.tsx:153`, :324-330). Pressed.
 // - Stored for the reader: nothing; the words were the tab's own state (:243), kept nowhere.
 // SLOW(>=2s): four seeded documents, an upload and a new document, read in the tab.
-test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its strip and its key @phone", async ({
+test("k-keep: an issue's Artifacts tab keeps its narrowing, its order, its counts, its actions and its key @phone", async ({
   page,
 }, testInfo) => {
   const phone = isPhoneProject(testInfo);
@@ -3151,6 +3107,7 @@ test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its s
     mimeType: "text/plain",
     name: "trace.log",
   });
+  // The staged file's own Upload, under the bar: the bar offers none while a file is staged.
   await main.getByRole("button", { exact: true, name: "Upload" }).click();
   const trace = main.getByTestId("artifact-trace-log");
   await expect(trace, "Upload").toContainText("file · 1 version");
@@ -3179,7 +3136,7 @@ test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its s
   await expect(rows).toHaveCount(4);
 
   // New document, which opens what it made; the tab then lists it.
-  await main.getByRole("button", { exact: true, name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = page.getByRole("form", { name: "New document" });
   await form.getByRole("textbox", { exact: true, name: "Title" }).fill("Drafted");
   await form.getByRole("button", { exact: true, name: "Create" }).click();
@@ -3249,7 +3206,7 @@ function hitOwners(bar: Locator): Promise<string[]> {
 // - Stored for the reader: the recent items, in local storage under `search.recents`
 //   (`features/search/recents.ts:26-87`). Found again after a reload.
 // SLOW(>=2s): twenty-six seeded issues and a document, the bar opened six times over four pages.
-test("the search bar keeps its narrowings, its groups, its count, its recent items and its keys @phone", async ({
+test("k-keep: the search bar keeps its narrowings, its groups, its count, its recent items and its keys @phone", async ({
   page,
 }, testInfo) => {
   const phone = isPhoneProject(testInfo);
@@ -3341,16 +3298,19 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
     await openFilterPanel(page, bar);
     await expect(field, `the ${narrowing} narrowing`).toBeVisible();
     await set();
-    await closeControlPanel(bar);
-    await expect(
-      chips.filter({ hasText: new RegExp(`^${narrowing} `) }),
-      `the ${narrowing} narrowing's chip`
-    ).toHaveCount(1);
+    // The chip stands in the bar's line where the bar is 640 px wide or wider; below it, as at
+    // the phone's width, Filter's badge stands for it and the open panel lists it at its top (R8).
+    if (!phone) await closeControlPanel(bar);
+    const chip = (
+      phone ? filters.getByRole("button", { name: /^Remove .+ filter$/ }) : chips
+    ).filter({ hasText: new RegExp(`^${narrowing} `) });
+    await expect(chip, `the ${narrowing} narrowing's chip`).toHaveCount(1);
     await expect
       .poll(() => hitOwners(bar), { message: `the ${narrowing} narrowing` })
       .toEqual([...left].sort());
-    await chips.click();
-    await expect(chips).toHaveCount(0);
+    await chip.click();
+    await expect(chip).toHaveCount(0);
+    if (phone) await closeControlPanel(bar);
     await expect.poll(() => hitOwners(bar)).toEqual(harbour);
   }
 
@@ -5561,7 +5521,8 @@ test("the Delivery page reaches every facet from its row, in both views, and its
   await octocat.click();
   await expect(shown).toHaveText("3 PRs in current filter/window");
   await expect(page).not.toHaveURL(/[?&]author=/);
-  await expect(trigger).toHaveText("Filter · 0");
+  // In the bar's look the trigger says its count only while a narrowing is on (R8).
+  await expect(trigger).toHaveText("Filter");
 
   // No column header is drawn on the Timeline, so its panel holds all nine.
   const panel = await openFilterPanel(page, main);

@@ -1384,10 +1384,18 @@ test("says meaning search is not running, and still shows the hits", async () =>
   }
 });
 
-/** Opens the one panel of the bar's control row, which all four narrowings are added from. A
- *  narrowing already on is a chip in the row instead, so its control is not in the panel. */
+/** Opens the one panel of the bar's control bar, which all four narrowings are added from. A
+ *  narrowing already on is a chip in the bar instead, so its control is not in the panel. */
 async function openFilters(user: UserEvent): Promise<void> {
   await user.click(screen.getByRole("button", { name: "Filter" }));
+}
+
+/** The bar's control bar itself: a chip is drawn there and, while the Filter panel is open, again
+ *  at the panel's top, which is portalled outside the bar. */
+function bar(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
+  if (found === null) throw new Error("the search bar draws no control bar");
+  return found;
 }
 
 // The dialog's own strip of controls is the control row itself, so the bar's box, the panel the
@@ -1439,9 +1447,11 @@ test("a chip narrows the search, reads back in the person's words, and comes off
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Status In progress filter" });
+    const chip = within(bar()).getByRole("button", { name: "Remove Status In progress filter" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
+    // Filter counts what is on, as every control bar's trigger does (R8).
+    expect(within(bar()).getByRole("button", { name: "Filter · 1" })).toBeTruthy();
     // The chip is the shared one, in the shared row: what the bar narrows by is said where
     // every other page says it.
     expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
@@ -1477,7 +1487,7 @@ test("a date typed in Updated since narrows the search only once its year is who
     // The same box once the year's last digit is typed.
     fireEvent.change(box, { target: { value: "2026-11-22" } });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
+      expect(within(bar()).getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
     );
     expect(screen.queryByLabelText("Updated since")).toBeNull();
   } finally {
@@ -1514,7 +1524,9 @@ test("a project picked in the panel narrows the search and reads back as its chi
         aborts
       )
     );
-    expect(screen.getByRole("button", { name: "Remove Project INFRA filter" })).not.toBeNull();
+    expect(
+      within(bar()).getByRole("button", { name: "Remove Project INFRA filter" })
+    ).not.toBeNull();
   } finally {
     listProjects.mockRestore();
     search.mockRestore();
@@ -1681,7 +1693,7 @@ test("an author typed in the panel is taken on Enter, narrows the search, and co
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Author alice filter" });
+    const chip = within(bar()).getByRole("button", { name: "Remove Author alice filter" });
     expect(chip.textContent).toContain("Author alice");
 
     await user.click(chip);
@@ -1716,7 +1728,9 @@ test("an author left in the box is taken when the panel shuts", async () => {
         aborts
       )
     );
-    expect(screen.getByRole("button", { name: "Remove Author alice filter" })).not.toBeNull();
+    expect(
+      within(bar()).getByRole("button", { name: "Remove Author alice filter" })
+    ).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();

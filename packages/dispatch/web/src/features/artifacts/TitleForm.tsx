@@ -16,10 +16,11 @@ import { focusOnDocument } from "../shell/roving";
  * host holds in the strip beside the control, in either state.
  *
  * Only a change of `open` moves the focus. Opening puts it in the Title box, so a keyboard reader
- * types at once. Closing gives it back to `idle`, the control that opened the form - the strip's
- * first button - when the focus went with the form, which leaves it on the document, or is still
- * in the strip; a reader who has gone elsewhere on the page keeps their place, and a form drawn
- * open takes no focus.
+ * types at once. Closing gives it back to the control that opened the form - `opener`'s, where
+ * that control stands outside the strip (the Artifacts tab's control bar), else `idle`, the
+ * strip's first button - when the focus went with the form, which leaves it on the document, or
+ * is still in the strip; a reader who has gone elsewhere on the page keeps their place, and a
+ * form drawn open takes no focus.
  */
 export function TitleForm({
   busyLabel,
@@ -30,6 +31,7 @@ export function TitleForm({
   onSubmit,
   onTitleChange,
   open,
+  opener,
   pending,
   problem,
   refusal,
@@ -42,12 +44,16 @@ export function TitleForm({
   readonly children?: ReactNode;
   /** What the form is called, which a reader reaches it by. */
   readonly formLabel: string;
-  /** The control the strip holds while the form is closed. */
+  /** The control the strip holds while the form is closed: none where the control that opens it
+   *  stands outside the strip (`opener`). */
   readonly idle: ReactNode;
   readonly onCancel: () => void;
   readonly onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   readonly onTitleChange: (title: string) => void;
   readonly open: boolean;
+  /** Where the control that opened the form stands outside the strip, the way to find it as the
+   *  form closes: the focus goes back to it rather than to `idle`. */
+  readonly opener?: () => HTMLElement | null;
   readonly pending: boolean;
   /** What the write answered, or undefined while it has answered nothing. */
   readonly problem?: string;
@@ -69,13 +75,15 @@ export function TitleForm({
     }
     const node = strip.current;
     if (node !== null && (focusOnDocument() || node.contains(document.activeElement))) {
-      node.querySelector("button")?.focus();
+      (opener?.() ?? node.querySelector("button"))?.focus();
     }
-  }, [open]);
+  }, [open, opener]);
 
   return (
+    // A strip with nothing to show - closed, its control drawn elsewhere (`opener`), and nothing
+    // the host holds beside it - takes no room, so it adds no gap under the bar it stands under.
     <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 ${open ? "w-full" : "shrink-0"}`}
+      className={`flex min-w-0 flex-wrap items-center gap-2 empty:hidden ${open ? "w-full" : "shrink-0"}`}
       ref={strip}
     >
       {open ? (

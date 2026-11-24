@@ -17,6 +17,7 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import { barAction } from "./filters";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
@@ -113,17 +114,18 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   // The tab's own slot of the control row ran a staged upload off a 390 px window once (CI run
   // 43204682061), and #3508 put the `New document` control in that same slot beside `Upload`. So
   // on the phone each control there lies whole inside the window and takes a press, and the form
-  // `New document` opens fits too.
+  // `New document` opens fits too. Both are now actions of the tab's control bar, items of its
+  // More below 640 px of the bar's width, as at the phone's width (R8).
   if (testInfo.project.name === "iphone") {
-    const newDocument = page.getByRole("button", { exact: true, name: "New document" });
-    const pickFile = page.getByRole("button", { exact: true, name: "Upload" });
+    const newDocument = await barAction(page, "New document");
+    const pickFile = await barAction(page, "Upload");
     await expectWithinWindow(page, newDocument, "New document");
     await expectWithinWindow(page, pickFile, "Upload");
     // Playwright holds the chooser the press opens, and it is left unanswered: nothing is staged.
     const chooser = page.waitForEvent("filechooser");
     await pickFile.click();
     await chooser;
-    await newDocument.click();
+    await (await barAction(page, "New document")).click();
     const newDocumentForm = page.getByRole("form", { name: "New document" });
     await expectWithinWindow(
       page,

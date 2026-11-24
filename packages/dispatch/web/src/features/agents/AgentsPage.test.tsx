@@ -4407,7 +4407,8 @@ test("the header checkbox follows the filters and its count never hides a select
 // select-all checkbox before it. While no row matches, that checkbox is disabled and the header
 // holds no other control, so its own hand-off moves nothing and leaves the loss to the page's
 // rescue, which the app shell mounts: its walk back passes over the disabled checkbox to the
-// Filter button, and never lands on the search box, which takes typed text.
+// Filter button, and never lands on the search box, which takes typed text. In the control bar's
+// look the Filter button says its count only while a narrowing is on.
 test("Clear selection hands its focus to the select-all checkbox, and never to the search box while no row matches", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
@@ -4440,7 +4441,7 @@ test("Clear selection hands its focus to the select-all checkbox, and never to t
       within(region).queryByRole("button", { name: "Clear selection" })
     ).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(within(region).getByRole("button", { name: "Filter · 0" })).toHaveFocus()
+      expect(within(region).getByRole("button", { name: "Filter" })).toHaveFocus()
     );
     expect(search).not.toHaveFocus();
   } finally {

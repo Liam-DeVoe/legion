@@ -149,9 +149,9 @@ test("renders one row per artifact with no compare controls", async () => {
 
 // W41. A closed issue takes neither a new document nor an upload, and Dispatch would refuse an
 // upload only after its whole body went up: the tab refuses both before a file is picked, with
-// the reason on each control - and on the one line beside them, for a reader with no pointer -
-// and a file dropped on it is not staged. W46. The hidden file input is disabled too, so no
-// keyboard path opens a chooser whose file is ignored.
+// the reason on each action of the control bar - and on the one line under the bar, outside it,
+// for a reader with no pointer - and a file dropped on it is not staged. W46. The hidden file
+// input is disabled too, so no keyboard path opens a chooser whose file is ignored.
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
@@ -172,6 +172,12 @@ test("a closed issue's Artifacts tab refuses a new document and an upload before
     const line = screen.getByText(refusal);
     expect(upload.getAttribute("aria-describedby")).toBe(line.id);
     expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    // Both are actions of the control bar, and the line that says why stands under it.
+    for (const action of [create, upload]) {
+      expect(action).toHaveAttribute("data-control", "bar-action");
+      expect(bar().contains(action)).toBe(true);
+    }
+    expect(bar().contains(line)).toBe(false);
     await user.click(create);
     expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
     await user.click(upload);
@@ -282,6 +288,53 @@ test("New document puts the focus in Title, and Cancel gives it back to New docu
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+/** The tab's control bar itself. */
+function bar(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
+  if (found === null) throw new Error("the Artifacts tab draws no control bar");
+  return found;
+}
+
+// R8. The bar holds the search box and the actions New document and Upload, and what each action
+// opens stands under it, outside it: the New document form, and a staged file with its summary,
+// its own Upload and Cancel. While a file is staged the bar offers no Upload of its own, so one
+// button named Upload is drawn, the one that stores the file; Cancel brings the bar's back.
+test("New document's form and a staged file stand under the bar, and the bar offers no Upload while a file is staged", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    expect(within(bar()).getAllByRole("button")).toEqual([
+      within(bar()).getByRole("button", { name: "New document" }),
+      within(bar()).getByRole("button", { name: "Upload" }),
+    ]);
+
+    await user.click(within(bar()).getByRole("button", { name: "New document" }));
+    const form = screen.getByRole("form", { name: "New document" });
+    expect(bar().contains(form)).toBe(false);
+    await user.click(within(form).getByRole("button", { name: "Cancel" }));
+
+    await user.upload(
+      screen.getByLabelText("Upload artifact"),
+      new File(["notes"], "notes.md", { type: "text/markdown" })
+    );
+    const summary = await screen.findByRole("textbox", { name: "Summary (optional)" });
+    expect(bar().contains(summary)).toBe(false);
+    expect(screen.getAllByRole("button", { name: "Upload" })).toHaveLength(1);
+    expect(within(bar()).queryByRole("button", { name: "Upload" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "New document" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toBeTruthy();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

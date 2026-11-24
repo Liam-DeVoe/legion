@@ -1185,8 +1185,10 @@ test("a facet's trigger names the facet and what is picked", async () => {
     "aria-label",
     "Repository: Any repository"
   );
-  // A picked value is a chip of the row, which takes it off again.
-  await user.click(screen.getByRole("button", { name: "Remove Component: Public API filter" }));
+  // A picked value is a chip of the bar, which takes it off again.
+  await user.click(
+    within(bar()).getByRole("button", { name: "Remove Component: Public API filter" })
+  );
   await waitFor(() => expect(currentSearch().has("component")).toBe(false));
 });
 
@@ -1407,9 +1409,17 @@ const everyFacet: DeliveryTimelineWithMeasures = {
   prs: [listedPR],
 };
 
-/** The trigger and every chip of the page's control row, by the name each is read out as. */
+/** The page's control bar itself: a chip is drawn there and, while the Filter panel is open, again
+ *  at the panel's top, which is portalled outside the bar. */
+function bar(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
+  if (found === null) throw new Error("the Delivery page draws no control bar");
+  return found;
+}
+
+/** The trigger and every chip of the page's control bar, by the name each is read out as. */
 function rowControls(): string[] {
-  return screen
+  return within(bar())
     .getAllByRole("button", { name: /^(Filter(?: · \d+)?|Remove .* filter)$/ })
     .map((button) => button.getAttribute("aria-label") ?? button.textContent ?? "");
 }
@@ -1495,7 +1505,8 @@ test("in the List a value picked on a column's header draws its chip in the row,
   await user.click(screen.getByRole("button", { name: "Remove Author: octocat filter" }));
   await waitFor(() => expect(currentSearch().has("author")).toBe(false));
   expect(screen.getByRole("button", { name: "Filter Author" })).toBeDefined();
-  expect(rowControls()).toEqual(["Filter · 0"]);
+  // In the control bar's look the trigger says its count only while a narrowing is on.
+  expect(rowControls()).toEqual(["Filter"]);
   // In the List the five stay on their headers: the panel holds the four that are no column.
   await openFilterPanel(user);
   expect(

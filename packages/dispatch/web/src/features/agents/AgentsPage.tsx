@@ -32,7 +32,7 @@ import { ControlRow } from "../../components/ControlRow";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
-import { filterChips } from "../../components/filter-chips";
+import type { FilterChip } from "../../components/filter-chips";
 import {
   controlsLikeRow,
   focusNoScroll,
@@ -42,11 +42,9 @@ import {
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
-import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -963,12 +961,17 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
 );
 
 /**
- * The one row the page's controls sit in: the search box, the one trigger over the three
- * narrowings that are no column of a table here - group, machine and role - and the chips of
- * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
- * that narrows its own options, because forty
- * machines cannot be read in a list that does not search; all three now sit behind one trigger
- * rather than three of their own.
+ * The control bar the page's controls sit in (`ControlRow`), handed each control as its props:
+ * the search box, **Filter** over the three narrowings that are no column of a table here -
+ * group, machine and role - and the chips of the values that are on, which the trigger's panel
+ * lists at its top too. Each narrowing is still a multi-select whose panel holds a text box that
+ * narrows its own options, because forty machines cannot be read in a list that does not search;
+ * all three sit behind one trigger rather than three of their own. The page has no **Clear
+ * filters**, as it had none before the bar: each chip takes its own value off.
+ *
+ * The placeholder is the box's name, `Search agents`, which still says what it searches where the
+ * bar gives the box its least room, at the phone's width (the measurement of 2026-11-24,
+ * INFRA-4948's `r8-bar-measurement-md`).
  */
 function AgentFilterBar({
   agents,
@@ -992,7 +995,7 @@ function AgentFilterBar({
   const filterPanel = useNestedPanels<OpenFilter>(filterOpen);
   // One chip per value the reader has ticked, in the order the panel lists the three controls;
   // a press takes that one value off and leaves the rest of the narrowing alone.
-  const chosen = [
+  const chosen: FilterChip[] = [
     ...filters.groups.map((value) => ({
       key: `group:${value}`,
       label: `Group: ${AGENT_GROUP_LABELS[value]}`,
@@ -1011,68 +1014,62 @@ function AgentFilterBar({
   ];
   return (
     <ControlRow
+      chips={chosen}
       className="mb-3"
-      chips={filterChips(chosen)}
-      search={
-        <SearchBox
-          className="w-full"
-          data-testid="agents-filter-search"
-          label="Search agents"
-          onChange={(value) => onFilters({ search: value })}
-          placeholder="Title, directory, machine, session or open issue"
-          ref={searchInputRef}
-          value={filters.search}
-        />
-      }
-      trigger={
-        <PanelTrigger
-          count={chosen.length}
-          label="Filter"
-          onOpenChange={setFilterOpen}
-          open={filterOpen}
-          stacked
-        >
-          {() => (
-            <>
-              <MultiSelect
-                {...filterPanel("group")}
-                emptyMessage="No group matches that."
-                label="Group"
-                // The control picks strings; these are the four group keys, read back in the one
-                // order the page draws them in, whatever order they were ticked in.
-                onChange={(next) =>
-                  onFilters({ groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
-                }
-                optionLabel={(value) => GROUP_FILTER_LABELS.get(value)}
-                options={AGENT_GROUPS}
-                searchLabel="Search groups"
-                selected={filters.groups}
-                triggerAriaLabel="Filter by group"
-              />
-              <MultiSelect
-                {...filterPanel("machine")}
-                emptyMessage="No machine matches that."
-                label="Machine"
-                onChange={(next) => onFilters({ machines: next })}
-                options={machines}
-                searchLabel="Search machines"
-                selected={filters.machines}
-                triggerAriaLabel="Filter by machine"
-              />
-              <MultiSelect
-                {...filterPanel("role")}
-                emptyMessage="No role matches that."
-                label="Role"
-                onChange={(next) => onFilters({ roles: next })}
-                options={roles}
-                searchLabel="Search roles"
-                selected={filters.roles}
-                triggerAriaLabel="Filter by role"
-              />
-            </>
-          )}
-        </PanelTrigger>
-      }
+      search={{
+        "data-testid": "agents-filter-search",
+        label: "Search agents",
+        onChange: (value) => onFilters({ search: value }),
+        placeholder: "Search agents",
+        ref: searchInputRef,
+        value: filters.search,
+      }}
+      trigger={{
+        children: () => (
+          <>
+            <MultiSelect
+              {...filterPanel("group")}
+              emptyMessage="No group matches that."
+              label="Group"
+              // The control picks strings; these are the four group keys, read back in the one
+              // order the page draws them in, whatever order they were ticked in.
+              onChange={(next) =>
+                onFilters({ groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
+              }
+              optionLabel={(value) => GROUP_FILTER_LABELS.get(value)}
+              options={AGENT_GROUPS}
+              searchLabel="Search groups"
+              selected={filters.groups}
+              triggerAriaLabel="Filter by group"
+            />
+            <MultiSelect
+              {...filterPanel("machine")}
+              emptyMessage="No machine matches that."
+              label="Machine"
+              onChange={(next) => onFilters({ machines: next })}
+              options={machines}
+              searchLabel="Search machines"
+              selected={filters.machines}
+              triggerAriaLabel="Filter by machine"
+            />
+            <MultiSelect
+              {...filterPanel("role")}
+              emptyMessage="No role matches that."
+              label="Role"
+              onChange={(next) => onFilters({ roles: next })}
+              options={roles}
+              searchLabel="Search roles"
+              selected={filters.roles}
+              triggerAriaLabel="Filter by role"
+            />
+          </>
+        ),
+        count: chosen.length,
+        label: "Filter",
+        onOpenChange: setFilterOpen,
+        open: filterOpen,
+        stacked: true,
+      }}
     />
   );
 }

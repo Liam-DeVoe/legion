@@ -35,6 +35,21 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
 }
 
 /**
+ * The control a page offers for the action `label`: on a page whose control bar holds it, the
+ * bar's own button where the bar is 640 px wide or wider, else its item of **More**, which this
+ * opens (R8, `components/ControlRow.tsx`); on a page that draws the action as a button of its
+ * own, that button. Waits until one of the two is drawn, so the bar has read its own width.
+ */
+export async function barAction(page: Page, label: string): Promise<Locator> {
+  const button = page.getByRole("button", { exact: true, name: label });
+  const more = control(controlRow(page), CONTROL.moreMenu);
+  await expect(button.or(more).first()).toBeVisible();
+  if ((await button.count()) > 0) return button;
+  if ((await expandedState("the bar's More", more)) === "shut") await more.click();
+  return page.getByRole("menuitem", { exact: true, name: label });
+}
+
+/**
  * The page's display menu, opened unless it is open already: the panel is the `dialog` named
  * after the trigger, and `label` is what that trigger reads (`View` on every page that draws
  * one today).

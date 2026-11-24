@@ -13,28 +13,27 @@
  *  measure to ten minutes after a re-recording. Everything that needs seeded counts, a write or
  *  a reload is in that file too.
  */
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
-import { control, controlRow, openFilterPanel } from "./filters";
-import { nextFrames } from "./frames";
+import { control, controlRow } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import {
-  closeControlPanel,
   drawnControlNames,
+  expectBarDesign,
+  expectNoGrowth,
+  expectOneBarOn,
   gapBoxes,
   heightOf,
   isPhoneProject,
+  NARROW_BELOW,
   openSurface,
   pickInboxField,
-  pickIssueFlag,
   resetScroll,
   STUBBABLE_SURFACES,
   SURFACE_CONTROLS,
   SURFACE_SEARCH_TERM,
-  type Surface,
   type SurfaceName,
-  type SurfaceScene,
   seedSurfaces,
   straysBetween,
   topOf,
@@ -344,7 +343,14 @@ test("each page draws every shared control its design gives it, and no other @pr
     const surface = await openSurface(page, name, scene, {
       searchTerm: SURFACE_SEARCH_TERM,
     });
-    const expected = [...SURFACE_CONTROLS[name]].sort();
+    // An issue's Artifacts tab draws its two actions as `bar-action`s where its bar is 640 px wide
+    // or wider and as items of **More** below (R8), so the one of the two its bar's width does not
+    // give it is not looked for.
+    const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
+    const notHere = width < NARROW_BELOW ? CONTROL.barAction : CONTROL.moreMenu;
+    const expected = [...SURFACE_CONTROLS[name]]
+      .filter((wanted) => name !== "Artifacts tab" || wanted !== notHere)
+      .sort();
     // Every control the page draws as it opens, read before anything is pressed, so a page
     // pointed at a copy of a control is named here rather than found missing by the act that
     // would have driven it. The chip and the selection bar are not among them: a chip is drawn
@@ -515,554 +521,56 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
 });
 
 /** The stubbable pages on the control bar's slots (INFRA-4948's T13), which R8's own rows below
- *  read: a page joins this list as it moves onto the slots, so each row reads every page that
- *  has moved and none that has not. The Inbox, its drawer, the search bar and the Artifacts tab
- *  join it as they move. */
+ *  read page by page (`expectOneBarOn`, `expectBarDesign`, `expectNoGrowth` in
+ *  `table-controls.ts`): a page joins this list as it moves onto the slots, so each row reads
+ *  every page that has moved and none that has not. The Inbox and its drawer join it as they
+ *  move. The Agents page and the Delivery page are on the slots too, and read in
+ *  `table-controls.e2e.ts`. */
 const BAR_PAGES: readonly SurfaceName[] = [
   "project List",
   "project Board",
+  "search bar",
+  "Artifacts tab",
   "priorities page",
   "priority page",
 ];
 
-/** The bar's own width under which it takes its narrow layout (`components/ControlRow.tsx`). */
-const NARROW_BELOW = 640;
-
-/** The name of a bar's `+N more` chip, `<N> more filters`, and of the panel it opens. */
-const MORE_CHIPS = /^\d+ more filters?$/;
-
-/** A chip's remove control, as `filterChips` names every one. */
-const REMOVE_CHIP = /^Remove .+ filter$/;
-
-/** A computed background no fill paints. */
-const NO_FILL = /^(transparent|rgba\(0, 0, 0, 0\))$/;
-
-/** The three tables the priorities page draws, each region under a bar of its own: the
- *  priorities table's, and the project List's above each issues table. */
-const PRIORITIES_TABLES = [
-  "Priorities",
-  "In flight under no priority",
-  "Priority work in backlog or icebox",
-] as const;
-
-/** The narrowings each page is read under, as its address writes them, in the order a row takes
- *  them: the first one, two, three or all six, each one chip. Every page keeps its bar under all
- *  six, and the seed keeps rows under the first three. The Board narrows by every label it names
- *  at once and each seeded issue carries one, so its last two leave it no card; a priority's own
- *  issue has no ask, so `needs-you` leaves its table no row; no reading of a bar needs one. */
-const NARROWINGS: Partial<Record<SurfaceName, readonly string[]>> = {
-  "project List": [
-    "needs-you=1",
-    "label=frontend",
-    "unclaimed=1",
-    "unread=1",
-    "status=todo",
-    "f.key=CORE",
-  ],
-  "project Board": [
-    "needs-you=1",
-    "q=Rollout",
-    "unclaimed=1",
-    "unread=1",
-    "label=frontend",
-    "label=backend",
-  ],
-  "priorities page": [
-    "p.f.owner=alice",
-    "p.f.waiting=0",
-    "p.f.in-flight=1",
-    "p.f.parked=0",
-    "p.f.closed=0",
-    "p.f.title=books",
-  ],
-  "priority page": [
-    "w.unclaimed=1",
-    "w.status=in_progress",
-    "w.f.key=BOOKS",
-    "w.f.title=Audit",
-    "needs-you=1",
-    "unread=1",
-  ],
-};
-
-/** The page `name` with its first `count` narrowings on. */
-function narrowedAddress(name: SurfaceName, scene: SurfaceScene, count: number): string {
-  const path =
-    name === "priorities page"
-      ? "/priorities"
-      : name === "priority page"
-        ? `/priorities/${scene.priority ?? ""}`
-        : `/projects/${scene.project}/issues`;
-  return `${path}?${(NARROWINGS[name] ?? []).slice(0, count).join("&")}`;
-}
-
-/** One control of a bar as a row reads it: what it is (its `data-control`, or `clear` for Clear
- *  filters), its accessible name, the words it shows - a badge's number among them - and its
- *  paint and box. */
-interface BarControl {
-  readonly background: string;
-  readonly border: number;
-  /** Whether it shares the box it stands in with the bar's trigger: the trigger's group. */
-  readonly besideTrigger: boolean;
-  readonly button: boolean;
-  readonly control: string;
-  readonly height: number;
-  readonly name: string;
-  readonly width: number;
-  readonly words: string;
-}
-
-/** A bar read in one pass: its box, the controls of its line in their order, and its search
- *  box's room beside the width of its placeholder in the box's own font. */
-interface BarReading {
-  readonly controls: readonly BarControl[];
-  readonly height: number;
-  readonly placeholder: string;
-  readonly placeholderWidth: number;
-  readonly room: number;
-  readonly width: number;
-}
-
-async function readBar(bar: Locator): Promise<BarReading> {
-  return bar.evaluate((node) => {
-    const trigger = node.querySelector('[data-control="panel-trigger"]');
-    const controls = [...node.querySelectorAll<HTMLElement>("input, button, a[href]")]
-      .filter((element) =>
-        element.checkVisibility({ opacityProperty: true, visibilityProperty: true })
-      )
-      .map((element) => {
-        const style = getComputedStyle(element);
-        const box = element.getBoundingClientRect();
-        // The name a screen reader hears: its label, else its words without what it hides.
-        const spoken = element.cloneNode(true) as HTMLElement;
-        for (const hidden of spoken.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
-        const name = (
-          element.getAttribute("aria-label") ??
-          element.getAttribute("title") ??
-          spoken.textContent ??
-          ""
-        ).trim();
-        return {
-          background: style.backgroundColor,
-          border:
-            Number.parseFloat(style.borderTopWidth) +
-            Number.parseFloat(style.borderRightWidth) +
-            Number.parseFloat(style.borderBottomWidth) +
-            Number.parseFloat(style.borderLeftWidth),
-          besideTrigger:
-            trigger !== null &&
-            trigger !== element &&
-            trigger.parentElement === element.parentElement,
-          button: element.tagName === "BUTTON",
-          control:
-            element.getAttribute("data-control") ??
-            (name === "Clear filters" ? "clear" : element.tagName.toLowerCase()),
-          height: box.height,
-          name,
-          width: box.width,
-          words: (element.textContent ?? "").trim(),
-        };
-      });
-    const field = node.querySelector<HTMLInputElement>('input[data-control="search-box"]');
-    let placeholderWidth = 0;
-    let room = 0;
-    if (field !== null) {
-      const style = getComputedStyle(field);
-      const probe = document.createElement("span");
-      probe.textContent = field.placeholder;
-      probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
-      for (const property of [
-        "fontFamily",
-        "fontSize",
-        "fontStyle",
-        "fontWeight",
-        "letterSpacing",
-      ] as const) {
-        probe.style[property] = style[property];
-      }
-      document.body.append(probe);
-      placeholderWidth = probe.getBoundingClientRect().width;
-      probe.remove();
-      room =
-        field.clientWidth -
-        Number.parseFloat(style.paddingLeft) -
-        Number.parseFloat(style.paddingRight);
-    }
-    const box = node.getBoundingClientRect();
-    return {
-      controls,
-      height: box.height,
-      placeholder: field?.placeholder ?? "",
-      placeholderWidth,
-      room,
-      width: box.width,
-    };
-  });
-}
-
-/** A bar as a failure names it: its width and height, and each control with its height. */
-function saidOf(reading: BarReading): string {
-  return `a ${Math.round(reading.width)}px bar ${Math.round(reading.height)}px tall holding ${reading.controls
-    .map((one) => `${one.control} "${one.name}" (${Math.round(one.height)}px)`)
-    .join(", ")}`;
-}
-
-/** Waits until the bar of `name` stands for the narrowings its address put on: **Filters** says
- *  their number, or - on the priorities table's bar, which has no trigger - its chips are drawn.
- *  The chips line reads its chips' widths after the commit that drew them and draws again by that
- *  reading, so two frames more hold both. */
-async function settledBar(page: Page, name: SurfaceName, bar: Locator, count: number) {
-  if (name === "priorities page") await expect(control(bar, CONTROL.chip).first()).toBeVisible();
-  else await expect(control(bar, CONTROL.panelTrigger)).toHaveAccessibleName(`Filters · ${count}`);
-  await nextFrames(page);
-  await nextFrames(page);
-}
-
-/** The chips a wide bar stands for: the ones its line draws, then the ones its `+N more` lists in
- *  the panel it opens, read once the line and `N` add up to `count`; `N` itself is read against
- *  the panel. */
-async function chipsOfBar(
-  page: Page,
-  bar: Locator,
-  count: number,
-  where: string
-): Promise<{ line: string[]; listed: string[] }> {
-  const line = bar.locator("[data-chip-strip]").getByRole("button", { name: REMOVE_CHIP });
-  const more = bar.getByRole("button", { name: MORE_CHIPS });
-  const held = async () =>
-    (await more.count()) === 0
-      ? 0
-      : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
-  await expect
-    .poll(async () => (await line.count()) + (await held()), {
-      message: `${where}: the chips line and its +N more stand for another number than the ${count} narrowings on`,
-    })
-    .toBe(count);
-  const names = (chips: Locator) =>
-    chips.evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? ""));
-  const drawn = await names(line);
-  const n = await held();
-  if (n === 0) return { line: drawn, listed: [] };
-  await more.click();
-  const panel = page.getByRole("dialog", { name: MORE_CHIPS });
-  await expect(panel, `${where}: +N more opened no panel`).toBeVisible();
-  const listed = await names(panel.getByRole("button", { name: REMOVE_CHIP }));
-  expect(listed.length, `${where}: +${n} more lists ${listed.join(", ")}`).toBe(n);
-  await page.keyboard.press("Escape");
-  await expect(panel, `${where}: Escape left the panel of +N more open`).toHaveCount(0);
-  return { line: drawn, listed };
-}
-
-/** `k-one-row`'s reading of one bar at `where`: one line, as tall as its tallest control within
- *  1 px; its first control the search box, with room for its whole placeholder; the page not
- *  scrolled sideways; and in the narrow layout no chip in its line - but the priorities table's one
- *  `+N more` - and **Filters**, the display menu and **More** showing no words but a badge's
- *  number, each with its name. */
-async function expectOneBar(page: Page, name: SurfaceName, bar: Locator, where: string) {
-  const reading = await readBar(bar);
-  const said = saidOf(reading);
-  const tallest = Math.max(...reading.controls.map((one) => one.height));
-  expect(
-    Math.abs(reading.height - tallest),
-    `${where}: ${said}, so it is not one line as tall as its tallest control`
-  ).toBeLessThanOrEqual(1);
-  expect(reading.controls[0]?.control, `${where}: ${said}, its search box not first`).toBe(
-    CONTROL.searchBox
-  );
-  expect(
-    reading.placeholderWidth,
-    `${where}: the search box has ${Math.round(reading.room)}px for its placeholder "${reading.placeholder}", which takes ${Math.round(reading.placeholderWidth)}px in the box's font`
-  ).toBeLessThanOrEqual(reading.room);
-  await assertPageFits(page);
-  if (reading.width >= NARROW_BELOW) return;
-  const chips = reading.controls.filter((one) => one.control === CONTROL.chip);
-  const kept = name === "priorities page" ? chips.filter((one) => MORE_CHIPS.test(one.name)) : [];
-  expect(
-    chips.filter((one) => !kept.includes(one)).map((one) => one.name),
-    `${where}: ${said}, chips in the narrow bar's line`
-  ).toEqual([]);
-  expect(kept.length, `${where}: ${said}, more than one +N more`).toBeLessThanOrEqual(1);
-  for (const one of reading.controls) {
-    if (
-      one.control !== CONTROL.panelTrigger &&
-      one.control !== CONTROL.displayMenu &&
-      one.control !== CONTROL.moreMenu
-    ) {
-      continue;
-    }
-    expect(one.name, `${where}: ${said}, ${one.control} has no name`).not.toBe("");
-    expect(one.words, `${where}: ${said}, ${one.control} shows words in the narrow layout`).toMatch(
-      one.control === CONTROL.panelTrigger ? /^\d*$/ : /^$/
-    );
-  }
-}
-
-// SLOW(>=2s): four pages at each of this project's widths, each read with no narrowing and with six.
-test("k-one-row: each page on the bar's slots draws one bar of one line above its table, its search box first and its placeholder whole @phone @pr", async ({
-  page,
-  scene,
-}, testInfo) => {
-  test.setTimeout(180_000);
-  const phone = isPhoneProject(testInfo);
-  for (const size of widthsOf(page, testInfo)) {
-    if (!phone) await page.setViewportSize(size);
-    for (const name of BAR_PAGES) {
-      const surface = await openSurface(page, name, scene, { phone });
-      const where = `${name} at ${size.width}x${size.height}`;
-      await expect(
-        surface.row,
-        `${where}: not exactly one control bar above its table`
-      ).toHaveCount(1);
-      if (name === "priorities page") {
-        for (const region of PRIORITIES_TABLES) {
-          await expect(
-            controlRow(surface.root.getByRole("region", { exact: true, name: region })),
-            `${where}: not exactly one control bar above the table ${region}`
-          ).toHaveCount(1);
-        }
-      }
-      const strays = await straysBetween(
-        surface.root,
-        await topOf(surface.head),
-        await topOf(surface.firstRow)
-      );
-      expect(
-        strays,
-        `${where}: ${strays.join("; ")} is drawn between the title and the first row, outside the bar`
-      ).toEqual([]);
-      await expectOneBar(page, name, surface.row, `${where}, no narrowing on`);
-      await page.goto(narrowedAddress(name, scene, 6));
-      await settledBar(page, name, surface.row, 6);
-      await expectOneBar(page, name, surface.row, `${where}, six narrowings on`);
-      if (phone && name === "priorities page") {
-        // A bar with chips and no trigger keeps one `+N more` in its narrow line, which holds them.
-        await page.goto(narrowedAddress(name, scene, 2));
-        await settledBar(page, name, surface.row, 2);
-        const line = (await readBar(surface.row)).controls.filter(
-          (one) => one.control === CONTROL.chip
-        );
-        expect(
-          line.map((one) => one.name),
-          `${where}, two narrowings on: the narrow bar's chips`
-        ).toEqual(["2 more filters"]);
-      }
-    }
-  }
-});
-
-/** The controls the Design's table gives each page's bar with no narrowing on, each by what it is
- *  and its name, in the bar's order, in the layout its width gives it: the priorities table's
- *  **New priority** is an action of the line in the wide layout and an item of **More** in the
- *  narrow one, and no other page has an action. */
-function barDesign(name: SurfaceName, narrow: boolean): string[] {
-  if (name === "project Board") return ['search-box "Search issues"', 'panel-trigger "Filters"'];
-  if (name === "priorities page") {
-    return narrow
-      ? [
-          'search-box "Search priorities"',
-          'columns-menu "Columns"',
-          'display-menu "View"',
-          'more-menu "More"',
-        ]
-      : [
-          'search-box "Search priorities"',
-          'bar-action "New priority"',
-          'columns-menu "Columns"',
-          'display-menu "View"',
-        ];
-  }
-  return [
-    'search-box "Search issues"',
-    'panel-trigger "Filters"',
-    'columns-menu "Columns"',
-    'display-menu "View"',
-  ];
-}
-
-// SLOW(>=2s): four pages, each read at rest and under one, two, three or six narrowings.
-test("k-bar: each page on the bar's slots draws its design's controls and no other, quiet at rest, with Filters' count, its chips and its panel's list @phone @pr", async ({
+// SLOW(>=2s): six pages at each of this project's widths, each read with no narrowing and with six.
+test("k-one-row: each page on the bar's slots draws one bar of one line above its list or table, its search box first and its placeholder whole @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
   test.setTimeout(240_000);
+  const phone = isPhoneProject(testInfo);
+  for (const size of widthsOf(page, testInfo)) {
+    if (!phone) await page.setViewportSize(size);
+    for (const name of BAR_PAGES) await expectOneBarOn(page, name, scene, size, phone);
+  }
+});
+
+// SLOW(>=2s): six pages, each read at rest and under one, two, three or six narrowings.
+test("k-bar: each page on the bar's slots draws its design's controls and no other, quiet at rest, with Filters' count, its chips and its panel's list @phone @pr", async ({
+  page,
+  scene,
+}, testInfo) => {
+  test.setTimeout(300_000);
   const phone = isPhoneProject(testInfo);
   const size = phone
     ? (page.viewportSize() ?? { height: 664, width: 390 })
     : { height: 800, width: 1280 };
   if (!phone) await page.setViewportSize(size);
-  for (const name of BAR_PAGES) {
-    const where = `${name} at ${size.width}x${size.height}`;
-    const surface: Surface = await openSurface(page, name, scene, { phone });
-    const bar = surface.row;
-    // At rest: no narrowing, nothing hovered, nothing focused.
-    await page.mouse.move(size.width - 1, size.height - 1);
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    const rest = await readBar(bar);
-    const narrow = rest.width < NARROW_BELOW;
-    const said = `${where}: ${saidOf(rest)}`;
-    expect(
-      rest.controls.map((one) => `${one.control} "${one.name}"`),
-      `${said}, not its design's controls in the ${narrow ? "narrow" : "wide"} layout`
-    ).toEqual(barDesign(name, narrow));
-    const painted = rest.controls.filter(
-      (one) => one.button && (one.border !== 0 || !NO_FILL.test(one.background))
-    );
-    expect(
-      painted.map(
-        (one) => `${one.control} "${one.name}": ${one.border}px border, ${one.background}`
-      ),
-      `${said}, buttons with a border or a fill at rest`
-    ).toEqual([]);
-    if (phone) {
-      const small = rest.controls.filter(
-        (one) => one.button && (one.width < 43.5 || one.height < 43.5)
-      );
-      expect(
-        small.map(
-          (one) =>
-            `${one.control} "${one.name}" ${Math.round(one.width)}x${Math.round(one.height)}px`
-        ),
-        `${said}, buttons under the 44 px floor`
-      ).toEqual([]);
-    }
-    if (narrow && name === "priorities page") {
-      await control(bar, CONTROL.moreMenu).click();
-      await expect(
-        page.getByRole("menuitem", { name: "New priority" }),
-        `${where}: More holds no New priority`
-      ).toBeVisible();
-      await page.keyboard.press("Escape");
-    }
-    if (name === "priorities page") {
-      // No trigger: the chips stand in the line from the first, behind one `+N more`.
-      if (narrow) continue;
-      await page.goto(narrowedAddress(name, scene, 6));
-      await settledBar(page, name, bar, 6);
-      const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
-      expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
-      continue;
-    }
-    const trigger = control(bar, CONTROL.panelTrigger);
-
-    // One narrowing: Filters on a tint, its count in its name, and - on the List's bar in the wide
-    // layout - Clear filters beside it in its group, a button of its own. The Board has none (D24).
-    await page.goto(narrowedAddress(name, scene, 1));
-    await settledBar(page, name, bar, 1);
-    const one = await readBar(bar);
-    const tinted = one.controls.find((each) => each.control === CONTROL.panelTrigger);
-    expect(tinted?.background, `${where}, one narrowing on: Filters has no fill`).not.toMatch(
-      NO_FILL
-    );
-    const clear = one.controls.filter((each) => each.control === "clear");
-    if (narrow || name === "project Board") {
-      expect(clear.length, `${where}, one narrowing on: ${saidOf(one)}, a Clear filters`).toBe(0);
-    } else {
-      const at = one.controls.findIndex((each) => each.control === CONTROL.panelTrigger);
-      expect(
-        one.controls[at + 1]?.control,
-        `${where}, one narrowing on: ${saidOf(one)}, no Clear filters after Filters`
-      ).toBe("clear");
-      expect(clear[0]?.besideTrigger, `${where}: Clear filters is not in Filters' group`).toBe(
-        true
-      );
-    }
-
-    // The List's flag and column filter: counted as two, each listed at the panel's top with the
-    // control that removes it.
-    if (name === "project List") {
-      await page.goto(`/projects/${scene.project}/issues?needs-you=1&label=frontend`);
-      await settledBar(page, name, bar, 2);
-      const panel = await openFilterPanel(page, surface.root);
-      for (const chip of ["Needs you", "Label: frontend"]) {
-        await expect(
-          panel.getByRole("button", { exact: true, name: `Remove ${chip} filter` }),
-          `${where}: the Filters panel does not list ${chip}`
-        ).toHaveCount(1);
-      }
-      await closeControlPanel(surface.root);
-    }
-
-    // Six at 1280x800, three at the phone width: in the wide layout the chips that do not fit
-    // stand behind one `+N more`, and in the narrow one none stands in the line, Filters' badge
-    // says their number and no Clear filters is drawn; at every width the panel lists them all.
-    const count = phone ? 3 : 6;
-    await page.goto(narrowedAddress(name, scene, count));
-    await settledBar(page, name, bar, count);
-    const many = await readBar(bar);
-    const at = `${where}, ${count} narrowings on`;
-    if (many.width < NARROW_BELOW) {
-      expect(
-        many.controls.find((each) => each.control === CONTROL.panelTrigger)?.words,
-        `${at}: ${saidOf(many)}, Filters' badge`
-      ).toBe(String(count));
-      expect(
-        many.controls.filter((each) => each.control === CONTROL.chip || each.control === "clear"),
-        `${at}: ${saidOf(many)}, chips or Clear filters in the narrow line`
-      ).toEqual([]);
-    } else {
-      const { line, listed } = await chipsOfBar(page, bar, count, at);
-      expect(new Set([...line, ...listed]).size, `${at}: ${count} chips, each once`).toBe(count);
-    }
-    const panel = await openFilterPanel(page, surface.root);
-    await expect(
-      panel.getByRole("button", { name: REMOVE_CHIP }),
-      `${at}: the Filters panel's top does not list every narrowing with its remove control`
-    ).toHaveCount(count);
-    await closeControlPanel(surface.root);
-    await expect(trigger).toHaveAttribute("aria-expanded", "false");
-  }
+  for (const name of BAR_PAGES) await expectBarDesign(page, name, scene, size, phone);
 });
 
-// SLOW(>=2s): four pages at each of this project's widths, each driven through four acts.
+// SLOW(>=2s): six pages at each of this project's widths, each driven through four acts.
 test("k-no-growth: no narrowing, panel, display menu or selection moves the first row of a page on the bar's slots, in the layout its bar's width gives @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
-    for (const name of BAR_PAGES) {
-      const surface = await openSurface(page, name, scene, { phone });
-      const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
-      const where = `${name} at ${size.width}x${size.height}, its bar ${Math.round(width)}px wide (the ${width < NARROW_BELOW ? "narrow" : "wide"} layout)`;
-      await resetScroll(page, surface.firstRow);
-      const first = await topOf(surface.firstRow);
-      // One narrowing that draws a chip: the List's and the Board's Needs you, a priority's
-      // Unclaimed (its one issue has no ask), and on the priorities table, which has no trigger,
-      // the Owner pick its column filter writes into the address.
-      const narrowing =
-        name === "priorities page"
-          ? async () => {
-              await page.goto(narrowedAddress(name, scene, 1));
-              await settledBar(page, name, surface.row, 1);
-            }
-          : name === "priority page"
-            ? () => pickIssueFlag(page, "Unclaimed")
-            : surface.narrow;
-      for (const [act, run] of [
-        ["one narrowing applied", narrowing],
-        ["the filter panel opened", surface.panel],
-        ["the display menu opened", surface.display],
-        ["a row selected", surface.select],
-      ] as const) {
-        if (run === undefined) continue;
-        await run();
-        await expect(surface.firstRow, `${where}: ${act} left no first row`).toBeVisible();
-        await resetScroll(page, surface.firstRow);
-        const after = await topOf(surface.firstRow);
-        expect(
-          Math.abs(after - first),
-          `${where}: ${act} moved the first row from ${Math.round(first)}px to ${Math.round(after)}px`
-        ).toBeLessThanOrEqual(1);
-        if (run === surface.panel) {
-          await page.keyboard.press("Escape");
-          await expect(
-            control(surface.row, CONTROL.panelTrigger),
-            `${where}: Escape left the filter panel open`
-          ).toHaveAttribute("aria-expanded", "false");
-        }
-      }
-    }
+    for (const name of BAR_PAGES) await expectNoGrowth(page, name, scene, size, phone);
   }
 });

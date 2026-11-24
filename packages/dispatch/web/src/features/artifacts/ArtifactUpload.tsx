@@ -661,10 +661,9 @@ export function useArtifactUpload(
 }
 
 /** The upload control of a strip: its button, and, while a file is staged, that file's name, its
- *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
- *  host already shows the refusal on - the one line a closed issue's strip shows for every control
- *  in it; without it the row shows its own. The two presses are held while the upload is out
- *  (`heldPress`). */
+ *  summary and the two presses that store or discard it (`ArtifactUploadStaging`).
+ *  `refusalShownBy` is the id of a line the host already shows the refusal on; without it the row
+ *  shows its own. */
 export function ArtifactUploadRow({
   refusalShownBy,
   upload,
@@ -673,59 +672,66 @@ export function ArtifactUploadRow({
   readonly upload: ArtifactUpload;
 }): ReactNode {
   const ownRefusalId = useId();
+  if (upload.pendingFile !== null) return <ArtifactUploadStaging upload={upload} />;
   return (
     // The host owns the strip this sits in, so the row carries no divider of its own: idle it
     // is one button beside the filter, staging a file it takes the line.
-    <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 ${upload.pendingFile === null ? "shrink-0" : "w-full"}`}
-    >
-      {upload.pendingFile === null ? (
-        <>
-          <RefusableButton
-            className="min-h-11 shrink-0"
-            look="secondary-compact"
-            onPress={upload.openPicker}
-            refusal={upload.refusal}
-            refusalShownBy={upload.refusal === null ? undefined : (refusalShownBy ?? ownRefusalId)}
-          >
-            Upload
-          </RefusableButton>
-          {upload.refusal === null || refusalShownBy !== undefined ? null : (
-            <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
-              {upload.refusal}
-            </span>
-          )}
-        </>
-      ) : (
-        <>
-          <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
-            {upload.pendingFile.name}
-          </span>
-          <input
-            aria-label="Summary (optional)"
-            className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-            disabled={upload.summaryHeld}
-            onChange={(event) => upload.setSummary(event.target.value)}
-            placeholder="Summary (optional)"
-            value={upload.summary}
-          />
-          <button
-            className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            {...heldPress(upload.isPending, upload.confirm)}
-            type="button"
-          >
-            Upload
-          </button>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            {...heldPress(upload.isPending, upload.cancel)}
-            type="button"
-          >
-            Cancel
-          </button>
-        </>
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
+      <RefusableButton
+        className="min-h-11 shrink-0"
+        look="secondary-compact"
+        onPress={upload.openPicker}
+        refusal={upload.refusal}
+        refusalShownBy={upload.refusal === null ? undefined : (refusalShownBy ?? ownRefusalId)}
+      >
+        Upload
+      </RefusableButton>
+      {upload.refusal === null || refusalShownBy !== undefined ? null : (
+        <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
+          {upload.refusal}
+        </span>
       )}
       <ArtifactUploadStatus upload={upload} />
+    </div>
+  );
+}
+
+/** A staged file - its name, its summary and the two presses that store or discard it - and what
+ *  became of the last upload (`ArtifactUploadStatus`), on a line of their own: under the
+ *  Artifacts tab's control bar, whose **Upload** action picks the file, or in place of
+ *  `ArtifactUploadRow`'s button. Nothing is drawn while no file is staged and no upload has
+ *  anything to say. The two presses are held while the upload is out (`heldPress`). */
+export function ArtifactUploadStaging({ upload }: { readonly upload: ArtifactUpload }): ReactNode {
+  const status = <ArtifactUploadStatus upload={upload} />;
+  if (upload.pendingFile === null) return status;
+  return (
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+      <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
+        {upload.pendingFile.name}
+      </span>
+      <input
+        aria-label="Summary (optional)"
+        className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+        disabled={upload.summaryHeld}
+        onChange={(event) => upload.setSummary(event.target.value)}
+        placeholder="Summary (optional)"
+        value={upload.summary}
+      />
+      <button
+        className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+        {...heldPress(upload.isPending, upload.confirm)}
+        type="button"
+      >
+        Upload
+      </button>
+      <button
+        className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
+        {...heldPress(upload.isPending, upload.cancel)}
+        type="button"
+      >
+        Cancel
+      </button>
+      {status}
     </div>
   );
 }

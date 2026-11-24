@@ -7,12 +7,10 @@ import { queryString } from "../../api/paths";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
-import { filterChips } from "../../components/filter-chips";
+import type { FilterChip } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
-import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSettled } from "../../hooks/useSettled";
 import {
@@ -433,9 +431,10 @@ function Facet({
 }
 
 /**
- * The one row the page's controls sit in: the search box, the one trigger over the facets, and
- * a chip for every value that is on, so every facet can be set and taken
- * off from this row in either view.
+ * The control bar the page's controls sit in (`ControlRow`), handed each control as its props:
+ * the search box, **Filter** over the facets, and a chip for every value that is on, which the
+ * trigger's panel lists at its top too, so every facet can be set and taken off from this bar in
+ * either view. The page has no **Clear filters**, as it had none before the bar.
  *
  * The panel holds the four facets that are no column of the list. While the list is drawn
  * (`columnsDrawn`, the List view) the other five sit on the headers of the columns they narrow,
@@ -448,7 +447,7 @@ function Facet({
  * Each facet is counted by Dispatch with every other facet applied and its own ignored, so the
  * counts here are the answer's, never the page's. Under Parent agent's old place, **Edit
  * groups** opened the session-groups editor; it sits at the foot of this panel now, since that
- * facet is a column.
+ * facet is a column. The editor it opens stands under the bar, outside it.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
@@ -528,7 +527,7 @@ function DeliveryControls({
     }
     return value;
   };
-  const chosen = FACETS.flatMap(({ key, label }) =>
+  const chosen: FilterChip[] = FACETS.flatMap(({ key, label }) =>
     filters[key].map((value) => ({
       key: `${key}:${value}`,
       label: `${label}: ${valueLabel(key, value)}`,
@@ -537,29 +536,18 @@ function DeliveryControls({
   );
   const inPanel = columnsDrawn ? PANEL_FACETS : FACETS;
   return (
-    <ControlRow
-      chips={filterChips(chosen, "compact")}
-      search={
-        <SearchBox
-          className="w-full"
-          label="Search pull requests"
-          onChange={(value) => onFilters({ ...filters, search: value })}
-          placeholder="Title or PR id"
-          size="compact"
-          value={filters.search}
-        />
-      }
-      size="compact"
-      trigger={
-        <PanelTrigger
-          count={chosen.length}
-          label="Filter"
-          onOpenChange={setPanelOpen}
-          open={panelOpen}
-          size="compact"
-          stacked
-        >
-          {() => (
+    <>
+      <ControlRow
+        chips={chosen}
+        search={{
+          label: "Search pull requests",
+          onChange: (value) => onFilters({ ...filters, search: value }),
+          placeholder: "Title or PR id",
+          value: filters.search,
+        }}
+        size="compact"
+        trigger={{
+          children: () => (
             <>
               {inPanel.map(({ key, label }) => (
                 <Facet
@@ -583,10 +571,16 @@ function DeliveryControls({
                 </button>
               )}
             </>
-          )}
-        </PanelTrigger>
-      }
-    >
+          ),
+          count: chosen.length,
+          label: "Filter",
+          onOpenChange: setPanelOpen,
+          open: panelOpen,
+          stacked: true,
+        }}
+      />
+      {/* What Edit groups opens stands under the bar, outside it: a dialog at the window's
+          right edge, so it takes no room in the page's column. */}
       {editingGroups && data !== undefined ? (
         <SessionGroupsEditor
           counts={data.session_pr_counts ?? {}}
@@ -595,7 +589,7 @@ function DeliveryControls({
           titles={data.session_titles ?? {}}
         />
       ) : null}
-    </ControlRow>
+    </>
   );
 }
 
