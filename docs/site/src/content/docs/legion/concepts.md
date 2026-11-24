@@ -53,10 +53,11 @@ Each token is minted on that owner's installation with that App's permissions: t
 App's write set for the implementer, the merger and a role of the issue's plan of the type
 implementation, the set of the App its `github_app` names for a role of the deployment that the
 issue's plan does not define, and the review App's review set for every other role.
-While the architect acts as another role, its bundle is that role's App instead: at a step of its
-own plan (one whose key is `owner`), the step's role; at its retro where the task's last
-implementation step is its own, that step's role; and while a merge forward the daemon asked of it
-has not ended, the implementer, since that merge is the implementer's act.
+While the architect acts as another role, its bundle is that role's App instead: while a merge
+forward the daemon asked of it has not ended, the implementer, whatever step or retro it does then,
+since that merge is the implementer's act; else at a step of its own plan (one whose key is
+`owner`), the step's role, and at its retro where the task's last implementation step is its own,
+that step's role.
 Everywhere else, and always while the issue is held, it is the architect's own App, and the end of
 each such act writes that App back, but for a linger of its tree or a rename collision that deletes
 its pull request record, after which the architect's next launch writes it.
