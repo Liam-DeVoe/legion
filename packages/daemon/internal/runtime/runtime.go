@@ -862,8 +862,9 @@ func (id GitIdentity) Env() map[string]string {
 
 // ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
 // other work than its stored role's, and false where it gives none: the owner's step is such work,
-// and so is the owner's retro of a task whose last implementation step was its own, which the
-// daemon's owner function decides. A runtime is given one in its options (nil by default), and
+// and so are the owner's retro of a task whose last implementation step was its own and a merge
+// forward asked of the owner, an act as the implementer, which the daemon's owner function decides.
+// A runtime is given one in its options (nil by default), and
 // SlotRole, the one function that answers a slot's App role, reads it.
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
@@ -890,7 +891,8 @@ func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.
 }
 
 // SlotCredentials writes and reads the gh credential of a slot, which the daemon asks of a runtime
-// before it tells an owner a step or a retro whose App the owner's slot must hold, and at its end.
+// before it tells an owner a step, a retro or a merge-forward act whose App the owner's slot must
+// hold, and at the end of each.
 // Both runtimes answer it.
 type SlotCredentials interface {
 	// WriteSlotCredential brings the slot of token to the gh credential of the App of the role

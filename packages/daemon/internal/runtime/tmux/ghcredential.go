@@ -68,11 +68,12 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // has nothing to refresh.
 //
 // The walk builds each bundle once (appauth.Bundles), held by the App role the pane works as on
-// its issue (paneRole, runtime.SlotRole: its claim's role, or the step's while the architect does
-// a step of its own; appauth.AppRoleFor), the role itself where it is none of Legion's, and the
-// pane's repository, and each build opens with a live read of every page of its App's
-// installations under a fresh JWT (appauth.GitHubCredential), so the panes of one issue whose
-// roles are Legion's and run as one App cost the tick one
+// its issue (paneRole, runtime.SlotRole: its claim's role, or the role the architect acts as, the
+// step's while it does a step of its own or the retro of one, and the implementer while a merge
+// forward asked of it has not ended; appauth.AppRoleFor), the role itself where it is none of
+// Legion's, and the pane's repository, and each build opens with a live read of every page of
+// its App's installations under a fresh JWT (appauth.GitHubCredential), so the panes of one
+// issue whose roles are Legion's and run as one App cost the tick one
 // read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
 // reads GitHub for what its bundles hold (INFRA-2543 R2).
 //
