@@ -1471,6 +1471,45 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   expect(focusedName()).toBe("Select CORE-2");
 });
 
+// INFRA-3135 round 26, the List's twin of `focus-place.test.ts`'s (dr): a Move with only closed
+// issues marked writes nothing - the List answers "Only open issues can change epic." - and
+// Move's own press leaves it held with no epic staged (`issues-table-page.tsx`). A hold that only
+// says there is nothing to do keeps no press live, so a frame and a task on, a live update that
+// takes the marked issues off the list and empties the bar is no doing of the reader's: the bar
+// hands the focus nowhere, and it stays on the page's body, as after a Move whose writes were
+// refused.
+test("a Move with only closed issues marked keeps no press live, and a live update that then empties the bar leaves the focus on the body", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockRejectedValue(new Error("A refused Move writes nothing"));
+  restores.push(() => send.mockRestore());
+  const rows = [
+    issue("CORE-1", { labels: ["epic"], title: "Target" }),
+    issue("CORE-2", { status: "done" }),
+    issue("CORE-3", { status: "done" }),
+    issue("CORE-4"),
+  ];
+  const { client } = table(rows, "?nofilter=1", { inMain: true });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  await user.click(within(bar).getByRole("button", { name: pickNamed("Move to epic") }));
+  await user.click(screen.getByRole("option", { name: "Target" }));
+  const move = within(bar).getByRole("button", { name: /^Move$/ });
+  act(() => move.focus());
+  await user.keyboard("{Enter}");
+  await screen.findByText(/^Only open issues can change epic\./);
+  expect(move.getAttribute("aria-disabled")).toBe("true");
+  expect(focusedName()).toBe("Move");
+  await afterFrameAndTasks();
+  // Another person's live update: the listing no longer holds the two marked issues.
+  rows.splice(1, 2);
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await afterFrameAndTasks();
+  expect(focusedName()).toBe("the body");
+  expect(send).not.toHaveBeenCalled();
+});
+
 /** React's switch for its warning about an update outside `act`, which Testing Library's own
  *  waits turn off while they let the page's tasks run. */
 const reactGlobals = globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean };

@@ -434,10 +434,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
-  // The panel's sticky text box at its top, and its sticky foot at its bottom - a multi-select's
-  // Clear, a menu's line of keys - which a row scrolled into sight is kept clear of.
-  const searchHostRef = useRef<HTMLDivElement>(null);
-  const footHostRef = useRef<HTMLDivElement>(null);
+  // The panel's sticky text box at its top, and its sticky foot at its bottom while one is drawn
+  // - a multi-select's Clear, a menu's line of keys: the rows scroll under both.
+  const headRef = useRef<HTMLDivElement>(null);
+  const footRef = useRef<HTMLDivElement>(null);
   // What an open reads of this render: the value it starts on, and the options a move key that
   // opened it steps through. A host may build its options only while the list stands open (an
   // ask's hand-on), so the step is taken in the open render's options, not the closed trigger's.
@@ -608,24 +608,26 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   }, [open]);
 
   // The highlighted row stays in sight in the panel, whatever moved the highlight - the open on
-  // the value picked, a move key on the closed trigger, an arrow in the text box, a search - since
-  // the panel holds about five rows and the highlight is drawn on the row alone: End, Page Down
-  // or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter then picks
-  // unseen. `nearest` scrolls only as far as the row needs to stand inside the panel's box, where
-  // the sticky text box at its top, or the sticky foot at its bottom (a multi-select's Clear, a
-  // menu's keys), can still stand over it, so the panel scrolls on until the row stands clear of
-  // both. Laid out before the browser paints, so the row is never drawn out of sight first.
+  // the value picked, a move key on the closed trigger, an arrow, Home or End in the text box, a
+  // search - since the panel holds about five rows and the highlight is drawn on the row alone:
+  // End, Page Down or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter
+  // then picks unseen. The panel scrolls the least that shows the row whole between the sticky
+  // text box and the sticky foot, so a row already whole scrolls nothing. Only the panel's own box
+  // scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which scrolls the window
+  // too. Laid out before the browser paints, so the row is never drawn out of sight first.
   useLayoutEffect(() => {
     const row = activeId === undefined ? null : document.getElementById(activeId);
-    const panel = document.getElementById(panelId);
-    if (row === null || panel === null) return;
-    row.scrollIntoView({ block: "nearest" });
+    const head = headRef.current;
+    const box = head?.parentElement ?? null;
+    if (row === null || head === null || box === null) return;
+    const shownTop = head.getBoundingClientRect().bottom;
+    const shownBottom =
+      footRef.current?.getBoundingClientRect().top ??
+      box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
     const { bottom, top } = row.getBoundingClientRect();
-    const underSearch = (searchHostRef.current?.getBoundingClientRect().bottom ?? top) - top;
-    if (underSearch > 0) panel.scrollTop -= underSearch;
-    const underFoot = bottom - (footHostRef.current?.getBoundingClientRect().top ?? bottom);
-    if (underFoot > 0) panel.scrollTop += underFoot;
-  }, [activeId, panelId]);
+    if (top < shownTop) box.scrollTop -= shownTop - top;
+    else if (bottom > shownBottom) box.scrollTop += bottom - shownBottom;
+  }, [activeId]);
 
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
   // ArrowDown and ArrowUp, with Alt or without, open it as a click does, on the value picked, and
@@ -742,7 +744,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       return;
     }
     // The arrows move the highlight, and in a menu Home and End do too, where they would move the
-    // caret; ArrowLeft and ArrowRight stay the caret's.
+    // caret; ArrowLeft and ArrowRight stay the caret's. Each scrolls the list the least that shows
+    // the option it marks (the layout effect above).
     if (
       event.key === "ArrowDown" ||
       event.key === "ArrowUp" ||
@@ -909,7 +912,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}
-            ref={searchHostRef}
+            ref={headRef}
           >
             <input
               aria-activedescendant={activeId}
@@ -1047,7 +1050,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             <div
               aria-hidden="true"
               className={`sticky bottom-0 border-t px-3 py-1.5 text-xs ${tooltips ? `${card} ${textMutedOnSurface}` : `${ON_PAGE.panel} ${ON_PAGE.detail}`}`}
-              ref={footHostRef}
+              ref={footRef}
             >
               ↑ ↓ Home End to move · Enter{menuDigits === "" ? "" : ` or ${menuDigits}`} to choose ·
               Esc to close
@@ -1056,7 +1059,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           {props.mode === "single" || selected.length === 0 ? null : (
             <div
               className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}
-              ref={footHostRef}
+              ref={footRef}
             >
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}

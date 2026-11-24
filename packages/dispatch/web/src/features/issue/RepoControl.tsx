@@ -36,7 +36,7 @@ import { propertyControl } from "./property-control";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The option of the shared list that clears the issue's own repository, so it resolves to its
- *  nearest ancestor's, else to the project's default, again. */
+ *  nearest ancestor's in its own project, else to the project's default, again. */
 const INHERIT = "";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
@@ -167,9 +167,10 @@ export function RepoControl({
 
 /**
  * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
- * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
- * not its own; "No repository" when none resolves), which is the trigger of the shared list's
- * single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is, and ends in the
+ * issue resolves to (its own, else its nearest ancestor's in its own project, else the project's
+ * default, muted when not its own; "No repository" when none resolves), which is the trigger of
+ * the shared list's single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is,
+ * and ends in the
  * shared chevron, since the control it replaced was a visible text box. Labelled
  * `Repository of <KEY>`. The badge is hidden from assistive technology; the trigger's name goes on
  * from its label to the words that read what it shows: the repository,

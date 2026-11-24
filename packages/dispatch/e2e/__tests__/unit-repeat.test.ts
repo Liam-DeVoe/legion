@@ -47,9 +47,6 @@ const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 
 const SEED = 4242;
 
-/** How many runs of each file a stopped leg (`stoppedLeg`) asks the tool for. */
-const STOPPED_LEG_RERUNS = 2;
-
 /** Passes its first run and fails every later one. */
 const failsAfterFirstRun = `import { describe, expect, test } from "bun:test";
 
@@ -914,18 +911,18 @@ const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
- *  tool there as the harness lane with `STOPPED_LEG_RERUNS` reruns, and sends the tool alone the
- *  SIGTERM the step's `timeout` sends, once every one of `marks` exists, or once the tool has
- *  ended first. The driver runs as its tree's subreaper (`asSubreaper`), and once the tool has
- *  ended it lists what the leg left (`leftBehind`): no read of the machine's other processes, and
- *  no wait for one to die. `bounds` are the tool's two stop bounds, which the caller sets so that
- *  its verdict rests on its marks and not on how long Bun or a names run takes. `how.hold`, where
- *  given, is a preload of the tool's own process, and a file the driver writes once it has sent
- *  the SIGTERM, which that preload can wait for. `how.killFrom`, where given, is a file that holds
- *  a pid: the driver sends that process a SIGKILL in place of the SIGTERM to the tool, as the
- *  out-of-memory killer would, and the tool hears of no stop. `how.doneRuns`, where given, is how
- *  many runs the progress file must show ended (`done`) before the driver sends either signal, so
- *  that a file the row wants finished at that moment is finished, whatever the machine's load. */
+ *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
+ *  step's `timeout` sends, once every one of `marks` exists, or once the tool has ended first.
+ *  The driver runs as its tree's subreaper (`asSubreaper`), and once the tool has ended it lists
+ *  what the leg left (`leftBehind`): no read of the machine's other processes, and no wait for
+ *  one to die. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
+ *  rests on its marks and not on how long Bun or a names run takes. `how.hold`, where given, is a
+ *  preload of the tool's own process, and a file the driver writes once it has sent the SIGTERM,
+ *  which that preload can wait for. `how.killFrom`, where given, is a file that holds a pid: the
+ *  driver sends that process a SIGKILL in place of the SIGTERM to the tool, as the out-of-memory
+ *  killer would, and the tool hears of no stop. `how.doneRuns`, where given, is how many runs the
+ *  progress file must show ended (`done`) before the driver sends either signal, so that a file
+ *  the row wants finished at that moment is finished, whatever the machine's load. */
 async function stoppedLeg(
   directory: string,
   files: Readonly<Record<string, string>>,
@@ -974,7 +971,7 @@ async function stoppedLeg(
       "--lane",
       "harness",
       "--reruns",
-      String(STOPPED_LEG_RERUNS),
+      "2",
       "--seed",
       String(SEED),
       "--out",
@@ -1235,17 +1232,18 @@ driverRow(
   rowLimit("stoppedLeg")
 );
 
-/** A test file of one row that writes its worker's pid, `process.pid`, into `pidFile`, whole, and
- *  then spins without yielding. Bun 1.4.4 under `--parallel=2` runs a lane of one file in its
- *  test process itself, and starts workers (`bun test --test-worker`) only for two files or more
- *  (measured on 2026-11-21), so a row that kills one puts `besideIt` beside it. */
-function killedRow(pidFile: string): string {
+/** A test file of one row that writes the pid `of` gives into `pidFile`, whole, and then spins
+ *  without yielding: `process.pid` for its worker, `process.ppid` for Bun's test process. Bun
+ *  1.4.4 under `--parallel=2` runs a lane of one file in its test process itself, and starts
+ *  workers (`bun test --test-worker`) only for two files or more (measured on 2026-11-21), so a
+ *  row that kills one puts `besideIt` beside it. */
+function killedRow(pidFile: string, of: "process.pid" | "process.ppid"): string {
   const written = `${pidFile}.writing`;
   return (
     'import { test } from "bun:test";\n' +
     'import { renameSync, writeFileSync } from "node:fs";\n\n' +
     'test("is killed", () => {\n' +
-    `  writeFileSync(${JSON.stringify(written)}, String(process.pid));\n` +
+    `  writeFileSync(${JSON.stringify(written)}, String(${of}));\n` +
     `  renameSync(${JSON.stringify(written)}, ${JSON.stringify(pidFile)});\n` +
     "  for (;;) {}\n" +
     "});\n"
@@ -1254,40 +1252,6 @@ function killedRow(pidFile: string): string {
 
 /** The second file of a lane whose row kills a worker or Bun's test process. */
 const besideIt = 'import { test } from "bun:test";\n\ntest("beside it", () => {});\n';
-
-/** As `killedRow`, but the row writes `process.ppid`, Bun's test process, and first waits, 10 ms
- *  at a time, until every run of `beside`, the lane's other file, has ended, as the progress file
- *  the tool's preload writes says (`DISPATCH_UNIT_REPEAT_PROGRESS`: a `done` line of that file's
- *  load for each of `STOPPED_LEG_RERUNS` runs). Bun's test process, killed, ends every worker with
- *  it, and the tool names each file whose runs had not all ended (`runningAt`), so a `besideIt`
- *  that had not yet loaded when the row wrote its pid is named too, as `loading`. That is a true
- *  report of a race the row did not mean to make: on a loaded runner the other worker can still
- *  be loading when the driver sends its SIGKILL, 50 ms after the pid is written (CI runs
- *  45299115821 and 45301348753 of cybermonklabs/legion#3729). Waiting for it leaves the killed
- *  row's file the only one in a run, whatever the runner's load. */
-function killedAfterRow(pidFile: string, beside: string): string {
-  const written = `${pidFile}.writing`;
-  return (
-    'import { test } from "bun:test";\n' +
-    'import { readFileSync, renameSync, writeFileSync } from "node:fs";\n\n' +
-    "const besideEnded = () => {\n" +
-    '  const lines = readFileSync(process.env.DISPATCH_UNIT_REPEAT_PROGRESS ?? "", "utf8")\n' +
-    '    .split("\\n")\n' +
-    '    .filter((line) => line !== "")\n' +
-    "    .map((line) => JSON.parse(line));\n" +
-    "  const loads = new Set(\n" +
-    `    lines.filter((line) => line.event === "load" && line.file === ${JSON.stringify(beside)}).map((line) => line.load)\n` +
-    "  );\n" +
-    '  return lines.filter((line) => line.event === "done" && loads.has(line.load)).length;\n' +
-    "};\n\n" +
-    'test("is killed", () => {\n' +
-    `  while (besideEnded() < ${STOPPED_LEG_RERUNS}) Bun.sleepSync(10);\n` +
-    `  writeFileSync(${JSON.stringify(written)}, String(process.ppid));\n` +
-    `  renameSync(${JSON.stringify(written)}, ${JSON.stringify(pidFile)});\n` +
-    "  for (;;) {}\n" +
-    "});\n"
-  );
-}
 
 driverRow(
   "a worker killed in a row names its file and row, and the progress file stays",
@@ -1300,7 +1264,7 @@ driverRow(
     const pid = join(directory, "worker-pid");
     const { code, stdout, report, left } = await stoppedLeg(
       directory,
-      { "killed.test.ts": killedRow(pid), "beside.test.ts": besideIt },
+      { "killed.test.ts": killedRow(pid, "process.pid"), "beside.test.ts": besideIt },
       [pid],
       { graceMs: 120_000, namesMs: 120_000 },
       { killFrom: pid }
@@ -1335,9 +1299,8 @@ driverRow(
   async () => {
     // The lie: when Bun's test process itself is killed from outside, Bun writes no junit file,
     // and the report says only that: no file and no row is named, and the progress file that
-    // records the row is deleted. Here the row waits for every run of the file beside it to end
-    // (`killedAfterRow`), writes its parent's pid, Bun's test process, and spins; the driver sends
-    // that process a SIGKILL, and the tool no signal at all.
+    // records the row is deleted. Here the row writes its parent's pid, Bun's test process, and
+    // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
     //
     // Killing Bun's test process ends every worker, so each file a worker was still in is cut
     // short, and the report names it: beside.test.ts too, as "loading", where its worker had not
@@ -1349,10 +1312,7 @@ driverRow(
     const pid = join(directory, "test-process-pid");
     const { code, report, left } = await stoppedLeg(
       directory,
-      {
-        "killed.test.ts": killedAfterRow(pid, "e2e/__tests__/beside.test.ts"),
-        "beside.test.ts": besideIt,
-      },
+      { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
       [pid],
       { graceMs: 120_000, namesMs: 120_000 },
       { killFrom: pid, doneRuns: 2 }

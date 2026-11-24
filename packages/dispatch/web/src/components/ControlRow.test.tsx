@@ -23,11 +23,12 @@ import { PanelTrigger } from "./PanelTrigger";
  */
 const HEIGHT_RULE_CSS =
   ".flex{display:flex}.flex-col{flex-direction:column}.flex-wrap{flex-wrap:wrap}.flex-nowrap{flex-wrap:nowrap}.shrink-0{flex-shrink:0}.flex-1{flex:1 1 0%}.min-w-0{min-width:0}.gap-2{gap:0.5rem}.overflow-x-auto{overflow-x:auto}" +
-  String.raw`.\[\&\>\*\]\:shrink-0>*{flex-shrink:0}`;
-/** Tailwind's `sm:` utilities as they apply from 640 px up, which is where R1's two widths
- *  (1440 and 1280) are. Below it the first line and the page's own slot wrap, so that a phone's
- *  search box is a search box and a phone's own controls stay on the screen. */
-const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}.sm\:shrink-0{flex-shrink:0}`;
+  String.raw`.\[\&\>\*\]\:shrink-0>*{flex-shrink:0}.\@container{container-type:inline-size}`;
+/** The row's own container variants (`@min-[40rem]:`) as they apply where the row's box is 40rem
+ *  (640 px) wide or more. In a narrower row - a phone's, or the Inbox drawer's at any window -
+ *  the first line and the page's own slot wrap, so that a search box is a search box and the
+ *  page's own controls stay inside the row. */
+const WIDE_ROW_CSS = String.raw`.\@min-\[40rem\]\:flex-nowrap{flex-wrap:nowrap}.\@min-\[40rem\]\:shrink-0{flex-shrink:0}`;
 
 function Row(props: Partial<ControlRowProps>) {
   return (
@@ -106,14 +107,17 @@ test("the chips line is drawn only while a chip is on, so a row with none is its
   }
 });
 
-test("from the sm breakpoint up the first line is one line, and however many chips are on they take one more", () => {
-  const removeCss = withCss(`${HEIGHT_RULE_CSS}${DESKTOP_CSS}`);
+test("in a row 40rem wide or more the first line is one line, and however many chips are on they take one more", () => {
+  const removeCss = withCss(`${HEIGHT_RULE_CSS}${WIDE_ROW_CSS}`);
   const view = render(<Row />);
   try {
     // The row is a column of its lines, the row's 8 px gap apart.
     expect(getComputedStyle(row()).flexDirection).toBe("column");
     expect(getComputedStyle(row()).gap).toBe("0.5rem");
-    // The first line is one line from `sm` up: no slot of it is ever pushed under another.
+    // The row is the container its first line and slots read, so they switch on the row's own
+    // width and not the window's: the Inbox drawer's row is 415 px wide in a 1440 px window.
+    expect(getComputedStyle(row()).getPropertyValue("container-type")).toBe("inline-size");
+    // The first line is one line in a row that wide: no slot of it is ever pushed under another.
     const [first, chipsLine] = lines();
     expect(getComputedStyle(first).flexWrap).toBe("nowrap");
     expect(getComputedStyle(first).gap).toBe("0.5rem");
@@ -156,15 +160,16 @@ test("from the sm breakpoint up the first line is one line, and however many chi
   }
 });
 
-test("below the phone breakpoint the first line and the page's own controls wrap onto the screen", () => {
-  // The same utilities with no `sm:` rule applied, which is a window narrower than 640 px.
+test("in a row narrower than 40rem the first line and the page's own controls wrap inside it", () => {
+  // The same utilities with no container variant applied, which is a row narrower than 40rem.
   const removeCss = withCss(HEIGHT_RULE_CSS);
   const view = render(<Row />);
   try {
-    // A 390 px phone cannot hold the search box, the trigger, the page's own controls and the
-    // display menu on one line, so the first line wraps rather than running past the right edge
-    // with a control the reader cannot reach (the Artifacts tab's staged upload). That wrap is
-    // there before any narrowing, since no chip is in that line.
+    // A 390 px phone, or the Inbox drawer's 415 px row, cannot hold the search box, the trigger,
+    // the page's own controls and the display menu on one line, so the first line wraps rather
+    // than running past the row's right edge with a control the reader cannot reach (the
+    // Artifacts tab's staged upload). That wrap is there before any narrowing, since no chip is
+    // in that line.
     const [first, chipsLine] = lines();
     expect(getComputedStyle(first).flexWrap).toBe("wrap");
     expect(getComputedStyle(slotOf("own")).flexWrap).toBe("wrap");
@@ -533,6 +538,75 @@ test("Escape in the panel, and Tab past its last chip, close it and hand the foc
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(more).toHaveFocus();
   } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/**
+ * Lays the open panel of `+N more` out as a browser would, which happy-dom does not: its box is
+ * 200 px tall at 100 px down the window inside a 1 px border, so it shows 198 px of what it
+ * holds, and its chips stand one under another from 8 px into it (its padding), 44 px tall and
+ * 8 px apart, moved up by its `scrollTop`, which stops at both ends of the scroll, as a browser's
+ * does.
+ */
+function layOutPanel(panel: HTMLElement): void {
+  const chips = within(panel).getAllByRole("button");
+  const shown = 198;
+  const end = 8 + chips.length * 52 - 8 + 8 - shown;
+  let scrolled = 0;
+  Object.defineProperties(panel, {
+    clientHeight: { configurable: true, get: () => shown },
+    clientTop: { configurable: true, get: () => 1 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
+      },
+    },
+  });
+  panel.getBoundingClientRect = () => new DOMRect(0, 100, 256, 200);
+  for (const [index, chip] of chips.entries()) {
+    chip.getBoundingClientRect = () => new DOMRect(9, 109 + 52 * index - scrolled, 100, 44);
+  }
+}
+
+// Here no engine scrolls the panel itself, as Firefox scrolls no chip already partly in sight.
+test("a chip the focus reaches in the panel of +N more stands whole in the panel's box, which scrolls the least that shows it, and nothing else scrolls", async () => {
+  const user = userEvent.setup();
+  const names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta"];
+  const restore = layOutLine({ width: 300 }, Object.fromEntries(names.map((name) => [name, 100])));
+  const view = render(<RemovableChips names={names} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(screen.getByRole("button", { name: "5 more filters" }));
+    const panel = screen.getByRole("dialog", { name: "5 more filters" });
+    layOutPanel(panel);
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+    // The chip each key puts the focus on, and how far the panel has scrolled then: the panel
+    // shows 0-198 px of what it holds, and the fourth chip, Zeta, stands at 164-208.
+    const walked: [string, number][] = [];
+    for (const shift of [false, false, false, false, true, true, true, true]) {
+      await user.tab({ shift });
+      walked.push([document.activeElement?.textContent ?? "nothing", panel.scrollTop]);
+    }
+    expect(walked).toEqual([
+      ["Delta", 0],
+      ["Epsilon", 0],
+      ["Zeta", 10],
+      ["Eta", 62],
+      // Already whole, so nothing scrolls.
+      ["Zeta", 62],
+      ["Epsilon", 62],
+      // Back up, each chip stands at the box's top edge, so the first leaves the panel's 8 px of
+      // padding above it out of sight.
+      ["Delta", 60],
+      ["Gamma", 8],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
     view.unmount();
     restore();
   }

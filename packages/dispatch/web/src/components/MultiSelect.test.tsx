@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 // fireEvent also gives one row's press below a click with no pointer press before it, which
 // user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { flushSync } from "react-dom";
@@ -188,6 +188,139 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
   } finally {
+    view.unmount();
+  }
+});
+
+/**
+ * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
+ * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
+ * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot to
+ * its bottom while it is drawn; each option is 44 px tall, under the text box in the list's
+ * order, moved up by the panel's `scrollTop`, which stops at both ends of the scroll, as a
+ * browser's does. `trigger` stands above the panel, so the panel does not close as one hanging
+ * off nothing (`AnchoredPanel`). Answers the panel.
+ */
+function layOutList(trigger: HTMLElement): HTMLElement {
+  const listbox = screen.getByRole("listbox");
+  const box = listbox.parentElement;
+  const head = screen.getByRole("combobox").parentElement;
+  if (box === null || head === null) throw new Error("the list is drawn outside its panel");
+  const foot = screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
+  const options = within(listbox).getAllByRole("option");
+  const shown = 286;
+  const end = 61 + options.length * 44 + (foot === null ? 0 : 61) - shown;
+  let scrolled = 0;
+  Object.defineProperties(box, {
+    clientHeight: { configurable: true, get: () => shown },
+    clientTop: { configurable: true, get: () => 1 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
+      },
+    },
+  });
+  trigger.getBoundingClientRect = () => new DOMRect(0, 52, 120, 44);
+  box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 288);
+  head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
+  if (foot !== null) foot.getBoundingClientRect = () => new DOMRect(1, 101 + shown - 61, 254, 61);
+  for (const [index, option] of options.entries()) {
+    option.getBoundingClientRect = () => new DOMRect(1, 162 + 44 * index - scrolled, 254, 44);
+  }
+  return box;
+}
+
+/** The words of the option the list marks active: the one its text box names. */
+function activeName(search: HTMLElement): string {
+  const option = document.getElementById(search.getAttribute("aria-activedescendant") ?? "");
+  return option?.textContent?.replace("✓", "") ?? "no option";
+}
+
+// The issue header's Status list in a browser: eight statuses under the text box of a box that
+// shows five, where the arrows marked Testing, Needs review and Retro active out of sight.
+test("ArrowDown and ArrowUp scroll the list the least that shows the option they mark active whole below its text box, and scroll nothing else", async () => {
+  const user = userEvent.setup();
+  const statuses = [
+    "Triage",
+    "Backlog",
+    "Todo",
+    "In progress",
+    "Blocked",
+    "Testing",
+    "Needs review",
+    "Retro",
+  ];
+  const view = render(<SingleHost initial="Triage" options={statuses} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    await user.click(trigger);
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    expect(activeName(search)).toBe("Triage");
+    // The option each key marks active, and how far the list has scrolled then: the box shows
+    // 61-286 px of its content, and the sixth option, Testing, stands at 281-325.
+    const walked: [string, number][] = [];
+    const down = Array<string>(7).fill("ArrowDown");
+    for (const key of [...down, "ArrowUp", "ArrowDown", "ArrowDown", "ArrowUp"]) {
+      await user.keyboard(`{${key}}`);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    expect(walked).toEqual([
+      ["Backlog", 0],
+      ["Todo", 0],
+      ["In progress", 0],
+      ["Blocked", 0],
+      ["Testing", 39],
+      ["Needs review", 83],
+      ["Retro", 127],
+      // Already whole, so nothing scrolls.
+      ["Needs review", 127],
+      ["Retro", 127],
+      // ArrowDown wraps to the first option, back under the text box, and ArrowUp to the last.
+      ["Triage", 0],
+      ["Retro", 127],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+test("the arrows scroll a multi-select's list the least that shows the option they mark active whole above its Clear foot", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: "Labels" });
+    await user.click(trigger);
+    // A pick draws the Clear foot, which covers the box's last 61 px.
+    await user.click(screen.getByRole("option", { name: "api" }));
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    expect(search).toHaveFocus();
+    const walked: [string, number][] = [];
+    for (const key of ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowUp", "ArrowUp", "ArrowUp"]) {
+      await user.keyboard(`{${key}}`);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    // The box shows 61-225 px of its content between the text box and the foot, and the fourth
+    // option, infra, stands at 193-237.
+    expect(walked).toEqual([
+      ["docs", 0],
+      ["frontend", 0],
+      ["infra", 12],
+      ["frontend", 12],
+      ["docs", 12],
+      ["api", 0],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
     view.unmount();
   }
 });
@@ -1034,42 +1167,114 @@ test("with keysOnTrigger, a move key on the closed trigger opens the list on the
   }
 });
 
+/**
+ * Lays out every list a key opens as `layOutList` does one, from before the list is drawn: a key
+ * on the closed trigger opens the list on a row far down, and the list scrolls in the commit that
+ * draws it, before a test could lay out what it drew. The box that scrolls, a listbox's parent, is
+ * 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px; the text box's
+ * row is 61 px, stuck to its top; each option is 44 px under it in the list's order, moved up by
+ * the box's `scrollTop`, which stops at both ends of the scroll. A list's trigger stands above the
+ * box, so the panel does not close as one hanging off nothing (`AnchoredPanel`), and every other
+ * element keeps happy-dom's own box. Answers the undo.
+ */
+function layOutListsAsDrawn(): () => void {
+  const scrolled = new WeakMap<Element, number>();
+  const isBox = (element: Element) => element.querySelector(':scope > [role="listbox"]') !== null;
+  const optionsIn = (box: Element) => [...box.querySelectorAll('[role="option"]')];
+  const ownRect = Element.prototype.getBoundingClientRect;
+  const rects = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (isBox(this)) return new DOMRect(0, 100, 256, 288);
+    if (this.getAttribute("aria-haspopup") === "listbox") return new DOMRect(0, 52, 120, 44);
+    if (this.querySelector(':scope > [role="combobox"]') !== null) {
+      return new DOMRect(1, 101, 254, 61);
+    }
+    const box = this.closest('[role="listbox"]')?.parentElement ?? null;
+    if (this.getAttribute("role") !== "option" || box === null) return ownRect.call(this);
+    const top = 162 + 44 * optionsIn(box).indexOf(this) - (scrolled.get(box) ?? 0);
+    return new DOMRect(1, top, 254, 44);
+  });
+  const own = ["scrollTop", "clientHeight", "clientTop"] as const;
+  const before = own.map((name) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
+  const original = (name: (typeof own)[number]) =>
+    Object.getOwnPropertyDescriptor(HTMLElement.prototype, name) ??
+    Object.getOwnPropertyDescriptor(Element.prototype, name);
+  const scrollTop = original("scrollTop");
+  const clientHeight = original("clientHeight");
+  const clientTop = original("clientTop");
+  Object.defineProperties(HTMLElement.prototype, {
+    clientHeight: {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isBox(this) ? 286 : clientHeight?.get?.call(this);
+      },
+    },
+    clientTop: {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isBox(this) ? 1 : clientTop?.get?.call(this);
+      },
+    },
+    scrollTop: {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isBox(this) ? (scrolled.get(this) ?? 0) : scrollTop?.get?.call(this);
+      },
+      set(this: HTMLElement, value: number) {
+        if (!isBox(this)) {
+          scrollTop?.set?.call(this, value);
+          return;
+        }
+        const end = 61 + optionsIn(this).length * 44 - 286;
+        scrolled.set(this, Math.min(Math.max(value, 0), Math.max(end, 0)));
+      },
+    },
+  });
+  return () => {
+    rects.mockRestore();
+    for (const [index, name] of own.entries()) {
+      const descriptor = before[index];
+      if (descriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, name);
+      else Object.defineProperty(HTMLElement.prototype, name, descriptor);
+    }
+  };
+}
+
 // The panel holds about five rows and marks the highlighted one on the row alone
 // (`aria-activedescendant`), so a key that moves the highlight past its fold - End, Page Down,
-// ArrowUp's wrap from a trigger holding nothing, ArrowUp's wrap in the text box - scrolls the row
-// it highlights into sight, as far as it needs and no further, before Enter can pick it.
-test("a single pick scrolls the row each key highlights into sight in its panel", async () => {
+// ArrowUp's wrap from a trigger holding nothing, ArrowUp's wrap in the text box - scrolls the
+// list's own box the least that shows the row whole under its text box, and never the window
+// (`scrollIntoView` scrolls both), before Enter can pick it.
+test("a single pick scrolls its own box to show the row each key highlights, and scrolls nothing else", async () => {
   const user = userEvent.setup();
   const epics = Array.from({ length: 25 }, (_, index) => `epic-${index + 1}`);
-  const scrolled: { readonly options: unknown; readonly row: string | undefined }[] = [];
-  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element,
-    options?: boolean | ScrollIntoViewOptions
-  ) {
-    scrolled.push({ options, row: this.textContent?.replace("✓", "") });
-  });
+  const undo = layOutListsAsDrawn();
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
   const view = render(<SingleHost keysOnTrigger options={epics} />);
   try {
     const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     act(() => trigger.focus());
+    // The box shows the window's 162-387 px under its text box; each row a key highlights must
+    // stand whole there, whatever the box had scrolled to before.
     for (const [keys, to] of [
       ["{End}", "epic-25"],
       ["{PageDown}", "epic-10"],
       ["{ArrowUp}", "epic-25"],
       ["{Home}{ArrowUp}", "epic-25"],
     ] as const) {
-      scrolled.length = 0;
       await user.keyboard(keys);
       const search = screen.getByRole("combobox", { name: "Search epics" });
       expect(highlightedRow(search), `${keys} highlights ${to}`).toBe(to);
-      expect(scrolled.at(-1), `${keys} scrolls ${to} into sight`).toEqual({
-        options: { block: "nearest" },
-        row: to,
-      });
+      const row = document.getElementById(search.getAttribute("aria-activedescendant") ?? "");
+      const { bottom, top } = row?.getBoundingClientRect() ?? new DOMRect();
+      expect(top >= 162 && bottom <= 387, `${keys} shows ${to} whole in the box`).toBe(true);
       await user.keyboard("{Escape}");
     }
+    expect(scrolls).not.toHaveBeenCalled();
   } finally {
     scrolls.mockRestore();
+    undo();
     view.unmount();
   }
 });

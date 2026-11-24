@@ -13,7 +13,7 @@ import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
-import { controlPadding } from "../../components/control-names";
+import { type ControlSize, controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
@@ -161,10 +161,13 @@ type InboxFilterPanel = InboxFilterField | "assignee";
  *  each keeps the row's 44 px line and nothing in the row can grow it. */
 const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
+/** The size the Inbox draws its selection bar at, the comfortable one: the one value the bar
+ *  takes (`SelectionBar`'s `size`) and its actions' chrome reads, so the two cannot drift apart. */
+const BAR_SIZE: ControlSize = "comfortable";
+
 /** The chrome of the selection bar's actions - **Select all**, **Clear selection** and the
- *  thread's **Dismiss** - in the recipe of the size the bar is drawn at: the comfortable one,
- *  `SelectionBar`'s own where the page passes none, as this page does. */
-const BAR_CONTROL_CLASS = `shrink-0 rounded-lg text-sm font-medium ${controlPadding.comfortable} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+ *  thread's **Dismiss** - in the recipe of the size the bar is drawn at (`BAR_SIZE`). */
+const BAR_CONTROL_CLASS = `shrink-0 rounded-lg text-sm font-medium ${controlPadding[BAR_SIZE]} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
 
 /** The values a field offers, in the order its control lists them: its vocabulary, the one the
  *  address keeps the field's values by (`INBOX_FILTER_VOCABULARY`). Project is the one field
@@ -1826,6 +1829,7 @@ function InboxBody({
           : (rowIn(listRef.current, lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
             focusListStop(listScroller.current))
       }
+      size={BAR_SIZE}
       state={barState}
     >
       {/* The picker stays while its own write is out. While Later is folded, the optimistic
