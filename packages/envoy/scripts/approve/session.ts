@@ -31,7 +31,16 @@
 // exits 3 rather than report a clean environment it never read.
 
 import { createHash, createPrivateKey } from "node:crypto";
-import { readdirSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  type Stats,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { newDpopKey } from "../../../cipher-client/src/dpop";
 import type { ApproveRoute } from "../../../envoy-client/src/bearer";
@@ -238,8 +247,8 @@ async function approveThenRevoked(): Promise<void> {
 }
 
 /**
- * Every file under `path`, depth first, into `into`; a file larger than 16 MiB, and a path or a
- * directory that cannot be read, into `skipped`, named, never dropped.
+ * Every file under `path`, depth first, into `into`, whatever its size (`fileChunks` reads a large
+ * one in pieces); a path or a directory that cannot be read into `skipped`, named, never dropped.
  */
 function files(path: string, into: string[], skipped: string[]): void {
   let stat: Stats;
@@ -259,8 +268,30 @@ function files(path: string, into: string[], skipped: string[]): void {
     }
     for (const entry of entries) files(join(path, entry), into, skipped);
   } else if (stat.isFile()) {
-    if (stat.size > 16 * 1024 * 1024) skipped.push(path);
-    else into.push(path);
+    into.push(path);
+  }
+}
+
+/** The size of a piece of a file the scan reads at once, and how far each piece reaches back
+ *  into the one before it: far more than any credential the scan looks for (a broker token is 87
+ *  characters, an EC private key's PEM a few hundred, escaped in a JSON string a little more), so
+ *  a credential that crosses a piece's end is whole in the next piece. */
+const CHUNK_BYTES = 8 * 1024 * 1024;
+const CHUNK_OVERLAP = 64 * 1024;
+
+/** Each piece of the file at `path` in turn, as Latin-1 text, so a file of any size is read
+ *  whole without holding it all: pieces of `CHUNK_BYTES` that reach `CHUNK_OVERLAP` back. */
+function* fileChunks(path: string): Generator<string> {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(CHUNK_BYTES);
+    for (let at = 0; ; at += CHUNK_BYTES - CHUNK_OVERLAP) {
+      const got = readSync(fd, buffer, 0, CHUNK_BYTES, at);
+      yield buffer.toString("latin1", 0, got);
+      if (got < CHUNK_BYTES) return;
+    }
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -369,16 +400,77 @@ async function scan(): Promise<void> {
       "the broker log names no key binding (no `jkt` on a minted token's line), so no key's thumbprint is compared with anything"
     );
   }
+  const base64url = new Set<string>();
+  const token68 = new Set<string>();
+  const answers = new Set<string>();
+  const keys = new Map<string, Jwk>();
+  // take reads one text in every form a credential can sit in it: as written; with the escapes a
+  // JSON or shell string writes a line ending, a quote or a slash in decoded, so a PEM key a file
+  // keeps as one JSON string (a sign-in record's box_key) reads as PEM; with a URL's
+  // percent-encoding and a form's `+` for a space decoded (urlDecoded), so a token in a logged query
+  // or form body reads as itself; and each string value of every JSON document or line in it,
+  // which may itself hold JSON or PEM. Each form of the text is read once.
+  const take = (root: string): void => {
+    const seen = new Set<string>();
+    const queue = [root];
+    for (let text = queue.pop(); text !== undefined; text = queue.pop()) {
+      if (seen.has(text)) continue;
+      seen.add(text);
+      queue.push(unescaped(text), urlDecoded(text));
+      for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}/g)) base64url.add(match[0]);
+      // RFC 7235's token68: `=` only as trailing padding. A broker token holds a `.` (authelia's
+      // HMAC strategy writes `%s.%s`), so the base64url pattern finds only its halves, and an `=`
+      // inside the class would take the `NAME=` before a token as part of it.
+      for (const match of text.matchAll(/[A-Za-z0-9._~+/-]{20,}=*/g)) token68.add(match[0]);
+      // The broker token's own shape, two base64url parts joined by `.`: token68 takes a `/`,
+      // `+`, `~` or `.` before a token as part of it, as in a URL path or `DPoP+<token>`, and this
+      // does not.
+      for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g))
+        token68.add(match[0]);
+      // The broker token is exactly 43 base64url characters, a `.`, and 43 more (32 bytes each,
+      // authelia's HMAC strategy), so the 43 characters on each side of every `.` are a candidate,
+      // whatever run the token is glued to (`cache_<token>`, `<uuid>.<token>`): the patterns above
+      // take such a run as part of the token. A lookahead, so each `.` gives one candidate. A token
+      // that is itself encoded again, base64 of it among them, is outside k31's forms and not read.
+      for (const match of text.matchAll(/(?=([A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}))/g))
+        token68.add(match[1] as string);
+      for (const block of text.matchAll(
+        /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
+      )) {
+        try {
+          const key = createPrivateKey(block[0]).export({ format: "jwk" }) as Jwk;
+          keys.set(JSON.stringify(key), key);
+        } catch {
+          // not a key this runtime reads; counted as no key
+        }
+      }
+      for (const chunk of [text, ...text.split("\n")]) {
+        let value: unknown;
+        try {
+          value = JSON.parse(chunk);
+        } catch {
+          continue;
+        }
+        dpopAnswers(value, answers);
+        const found: Jwk[] = [];
+        privateJwks(value, found);
+        for (const key of found) keys.set(JSON.stringify(key), key);
+        jsonStrings(value, queue);
+      }
+    }
+  };
+  // Every file under every named path, each read whole in pieces (fileChunks). A path, a
+  // directory or a file that could not be read is named in files_skipped, and makes the scan
+  // UNKNOWN: a file it did not read is a file it cannot call clean.
   const read: string[] = [];
   const skipped: string[] = [];
-  const texts: string[] = [];
   for (const path of paths) {
     const under: string[] = [];
     files(path, under, skipped);
     let readHere = 0;
     for (const file of under) {
       try {
-        texts.push(readFileSync(file).toString("latin1"));
+        for (const piece of fileChunks(file)) take(piece);
         read.push(file);
         readHere += 1;
       } catch {
@@ -388,10 +480,9 @@ async function scan(): Promise<void> {
     if (readHere === 0) unknown.push(`no file under ${path} could be read`);
   }
   if (read.length === 0) unknown.push("the scan read no file");
-  // The environment of each process of the session: this one's, and every pid named. Each
-  // variable reads `NAME=value`, as a shell or an env file writes it.
   // Each environment variable read, by name, for the report: the scan names the variables it read
-  // and the ones that hold a minted token, and prints no value of any.
+  // and the ones that hold a minted token, and prints no value of any. Each variable reads
+  // `NAME=value`, as a shell or an env file writes it.
   const environment = new Map<string, string[]>();
   const keepEnvironment = (entries: readonly string[]): void => {
     for (const entry of entries) {
@@ -401,85 +492,27 @@ async function scan(): Promise<void> {
       environment.set(name, [...(environment.get(name) ?? []), entry.slice(at + 1)]);
     }
   };
+  // The environment of each process of the session: this one's, and every pid named.
   const own = Object.entries(env).map(([name, value]) => `${name}=${value}`);
   keepEnvironment(own);
-  texts.push(own.join("\n"));
-  let environs = 0;
+  take(own.join("\n"));
   for (const pid of pids) {
     try {
       const entries = readFileSync(`/proc/${pid}/environ`).toString("latin1").split("\0");
       keepEnvironment(entries);
-      texts.push(entries.join("\n"));
-      environs += 1;
+      take(entries.join("\n"));
     } catch {
       skipped.push(`/proc/${pid}/environ`);
     }
   }
-  if (LOCAL === "" && environs === 0) {
-    // On a box the session's processes are not this one, so a scan that read none of theirs read
+  if (LOCAL === "" && pids.length === 0) {
+    // On a box the session's processes are not this one, so a scan that names none of them reads
     // no environment of the session, and would call clean what it never saw.
     unknown.push(
-      pids.length === 0
-        ? "APPROVE_CHECK_SESSION_PIDS names no process of the session, and outside the local stack (APPROVE_CHECK_DISPATCH_LOCAL unset) the session's processes are not this one"
-        : `no environment of the ${pids.length} processes APPROVE_CHECK_SESSION_PIDS names could be read`
+      "APPROVE_CHECK_SESSION_PIDS names no process of the session, and outside the local stack (APPROVE_CHECK_DISPATCH_LOCAL unset) the session's processes are not this one"
     );
   }
-  const base64url = new Set<string>();
-  const token68 = new Set<string>();
-  const answers = new Set<string>();
-  const keys = new Map<string, Jwk>();
-  // Each text in every form a credential can sit in it: as written; with the escapes a JSON or
-  // shell string writes a line ending, a quote or a slash in decoded, so a PEM key a file keeps as
-  // one JSON string (a sign-in record's box_key) reads as PEM; with a URL's percent-encoding and a
-  // form's `+` for a space decoded (urlDecoded), so a token in a logged query or form body reads
-  // as itself; and each string value of every JSON document or line in it, which may itself hold
-  // JSON or PEM. Each form is read once.
-  const seen = new Set<string>();
-  const queue = [...texts];
-  for (let text = queue.pop(); text !== undefined; text = queue.pop()) {
-    if (seen.has(text)) continue;
-    seen.add(text);
-    queue.push(unescaped(text), urlDecoded(text));
-    for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}/g)) base64url.add(match[0]);
-    // RFC 7235's token68: `=` only as trailing padding. A broker token holds a `.` (authelia's
-    // HMAC strategy writes `%s.%s`), so the base64url pattern finds only its halves, and an `=`
-    // inside the class would take the `NAME=` before a token as part of it.
-    for (const match of text.matchAll(/[A-Za-z0-9._~+/-]{20,}=*/g)) token68.add(match[0]);
-    // The broker token's own shape, two base64url parts joined by `.`: token68 takes a `/`, `+`,
-    // `~` or `.` before a token as part of it, as in a URL path or `DPoP+<token>`, and this does not.
-    for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g))
-      token68.add(match[0]);
-    // The broker token is exactly 43 base64url characters, a `.`, and 43 more (32 bytes each,
-    // authelia's HMAC strategy), so the 43 characters on each side of every `.` are a candidate,
-    // whatever run the token is glued to (`cache_<token>`, `<uuid>.<token>`): the patterns above
-    // take such a run as part of the token. A lookahead, so each `.` gives one candidate. A token
-    // that is itself encoded again, base64 of it among them, is outside k31's forms and not read.
-    for (const match of text.matchAll(/(?=([A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}))/g))
-      token68.add(match[1] as string);
-    for (const block of text.matchAll(
-      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
-    )) {
-      try {
-        const key = createPrivateKey(block[0]).export({ format: "jwk" }) as Jwk;
-        keys.set(JSON.stringify(key), key);
-      } catch {
-        // not a key this runtime reads; counted as no key
-      }
-    }
-    for (const chunk of [text, ...text.split("\n")]) {
-      let value: unknown;
-      try {
-        value = JSON.parse(chunk);
-      } catch {
-        continue;
-      }
-      dpopAnswers(value, answers);
-      const found: Jwk[] = [];
-      privateJwks(value, found);
-      for (const key of found) keys.set(JSON.stringify(key), key);
-      jsonStrings(value, queue);
-    }
-  }
+  for (const missed of skipped) unknown.push(`${missed} could not be read`);
   const candidates = new Set<string>([...base64url, ...token68, ...answers]);
   const matched: { sha256: string; grant: unknown; expires_at: unknown }[] = [];
   for (const candidate of candidates) {

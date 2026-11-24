@@ -17,7 +17,7 @@
 // scan must find it in each, so the read it refuses to skip is a read that can find something.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -330,5 +330,54 @@ test("the diagnostic sends Dispatch no value the broker did not mint, and names 
     for (const value of [...planted, minted]) expect(printed).not.toContain(value);
   } finally {
     session.kill();
+  }
+});
+
+test("a file over 16 MiB is read whole: a token at its end and one across a chunk's boundary are found", {
+  timeout: 120_000,
+}, async () => {
+  const atEnd = brokerShapedToken();
+  const acrossBoundary = brokerShapedToken();
+  const dir = join(work, "box-large-file");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  // 20 MiB of text with no credential in it, a token 40 bytes before the 8 MiB mark, so it
+  // crosses it, and one after the 16 MiB mark, at the end.
+  const filler = Buffer.alloc(20 * 1024 * 1024, "filler line with nothing in it\n");
+  const boundary = 8 * 1024 * 1024 - 40;
+  filler.write(`\n${acrossBoundary}\n`, boundary, "latin1");
+  const transcript = Buffer.concat([filler, Buffer.from(`\nDPoP ${atEnd}\n`, "latin1")]);
+  writeFileSync(join(dir, "box", "session-transcript.log"), transcript);
+  const { answer, exitCode, stderr } = await scanCase("large-file", "box", {
+    log: [atEnd, acrossBoundary].map((token) => mintedLine(sha256(token), "jkt")).join(""),
+    paths: ["box"],
+    pids: READABLE,
+  });
+  expect(exitCode, stderr).toBe(0);
+  expect(answer["files_skipped"]).toEqual([]);
+  const found = (answer["hash_matches"] as { sha256: string }[]).map((match) => match.sha256);
+  expect([atEnd, acrossBoundary].map((token) => found.includes(sha256(token)))).toEqual([
+    true,
+    true,
+  ]);
+});
+
+test("a file the scan could not read makes it UNKNOWN, exit 3, naming the file, though other files were read", async () => {
+  const dir = join(work, "box-unreadable");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  const locked = join(dir, "box", "locked.log");
+  writeFileSync(locked, "a file the scan cannot open\n");
+  chmodSync(locked, 0o000);
+  try {
+    const { answer, exitCode } = await scanCase("unreadable", "box", {
+      log: LOGGED,
+      paths: ["box"],
+      pids: READABLE,
+    });
+    expect(exitCode).toBe(3);
+    expect(answer["result"]).toBe("UNKNOWN");
+    expect(answer["files_read"]).toBe(1);
+    expect(answer["files_skipped"]).toEqual([locked]);
+  } finally {
+    chmodSync(locked, 0o600);
   }
 });
