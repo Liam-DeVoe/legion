@@ -15,9 +15,10 @@ package api
 //
 // Each write of an option leaves a comment of Dispatch's system actor on its issue, which names
 // the call. When the options changed at least one issue, the issue the call names gets one comment
-// of that actor too, which names the call and lists each of those changes. The call writes it after
-// its last step, in a transaction of its own (statusChangeRun.finish). A call that a step refuses
-// writes no such comment, and each step that committed before the refusal keeps its own.
+// of that actor too, which names the call and lists those changes, as many as one block holds,
+// with a count of the rest (statusChangeRun.namedComment). The call writes it after its last step,
+// in a transaction of its own (statusChangeRun.finish). A call that a step refuses writes no such
+// comment, and each step that committed before the refusal keeps its own.
 //
 // A keyed call keeps its progress in its request key's recovery point (statusChangeRecovery):
 // each step that writes adds its entry there in its own transaction, right after its write phase,
@@ -42,6 +43,8 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -641,12 +644,37 @@ func (move statusChangeMove) line(named string) string {
 	return fmt.Sprintf("- %s moved from `%s` to `%s` (`%s`)", move.Key, move.From, move.To, move.Option)
 }
 
-// namedComment is the body of the comment on the issue the call names: the call, as the comment
-// of each step of an option names it, with each option that changed an issue, the rule sentence,
-// and a list of each change of the options, the moves of the point this attempt resumed first and
-// then this attempt's own, in the order their steps committed. It is "" when the options changed
-// no issue. The named issue's own step is no change of an option, so a call with no option, and
-// one whose options found nothing to change, owe no such comment.
+// movesLeftOutLine is the last line of the list of the comment on the named issue where the list
+// leaves out count moves (statusChangeRun.namedComment): each of those issues has the comment of
+// its own step.
+func movesLeftOutLine(count int) string {
+	return fmt.Sprintf("- and %d more, each with a comment of its own", count)
+}
+
+// because is the reason that each comment of a status change gives for its change: the caller, the
+// issue the call names, each of options in a code span of its own, and the rule sentence. The
+// comment of each step of an option gives its one option, and the comment on the named issue gives
+// each option that changed an issue (namedComment).
+func (run *statusChangeRun) because(options ...string) string {
+	return fmt.Sprintf("because %s's status change of %s passed `%s`. %s",
+		run.callerName, run.key, strings.Join(options, "` and `"), statusChangeRuleSentence)
+}
+
+// namedComment is the body of the comment on the issue the call names: a paragraph that names the
+// call, as the comment of each step of an option names it (because), with each option that changed
+// an issue, and a list of each change of the options, the moves of the point this attempt resumed
+// first and then this attempt's own, in the order their steps committed. It is "" when the options
+// changed no issue. The named issue's own step is no change of an option, so a call with no option,
+// and one whose options found nothing to change, owe no such comment.
+//
+// The list is one block, which queueIssueComment holds to contracts.DispatchBlockUnits, in the
+// UTF-16 units that itemblocks.Check counts. So the list writes the line of each move, counted with
+// the line feed before it, while the lines fit in that bound with room left for one more line.
+// When a line does not fit, the list stops there and its last line counts the moves it leaves out
+// (movesLeftOutLine). The room is the units of that line for a count of every move, so the line
+// always fits. The paragraph names the options of every move, those the list leaves out included.
+// The paragraph holds no text of the call's but the caller's name, which the comment of each step
+// holds too (because).
 func (run *statusChangeRun) namedComment() string {
 	var moves []statusChangeMove
 	if run.resumed != nil {
@@ -657,15 +685,30 @@ func (run *statusChangeRun) namedComment() string {
 		return ""
 	}
 	var options []string
-	var lines strings.Builder
 	for _, move := range moves {
 		if !slices.Contains(options, move.Option) {
 			options = append(options, move.Option)
 		}
-		lines.WriteString("\n" + move.line(run.key))
 	}
-	return fmt.Sprintf("Dispatch changed the issues below, because %s's status change of %s passed `%s`. %s\n%s",
-		run.callerName, run.key, strings.Join(options, "` and `"), statusChangeRuleSentence, lines.String())
+	room := itemblocks.Units16("\n" + movesLeftOutLine(len(moves)))
+	var lines strings.Builder
+	units, left := 0, 0
+	for index, move := range moves {
+		line := "\n" + move.line(run.key)
+		bound := contracts.DispatchBlockUnits
+		if index < len(moves)-1 {
+			bound -= room
+		}
+		if units += itemblocks.Units16(line); units > bound {
+			left = len(moves) - index
+			break
+		}
+		lines.WriteString(line)
+	}
+	if left > 0 {
+		lines.WriteString("\n" + movesLeftOutLine(left))
+	}
+	return "Dispatch changed the issues below, " + run.because(options...) + "\n" + lines.String()
 }
 
 // finish ends a call whose last step has run, with issue, the answer's issue, in one transaction of
@@ -741,7 +784,7 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 	}
 	call.comment = &issueComment{author: parentStatusRuleActor}
 	named, status := run.key, run.change.status
-	because := fmt.Sprintf("because %s's status change of %s passed `%s`. %s", run.callerName, named, step.option, statusChangeRuleSentence)
+	because := run.because(step.option)
 	call.step.moved = func(before model.Issue) statusChangeMove {
 		move := statusChangeMove{Key: step.key, Option: step.option}
 		if !step.reparent {
@@ -876,7 +919,7 @@ const (
 	// pointWithdrawn is the ids of the asks the named issue's own close withdrew.
 	pointWithdrawn = "withdrawn"
 	// pointMoved is what each step of an option changed, which the comment on the named issue
-	// lists.
+	// lists, and which recoveryPointRead gathers from request_key_steps.
 	pointMoved = "moved"
 	// pointFinished is the mark that every step of the call ran.
 	pointFinished = "finished"
@@ -887,13 +930,14 @@ const (
 // statusChangeRecovery is the recovery point of a keyed status change (request_keys.go): what
 // the steps that committed made, from which a repeat finishes the call. Each step that writes adds
 // to it in its own transaction, right after its write phase, with a statement that builds the
-// head's members in its SQL and adds its entry as a row of request_key_steps
-// (queueStatusChangeStep), and the call marks it finished, with the answer's issue, once its last
-// step has run, in the transaction that writes the comment on the named issue
-// (markStatusChangeFinished). Every reader reads it with the steps' entries under changed
-// (recoveryPointRead). Each field's json tag is the name of its member above, so every
-// json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey, replayRecovered) names
-// each member as those statements do, and a member the point does not hold stays empty.
+// head's members in its SQL and adds its entry, and what a step of an option changed, as a row of
+// request_key_steps (queueStatusChangeStep), and the call marks it finished, with the answer's
+// issue, once its last step has run, in the transaction that writes the comment on the named issue
+// (markStatusChangeFinished). Every reader reads it with the steps' entries under changed and
+// their moves under moved (recoveryPointRead). Each field's json tag is the name of its member
+// above, so every json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey,
+// replayRecovered) names each member as those statements do, and a member the point does not hold
+// stays empty.
 type statusChangeRecovery struct {
 	// Changed is the entry of each step that wrote, in the order the steps committed, each with
 	// its issue as its step's write answered it, which every answer from the point carries.
@@ -1013,14 +1057,15 @@ func markStatusChangeFinished(ctx context.Context, tx pgx.Tx, issue model.Issue)
 // the head the key holds, which is the call's point so far, since only the attempt that holds the
 // key writes it: the ids of the events on the issue the call names (step.named) after
 // namedLastSeq, its last_seq as the step read it under that issue's owner lock, when the step holds
-// that lock (holdsNamed), withdrawn, the ids of the asks that the named issue's own close
-// withdrew, and moved, what a step of an option changed (nil for the named issue's own step). It
-// adds entry, the step's entry with its issue as the step's write answered it, as a row of
-// request_key_steps. The event ids exist, and the issue's last_seq and a close's closed_at
-// are known, only once the batch has run, so the statement derives the ids in its own SQL, after
-// the step's last event insert, and its callback reads them into events, the step's own events on
-// the named issue (issueWriteResult.namedEvents). The statement is scoped to the request's own
-// claim, so a step whose key another attempt took over rolls back (errRequestKeyTakenOver).
+// that lock (holdsNamed), and withdrawn, the ids of the asks that the named issue's own close
+// withdrew. It adds a row of request_key_steps that holds entry, the step's entry with its issue as
+// the step's write answered it, and moved, what a step of an option changed (null for the named
+// issue's own step), so no step rewrites the moves of the steps before it. The event ids exist, and
+// the issue's last_seq and a close's closed_at are known, only once the batch has run, so the
+// statement derives the ids in its own SQL, after the step's last event insert, and its callback
+// reads them into events, the step's own events on the named issue (issueWriteResult.namedEvents).
+// The statement is scoped to the request's own claim, so a step whose key another attempt took over
+// rolls back (errRequestKeyTakenOver).
 func queueStatusChangeStep(
 	b *store.WriteBatch, step *issueWriteCallStep, entry statusChangeEntry, moved *statusChangeMove, namedLastSeq int,
 	holdsNamed bool, withdrawn []string, events *[]int64,
@@ -1029,13 +1074,11 @@ func queueStatusChangeStep(
 	if err != nil {
 		return err
 	}
-	moves := []statusChangeMove{}
+	var encodedMove any
 	if moved != nil {
-		moves = append(moves, *moved)
-	}
-	encodedMoves, err := json.Marshal(moves)
-	if err != nil {
-		return err
+		if encodedMove, err = json.Marshal(*moved); err != nil {
+			return err
+		}
 	}
 	claim := step.claim
 	b.Queue("write the recovery point of a status change", `
@@ -1045,16 +1088,15 @@ func queueStatusChangeStep(
 		), head as (
 			update request_keys set recovery = jsonb_build_object(
 				'`+pointEvents+`', coalesce(recovery -> '`+pointEvents+`', '[]') || to_jsonb(named.ids),
-				'`+pointWithdrawn+`', coalesce(recovery -> '`+pointWithdrawn+`', '[]') || coalesce(to_jsonb($8::text[]), '[]'),
-				'`+pointMoved+`', coalesce(recovery -> '`+pointMoved+`', '[]') || $9::jsonb)
+				'`+pointWithdrawn+`', coalesce(recovery -> '`+pointWithdrawn+`', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
 			from named
 			where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
 			returning named.ids
 		), step as (
-			insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
+			insert into request_key_steps (login, idempotency_key, entry, moved) select $1, $2, $7::jsonb, $9::jsonb from head
 		)
 		select ids from head
-	`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, encoded, withdrawn, encodedMoves,
+	`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, encoded, withdrawn, encodedMove,
 	).QueryRow(func(row pgx.Row) error {
 		err := row.Scan(events)
 		if errors.Is(err, pgx.ErrNoRows) {

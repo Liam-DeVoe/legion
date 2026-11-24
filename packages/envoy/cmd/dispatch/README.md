@@ -2809,6 +2809,7 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 
 Migration `20261121043859_request_key_steps` creates `request_key_steps`, one row for each committed step of a keyed status change (`POST /api/v1/issues/{key}/status-change`), in the order the steps committed.
 A row holds the step's entry as the route answers it, its issue included, so a repeat of the call answers each issue as its step's write answered it, rather than as it stands then.
+A row of a step of an option also holds, in `moved`, what that step changed, which the comment on the issue the call names lists; `moved` is null for the step of the issue the call names.
 The head of the call's recovery point stays in `request_keys.recovery`, and a row goes with its key through the foreign key's cascade.
 Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
 A new table: the foreign key holds `request_keys` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so a keyed request's claim waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
@@ -5047,6 +5048,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each issue that an option changes gets a comment from Dispatch's system actor, `{kind: "system", id: "parent-status-rule"}`, that names the caller, the issue the call names and the option.
   The write itself records the caller, as a `PATCH` does.
   When the options changed at least one issue, the issue the call names gets one comment from the same actor after the last write, which names the call and lists each issue that the options changed, with the status it moved from and to, or its removal from the issue.
+  The list is one block of the comment, so it stops before it passes the block bound (`block_units` of `GET /api/v1/limits`), and its last line then counts the issues it leaves out, each of which has its own comment.
   A call whose options changed no issue, a call with no option and a dry run leave the issue no such comment, and so does a call that a write refuses: each write that committed before the refusal keeps its own comment.
   A keyed call leaves it once, in the transaction that marks its recovery point finished, and a repeat that finishes the call lists the changes of the attempts before it too.
   Before the first write, the call reads its plan again under the owner locks of each issue it writes and of each one's current and new parent, and checks the whole plan.

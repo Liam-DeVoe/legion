@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -206,8 +207,8 @@ func optionComment(key, body string) string {
 // option that changed an issue as the comment names it, and each line is one change (movedLine,
 // removedLine).
 func namedComment(named, caller, options string, lines ...string) string {
-	return fmt.Sprintf("%s %s:%s: Dispatch changed the issues below, because %s's status change of %s passed %s. %s\n\n%s",
-		named, parentStatusRuleActor.Kind, parentStatusRuleActor.ID, caller, named, options, statusChangeRule, strings.Join(lines, "\n"))
+	return optionComment(named, fmt.Sprintf("Dispatch changed the issues below, because %s's status change of %s passed %s.", caller, named, options)) +
+		"\n\n" + strings.Join(lines, "\n")
 }
 
 // movedLine is the line of namedComment for key, which option moved from status from to to.
@@ -2145,6 +2146,74 @@ func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.
 		if tag, _, _ := strings.Cut(field.Tag.Get("json"), ","); tag != member {
 			t.Errorf("statusChangeRecovery.%s has the json tag %q, want %q, its member's constant", field.Name, tag, member)
 		}
+	}
+}
+
+// TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest: the comment on the issue a
+// call names lists the moves, in their order, while one block holds them, and its last line then
+// counts the moves it leaves out. So the comment of a call whose options changed thousands of
+// issues passes each check that queueIssueComment makes of its body: its line endings are line
+// feeds, it holds text, and itemblocks.Check refuses none of its blocks. The list stops close to
+// the bound, not far before it. The paragraph names the option of each move, of a move the list
+// leaves out too. A call whose moves fit lists each of them and counts none.
+func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *testing.T) {
+	const named = "ACME-1"
+	// moved is count moves by include_children of the issues after first, then, past the cut, one
+	// move by include_parent: no call writes in that order, so that only a move the list leaves out
+	// brings its option.
+	moved := func(first, count int) []statusChangeMove {
+		moves := make([]statusChangeMove, 0, count+1)
+		for index := range count {
+			moves = append(moves, statusChangeMove{
+				Key: fmt.Sprintf("ACME-%d", first+index), Option: optionIncludeChildren, From: "in_progress", To: "done",
+			})
+		}
+		return append(moves, statusChangeMove{Key: "ACME-99999", Option: optionIncludeParent, From: "backlog", To: "in_progress"})
+	}
+	// The moves of an earlier attempt come first, all by include_children, then the attempt's own.
+	earlier := moved(2, 3000)[:3000]
+	run := &statusChangeRun{key: named, callerName: "alice", resumed: &statusChangeRecovery{Moved: earlier}, moved: moved(3002, 2000)}
+	all := append(slices.Clone(run.resumed.Moved), run.moved...)
+	body := run.namedComment()
+	if pmdoc.LineFeeds(body) != body || strings.TrimSpace(body) == "" {
+		t.Fatalf("the comment is blank or holds a line ending that is no line feed: %q", body)
+	}
+	if err := itemblocks.Check("body", body); err != nil {
+		t.Fatalf("the comment for %d moves is refused: %v", len(all), err)
+	}
+	blocks := itemblocks.Split(body)
+	if len(blocks) != 2 {
+		t.Fatalf("the comment is %d blocks, want a paragraph and a list", len(blocks))
+	}
+	want := "Dispatch changed the issues below, because alice's status change of " + named + " passed `include_children` and `include_parent`. " + statusChangeRule
+	if blocks[0].Text != want {
+		t.Errorf("the paragraph is %q, want %q", blocks[0].Text, want)
+	}
+	lines := strings.Split(blocks[1].Text, "\n")
+	listed := len(lines) - 1
+	if listed < 1 || listed >= len(all) {
+		t.Fatalf("the list holds %d lines for %d moves, want the moves one block holds and one line that counts the rest", len(lines), len(all))
+	}
+	for index, line := range lines[:listed] {
+		if move := all[index]; line != movedLine(move.Key, move.From, move.To, move.Option) {
+			t.Fatalf("line %d of the list is %q, want the move of %s", index+1, line, move.Key)
+		}
+	}
+	if count := fmt.Sprintf("- and %d more, each with a comment of its own", len(all)-listed); lines[listed] != count {
+		t.Errorf("the last line of the list is %q, want %q", lines[listed], count)
+	}
+	if units := itemblocks.Units16(blocks[1].Text); units < contracts.DispatchBlockUnits-200 {
+		t.Errorf("the list is %d units, want it to stop close to the bound of %d", units, contracts.DispatchBlockUnits)
+	}
+
+	// A list that holds every move counts none. namedComment is the comment as storedComments
+	// lists it, after its issue and its author.
+	few := &statusChangeRun{key: named, callerName: "alice", moved: moved(2, 2)}
+	got := named + " " + parentStatusRuleActor.Kind + ":" + parentStatusRuleActor.ID + ": " + few.namedComment()
+	if want := namedComment(named, "alice", "`include_children` and `include_parent`",
+		movedLine("ACME-2", "in_progress", "done", optionIncludeChildren), movedLine("ACME-3", "in_progress", "done", optionIncludeChildren),
+		movedLine("ACME-99999", "backlog", "in_progress", optionIncludeParent)); got != want {
+		t.Errorf("the comment for three moves is\n%s\nwant\n%s", got, want)
 	}
 }
 
