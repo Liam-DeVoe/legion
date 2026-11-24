@@ -2853,7 +2853,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
 	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
 	// issue that arrives there and waits must be told why: the notice its architect got at the
-	// merge could not say it, since the issue was elsewhere then.
+	// merge could not say it, since the issue was elsewhere then. The close of the pull requests
+	// whose work that merge holds is queued here too (closeHeldPullRequests), since the merge landed
+	// while the task stood short of its merge, where it queues none.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
 		if err := e.start(ctx, tx, s, starting, func(at Standing) string {
@@ -2894,6 +2896,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 		return err
 	}
 	if mergedAlready {
+		if err := e.closeHeldPullRequests(ctx, tx, s, *pr); err != nil {
+			return err
+		}
 		return e.closeMergedTelling(ctx, tx, s, pr)
 	}
 	// The issue leaves the workflow where its tasks put it in done (putIssue), through the one place
