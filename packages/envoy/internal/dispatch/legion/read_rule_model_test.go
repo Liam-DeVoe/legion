@@ -45,12 +45,14 @@ type readRuleRow struct {
 //     stream sequence N as the owed read's holder, and no message of INFRA is pending: that holder
 //     never makes the read".
 //
-// Seed 1030 (120 steps), the tester's round 19 at bc057cc2, fails invariant 2: the setting's daemon
-// is redeployed into the recorded old store and boots there (row 3.5), its next reads all fail
-// until the boot that holds the read is released, and every later message of that daemon is of a
-// store the cursor forgets, which makes no read while the cursor holds a store (callRead), so the
-// owed read is never made: "it owes a read that no message holds, and its last read failed or a
-// holder was released, but 3 next messages of the daemon did not bring the cursor up".
+// Seed 1030 (120 steps), the tester's round 19, failed invariant 2 at bc057cc2 and 60cd52d6: the
+// setting's daemon is redeployed into the recorded old store and boots there (row 3.5), its next
+// reads all fail until the boot that holds the read is released, and every later message of that
+// daemon is of a store the cursor forgets, which then made no read while the cursor held a store,
+// so the owed read was never made: "it owes a read that no message holds, and its last read failed
+// or a holder was released, but 3 next messages of the daemon did not bring the cursor up". It
+// passes with row 4.3 of read-rule-cases v9: such a message makes an owed, due and unheld read
+// whatever store the cursor holds (callRead).
 //
 // Seeds 8 and 37 meet the rest: the read that stops answering until its holder is let go, six
 // take-overs, a redeploy to the old store, a stall and four redeploys. Each end waits up to

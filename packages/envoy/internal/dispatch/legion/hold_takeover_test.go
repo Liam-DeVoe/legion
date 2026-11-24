@@ -721,10 +721,10 @@ func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
 // message of a store the cursor drops, past the cap while a whole read of the project is in
 // flight, owe the gap read as any message past the cap does, and the first message past the cap
 // holds that read. Where the read in flight does not find that store, the holder's redelivery is
-// judged on the runner as a message of a dropped store (outcomeForgotten): it is acknowledged, and
-// it makes no read and calls for none while the cursor holds a store (callRead). A message of the
-// setting's daemon that arrived past the cap after it joined the read the holder holds and was
-// acknowledged unapplied, so nothing takes its events while the project stays quiet.
+// judged as the holder (row 8.2): it makes the read it holds once that read is due, and the
+// setting's daemon's message that arrived past the cap after it and joined that read is taken
+// from the read's snapshot. Were the holder acknowledged with no read made, nothing would take
+// that message's events while the project stays quiet.
 //
 // INFRA's daemon is read whole in the rig's store, and a write of INFRA's setting names another
 // daemon, in a store of its own, whose starting read is held. The daemon named before publishes
