@@ -123,13 +123,8 @@ func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of
 // worker of an issue whose key names no claims, one for each role, whose every row of the role is
 // its own.
 func ReviewedBefore(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
-	for _, row := range rows {
-		if task != "" && row.Role == role && row.StepTask == task && row.StepPlace > 0 && row.StepPlace != place &&
-			(agent == "" || row.Claim == agent) && row.ReviewedHead != "" {
-			return row.ReviewedHead
-		}
-	}
-	return ""
+	own, _ := earlierStepRow(rows, role, task, place, func(row PhaseRow) bool { return agent == "" || row.Claim == agent })
+	return own.ReviewedHead
 }
 
 // AnotherAgentsReview is the commit another agent's review on row's task read, which the task of a
