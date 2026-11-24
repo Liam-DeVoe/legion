@@ -2353,7 +2353,9 @@ export const LegionTaskStopRequest = z.strictObject({
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
+ * issue's phase and its open check for `handoff_complete`, and `handoff-record.ts` the state and
+ * the head of its pull request, which excuse a round merged at its head from a branch GitHub
+ * deleted at the merge; `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim and of every worker's.
@@ -2389,6 +2391,9 @@ const ISSUE_RECORD_READS = [
   "slot.index",
   "slot.admittedAt",
   "slot.lentTo",
+  "pullRequest",
+  "pullRequest.state",
+  "pullRequest.head",
 ] as const;
 
 /**

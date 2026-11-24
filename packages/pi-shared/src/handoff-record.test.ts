@@ -649,6 +649,55 @@ test("an implementer whose @- is not on its branch at origin is refused naming t
   }
 });
 
+test("TestAMergedPullRequestWhoseBranchIsGoneAcceptsItsHead", async () => {
+  // GitHub deletes `legion/<issue>` when the pull request merges, so a round whose pull request
+  // merged at its `@-` finds the branch gone at origin, and the role prompt says a merged pull
+  // request refuses nothing. The issue's record shows the pull request merged at that head, so
+  // the completion goes with `@-`, and the branch at origin is not read.
+  const { jj, calls } = fakeJj(false);
+  const { latestHandoff } = recordingDispatch(PUSHED_RECORD);
+  await expect(
+    findHandoffReport({
+      phase: "implementing",
+      role: "implementer",
+      env,
+      jj,
+      latestHandoff,
+      pullRequest: { state: "merged", head: STANDING },
+    })
+  ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+
+  // Every other pull request is held to the branch at origin as before: one not merged at `@-`,
+  // one merged at another head, and none at all.
+  for (const pullRequest of [
+    { state: "open", head: STANDING },
+    { state: "closed", head: STANDING },
+    { state: "merged", head: TIP },
+    { state: "merged" },
+    undefined,
+  ] as const) {
+    const { jj, calls } = fakeJj(false);
+    const { latestHandoff } = recordingDispatch(PUSHED_RECORD);
+    await expect(
+      findHandoffReport({
+        phase: "implementing",
+        role: "implementer",
+        env,
+        jj,
+        latestHandoff,
+        pullRequest,
+      })
+    ).rejects.toThrow(
+      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it`
+    );
+    expect(calls).toEqual([
+      ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+      ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
+    ]);
+  }
+});
+
 test("an implementer whose pushed @- its record does not name is refused naming the rewrite", async () => {
   // The forgotten push's next completion: `@-` is pushed now and the record still names the
   // branch's older tip, a head the branch carries and the round's work was not done against. A

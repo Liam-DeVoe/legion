@@ -93,6 +93,7 @@ function runtime(
   const bytes: { readonly route: string; readonly bytes: number }[] = [];
   const posted: Record<string, unknown>[] = [];
   const lookups: string[] = [];
+  const pullRequests: unknown[] = [];
   const answers: Record<string, Record<string, unknown>> = {
     "/legion/v1/state": state,
     "/legion/v1/grants": daemonFixture("grant.json"),
@@ -130,15 +131,16 @@ function runtime(
     }),
     claim,
     build: BUILD,
-    handoffReport: async (phase, role) => {
+    handoffReport: async (phase, role, pullRequest) => {
       lookups.push(`${phase} ${role}`);
+      pullRequests.push(pullRequest);
       return report;
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
     },
   };
-  return { ops, routes, bytes, posted, lookups };
+  return { ops, routes, bytes, posted, lookups, pullRequests };
 }
 
 test("the phase ops' fields, as a host declares them, are every field of every op, each optional, from the host's Zod", () => {
@@ -352,6 +354,26 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "pass",
     ...REPORT,
   });
+});
+
+// A pull request GitHub merged deletes its branch, so the implementer's round on it is held to
+// the record rather than to the branch at origin (handoff-record's findHandoffReport): the
+// completion hands the record's pull request, as read, to the report it looks up.
+test("handoff_complete hands the issue record's pull request to the report it looks up", async () => {
+  const state = daemonFixture("state.json");
+  const issues = state.issues as Record<string, Record<string, unknown>>;
+  const merged = {
+    number: 1239,
+    head: "c0de0000000000000000000000000000000000ff",
+    state: "merged",
+  };
+  issues["LEGION-208"] = { ...issues["LEGION-208"], pullRequest: merged };
+  const { ops, lookups, pullRequests } = runtime(implementer, state);
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["implementing implementer"]);
+  expect(pullRequests).toEqual([merged]);
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the

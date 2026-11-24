@@ -967,13 +967,13 @@ export default function legionExtension(pi: PiApi): void {
         // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
         // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
         // the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: (phase, role) =>
+        handoffReport: (phase, role, pullRequest) =>
           paneHandoffReport(
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
             currentSessionID()
-          )(phase, role),
+          )(phase, role, pullRequest),
         branchHead: () => findPushedBranchHead({ env: process.env }),
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.

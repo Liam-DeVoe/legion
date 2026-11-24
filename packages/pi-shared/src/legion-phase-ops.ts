@@ -18,7 +18,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import type { HandoffPullRequest, HandoffReport } from "./handoff-record";
 
 /** The claim a session registered, as the phase ops need it, and as the claim boot
  * (`legion-claim-core`) records it: its own id, the daemon's answer for tree, issue and role, the
@@ -448,9 +448,14 @@ export interface PhaseOpRuntime {
    * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
-   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * implementer's record names no head, the commit its workspace stands on is not pushed while
+   * `pullRequest` (the issue record's) is not merged at that commit, or its record's head is not
+   * that commit. */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    pullRequest?: HandoffPullRequest
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -951,9 +956,9 @@ async function completeHandoff(
       "handoff_complete's wake_at is a production check's pending report alone; a phase completion carries none"
     );
   }
-  // The record and the commit are found before the grant is minted. The phase is the issue
-  // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role);
+  // The record and the commit are found before the grant is minted. The phase and the pull request
+  // are the issue record's, the role the claim's.
+  const report = await runtime.handoffReport(record.phase, claim.role, record.pullRequest);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,

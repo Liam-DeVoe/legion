@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  An implementer's `handoff_complete` in implementing is no longer refused once its pull request has merged. GitHub deletes `legion/<issue>` at the merge, so the check that the commit the workspace stands on, `@-`, is on `legion/<issue>@origin` refused the completion with "push it". When the issue's record shows the pull request merged at `@-`, the check now takes `@-` without reading the branch at origin. The handoff record must still name `@-`, and every other completion is checked as before.
+time: 2026-11-24T15:20:53Z
+custom:
+  Issue: INFRA-5682

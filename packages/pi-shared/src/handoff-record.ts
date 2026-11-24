@@ -45,7 +45,10 @@ import { staleGitLockNote } from "./git-lock";
  * a head the branch carries while the round's own work is under `@-` alone. A pushed `@-` the
  * record does not name is refused naming the rewrite of the record at `@-`: a head other than the
  * commit the round's work stands on is not the head that work was done against, whether the
- * branch carries it or not. These checks hold in the phase the implementer works alone.
+ * branch carries it or not. These checks hold in the phase the implementer works alone. One
+ * exception reads the issue's record rather than the branch: a pull request the record shows
+ * merged at `@-` excuses `@-` from being on `legion/<issue>@origin`, since GitHub deletes the
+ * branch at the merge and a merged pull request refuses nothing; the record must still name `@-`.
  *
  * The left-phase rule, which every other comment of this module and its tests points at: a role
  * whose phase the issue has left never runs a workspace check, and where it holds a record of that
@@ -113,6 +116,17 @@ export interface HandoffReportInput {
   readonly latestHandoff: LatestHandoff;
   /** PATH's jj by default, the one the pane's own shell runs. */
   readonly jj?: JjRunner;
+  /** The issue's pull request as its record shows it (`read_record`'s `pullRequest`), absent
+   * where the record shows none: one merged at `@-` excuses the implementer's round from the
+   * branch at origin, which GitHub deleted at the merge. */
+  readonly pullRequest?: HandoffPullRequest;
+}
+
+/** The issue record's pull request as a completion reads it: its state and the head the daemon
+ * records for it (`LegionPullRequestView`'s `state` and `head`). */
+export interface HandoffPullRequest {
+  readonly state?: "open" | "merged" | "closed" | undefined;
+  readonly head?: string | undefined;
 }
 
 /** The handoff a file-backed phase ends with, by the phase's word, and the role that works it:
@@ -173,21 +187,27 @@ export function paneLatestHandoff(
   };
 }
 
-/** What a completion by `role` reports in the pane while the issue stands at `phase`
- * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
- * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
+/** What a completion by `role` reports in the pane while the issue stands at `phase`, its pull
+ * request as the record shows it (`findHandoffReport` with the pane's environment `env` and its
+ * Dispatch, `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks
+ * it. */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string
-): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
-  return (phase, role) =>
+): (
+  phase: LegionPhase,
+  role: LegionRole,
+  pullRequest?: HandoffPullRequest
+) => Promise<HandoffReport> {
+  return (phase, role, pullRequest) =>
     findHandoffReport({
       phase,
       role,
       env,
       latestHandoff: paneLatestHandoff(file, env, cwd, session),
+      ...(pullRequest === undefined ? {} : { pullRequest }),
     });
 }
 
@@ -352,14 +372,20 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   }
   const workspace = requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF);
   const stands = await jj(STANDING, workspace);
+  // A pull request the issue's record shows merged at `@-` is the round's work merged: GitHub
+  // deleted `legion/<issue>` at the merge, so the branch at origin is not read, and the record
+  // must still name `@-` (below).
+  const merged = input.pullRequest?.state === "merged" && input.pullRequest.head === stands;
   // The branch's tip at origin when `@-` is on it, and nothing when it is not. A round that forgot
   // its push and wrote its record against the branch's tip at origin is refused here, and told of
   // its record too: once `@-` is pushed, a record naming that older tip names a commit the round's
   // work is not.
-  const tip = await jj(
-    ["log", "-r", `${pushedBranch(bookmark)} & ${stands}::`, "--no-graph", "-T", "commit_id"],
-    workspace
-  );
+  const tip = merged
+    ? stands
+    : await jj(
+        ["log", "-r", `${pushedBranch(bookmark)} & ${stands}::`, "--no-graph", "-T", "commit_id"],
+        workspace
+      );
   if (tip === "") {
     throw new Error(
       `the commit this workspace stands on, ${stands}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r @- && jj git push --bookmark ${bookmark}\`; the handoff's \`head\` must name that pushed commit, and the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names ${head}, so when that is another commit, write the handoff again with \`head\` set to ${stands} (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`); then complete again`

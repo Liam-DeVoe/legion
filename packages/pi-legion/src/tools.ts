@@ -13,7 +13,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "@legion/pi-shared/daemon-client";
-import type { HandoffReport } from "@legion/pi-shared/handoff-record";
+import type { HandoffPullRequest, HandoffReport } from "@legion/pi-shared/handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -540,8 +540,13 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed while `pullRequest` (the issue record's) is not merged at that commit, or its
+   * record's head is not that commit. */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    pullRequest?: HandoffPullRequest
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
