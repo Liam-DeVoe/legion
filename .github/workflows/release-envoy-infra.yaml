@@ -162,10 +162,10 @@ jobs:
             -- "${paths[@]}" >> "$GITHUB_OUTPUT"
       # The module's vet, both live-test tags included, before anything is built. Vet compiles the
       # live tests without running them and starts no container, so this job needs no Docker. The
-      # module's unit tests do not run here: ci.yaml's envoy-infra-go job runs each of them under
-      # -race (scripts/race-unit.sh run) before each merge that changes what they read, and a
-      # release checks only what it builds, as release-envoy-listener.yaml's docker job smoke-tests
-      # the image it built (.github/release-checks.yaml).
+      # module's unit tests do not run here: ci.yaml's go-envoy job's envoy-infra-build leg runs
+      # each of them under -race (scripts/race-unit.sh run) before each merge that changes what
+      # they read, and a release checks only what it builds, as release-envoy-listener.yaml's
+      # docker job smoke-tests the image it built (.github/release-checks.yaml).
       - name: Vet envoy-infra, its live-test tags included
         if: steps.version.outputs.skip != 'true'
         run: go -C packages/envoy/infra vet -tags pulumilive,natslive ./...

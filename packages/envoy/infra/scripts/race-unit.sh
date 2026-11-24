@@ -5,7 +5,7 @@
 # and ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
 #   race-unit.sh run       .github/scripts/go-test.sh --jsonfile envoy-infra-go-unit.json
-#                          --packages "PACKAGES" -- -count=1 -race (envoy-infra-go's unit step:
+#                          --packages "PACKAGES" -- -count=1 -race (envoy-infra-build's unit step:
 #                          gotestsum prints each test's result by name, as every go test step of
 #                          a job ci-ok needs does, and in a merge group runs a failed test once
 #                          more; go-test.sh's header says when)
@@ -16,11 +16,12 @@
 # the flags of a run against those of a compile differ, so the objects the fill compiles are the
 # objects the step links. A fill built from another list or other flags holds objects no step
 # reads, and nothing fails: the step compiles them from nothing on every run. The jsonfile's name
-# is the one step's that runs this mode, envoy-infra-go's unit step, which go-test.sh leaves for
-# that job's upload step.
-# The envoy-infra-go leg runs `scripts/race-unit.sh run`, whose EXCLUDE leaves out the text-check
-# package; check-ci-layout.sh's rule 16 (ci_workflow_rules.py's check_race_fill_scripts) holds the fill to
-# `scripts/race-unit.sh compile` and to no race build of its own.
+# is the one the upload step of the step that runs this mode, envoy-infra-build's unit step,
+# reads; it keeps main's envoy-infra-go job's name, and go-test.sh leaves it for that upload.
+# go-envoy's envoy-infra-build leg runs `scripts/race-unit.sh run`, whose EXCLUDE leaves out the
+# text-check package; check-ci-layout.sh's rule 16 (ci_workflow_rules.py's
+# check_race_fill_scripts) holds the fill to `scripts/race-unit.sh compile` and to no race build of
+# its own.
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits
 # 2 on any other; it exits 1 when go list fails or keeps no package, and otherwise with go test's

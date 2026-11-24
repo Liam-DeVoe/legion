@@ -230,14 +230,14 @@ AUDITED_SCRIPTS = {
     # EXCLUDE, `/internal/textcheck$`, matches (the text checks, whose tests the text-check job
     # runs), which runs gotestsum, whose first run is one `go test -json -count=1 -race` of them.
     # Given `compile`, it builds those race test binaries with `-c` and runs none, which
-    # ci-caches.yaml's envoy-infra fill alone does, outside ci.yaml. envoy-infra-go's unit step
-    # passes `run`.
+    # ci-caches.yaml's envoy-infra fill alone does, outside ci.yaml. go-envoy's envoy-infra-build
+    # leg's unit step passes `run`.
     "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
         module="packages/envoy/infra",
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -json -count=1 -race",
         },
-        sha256="12b041dd237b98f67f376deea73a5e6261f87abae38fec7757a1b1c33710d25a",
+        sha256="abe9d3c707e354ac1936adb38df3244493be30dff300f147fe301d2c7a6366a1",
     ),
     # It moves into the module its -C names (`cd "$module"`; packages/envoy without one), builds a
     # hooked copy of nats-server, and with -jsonfile runs one .github/scripts/go-test.sh over the

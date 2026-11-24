@@ -241,10 +241,6 @@ def path_lines(value) -> list:
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
-# The key an action's save takes from its own restore step, which cannot drift from it.
-PRIMARY_KEY = re.compile(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}")
-
-
 def job_cache_steps(job: dict, action: str) -> list:
     """Every actions/cache/<action> step of one job, its own and those of the local actions its
     steps run, as (its family, its with:, the action file it is in or '')."""
@@ -370,7 +366,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
         if not holder:
             continue  # a save step of this workflow's own, which saves_of read
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
-        mirrored = PRIMARY_KEY.fullmatch(key)
+        mirrored = COMPUTED_KEY.fullmatch(key)
         if mirrored:
             # A save inside an action under the key its own restore computed (the architecture
             # and spec checks): the key cannot drift from that restore, and the paths must not.
@@ -460,7 +456,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 # packages are the words beginning `./`, which is how a go command names one and how the race
 # step's --packages list spells the same list; the `-o /dev/null` of the build is no package. A
 # race build of another job fills another family's cache, for another lane, and is not this
-# rule's: the envoy-infra job's fills envoy-infra-go's unit step. PINS is the file that names the
+# rule's: the envoy-infra job's fills envoy-infra-build's unit step. PINS is the file that names the
 # step and the job, which each refusal names.
 RACE_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 RACE_FLAG = re.compile(r"(?<![\w-])-race\b")

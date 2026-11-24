@@ -16,40 +16,43 @@ name: CI caches
 #
 # Six Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
-# of its module files too, for the reason its job gives): go-notices (lint's notices step),
-# go-daemon (typecheck, daemon-go, plugin-pack, pi-legion and daemon-live, the pane-drivers,
-# tmux-scripts, session-scripts and nats-callout-sessions legs of ci.yaml's agent-harness job
-# (.github/actions/agent-harness), and the legion_build job of release.yaml), go-envoy
-# (envoy-go-checks, envoy-go-race-docs,
-# envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall, the
-# session-settings and plugin-smokes legs of agent-harness, and the embedder job of
-# .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model, which
-# builds the API's test binary of that set, the nats-callout-sessions leg of
-# agent-harness, and the binaries, multiprocess and visual jobs of
+# of its module files too, for the reason its job gives): go-notices (the notices job), go-daemon
+# (lint's typecheck leg, go-daemon's daemon-go and daemon-go-race legs, plugin-pack, pi-held's
+# pi-legion and daemon-live, the pane-drivers, tmux-scripts, session-scripts and
+# nats-callout-sessions legs of ci.yaml's agent-harness job (.github/actions/agent-harness), and
+# the legion_build job of release.yaml), go-envoy (go-envoy's envoy-go-build, envoy-session-stall,
+# envoy-e2e-local and listener-server-change legs, envoy-held's envoy-go-checks,
+# envoy-session-proofs and envoy-e2e-refill legs, go-envoy-held's envoy-go-race-docs and
+# envoy-go-docs-finalizers legs, the session-settings and plugin-smokes legs of agent-harness, and
+# the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (go-envoy-held's
+# envoy-go legs and its envoy-go-claim-model leg, which builds the API's test binary of that set,
+# the nats-callout-sessions leg of agent-harness, and the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those four
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold), go-envoy-darwin-vet (envoy-go-checks'
+# build of the listener and natsd alone does not hold), go-envoy-darwin-vet (envoy-go-build's
 # darwin vet, whose build cache is a directory of its own, the GOCACHE of that step's env) and
-# go-envoy-infra (envoy-infra-go, and the build job of release-envoy-infra.yaml).
+# go-envoy-infra (go-envoy's envoy-infra-build leg, envoy-held's envoy-infra-go leg, and the build
+# job of release-envoy-infra.yaml).
 # The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 # that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 # its objects. So each family is filled on every architecture one of its readers runs on, one
-# matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
-# go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
-# each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
-# plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model, the browser lane
-# and the release builds on the second), and go-envoy-darwin-vet on ubuntu-24.04 alone, where
-# envoy-go-build runs. A leg builds
+# matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where the notices job runs, and
+# go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04
+# both, since each has a reader on each (typecheck, the arm64 legs of go-envoy, envoy-held and
+# go-envoy-held, envoy-infra-build and envoy-infra-go on the first; go-daemon, plugin-pack,
+# pi-legion, daemon-live, agent-harness, envoy-go-build, envoy-go-checks, envoy-go-claim-model, the
+# browser lane and the release builds on the second), and go-envoy-darwin-vet on ubuntu-24.04
+# alone, where envoy-go-build runs. A leg builds
 # what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
 # arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 # go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
-# other five after it: the go-notices entry holds go-licenses, a program lint's notices step
-# runs, and a run of a workflow file older than the architecture in the key restores by
+# other five after it: the go-notices entry holds go-licenses, a program the notices job runs,
+# and a run of a workflow file older than the architecture in the key restores by
 # go-notices-<os>-, which an <os>-<arch> key starts with (the notices action's restore step says what
 # that did). One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
-# go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
-# module's for go-envoy, go-envoy-test and go-envoy-darwin-vet; the infra module's for
+# go.mod for go-daemon and for go-notices, which the notices job installs the daemon's Go for; the
+# envoy module's for go-envoy, go-envoy-test and go-envoy-darwin-vet; the infra module's for
 # go-envoy-infra.
 #
 # go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet are filled again on
@@ -732,28 +735,28 @@ jobs:
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
-      # What envoy-infra-go and the release build build: the vet with both live-test tags, for
-      # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
-      # runs, and the test binaries of each leg's reader. On ubuntu-24.04-arm, envoy-infra-go's unit
-      # step's race build, through the script that step runs (scripts/race-unit.sh, here in its
-      # compile mode), so the entry holds what that step links; check-ci-layout.sh holds this leg
-      # to that call and to no race build of its own. On ubuntu-24.04, release-envoy-infra.yaml's
-      # plain `go test ./...`. Compiled, not run: the live tests need nats-server, Postgres and
-      # container images, and the unit tests nothing a build cache keeps. The darwin vet is in the
-      # fill because, built cold, it is the step that brought envoy-infra-go near its time limit.
-      - name: Build what envoy-infra-go builds
+      # What the family's readers build, each on its own runner. On ubuntu-24.04-arm: the linux vet
+      # with both live-test tags and the darwin vet (envoy-infra-build's two vets), the race build
+      # of envoy-infra-build's unit step, through the script that step runs (scripts/race-unit.sh,
+      # here in its compile mode), so the entry holds what that step links (check-ci-layout.sh
+      # holds this leg to that call and to no race build of its own), and the natslive test
+      # binaries of the three packages envoy-infra-go's live step runs. On ubuntu-24.04, the one
+      # reader is release-envoy-infra.yaml's build, which runs that linux vet and runs no test (its
+      # other builds are -trimpath cross builds, which no object here serves), so that leg builds
+      # the vet alone. Compiled, not run: the live tests need nats-server, Postgres and container
+      # images, and the unit tests nothing a build cache keeps. The darwin vet is in the fill
+      # because, built cold, it is the step that brought main's envoy-infra-go job, which ran it,
+      # near its time limit.
+      - name: Build what the family's readers build
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
           go vet -tags pulumilive,natslive ./...
+          [ "$RUNNER_ARCH" = ARM64 ] || exit 0
           while IFS= read -r flag; do
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
-          if [ "$RUNNER_ARCH" = ARM64 ]; then
-            scripts/race-unit.sh compile
-          else
-            go test -c -o /dev/null ./...
-          fi
+          scripts/race-unit.sh compile
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
 
