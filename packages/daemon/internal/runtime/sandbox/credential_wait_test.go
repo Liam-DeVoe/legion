@@ -1,12 +1,15 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -95,6 +98,81 @@ func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testin
 			}
 			if frames := g.sent(keyed)[sent:]; len(frames) > 0 {
 				t.Errorf("the refused launch sent its launcher %#v, want nothing", frames)
+			}
+		})
+	}
+}
+
+// A read that fails in a launch into a kept pod whose launcher does not wait for the credential is
+// an error the launch retries. It is never a slot read as starting another App, which ends the
+// launch for the pod's update round (runtime.ErrAwaitsPodUpdate). The claim `…-implementer` runs
+// as the checker, a role the deployment defines as the implement App, and is launched again as the
+// checker. After the setup, one read answers its first ask and fails at each later one: the
+// runtime's ActsAs, or the plan reader of a role's App (appauth.RoleApps.Plan), which the launch
+// asks for each role the slot may hold that is none of Legion's. The launch answers the read's
+// error, sends no start, and is not runtime.ErrAwaitsPodUpdate. The control: with reads that never
+// fail, the same launch starts.
+func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) {
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	failed := errors.New("the record could not be read")
+	for _, tc := range []struct {
+		name string
+		// fails is the read that fails after its first ask: "actsAs", "plan", or "" for none.
+		fails string
+	}{
+		{name: "an ActsAs that fails after its first ask", fails: "actsAs"},
+		{name: "a plan read that fails after its first ask", fails: "plan"},
+		{name: "control: reads that never fail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var armed atomic.Bool
+			asked := map[string]*atomic.Int32{"actsAs": new(atomic.Int32), "plan": new(atomic.Int32)}
+			// answer is read's answer once armed: nil at its first ask, and failed at each later
+			// ask where read is the one the case fails.
+			answer := func(read string) error {
+				if armed.Load() && asked[read].Add(1) > 1 && tc.fails == read {
+					return failed
+				}
+				return nil
+			}
+			g := newRig(t, nil, withoutCredentialWait(),
+				withOptions(func(o *Options) {
+					o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement}
+					o.RoleApps.Plan = func(context.Context, string, claim.Role) (appauth.Planned, error) {
+						return appauth.Planned{}, answer("plan")
+					}
+					o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
+						if token != keyed {
+							return "", false, nil
+						}
+						return "", false, answer("actsAs")
+					}
+				}),
+				withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+			g.spawn(rootSpec(t))
+			g.spawn(testSpec(t, keyed, "checker", testTree))
+			sent := len(g.sent(keyed))
+
+			again := testSpec(t, keyed, "checker", testTree)
+			again.Generation++
+			armed.Store(true)
+			_, err := g.r.Spawn(g.ctx, again)
+			starts := slices.ContainsFunc(g.sent(keyed)[sent:], func(frame shimwire.Frame) bool {
+				start, ok := frame.(shimwire.LauncherStart)
+				return ok && start.Generation == again.Generation
+			})
+			if tc.fails == "" {
+				if err != nil || !starts {
+					t.Fatalf("the launch with reads that never fail = %v, sending a start: %t; want it started", err, starts)
+				}
+				return
+			}
+			if n := asked[tc.fails].Load(); n < 2 {
+				t.Fatalf("the launch asked the %s read %d times, want two or more: this case proves nothing", tc.fails, n)
+			}
+			if errors.Is(err, runtime.ErrAwaitsPodUpdate) || !errors.Is(err, failed) || starts {
+				t.Fatalf("the launch with a %s read that failed = %v, sending a start: %t; want the read's error, which the launch retries, "+
+					"no start, and no wait for the pod's update round", tc.fails, err, starts)
 			}
 		})
 	}
