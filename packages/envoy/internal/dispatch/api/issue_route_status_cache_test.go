@@ -138,11 +138,11 @@ func TestTwoIssueReadsWithinTheTTLMakeOneListenerCall(t *testing.T) {
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
-	// The answer serves an hour here, so the second read is inside it however slow the machine:
-	// the deployment's five seconds, which the database judges on its own clock, would ask again
-	// after a stall between the reads (TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds
-	// reads the deployment's own).
-	served.rosters.ttl = time.Hour
+	// The answer serves stagedAhead here, so the second read is inside it however slow the
+	// machine: the deployment's five seconds, which the database judges on its own clock, would
+	// ask again after a stall between the reads
+	// (TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds reads the deployment's own).
+	served.rosters.ttl = stagedAhead
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
 
@@ -341,14 +341,14 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 // The listener never answers, so the fetch ends at routeRosterTimeout, and the stored silence
 // must expire a window after that moment rather than a window after the send. This server runs
 // on the real clock: what the test reads is the gap between two moments the database stamped,
-// and the fetch's bound is the deployment's own two seconds. The silence is an hour here, so the
-// second read is inside it however slow the machine; a window counted from the send still falls
-// the fetch's bound short of the one stored.
+// and the fetch's bound is the deployment's own two seconds. The silence is stagedAhead here, so
+// the second read is inside it however slow the machine; a window counted from the send still
+// falls the fetch's bound short of the one stored.
 func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls, _ := heldRosterListener(t)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL})
-	served.rosters.silenceTTL = time.Hour
+	served.rosters.silenceTTL = stagedAhead
 	if readRoster(t, served, context.Background()).answered {
 		t.Fatal("a listener that hangs answered")
 	}
@@ -428,10 +428,10 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	// Not parallel: rosterWaits reads every goroutine of the process (runtime.Stack, all), so a read
 	// another test parks in readRouteRoster counts as one of this row's 3.
 	served, calls, release, _ := heldRosterServer(t)
-	// The answer serves an hour here, so the last read below takes the fetch's answer however long
-	// after the fetch's send it comes: the deployment's five seconds, which the database judges,
-	// would ask the listener again after a stall.
-	served.rosters.ttl = time.Hour
+	// The answer serves stagedAhead here, so the last read below takes the fetch's answer however
+	// long after the fetch's send it comes: the deployment's five seconds, which the database
+	// judges, would ask the listener again after a stall.
+	served.rosters.ttl = stagedAhead
 	read := func(ctx context.Context) <-chan routeRoster {
 		answer := make(chan routeRoster, 1)
 		go func() {

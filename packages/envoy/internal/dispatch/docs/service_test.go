@@ -4667,7 +4667,7 @@ func TestUnlinkedDocumentIsAlwaysOpen(t *testing.T) {
 func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// No timer runs the settlement: the test runs it itself once the room holds the element.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 		fragment := doc.GetXmlFragment(fragmentName)
@@ -4696,7 +4696,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// No timer settles the document: the test runs the settlement itself after the rollback,
 	// where it would version the rolled-back write if the room held it.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	// The seed owes a settlement, which versions it (the fixture's first version is another
 	// text); settled here, it is not what a load during the transaction arms below.

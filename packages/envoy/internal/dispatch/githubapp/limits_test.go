@@ -28,8 +28,10 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 // Authorization"): one repository (acme/web) and the installation covering it, token mints, the
 // App's installation list, and any other path answered as a read. A request to limitPath is
 // answered as GitHub answers an exhausted rate limit: 403, X-RateLimit-Remaining: 0 and a
-// Retry-After of an hour, so the limit it leaves is still in force when the row reads another
-// request under it, however slow the row is.
+// Retry-After of an hour, serverwait.MaxWait, the longest wait the client records from an answer.
+// The limit it leaves is staged state for the database's clock, not a wait, and is still in force
+// when the row reads another request under it however slow the row is: no `go test -timeout` CI
+// gives this package reaches an hour.
 type limitGitHub struct {
 	server *httptest.Server
 
@@ -195,14 +197,24 @@ func passLimits(t *testing.T, database *store.Store) {
 	}
 }
 
-// holdLimits moves every recorded limit's end an hour past the database's clock, for a row that
-// reads a request made inside a limit a slow row may outlast before it gets there: GitHub's
+// stagedAhead is how far past the database's clock a row of this package stages the end of a
+// rate limit the client judges against that clock (github_rate_limits.until): a limit a row
+// records itself (ratelimit.Store.Record) or holds on (holdLimits). It is staged state for the
+// product's clock, not a wait: longer than any `go test -timeout` CI gives this package, so the
+// limit is still in force when the row's later request is made however slow the row is. A wait
+// GitHub's answer names is held to serverwait.MaxWait, an hour, so no answer the fake gives can
+// stage a limit longer than that.
+const stagedAhead = 24 * time.Hour
+
+// holdLimits moves every recorded limit's end stagedAhead past the database's clock, for a row
+// that reads a request made inside a limit a slow row may outlast before it gets there: GitHub's
 // minute where its answer names no wait (rateLimitWait). The row reads the wait the limit was
 // recorded with first (recordedWait).
 func holdLimits(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() + interval '1 hour'`); err != nil {
-		t.Fatalf("hold the recorded limits for an hour: %v", err)
+	if _, err := database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() + make_interval(secs => $1)`,
+		stagedAhead.Seconds()); err != nil {
+		t.Fatalf("hold the recorded limits stagedAhead on: %v", err)
 	}
 }
 
@@ -239,9 +251,10 @@ func requireHeld(t *testing.T, err error, what string) {
 // keeps meeting one (a strike), where a primary limit ends at GitHub's own reset.
 //
 // Each shape here is one GitHub answers a limited query with, at either status. A wait GitHub
-// names is an hour, so the limit is still in force when the other process's requests are read
-// however slow the row is; where GitHub names none, the limit is its minute, which the row reads
-// as recorded and then holds an hour on (holdLimits).
+// names is an hour, serverwait.MaxWait, the longest the client records, so the limit is still in
+// force when the other process's requests are read however slow the row is (no
+// `go test -timeout` CI gives this package reaches an hour); where GitHub names none, the limit is
+// its minute, which the row reads as recorded and then holds stagedAhead on (holdLimits).
 func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
 	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
@@ -415,11 +428,11 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 		// absent is text of GitHub's answer the cause must not hold.
 		absent []string
 	}{{
-		// The limit is recorded for an hour, so it is still in force when the request is made
-		// however slow the row is.
+		// The limit is recorded for stagedAhead, so it is still in force when the request is
+		// made however slow the row is.
 		name: "a REST request a recorded limit holds",
 		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
-			if err := limits.Record(context.Background(), InstallationScope(7), time.Hour); err != nil {
+			if err := limits.Record(context.Background(), InstallationScope(7), stagedAhead); err != nil {
 				t.Fatalf("record the installation's limit: %v", err)
 			}
 		},
@@ -428,7 +441,7 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	}, {
 		name: "a query a recorded GraphQL limit holds before it is sent",
 		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
-			if err := limits.Record(context.Background(), GraphQLScope, time.Hour); err != nil {
+			if err := limits.Record(context.Background(), GraphQLScope, stagedAhead); err != nil {
 				t.Fatalf("record the GraphQL limit: %v", err)
 			}
 		},

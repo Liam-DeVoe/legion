@@ -48,14 +48,14 @@ func keyedPost(ctx context.Context, server *httptest.Server, path, body, key str
 // the first run is still going (409 KEY_IN_FLIGHT), then answered the first run's own stored
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
 // every repeat started again from nothing, so such a write could never land. The key's lease is
-// stagedKeyLease, so the first run holds its key however long the machine stalls its renewals:
+// stagedAhead, so the first run holds its key however long the machine stalls its renewals:
 // on the deployment's lease a renewal stalled for two thirds of it would let a repeat take the key
 // over and run the write again.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
-	rig := newWritingRigWith(t, testServerOptions{idempotencyLease: stagedKeyLease}, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
+	rig := newWritingRigWith(t, testServerOptions{idempotencyLease: stagedAhead}, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 		if run == 1 {
 			close(running)
 		}

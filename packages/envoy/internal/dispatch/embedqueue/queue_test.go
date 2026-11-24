@@ -192,17 +192,16 @@ func TestProcessBatchEmbedsAPendingRowTheWriteTimeTriggerEnqueued(t *testing.T) 
 // criterion: a write never fails because the embedder did, and a failed attempt leaves the row
 // pending, retried later rather than lost.
 //
-// The backoff is counted from the queue's clock (Deps.Clock), which here reads an hour past the
-// wall clock with the wall clock's waits: the row's next_attempt_at is then retry.Delay(1) past
-// that moment, an hour past the database's now(), so the row is still backed off when the
+// The backoff is counted from the queue's clock (Deps.Clock), which here reads stagedAhead past
+// the wall clock with the wall clock's waits: the row's next_attempt_at is then retry.Delay(1) past
+// that moment, stagedAhead past the database's now(), so the row is still backed off when the
 // database reads it and when the second batch runs, however slow the row is, where a second's
 // backoff on the wall clock could pass before either.
 func TestProcessBatchRetriesWithBackoffOnEmbedFailure(t *testing.T) {
-	const ahead = time.Hour
 	database := storetest.Open(t)
 	seedIssue(t, database, "RETR", "RETR-1", "A title")
 	embedder := &fakeEmbedder{err: errors.New("bedrock: simulated outage")}
-	deps := Deps{Store: database, Embedder: embedder, Clock: clocktest.WithNow(clock.Real(), func() time.Time { return time.Now().Add(ahead) })}
+	deps := Deps{Store: database, Embedder: embedder, Clock: clocktest.WithNow(clock.Real(), func() time.Time { return time.Now().Add(stagedAhead) })}
 	before := time.Now()
 	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
 	after := time.Now()
@@ -229,7 +228,7 @@ func TestProcessBatchRetriesWithBackoffOnEmbedFailure(t *testing.T) {
 	}
 	// The backoff is retry.Delay(1) past the queue's clock as the batch read it, a moment between
 	// before and after on that clock, at the microsecond the database keeps.
-	if low, high := before.Add(ahead+retry.Delay(1)).Truncate(time.Microsecond), after.Add(ahead+retry.Delay(1)); due.Before(low) || due.After(high) {
+	if low, high := before.Add(stagedAhead+retry.Delay(1)).Truncate(time.Microsecond), after.Add(stagedAhead+retry.Delay(1)); due.Before(low) || due.After(high) {
 		t.Errorf("next_attempt_at = %v, want retry.Delay(1) = %v past the queue's clock during the batch, between %v and %v", due, retry.Delay(1), low, high)
 	}
 	if !backedOff {
@@ -1849,8 +1848,8 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 // clock, a fake here that the row sets just after each row's stamp, so the claim's lapse is read
 // against the same moment the floor is, and the floor is exact.
 //
-// The other process's claim is put an hour past the database's clock before each pass that must
-// find it held, so it holds there however long the pass takes to read it: claimWindow's two
+// The other process's claim is put stagedAhead past the database's clock before each pass that
+// must find it held, so it holds there however long the pass takes to read it: claimWindow's two
 // minutes, and a second, could pass before the pass and leave the row due, claimed by this scan.
 // "Lapsing in a second" is then read on the queue's clock, which the row sets a second short of
 // the lapse.
@@ -1868,12 +1867,12 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	if claimed, _, err := scanPending(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)}); err != nil || len(claimed) != 1 {
 		t.Fatalf("the other process's claim = %v, %v; want DUE-2", claimed, err)
 	}
-	// The other process's claim, held an hour past the database's clock.
+	// The other process's claim, held stagedAhead past the database's clock.
 	var lapses time.Time
 	if err := database.Pool.QueryRow(ctx, `
-		update embeddings set next_attempt_at = now() + interval '1 hour' where id = 'DUE-2' returning next_attempt_at
-	`).Scan(&lapses); err != nil {
-		t.Fatalf("hold the claim an hour: %v", err)
+		update embeddings set next_attempt_at = now() + make_interval(secs => $1) where id = 'DUE-2' returning next_attempt_at
+	`, stagedAhead.Seconds()).Scan(&lapses); err != nil {
+		t.Fatalf("hold the claim stagedAhead on: %v", err)
 	}
 	fake.Set(testdb.Now(t, database.Pool))
 	if next := scanPass(ctx, deps); !next.Equal(lapses) {

@@ -24,11 +24,14 @@ import (
 )
 
 // stagedAhead is how far past the database's now() a row of this package stages a time the
-// service judges against the database's clock: a notice's quiet time, or an issue's close the
-// store's close margin is read against. It is staged state for the product's clock, not a wait:
-// longer than any `go test -timeout` CI gives this package, so what the row staged reads as not
-// yet passed however long the run takes, where the production thirty seconds or a minute would
-// pass on a loaded machine.
+// service judges against the database's clock: a notice's quiet time, an issue's close the store's
+// close margin is read against, or a process's heartbeat (fleetProcess). It is also how long a
+// row sets a delay of the service's own on the real clock that must not run out inside the row: a
+// settle delay (Deps.Settle) no timer may run before the row settles the document itself, and the
+// idle time ygo's sweep retires a room after (RoomIdleTimeout). It is staged state for the
+// product's clock, not a wait: longer than any `go test -timeout` CI gives this package (80
+// minutes in docs's race lane), so what the row staged reads as not yet passed however long the
+// run takes, where the production thirty seconds or a minute would pass on a loaded machine.
 const stagedAhead = 24 * time.Hour
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the

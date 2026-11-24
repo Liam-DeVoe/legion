@@ -17,7 +17,7 @@ import (
 // liveProcess writes the server_processes row of a server process whose embedder has identity,
 // started startedAgo before the database's now() and live, and returns its instance id. The row
 // names this build's owner lock protocol, as processes.Register writes it. Its heartbeat is
-// heartbeatAhead past now(), so it reads live (processes.Live) however long the row takes to read
+// stagedAhead past now(), so it reads live (processes.Live) however long the row takes to read
 // it, where one stamped now() would lapse processes.LiveWindow later.
 func liveProcess(t *testing.T, database *store.Store, identity string, startedAgo time.Duration) string {
 	t.Helper()
@@ -25,15 +25,20 @@ func liveProcess(t *testing.T, database *store.Store, identity string, startedAg
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, started_at, heartbeat_at, owner_lock_protocol)
 		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now() + make_interval(secs => $4), $3)
-		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol, heartbeatAhead.Seconds()).Scan(&id); err != nil {
+		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol, stagedAhead.Seconds()).Scan(&id); err != nil {
 		t.Fatalf("add a server process embedding with %q: %v", identity, err)
 	}
 	return id
 }
 
-// heartbeatAhead is how far past the database's now() a live process's heartbeat is put
-// (liveProcess): far enough that no run outlasts it, where processes.LiveWindow is seconds.
-const heartbeatAhead = time.Hour
+// stagedAhead is how far past the database's now() a row of this package stages a time the
+// product judges against the database's clock: a live process's heartbeat (liveProcess), a row's
+// backoff (the queue's clock read that far past the wall clock), and another process's claim on
+// a row. It is staged state for the product's clock, not a wait: longer than any
+// `go test -timeout` CI gives this package, so what the row staged reads as not yet passed however
+// long the run takes, where processes.LiveWindow, a backoff's seconds or claimWindow's two minutes
+// would pass on a loaded machine.
+const stagedAhead = 24 * time.Hour
 
 // expireProcess moves the heartbeat of the process id past the registry's live window, as a
 // process that stopped without deregistering leaves it.
@@ -132,7 +137,7 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 
 	// The first process serves again: the second identity is still carried, so it stays active.
 	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() + make_interval(secs => $2) where instance = $1::uuid`,
-		first, heartbeatAhead.Seconds())
+		first, stagedAhead.Seconds())
 	firstEmbedder.calls = nil
 	before = snapshotRows(t, database)
 	cover(t, firstDeps)
@@ -163,7 +168,7 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 		with gone as (delete from server_processes where instance = $1::uuid)
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, heartbeat_at, owner_lock_protocol)
 		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, now() + make_interval(secs => $4), $3)`,
-		first, configuredIdentity, store.OwnerLockProtocol, heartbeatAhead.Seconds())
+		first, configuredIdentity, store.OwnerLockProtocol, stagedAhead.Seconds())
 
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	cover(t, Deps{Store: second, Embedder: secondEmbedder})

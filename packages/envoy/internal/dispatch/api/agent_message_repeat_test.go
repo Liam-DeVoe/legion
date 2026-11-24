@@ -269,13 +269,13 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 // them has arrived there: one makes the message and every other is told the first is in flight or,
 // once it has answered, given its answer. The session is handed the message once.
 //
-// The server stages the key's lease (stagedKeyLease), so the first request's lease is live at
+// The server stages the key's lease (stagedAhead), so the first request's lease is live at
 // every other request's read however long the machine takes, and only the key's own state decides
 // each answer.
 func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, idempotencyLease: stagedKeyLease})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, idempotencyLease: stagedAhead})
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
@@ -260,7 +259,7 @@ func TestAClonedForkAndItsReplicaAreIndependent(t *testing.T) {
 // lost-write check finds the write's own text by it (recordInsertedText).
 func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	server := websocket.NewServer()
-	server.RoomIdleTimeout = time.Hour // keeps ygo's idle sweep away from the room for the whole test
+	server.RoomIdleTimeout = stagedAhead // keeps ygo's idle sweep away from the room for the whole test
 	service := &Service{srv: newRoomServer(server)}
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)

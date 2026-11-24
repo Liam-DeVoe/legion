@@ -3,16 +3,11 @@ package docs
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
-
-// heldRoomIdleTimeout is how long a room stays resident once idle on a service whose rooms a test
-// holds (holdRoomsResident): far above any test's run.
-const heldRoomIdleTimeout = time.Hour
 
 // holdRoomsResident keeps every room of service resident for the test's run, however slowly the
 // machine runs it. A test that reads or writes a room's document directly - a roomPeer applies its
@@ -31,7 +26,7 @@ func holdRoomsResident(t *testing.T, service *Service) {
 		t.Fatalf("hold the rooms resident before any room loads: the service already holds %d room(s), %v, "+
 			"and ygo's idle sweeper reads the timeout from the first one", len(rooms), rooms)
 	}
-	service.srv.RoomIdleTimeout = heldRoomIdleTimeout
+	service.srv.RoomIdleTimeout = stagedAhead
 }
 
 // roomPeer is a browser's editor on a room: its own copy of the document, synced from the room
@@ -61,7 +56,7 @@ type roomPeer struct {
 // rooms must be held resident (holdRoomsResident), or the room can idle out under the peer.
 func newRoomPeer(t *testing.T, service *Service, artifactID string, conn uint64, actor model.Actor, sent map[string]bool) *roomPeer {
 	t.Helper()
-	if timeout := service.srv.RoomIdleTimeout; timeout < heldRoomIdleTimeout {
+	if timeout := service.srv.RoomIdleTimeout; timeout < stagedAhead {
 		t.Fatalf("a peer of %s on a service whose rooms idle out after %v: ygo's idle sweep retires the room "+
 			"under the peer once a run outlasts that; call holdRoomsResident(t, service) before its first room loads",
 			actor.ID, timeout)

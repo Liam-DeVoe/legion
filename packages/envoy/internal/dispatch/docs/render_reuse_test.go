@@ -1366,8 +1366,8 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
 	// As newRenderReuseService says: ygo's idle sweep is kept away from the rooms, set before any
 	// room loads. Under load task A's room was gone at the check ("no room is resident to check").
-	taskA.srv.RoomIdleTimeout = time.Hour
-	taskB.srv.RoomIdleTimeout = time.Hour
+	taskA.srv.RoomIdleTimeout = stagedAhead
+	taskB.srv.RoomIdleTimeout = stagedAhead
 	sh := watchRenders(t, taskA, artifactID)
 	seedServiceText(t, taskA, artifactID, renderReuseDocument())
 	if err := taskA.warmLiveDocument(context.Background(), artifactID); err != nil {

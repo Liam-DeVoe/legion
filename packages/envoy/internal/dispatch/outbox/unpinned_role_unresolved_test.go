@@ -41,7 +41,7 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 	}
 }
 
-// keepLive dates every pending attempt of commentID liveAhead past the database's clock, its
+// keepLive dates every pending attempt of commentID stagedAhead past the database's clock, its
 // creation and its claim, for a row that reads an attempt seedCreatedAttempt opened as live: that
 // statement dates both now(), as the API's does, which reads live for model.DeliveryClaimLapse
 // only (model.MentionLiveSQL), so a row that took a minute to read it would read it past its
@@ -51,7 +51,7 @@ func keepLive(t *testing.T, database *store.Store, commentID string) {
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set created_at = now() + $2::interval, claimed_at = now() + $2::interval
 		where comment_id = $1 and state = 'pending'
-	`, commentID, liveAhead); err != nil {
+	`, commentID, stagedAhead); err != nil {
 		t.Fatalf("keep the attempts of comment %s live: %v", commentID, err)
 	}
 }

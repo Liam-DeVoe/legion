@@ -35,16 +35,16 @@ const actAnswerSpec = "Context\n\n" +
 // write, seeds the document's live text and waits until settlement has indexed both blocks as
 // asks of the document - the rows the carry reads.
 //
-// The settle is an hour, so no settlement a timer starts runs while one of these tests holds its
-// joined transaction: one that did would take the document's rows in the other order and the two
-// would deadlock. The seeding settles the document itself, at once (SettleNow), as
+// The settle is stagedAhead, so no settlement a timer starts runs while one of these tests holds
+// its joined transaction: one that did would take the document's rows in the other order and the
+// two would deadlock. The seeding settles the document itself, at once (SettleNow), as
 // seededRegionDocument does, so no window of real time decides whether a timer's settlement lands
 // among the test's writes.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.SettleNow(artifactID)

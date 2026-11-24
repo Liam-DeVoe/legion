@@ -917,10 +917,14 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 
 // stagedAhead is how far past the database's now() a row of this package stages a time the
 // product judges against its own clock: a heartbeat, a lease, a claim, a run's ends_at, a close,
-// or a TTL the roster cache keeps an answer for. It is staged state for the product's clock, not a
-// wait: longer than any `go test -timeout` CI gives this package, so what the row staged reads as
-// not yet passed however long the run takes, where a stamp of now() would pass a minute or a few
-// seconds later on a loaded machine.
+// a snooze's end, the lease a key is taken for (testServerOptions.idempotencyLease), or a TTL the
+// roster cache keeps an answer or a silence for. It is also how long a row sets a product delay
+// on the real clock that must not run out inside the row: a document service's settle delay
+// (docs.Deps.Settle) and a stand-in embedder's stall (fakeEmbedder.delay). It is staged state for
+// the product's clock, not a wait: longer than any `go test -timeout` CI gives this package (70
+// minutes in api's race lane), so what the row staged reads as not yet passed however long the
+// run takes, where a stamp of now() would pass a minute or a few seconds later on a loaded
+// machine.
 const stagedAhead = 24 * time.Hour
 
 // ageAttempts moves the creation of the comments' attempts a claim lease and a second into the

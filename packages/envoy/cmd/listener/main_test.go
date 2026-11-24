@@ -1285,12 +1285,20 @@ func TestIsValidRole(t *testing.T) {
 	}
 }
 
-// The session cache counts ses_health until its TTL passes, so the TTL is staged at a day: state
-// for the registry's clock and the bucket's age, not a wait, longer than any `go test -timeout` CI
-// gives this package, so the count reads it however long the machine takes after the Put.
+// stagedAhead is how long a row of this package stages a time the product judges against a clock
+// the row does not move: a session TTL, which is the registry's deadline for a row and the
+// bucket's age nats-server drops a record at, and the interval a durable's bind waits out between
+// attempts on the real clock (bindListenerDurable), which a bind that ignored its context would
+// sit out. It is staged state for those clocks, not a wait of the row's: longer than any
+// `go test -timeout` CI gives this package, so what the row staged holds however long the machine
+// takes, and a bind that waited out its interval would not return before the shared wait gave up.
+const stagedAhead = 24 * time.Hour
+
+// The session cache counts ses_health until its TTL passes, so the TTL is staged at stagedAhead,
+// and the count reads it however long the machine takes after the Put.
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	client := setupPublishTestClient(t)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(24*time.Hour))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(stagedAhead))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -1718,14 +1726,13 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 // The session registry runs on a clock of the row's own (session.WithSessionClock), which stands
 // at the moment it was made until the row moves it: the heartbeat's Get right after its Put, the
 // expiry and the read are each judged at the moment the row set, so none passes or falls short of
-// its TTL by how long the machine took. The TTL is staged at a day, state for that clock and the
-// bucket's age and not a wait, longer than any `go test -timeout` CI gives this package, so
-// nats-server keeps the record while the row runs; the row moves the clock past it, then on past
-// the default retention to a moment the configured one still covers.
+// its TTL by how long the machine took. The TTL is staged at stagedAhead, so nats-server keeps
+// the record while the row runs; the row moves the clock past it, then on past the default
+// retention to a moment the configured one still covers.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	const (
 		expired    = "ses_heartbeat_expired"
-		sessionTTL = 24 * time.Hour
+		sessionTTL = stagedAhead
 	)
 	clock := clocktest.New(time.Now())
 	registry, sessions := setupInterestLastSeenTest(t, []string{expired},
@@ -2775,10 +2782,10 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 }
 
 // A signal during the wait ends the bind at once, without waiting for the next attempt, so the
-// listener's ordered shutdown starts while ECS's stop timeout still runs. The interval is an hour,
-// so a bind that waited for its next attempt would not return before the shared wait gave up; how
-// soon it returns is a reading of the machine's clock, held in benchtime's timing lane by the row
-// below.
+// listener's ordered shutdown starts while ECS's stop timeout still runs. The interval is
+// stagedAhead, so a bind that waited for its next attempt would not return before the shared wait
+// gave up; how soon it returns is a reading of the machine's clock, held in benchtime's timing
+// lane by the row below.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
 	bindCancelledInItsWait(t, benchtime.EveryRun)
 }
@@ -2810,7 +2817,7 @@ func bindCancelledInItsWait(t *testing.T, lane benchtime.Lane) {
 	done := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(ctx, replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
-			logging.NewWithWriter("test", logs), time.Hour, 2*time.Hour)
+			logging.NewWithWriter("test", logs), stagedAhead, 2*stagedAhead)
 		done <- bindOutcome{bind, err, time.Now()}
 	}()
 	testwait.Until(t, "the bind's first attempt to be refused, after which it waits out its interval", func() (string, bool) {
@@ -2824,7 +2831,7 @@ func bindCancelledInItsWait(t *testing.T, lane benchtime.Lane) {
 	})
 	cancelled := time.Now()
 	cancel()
-	outcome := testwait.Receive(t, "the bind to return once its context ended, an hour before its next attempt", done)
+	outcome := testwait.Receive(t, "the bind to return once its context ended, a day before its next attempt", done)
 	if !errors.Is(outcome.err, context.Canceled) {
 		t.Fatalf("bind after the context ended: %v, want context.Canceled", outcome.err)
 	}

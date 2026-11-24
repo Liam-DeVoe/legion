@@ -26,8 +26,8 @@ import (
 // sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
 // a frame of the feed is as late as the longest transaction open anywhere on the Postgres
 // instance, and no clock bounds the wait for one: it keys on the horizon's own account of itself
-// (internal/dispatch/horizontest), which fails the wait at once, naming the holder, on a hold in
-// the test's own database that has stood OwnHoldBound. Every server these tests build warns at
+// (internal/dispatch/horizontest), which waits out any hold to the shared give-up and then names
+// the holder, one in the test's own database among them. Every server these tests build warns at
 // horizontest.StallWarning (newRegisteredTestServer).
 
 // eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of

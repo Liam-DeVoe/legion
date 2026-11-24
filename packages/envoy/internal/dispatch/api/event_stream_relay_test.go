@@ -121,8 +121,8 @@ func subscribeRelay(t *testing.T, relay *eventStreamRelay) (<-chan relayedEvent,
 }
 
 // receiveRelayed is the subscription's next event. The relay publishes up to the safe horizon, so
-// the wait is the horizon's (horizontest.WaitInProcess), which fails at once, naming the holder,
-// on a hold in database, the test's own, that has stood OwnHoldBound.
+// the wait is the horizon's (horizontest.WaitInProcess), which waits out any hold to the shared
+// give-up and then names the holder, one in database, the test's own, among them.
 func receiveRelayed(t *testing.T, subscription <-chan relayedEvent, database *store.Store) relayedEvent {
 	t.Helper()
 	return receiveRelayedOn(t, nil, subscription, database)

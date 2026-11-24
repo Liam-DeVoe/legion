@@ -103,9 +103,11 @@ func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T)
 
 // stagedSessionTTL is the session TTL of a row whose verdict reads a registration back but is not
 // about its expiry: the bucket's age, which nats-server drops a record at, and the deadline Get
-// answers a row gone past (expiryFor). It is staged state for those clocks, not a wait: longer
-// than any `go test -timeout` CI gives this package, so a registration the row wrote still reads
-// back however long the machine takes, where ten seconds would pass on a loaded one.
+// answers a row gone past (expiryFor). A row about that deadline takes it too, and judges the
+// deadline on a clock it sets itself (WithSessionClock), so only the bucket's age runs on a clock
+// the row does not move. It is staged state for those clocks, not a wait: longer than any
+// `go test -timeout` CI gives this package, so a registration the row wrote still reads back
+// however long the machine takes, where ten seconds would pass on a loaded one.
 const stagedSessionTTL = 24 * time.Hour
 
 func TestSessionRegistry_PutAndGet(t *testing.T) {
@@ -227,7 +229,7 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 // (expiryFor). The bucket's age is far past the run, so nats-server keeps the record while the row
 // runs, and the clock the row sets is the one that judges the deadline.
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
-	const ttl = time.Hour
+	const ttl = stagedSessionTTL
 	client := setupNATS(t)
 	clk := clocktest.New(time.Now())
 	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clk.Now))
@@ -269,7 +271,7 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 // bucket's age is far past the run, so nats-server drops neither record while the row runs, and
 // the registry's own clock, which the row sets, judges both deadlines.
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
-	const ttl = time.Hour
+	const ttl = stagedSessionTTL
 	client := setupNATS(t)
 	clk := clocktest.New(time.Now())
 	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clk.Now))

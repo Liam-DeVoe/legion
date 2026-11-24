@@ -845,10 +845,10 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"PUT /api/v1/asks/{id}/asked-of": {body: map[string]any{"asked_of": "alice"}},
 	"POST /api/v1/asks/{id}/resolve": {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
 	// The snooze refuses a moment that has passed by the database's now() before it reads the ask
-	// (putAskSnooze), so its moment is that now() an hour on, read at the request: one taken when
-	// the test binary started would have passed once the binary is an hour old.
+	// (putAskSnooze), so its moment is that now() stagedAhead on, read at the request: one taken
+	// when the test binary started would have passed once the binary is that old.
 	"PUT /api/v1/me/asks/{id}/snooze": {at: func(t *testing.T, database queryer) any {
-		return map[string]any{"snoozed_until": databaseNow(t, database).Add(time.Hour).UTC().Format(time.RFC3339)}
+		return map[string]any{"snoozed_until": databaseNow(t, database).Add(stagedAhead).UTC().Format(time.RFC3339)}
 	}},
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
 	"POST /api/v1/comments/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},

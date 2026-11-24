@@ -81,7 +81,7 @@ func (unreadableRoleClaims) ReleaseExpiredRoleClaim(context.Context, string, str
 // the role and session registries a session plugin registers through, and a migrated database.
 // forwardBound is the bound the Deps it builds give a role route's forward's wait for an unnamed
 // mention (Deps.forwardBound): zero, which newRoleRig leaves, is unnamedForwardBound, and a row
-// that stages an attempt past its lease that must read within that bound sets stagedForwardBound
+// that stages an attempt past its lease that must read within that bound sets stagedAhead
 // before it builds any.
 type roleRig struct {
 	url          string

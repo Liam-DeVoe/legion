@@ -118,7 +118,7 @@ func TestSettlementTakeHoldsTheRoomsLiveInstance(t *testing.T) {
 func TestSettlementTakeOfARoomNoRoomHolds(t *testing.T) {
 	t.Run("during a shutdown that may not load it", func(t *testing.T) {
 		service, artifactID := newTestService(t)
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		seedServiceText(t, service, artifactID, "Context.\n")
 		closeDocumentRoom(t, service, artifactID)
 		service.shutdownRooms.Store(artifactID, struct{}{})
@@ -140,7 +140,7 @@ func TestSettlementTakeOfARoomNoRoomHolds(t *testing.T) {
 	})
 	t.Run("retired after its warm-up", func(t *testing.T) {
 		service, artifactID := newTestService(t)
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		seedServiceText(t, service, artifactID, "Context.\n")
 		closeDocumentRoom(t, service, artifactID)
 		var closed bool

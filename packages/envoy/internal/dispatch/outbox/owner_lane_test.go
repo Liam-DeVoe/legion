@@ -109,11 +109,12 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledged(t *testing.T) {
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
-		// What the outbox waits for the first forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test, so the first event's wait is still running when the span
-		// below ends, however slow the machine is: on roleForwardAckTimeout's 5 s the forward
-		// would time out and be sent again inside the span once the row had taken a few seconds.
-		stalledForwardWait = 10 * time.Minute
+		// What the outbox waits for the first forward's acknowledgement (Deps.forwardAckWait):
+		// stagedAhead, a wait of the product's on the real clock that outlasts the whole test, so
+		// the first event's wait is still running when the span below ends, however slow the
+		// machine is: on roleForwardAckTimeout's 5 s the forward would time out and be sent again
+		// inside the span once the row had taken a few seconds.
+		stalledForwardWait = stagedAhead
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)
@@ -188,8 +189,8 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 	// is on its forward.
 	first := rig.routedEvent(t, "T-1", stalledRole, alice)
 	other := rig.routedEvent(t, "T-2", stalledRole, alice)
-	backOffIn(t, rig.database, first.ID, attempts, time.Hour)
-	backOffIn(t, rig.database, other.ID, attempts, time.Hour)
+	backOffIn(t, rig.database, first.ID, attempts, stagedAhead)
+	backOffIn(t, rig.database, other.ID, attempts, stagedAhead)
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener

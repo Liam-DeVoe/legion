@@ -178,7 +178,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// room goes when that hub connects again.
 	untouched := emptyDocument(t, handler, issue.Key, "Notes a third process holds")
 	thirdStore := storetest.SecondProcess(t, database)
-	third := docs.New(docs.Deps{Store: thirdStore, Identity: headerIdentity(thirdStore), Settle: time.Hour})
+	third := docs.New(docs.Deps{Store: thirdStore, Identity: headerIdentity(thirdStore), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), third) })
 	// The hub's first dial fails and every later one waits on through, so this process hears
 	// nothing until the test lets it dial: the shape

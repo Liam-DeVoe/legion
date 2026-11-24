@@ -29,7 +29,7 @@ const heldRoleLaneBound = 2 * model.DeliveryClaimLapse
 // event, and once the mentions' sends settle the comment's copy reaches it, once.
 //
 // The bound the outbox cmd/dispatch runs is heldRoleLaneBound (Deps.unnamedForwardWait with no
-// Deps.forwardBound), which the row reads first. The wait itself runs on stagedForwardBound, so
+// Deps.forwardBound), which the row reads first. The wait itself runs on stagedAhead, so
 // that the attempts the row ages within the bound stay within it however long the row takes: two
 // leases leave an attempt past its lease less than one lease within them. The attempts are aged
 // half that bound, which is past heldRoleLaneBound, so a read that judged them by any bound but
@@ -52,7 +52,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
-	rig.forwardBound = stagedForwardBound
+	rig.forwardBound = stagedAhead
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -84,19 +84,19 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	_, later := comment("and one more thing")
 
 	// Within the bound: the attempts are half of it old, their claims this moment's.
-	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound/2)
+	agedUnnamedAttempts(t, rig.database, commentID, stagedAhead/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	recv.settle(t)
 	if got := recv.received(); len(got) != 1 {
 		t.Fatalf("%s was sent %v with the attempts %s short of the bound, want the earlier comment alone: the forward waits for the unnamed mentions, and the later event waits behind it",
-			holder, keysOf(got), stagedForwardBound/2)
+			holder, keysOf(got), stagedAhead/2)
 	}
 	if publishedAt(t, rig.database, held.ID) != nil || publishedAt(t, rig.database, later.ID) != nil {
 		t.Fatal("the comment or the later event is published within the bound, want both waiting")
 	}
 
 	// Just past the bound, the sender still alive and its claims written again just now.
-	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound+time.Second)
+	agedUnnamedAttempts(t, rig.database, commentID, stagedAhead+time.Second)
 	dueNow(t, rig.database, held.ID)
 	dueNow(t, rig.database, later.ID)
 	passed := time.Now()

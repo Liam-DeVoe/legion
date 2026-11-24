@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,12 +23,12 @@ import (
 // leaves it none to refuse. TestAVersionHoldingARepeatedBlockIDCarriesNothing's run without the
 // repeat is the control that carries. No settlement runs between the steps, to repair or version
 // the repeat on its own: the seed settles at once (seededRegionDocument), and every live write
-// after it arms its settlement an hour out. A second's delay was the window this row once relied
-// on, and under load the step that takes the peer's node out found no second node under the id
-// ("no changes produced"), 70 times in 200 beside whole runs of the package under 32 busy loops,
-// and once the answer's write met a deadlock ("deadlock detected").
+// after it arms its settlement stagedAhead out. A second's delay was the window this row once
+// relied on, and under load the step that takes the peer's node out found no second node under
+// the id ("no changes produced"), 70 times in 200 beside whole runs of the package under 32 busy
+// loops, and once the answer's write met a deadlock ("deadlock detected").
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
-	database, service, artifactID := seededRegionDocument(t, time.Hour)
+	database, service, artifactID := seededRegionDocument(t, stagedAhead)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 
 	editLiveTree(t, service, artifactID, appendSecondRegionAsk(t))

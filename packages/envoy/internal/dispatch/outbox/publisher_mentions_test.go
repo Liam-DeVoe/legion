@@ -46,22 +46,25 @@ func seedMentionDelivery(t *testing.T, database *store.Store, commentID, session
 	seedDelivery(t, database, commentID, "session:"+sessionID, sessionID, outcome)
 }
 
-// liveAhead is how far ahead of the database's clock a test dates a live attempt - its creation,
-// and its claim when it has one (seedDelivery, keepLive). An attempt reads live only until
-// model.DeliveryClaimLapse past its creation and claim (model.MentionLiveSQL,
-// model.DeliveryClaimFreeSQL), so one dated now reads resumed, or its claim free, once a row has
-// taken a minute to read it; dated an hour ahead it reads live for that hour and the lease past
-// it, however long the row takes.
-const liveAhead = time.Hour
-
-// stagedForwardBound is the bound a row gives a role route's forward's wait for an unnamed
-// mention (Deps.forwardBound, roleRig.forwardBound) when it stages an attempt past its lease that
-// must read within that bound: seedDelivery's resumed attempt, or one agedUnnamedAttempts ages.
-// Such an attempt reads past its lease from model.DeliveryClaimLapse after its creation, and
+// stagedAhead is how far a row of this package stages a time the product judges against the
+// database's clock, and the bound a row gives the product to judge such a time by. A live attempt
+// is dated stagedAhead ahead of the database's clock - its creation, and its claim when it has
+// one (seedDelivery, keepLive) - since an attempt reads live only until model.DeliveryClaimLapse
+// past its creation and claim (model.MentionLiveSQL, model.DeliveryClaimFreeSQL), so one dated
+// now reads resumed, or its claim free, once a row has taken a minute to read it. A back-off, a
+// fallback copy's next attempt (notDueAhead) and a killed holder's hold row lapse stagedAhead on,
+// and a hold a row's verdict reads held throughout lasts stagedAhead (holdPastTheRun).
+// stagedAhead is also the bound a row gives a role route's forward's wait for an unnamed mention
+// (Deps.forwardBound, roleRig.forwardBound) when it stages an attempt past its lease that must
+// read within that bound: seedDelivery's resumed attempt, or one agedUnnamedAttempts ages. Such
+// an attempt reads past its lease from model.DeliveryClaimLapse after its creation, and
 // unnamedForwardBound is two of those leases, so no age a row stages it at leaves it within
-// unnamedForwardBound for longer than one lease of the row's own run. An hour leaves a resumed
-// attempt within this bound for more than 58 minutes.
-const stagedForwardBound = time.Hour
+// unnamedForwardBound for longer than one lease of the row's own run. And it is how long a role
+// forward waits on the real clock for an acknowledgement a row makes sure never comes
+// (Deps.forwardAckWait). It is staged state for the product's clock, not a wait of the row's:
+// longer than any `go test -timeout` CI gives this package, so what a row staged reads as not yet
+// passed however long the run takes.
+const stagedAhead = 24 * time.Hour
 
 // seedDelivery records an attempt of commentID's mention of target, as the comment handler and
 // its sender leave it, inserting the comment and the mention row first when no test seeded them.
@@ -73,13 +76,13 @@ const stagedForwardBound = time.Hour
 // or "abandoned" for one created past model.MentionSweepWindow ago that no sender ever claimed,
 // which the delivery sweep will never send. "" records no attempt.
 //
-// A pending or queued attempt is live (model.MentionLiveSQL), and is dated liveAhead ahead of
+// A pending or queued attempt is live (model.MentionLiveSQL), and is dated stagedAhead ahead of
 // the database's clock, its claim too when it has one, so that it stays live however long the
 // row takes to read it. A resumed attempt is staged past the lease the outbox waits a send out
 // for (model.MentionResumedSQL), which only grows with the row's run, and half a lease within
 // unnamedForwardBound, the bound a role route's forward waits an unnamed mention out for, which
 // a slow row can pass: a row whose verdict reads an unnamed one within that bound gives its
-// outbox stagedForwardBound. The past-bound case is staged by the rows that pin the bound
+// outbox stagedAhead as that bound. The past-bound case is staged by the rows that pin the bound
 // (agedUnnamedAttempts, TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents,
 // TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound).
 func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessionID, outcome string) {
@@ -90,11 +93,11 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 	state, age, claimed := outcome, time.Duration(0), true
 	switch outcome {
 	case "pending":
-		age = -liveAhead
+		age = -stagedAhead
 	case "resumed":
 		state, age = "pending", model.DeliveryClaimLapse+model.DeliveryClaimLapse/2
 	case "queued":
-		state, age, claimed = "pending", -liveAhead, false
+		state, age, claimed = "pending", -stagedAhead, false
 	case "backlogged", "abandoned":
 		state, age, claimed = "pending", model.MentionSweepWindow+time.Minute, false
 	}
@@ -832,7 +835,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 		// comment's owner lock (the api's lockedCommentForDelivery), then the attempt's update -
 		// and commits it only once the outbox waits on that owner lock to settle it, holding no
 		// transaction id (settleAbandoned takes the lock before its update). The claim is dated
-		// liveAhead past the transaction's start, so it is still live when the outbox reads the
+		// stagedAhead past the transaction's start, so it is still live when the outbox reads the
 		// attempt after the commit, however long that commit is in coming.
 		claimFirst bool
 		wantTopics []string
@@ -886,7 +889,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				if _, err := claim.Exec(context.Background(), `
 					update comment_deliveries set claimed_at = now() + $2::interval where comment_id = $1
-				`, commentID, liveAhead); err != nil {
+				`, commentID, stagedAhead); err != nil {
 					t.Fatalf("claim the attempt: %v", err)
 				}
 				published := make(chan error, 1)
@@ -1180,7 +1183,7 @@ func readHeldCopy(t *testing.T, database *store.Store, commentID, destination st
 	return row
 }
 
-// notDueAhead puts commentID's fallback row at destination liveAhead past the database's clock
+// notDueAhead puts commentID's fallback row at destination stagedAhead past the database's clock
 // and returns the moment it falls due then, for a row that runs a pass the row must find not due:
 // the wait a pass writes on a row it leaves (mentionPendingDelay, retry.Delay) is seconds long,
 // so a pass the row runs next could come after it on a slow machine and claim the row. A pass
@@ -1193,8 +1196,8 @@ func notDueAhead(t *testing.T, database *store.Store, commentID, destination str
 		update comment_fallback_copies set next_attempt_at = now() + $3::interval
 		where comment_id = $1 and destination = $2
 		returning next_attempt_at
-	`, commentID, destination, liveAhead).Scan(&due); err != nil {
-		t.Fatalf("put the held copy at %s off by %s: %v", destination, liveAhead, err)
+	`, commentID, destination, stagedAhead).Scan(&due); err != nil {
+		t.Fatalf("put the held copy at %s off by %s: %v", destination, stagedAhead, err)
 	}
 	return due
 }

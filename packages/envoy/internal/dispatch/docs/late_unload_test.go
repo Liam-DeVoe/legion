@@ -809,10 +809,11 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 // (retireSettlementRoom). So the count is final once the socket has ended. hold, when set, holds
 // the next departure before it runs, so a test can run it after the room's close (holdDeparture).
 //
-// The fixture's service keeps a room idle for lateUnloadRoomIdleTimeout rather than ygo's minute,
-// so ygo's idle sweep retires none of the rooms a test closes itself, however slowly the machine
-// runs, and its Shutdown ends where the shared wait gives up (testwait.Context), so a test whose
-// hook never returns fails in its cleanup by name rather than at the binary's alarm.
+// The fixture's service keeps a room idle for stagedAhead rather than ygo's minute, so ygo's idle
+// sweep (roomIdleTimeout in production) retires none of the rooms a test closes itself, however
+// slowly the machine runs or long a settlement on a room takes, and its Shutdown ends where the
+// shared wait gives up (testwait.Context), so a test whose hook never returns fails in its cleanup
+// by name rather than at the binary's alarm.
 type reloadedRoom struct {
 	t              *testing.T
 	service        *Service
@@ -834,11 +835,6 @@ type departureHold struct {
 	held, release chan struct{}
 }
 
-// lateUnloadRoomIdleTimeout is how long the fixture's rooms stay resident once idle. Far above any
-// test's run, so ygo's idle sweep (roomIdleTimeout in production) retires no room before the
-// test's own close of it, however long a settlement on it takes.
-const lateUnloadRoomIdleTimeout = time.Hour
-
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,
 // and loads and writes to the room again while that unload is held.
 func unloadAcrossAReload(t *testing.T) *reloadedRoom {
@@ -851,7 +847,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
+	service.srv.RoomIdleTimeout = stagedAhead
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
 	t.Cleanup(func() {

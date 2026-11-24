@@ -201,7 +201,7 @@ type testServerOptions struct {
 	clock clock.Clock
 	// idempotencyLease is the server's Deps.IdempotencyLease: zero keeps
 	// contracts.IdempotencyLease, and a row whose repeats must find the first run in flight however
-	// long the machine takes stages stagedKeyLease.
+	// long the machine takes stages stagedAhead.
 	idempotencyLease time.Duration
 	// documentClock is the document service's Deps.Clock, which its settle timers run on (and its
 	// other timers: the compaction queue's checks, a mark's wait, a room query's wait, its
@@ -258,11 +258,6 @@ type testServerOptions struct {
 // starts inside it whenever the first try took under half a second, and the second, 500 ms later,
 // never does, so a window run out costs about a quarter second.
 const testTakeoverWindow = 750 * time.Millisecond
-
-// stagedKeyLease is the key lease a row stages (testServerOptions.idempotencyLease): staged state
-// for the product's clock, not a wait. It is a day, longer than any -timeout CI gives the package
-// (70 minutes in api's race lane), so no run of a row outlasts the lease it staged.
-const stagedKeyLease = 24 * time.Hour
 
 // testServerURL is the public origin every test server serves under: what a link a handler
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).

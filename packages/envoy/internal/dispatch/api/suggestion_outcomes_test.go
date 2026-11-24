@@ -250,10 +250,9 @@ func (s idleSweep) passesUntil(t *testing.T, what string, holds func() bool) {
 
 // awaitSafeHorizon is the safe horizon of the sweep's server once an observation taken during the
 // call is proven (safeHorizon), waited for as every wait on the horizon here is: the proof runs on
-// a goroutine of its own and the wait is the horizon's (horizontest.WaitInProcess), which fails at
-// once, naming the holder, on a hold in this test's own database that has stood
-// horizontest.OwnHoldBound, and waits out any other hold. what names what the row needs the
-// horizon for.
+// a goroutine of its own and the wait is the horizon's (horizontest.WaitInProcess), which waits out
+// any hold to the shared give-up and then names the holder, one in this test's own database among
+// them. what names what the row needs the horizon for.
 func (s idleSweep) awaitSafeHorizon(t *testing.T, what string) int64 {
 	t.Helper()
 	proven := make(chan horizonProof, 1)
@@ -354,9 +353,8 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // a write committed while a pass ran. A row that ran each re-ask at once would move the fake a gap
 // for each pass the horizon stood behind in real time, and once nine had passed the comment would
 // be past settle, judged alone, before any pass had read it. That wait, and the one before each
-// page the row judges itself, is the horizon's: a hold of any length only delays it, and a hold in
-// this test's own database that has stood horizontest.OwnHoldBound fails the row at once, naming
-// the holder.
+// page the row judges itself, is the horizon's: a hold of any length only delays it, to the shared
+// give-up, where the failure names the holder, one in this test's own database among them.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	t.Parallel()
 	const settle = 10 * time.Second

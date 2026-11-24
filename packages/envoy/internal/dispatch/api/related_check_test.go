@@ -350,7 +350,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // same moment, since both are three seconds from the check's start; no real time ends it first.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
 	t.Parallel()
-	embedder := &fakeEmbedder{delay: time.Hour}
+	embedder := &fakeEmbedder{delay: stagedAhead}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
 	key := createSearchIssue(t, handler, "MSLOW", "Nightly backups overrun their window", "")

@@ -519,8 +519,8 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 
 // waitForEventCursor waits until the hub holds every event through want. The wait has no bound of
 // its own: an open write anywhere on the test cluster holds back the safe horizon the relay
-// publishes up to, so the wait is the horizon's (horizontest.PollInProcess), which fails at once,
-// naming the holder, on a hold in the test's own database that has stood OwnHoldBound.
+// publishes up to, so the wait is the horizon's (horizontest.PollInProcess), which waits out any
+// hold to the shared give-up and then names the holder, one in the test's own database among them.
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
 	horizontest.PollInProcess(t, fmt.Sprintf("the hub's event log through %d (%s)", want, what), r.database, func() bool {
@@ -630,8 +630,8 @@ func (c *fakeLiveConn) next(t *testing.T, what string) any {
 
 // eventNext is the next frame the conn is sent, where the frame comes of an event on the hub's
 // feed, which stands behind the server's event horizon: the wait is the horizon's
-// (horizontest.WaitInProcess), which fails at once on a hold in database, the test's own, that has
-// stood OwnHoldBound.
+// (horizontest.WaitInProcess), which waits out any hold to the shared give-up and then names the
+// holder, one in database, the test's own, among them.
 func (c *fakeLiveConn) eventNext(t *testing.T, database *store.Store, what string) any {
 	t.Helper()
 	return horizontest.WaitInProcess(t, what, c.frames, database)

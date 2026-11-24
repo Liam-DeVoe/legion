@@ -161,17 +161,17 @@ func (t failOnce) Fatalf(format string, args ...any) {
 	t.T.Fatalf(format, args...)
 }
 
-// holdPastTheRun sets publisherHoldOptions' TTL and Margin to a day and an hour for the rest of t,
-// and puts them back once t ends, for a row whose verdict reads a hold held throughout: an outbox
-// that takes the hold then reports it lost only 23 hours after its last confirmed renewal, and
-// its row lapses on the database's clock a day after it, so no stall of the machine running the
-// row loses it. On publisherHoldOptions' own 6 s and 2 s a renewal that goes unanswered for 4 s
+// holdPastTheRun sets publisherHoldOptions' TTL and Margin to stagedAhead and an hour for the rest
+// of t, and puts them back once t ends, for a row whose verdict reads a hold held throughout: an
+// outbox that takes the hold then reports it lost only 23 hours after its last confirmed renewal,
+// and its row lapses on the database's clock a day after it, so no stall of the machine running
+// the row loses it. On publisherHoldOptions' own 6 s and 2 s a renewal that goes unanswered for 4 s
 // loses the hold, and the outbox gives it up and takes it again while the row reads it. Renew
 // stays the package's, so the hold is still renewed every second.
 func holdPastTheRun(t *testing.T) {
 	t.Helper()
 	saved := publisherHoldOptions
-	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
+	publisherHoldOptions.TTL, publisherHoldOptions.Margin = stagedAhead, time.Hour
 	t.Cleanup(func() { publisherHoldOptions = saved })
 }
 
@@ -226,12 +226,6 @@ func waitForPublished(t *testing.T, database *store.Store, counter *sendCounter,
 		t.Fatalf("event %d: %d envelopes sent, at most %d to one subject, want each of its subjects sent once", event.ID, total, most)
 	}
 }
-
-// backOffAhead is how far ahead of the database's clock the back-off of the row below is due. It
-// bounds none of the outbox's work: it is only far enough that the scan the insert wakes reads the
-// back-off still ahead however late that scan runs, so the scan arms its one wait for it. The row
-// then makes the back-off due itself and fires that wait on the outbox's fake.
-const backOffAhead = time.Hour
 
 // holderRest reads an outbox's holder at rest: waiting with nothing pending, a wait it entered
 // with its LISTEN connection already up, and nothing scanned since. That is "the outbox has
@@ -386,14 +380,14 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// start the batch that follows it and the scan has still to arm whatever comes of that.
 	rest.await(t, "the outbox resting after the other process's event")
 
-	// A back-off due backOffAhead from now, committed by the other process: its insert wakes the
+	// A back-off due stagedAhead from now, committed by the other process: its insert wakes the
 	// outbox, whose scan finds nothing due and arms its one retry timer to the back-off's own
 	// moment, and the timer's scan is the one that publishes it. The waits armed earlier in this
 	// row are not this one's.
 	armedBefore := len(armedWaits())
 	// The waits armed since the insert, read afresh each time: the slice only grows.
 	waitsSince := func() []armedWait { return armedWaits()[armedBefore:] }
-	backedOff, _ := appendBackedOffEvent(t, other, backOffAhead)
+	backedOff, _ := appendBackedOffEvent(t, other, stagedAhead)
 	inserted := time.Now()
 	testwait.Until(t, "the outbox arming a wait for the back-off its insert woke it to", func() (string, bool) {
 		if since := waitsSince(); len(since) > 0 {
@@ -405,14 +399,14 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	since := waitsSince()
 	// The wait is a value the database computed from its own next_attempt_at, not an elapsed time
 	// this test measured, so a loaded runner can only make it smaller: the only way past
-	// backOffAhead is a wait armed for something that is not this back-off. nextRetry clamps a
+	// stagedAhead is a wait armed for something that is not this back-off. nextRetry clamps a
 	// back-off already due to zero, so a wait of zero is a timer armed to fire at once, which is
 	// not the timer this row is about.
-	if len(since) != 1 || since[0].wait <= 0 || since[0].wait > backOffAhead {
+	if len(since) != 1 || since[0].wait <= 0 || since[0].wait > stagedAhead {
 		t.Fatalf("the outbox armed %v once the back-off's insert woke it, want one wait above zero and no more than %s",
-			since, backOffAhead)
+			since, stagedAhead)
 	}
-	// The back-off is still an hour ahead on the database's clock, so a publication now is the
+	// The back-off is still ahead on the database's clock, so a publication now is the
 	// outbox publishing a back-off that was not yet due.
 	if at, beforeDue := backOffState(t, database, backedOff.ID); at != nil || !beforeDue {
 		t.Fatalf("the back-off reads published at %v, still ahead %v, before its wait fired; want it unpublished and ahead", at, beforeDue)
@@ -716,17 +710,16 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // The row ties the wait the standby armed, its timer less the fake's present, to the hold's row
 // on both sides. Once the timer is armed, the row reads what is left of the hold's row on the
 // database's clock, in microseconds as duty.Expiry reads it. The standby read it earlier on that
-// clock, so its wait is no shorter than what is left, and no longer than killedHoldLapse, all the
+// clock, so its wait is no shorter than what is left, and no longer than stagedAhead, all the
 // hold's row had when it was written. A standby that arms a fixed wait, the hold's TTL or half an
-// hour, arms short of what is left; one that arms past the lapse arms beyond killedHoldLapse. The
+// hour, arms short of what is left; one that arms past the lapse arms beyond stagedAhead. The
 // wait the standby arms and both bounds are whole microseconds, so they are compared exactly.
 //
-// The killed holder's row is written to lapse killedHoldLapse past the database's now(), so it
-// stays live past anything the standby's start waits for, however slow, until the row lapses it
-// itself: a row written to lapse TTL on would lapse on its own while a slow start was still
-// connecting, and the standby would then take the hold at its first try, arming no timer.
+// The killed holder's row is written to lapse stagedAhead past the database's now(), so it stays
+// live past anything the standby's start waits for, however slow, until the row lapses it itself:
+// a row written to lapse TTL on would lapse on its own while a slow start was still connecting,
+// and the standby would then take the hold at its first try, arming no timer.
 func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *testing.T) {
-	const killedHoldLapse = time.Hour
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -734,7 +727,7 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 	killed := uuid.New()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
-	`, publisherHold, killed, killedHoldLapse.Seconds()); err != nil {
+	`, publisherHold, killed, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("write the killed holder's last renewal: %v", err)
 	}
 	start := time.Now()
@@ -749,9 +742,9 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 		t.Fatalf("read what is left of the killed holder's row: %v", err)
 	}
 	left := time.Duration(leftMicros) * time.Microsecond
-	if wait := armed[0].Sub(start); len(armed) != 1 || wait < left || wait > killedHoldLapse {
+	if wait := armed[0].Sub(start); len(armed) != 1 || wait < left || wait > stagedAhead {
 		t.Fatalf("the standby armed %v, %s past the fake's present %s, for a hold whose row had %s left on the database's clock once that timer was armed and %s when it was written: want one timer no less than what was left and no more than %s past the fake's present, the lapse the standby read before it armed",
-			armed, wait, start, left, killedHoldLapse, killedHoldLapse)
+			armed, wait, start, left, stagedAhead, stagedAhead)
 	}
 	// The killed holder's row lapses on the database's clock, which notifies no one.
 	if _, err := database.Pool.Exec(context.Background(), `update duty_holds set expires_at = now() where name = $1`, publisherHold); err != nil {
