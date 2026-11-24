@@ -1216,10 +1216,11 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // statement and bound once, and the counts are taken after it. What the page's rows draw is read
 // once for the page (meInboxPageReads).
 //
-// Under state=dismissed the walk reads only the tuples between the person's nodes and the nodes
-// the page answers (page_nodes): the first offset + limit + 1 of the page's rows, in the order the
-// page answers in, which are the rows the page and its next_cursor are taken from, or every row
-// where ?kind= narrows the entries by their relations. That is the page's cost and not the
+// Under state=dismissed the page's rows are read from their keys (page_keys,
+// meInboxDismissedKeys): the first offset + limit + 1 of the state's rows, in the order the page
+// answers in, which are the rows the page and its next_cursor are taken from, or every row where
+// ?kind= narrows the entries by their relations. The walk then reads only the tuples between the
+// person's nodes and the nodes those rows are (page_nodes). That is the page's cost and not the
 // person's history: every dismissal appends a dismissed tuple and every Mark all read a read_through
 // tuple for each thread it marks (api/read_marks.go), and the whole walk read all of them for a page
 // of 200. In the dismissed scale test the dismissals and Mark all read runs it times append some
@@ -1250,19 +1251,21 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	visible := meInboxVisible("g.node_kind", "g.node_id")
 	order := meInboxOrderOf(shape)
 	// The walk's reach: the relations of every node tied to the person, or under state=dismissed of
-	// the page's own nodes alone (above).
-	pageNodes, walkFrom := ``, ``
+	// the page's own nodes alone, whose rows are read from the page's keys (above).
+	pageKeys, pageNodes, walkFrom := ``, ``, ``
 	inbound := `t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
 	outbound := `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 	if shape.state == myRepliesStateDismissed {
+		pageKeys = `
+	page_keys(node_kind, node_id, page, moment) as materialized (` + meInboxDismissedKeys(shape) + `
+	),`
 		pageNodes = `
 	page_nodes(node_kind, node_id) as materialized (
 		select pr.node_kind, pr.node_id from page_rows pr
 		order by ` + order.by("pr") + `
-		limit case when ` + meInboxKindsParam + `::text[] is null
-		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end
+		limit ` + meInboxDismissedLimit + `
 	),`
 		walkFrom = `
 		cross join page_nodes p`
@@ -1293,7 +1296,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		where proved.asserted and proved.from_kind = '` + graphstore.KindSession + `'
 	),
 	` + meInboxKindSkip("kinds_in", "to") + `,
-	` + meInboxKindSkip("kinds_out", "from") + `,
+	` + meInboxKindSkip("kinds_out", "from") + `,` + pageKeys + `
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
 		meInboxPageRows(shape) + `
 	),` + pageNodes + `
@@ -1365,9 +1368,9 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	),`)
 	}
 	// Under state=dismissed the total is the page the read answers, and not the whole pile, which
-	// nothing counts: the arms are cut to the page before the walk (meInboxDismissedCut), so the
-	// entries hold the page and no row past it but the one each arm reads to learn whether another
-	// page follows (remaining).
+	// nothing counts: the page's keys are cut to the page before the walk (meInboxDismissedKeys), so
+	// the entries hold the page and no row past it but the one the cut reads to learn whether
+	// another page follows (remaining).
 	total := `(select c.total from counted c limit 1)`
 	if shape.state == myRepliesStateDismissed {
 		total = `(select count(*) from paged)`
@@ -1472,9 +1475,11 @@ func meInboxKindSkip(name, end string) string {
 //
 // Each row is the node it draws, the kind of row, the moment that state's list orders it by, and an
 // Agent row's session and the row itself (myAgentRowColumns), read once here for its order and kept.
-// A walk with no state draws the rows of the Inbox's own state. Under state=dismissed each of the two
-// arms is cut to the page before the walk meets it (meInboxDismissedCut), so a page of that state
-// reads the rows it answers however many threads the person has dismissed.
+// A walk with no state draws the rows of the Inbox's own state. Under state=dismissed the rows are
+// read from the page's keys (page_keys, meInboxDismissedKeys), the first offset + limit + 1 of the
+// state's rows: a Reply row is its key, and an Agent row is read over the Agent keys alone, so a
+// page of that state reads the rows it answers however many threads the person has dismissed, and
+// walks the threads of the Agent rows among them and of no other root.
 //
 // The owner's tests are written only into a shape that names that owner. The plan Postgres keeps
 // from the sixth execution, and the one this read forces (meInboxGenericPlan), knows nothing of
@@ -1500,13 +1505,7 @@ func meInboxKindSkip(name, end string) string {
 // test probes the ask's node, so it reads only the asks that wait on the person, which are
 // materialized before it as the open asks are before them.
 func meInboxPageRows(shape meInboxShape) string {
-	issue, artifact := `''`, `null`
-	if shape.issue {
-		issue = meInboxIssue
-	}
-	if shape.artifact {
-		artifact = meInboxArtifact
-	}
+	issue, artifact := meInboxOwnerArgs(shape)
 	state := shape.state
 	if state == "" {
 		state = myRepliesStateInbox
@@ -1517,15 +1516,17 @@ func meInboxPageRows(shape meInboxShape) string {
 	case myRepliesStateUnread:
 		threads, agents = bindFragment(myRepliesUnread, "$1", issue, artifact), myAgentUnreadRoots
 	case myRepliesStateDismissed:
+		// A Reply row is its key, and the Agent keys are the roots the Agent rows are read over,
+		// after the marks their facts read (agentMarkOf).
 		threads, threadMoment = `
-		from (
-			select u.kind, u.thread_id, u.dismissed_at
-			`+bindFragment(myRepliesDismissed, "$1", issue, artifact)+
-			meInboxDismissedCut("u.kind", "u.thread_id", "u.dismissed_at")+`
-		) u`, `u.dismissed_at`
-		agents, agentMoment = myAgentDismissedRootsHead+
-			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+
-			myAgentDismissedRootsEnd, `listed.dismissed_at`
+		from page_keys u(kind, thread_id, page, dismissed_at)
+		where u.page = '`+meInboxPageThread+`'`, `u.dismissed_at`
+		agents, agentMoment = myAgentMarks+`
+	roots as (
+		select k.node_id as root_id, k.moment as dismissed_at
+		from page_keys k
+		where k.page = '`+meInboxPageAgent+`'
+	)`, `listed.dismissed_at`
 	}
 	arms := []string{`
 		select u.kind, u.thread_id::text, '` + meInboxPageThread + `', ` + threadMoment + `, null::text, null::record
@@ -1566,16 +1567,82 @@ func meInboxPageRows(shape meInboxShape) string {
 		union all`)
 }
 
+// meInboxOwnerArgs is what a shape binds myRepliesOwner's issue and document to: the argument of
+// the owner the shape names, and for an owner it does not name the value that names none, the
+// empty text or null, so that its test is a constant the planner drops (meInboxPageRows).
+func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
+	issue, artifact = `''`, `null`
+	if shape.issue {
+		issue = meInboxIssue
+	}
+	if shape.artifact {
+		artifact = meInboxArtifact
+	}
+	return issue, artifact
+}
+
+// meInboxDismissedKeys selects the keys of the rows the Dismissed view's page is taken from
+// (page_keys): each of the two arms cut to the page (meInboxDismissedCut) - the Reply rows off
+// user_threads_dismissed, and the Agent roots off their dismissal marks
+// (myAgentDismissedRootsSelect) - then the two merged and cut again to the same offset + limit + 1,
+// or not at all where ?kind= narrows the entries (meInboxDismissedLimit), in the order the page
+// answers in (meInboxOrder). A key is the row's node, its id as the uuid both indexes hold, the kind
+// of row, and its dismissal.
+//
+// Every test a row of the page passes is passed above its own arm's cut, so the keys the merged cut
+// keeps are the rows the page answers, in its order and with its tie-break, and the one past it.
+// One test runs after the cut: an Agent root's facts are an inner lateral (myAgentRowFacts), which
+// drops a root holding no session reply. No dismissal mark names such a root: a dismissal is
+// refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), and no
+// statement deletes a message.
+// page_rows reads each row from its key (meInboxPageRows), so every step after it meets those rows
+// alone, and an Agent root's thread (myAgentRowFacts) is walked for the Agent rows among them and
+// for no other: with each arm cut on its own, every step met both arms' offset + limit + 1 rows,
+// and the Agent arm walked the thread of every root it kept, however many of the Reply rows newer
+// than those roots filled the page. A shape narrowed to an owner has no Agent arm
+// (meInboxRequest.owned).
+func meInboxDismissedKeys(shape meInboxShape) string {
+	issue, artifact := meInboxOwnerArgs(shape)
+	arms := []string{`
+			select u.kind, u.thread_id, '` + meInboxPageThread + `', u.dismissed_at
+			from (
+				select u.kind, u.thread_id, u.dismissed_at
+				` + bindFragment(myRepliesDismissed, "$1", issue, artifact) +
+		meInboxDismissedCut("u.kind", "u.thread_id", "u.dismissed_at") + `
+			) u`}
+	if !shape.owned() {
+		arms = append(arms, `
+			select '`+graphstore.KindMessage+`', a.root_id, '`+meInboxPageAgent+`', a.dismissed_at
+			from (`+myAgentDismissedRootsSelect+
+			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+`
+			) a`)
+	}
+	return `
+		select keyed.node_kind, keyed.node_id, keyed.page, keyed.moment
+		from (` + strings.Join(arms, `
+			union all`) + `
+		) keyed(node_kind, node_id, page, moment)
+		order by ` + meInboxOrderOf(shape).by("keyed") + `
+		limit ` + meInboxDismissedLimit
+}
+
+// meInboxDismissedLimit is how many of the Dismissed view's rows a page is taken from: the first
+// offset + limit + 1, the one past the page saying whether another page follows, or every row
+// where ?kind= narrows the entries by their relations (meInboxDismissedCut).
+const meInboxDismissedLimit = `case when ` + meInboxKindsParam + `::text[] is null
+		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end`
+
 // meInboxDismissedCut cuts one arm of the Dismissed view to the page before the walk meets it, as
 // GET /api/v1/me/replies cuts its own (myRepliesDismissedCut, myAgentDismissedPageCut): the arm's
 // rows past the cursor, in the order of the state's own index - the dismissal's moment, then the
 // root's id (user_threads_dismissed_replied, user_agent_thread_dismissed_login_dismissed_at;
 // meInboxOrder) - and of those the first offset + limit + 1, the one past the page saying whether
 // another page follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its
-// root's uuid and its dismissal. So the walk, the grouping, the count and the sort meet at most
-// twice that many rows, where they met the whole pile: at the dismissed scale test's seed a page
-// of 200 read a p50 of 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and cut it
-// reads 86 ms at either.
+// root's uuid and its dismissal. The two arms' cuts are merged and cut to that many again
+// (meInboxDismissedKeys), so the walk, the grouping, the count and the sort meet at most that many
+// rows, where they met the whole pile: at the dismissed scale test's seed a page of 200 read a p50
+// of 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and with each arm cut, 86 ms at
+// either.
 //
 // Three things make the cut the page the read answers. The cursor is one row comparison over
 // coalesced arguments rather than `(cursor is null or ...)`, so it is the index's own condition in
@@ -1596,8 +1663,7 @@ func meInboxDismissedCut(kind, id, moment string) string {
 		      coalesce(` + meInboxCursorID + `::text::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
 		  and ` + meInboxVisible(kind, id+`::text`) + `
 		order by ` + moment + ` desc, ` + id + ` desc
-		limit case when ` + meInboxKindsParam + `::text[] is null
-		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end`
+		limit ` + meInboxDismissedLimit
 }
 
 // meInboxVisible is whether the caller may see the node kind and id name, inside the request's
