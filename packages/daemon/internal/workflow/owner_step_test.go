@@ -27,7 +27,8 @@ func assertNoClaimStarts(t *testing.T, pool *pgxpool.Pool, key string) {
 	}
 }
 
-// stepStartsAt is every start of the run of key's step of kind at place.
+// stepStartsAt is each start record queued for key's step of kind at place, in order: one for
+// each start of the place, over every run of it.
 func stepStartsAt(t *testing.T, pool *pgxpool.Pool, key, kind string, place int) []record.StepRecord {
 	t.Helper()
 	var starts []record.StepRecord
