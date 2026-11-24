@@ -522,14 +522,16 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and its one result is the one derived from the run its `ci_check` names
-// (deriveCIResults), which is judged as a recorded result is.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
+// none is open at the final head of the merged one that merged last, and its results are the one
+// derived from the run its `ci_check` names at each head (deriveCIResults), each judged as a
+// recorded result is. A reader of one result of such a check finds the derived one by its id
+// (ci-run:<check run id>).
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
-// newest pull request head as on every read: the derived result is that head's, and stands at
-// the named commit only where that commit is the head.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// request head as on every read: the derived result of each is that head's, and stands at the named
+// commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -583,7 +585,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	// The read's memo of merge times is made before anything orders a merged pull request, so the
+	// CI read of each check and the comparison after it learn each merge time once
+	// (fillMergeTimes).
+	fills := &mergeTimeFills{}
+	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks, fills)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -598,6 +605,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
 	reader := newComparisonReader(s, at)
+	reader.headCI, reader.fills = headCI, fills
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])

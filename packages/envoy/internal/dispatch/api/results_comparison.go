@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -11,10 +10,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// results_comparison.go says what each check compares its results with, where each result's
-// commit stands against that, and whether a pass of the check stands. It holds no policy about
-// GitHub: what is asked, how long an answer is believed and what is written back are
-// delivery's (delivery/branch.go, delivery/commit_pull_reads.go,
+// results_comparison.go says what each check compares its results with and where each result's
+// commit stands against that; whether a pass of the check stands is results_pass_stands.go's, and
+// the heads a `before_merge` check compares with are results_head_bases.go's (headBases). It
+// holds no policy about GitHub: what is asked, how long an answer is believed and what is written
+// back are delivery's (delivery/branch.go, delivery/commit_pull_reads.go,
 // delivery.Attributor.HeadsAttributedTo, delivery.Attributor.ReadThroughCommitPulls). What lives
 // here is the choice of bases (comparedWith, measuredBranches) and one memo per read, so a tab
 // listing twenty results against a handful of commits costs a handful of round trips.
@@ -115,6 +115,13 @@ type comparisonReader struct {
 	readThroughs       map[[2]string]struct{}
 	storedHeads        map[[2]string]bool
 	commits            map[[3]string]delivery.BranchAnswer
+	// headCI is the read of each check CI proves at each head it was read at, by the check's block
+	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
+	// subject of it.
+	headCI map[string]map[ciHeadKey]*model.CheckCI
+	// fills is the read's memo of the merge times it learned (fillMergeTimes), the one
+	// listCheckResults made before deriveCIResults, so the reader learns no merge time twice.
+	fills *mergeTimeFills
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -124,10 +131,37 @@ const noCommitNamed = ""
 // comparison is what one check's results are compared with: the bases, in the order they are
 // asked about, and the reason there are none where the list is empty. Exactly one of the two
 // is filled in, and bases is never nil, so the answer carries an empty list rather than a
-// null.
+// null. unread is set beside bases alone: the reason the head of a branch a CI job pushed could
+// not be read, while the list holds other bases. A commit none of them names may be that head,
+// so it is unknown for that reason and never another commit (commitStands).
+//
+// subjects is set for a `before_merge` check compared with heads (headBases): the heads a pass
+// must stand at, each of them, for the gate's answer to be yes (passStandsOf). Every subject is a
+// basis; a merged pull request's head beside an open pull request, and a merged one older than
+// the newest, is a basis and no subject. unordered is set for a `before_merge` check of an issue
+// none of whose pull requests is open where Dispatch cannot tell which merged one merged last
+// (headBases): it names no subject, and passStandsOf answers unknown.
+//
+// ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
+// the head's repository and commit, which the subject of that repository at that commit carries
+// (subjectState).
 type comparison struct {
-	bases  []model.CheckBasis
-	reason string
+	bases     []model.CheckBasis
+	reason    string
+	unread    string
+	subjects  []headSubject
+	unordered bool
+	ci        map[ciHeadKey]*model.CheckCI
+}
+
+// headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
+// the answer names it, and repo, the repository it is a head of, the pull request row's own. The
+// basis names a repository only where it is another than the issue's (headBasis), so the read of
+// a check CI proves at the subject is keyed by repo and the commit (ciHeadKey): two repositories
+// at one commit are two subjects, each carrying the read of its own repository.
+type headSubject struct {
+	basis model.CheckBasis
+	repo  string
 }
 
 // noBases is a check comparing with nothing, for the one reason given: the empty list is the
@@ -211,6 +245,7 @@ const noDefaultBranchNamed = ""
 // which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
+	compared.ci = c.headCI[check.BlockID]
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
@@ -246,50 +281,6 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 	}
 	c.bases[key] = compared
 	return compared
-}
-
-// headBases is every pull request head Dispatch holds for the check's issue, newest learned
-// first, as the bases a `before_merge` check compares its results with. An issue holding none
-// compares with nothing, and nothingReason says which of the three kinds of nothing it is.
-//
-// The heads answer whether or not Dispatch can read the repository. A head Dispatch holds is a
-// fact about the work whatever the App can see today, so a result at one stands at it, and
-// only a result at no head of the list needs the repository read at all (commitStands).
-func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
-	if err != nil {
-		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
-		return noBases(model.ReasonReadFailed)
-	}
-	if len(heads) == 0 {
-		return noBases(c.nothingReason(ctx, issueKey))
-	}
-	bases := make([]model.CheckBasis, 0, len(heads))
-	for _, head := range heads {
-		bases = append(bases, headBasis(head))
-	}
-	return comparison{bases: bases}
-}
-
-// headBasis is one stored pull request head as the surface names it: the commit, the pull
-// request's number, and when Dispatch last learned that head with the kind of time it is. The
-// later of the two times wins, so a head a webhook moved after the last complete read prints
-// GitHub's own update time, named model.BasisLearnedUpdatedAt, and never an older read time. A
-// row carrying neither time names none. The head of a pull request the issue links in a
-// repository it does not resolve to names that repository too (AttributedHead.LinkedRepo), so a
-// reader can tell it from a pull request of the same number in the issue's own repository.
-func headBasis(head delivery.AttributedHead) model.CheckBasis {
-	number := head.Number
-	basis := model.CheckBasis{
-		Kind: model.CheckBasisPullRequest, Repo: head.LinkedRepo, Commit: head.HeadSHA, PullRequest: &number,
-	}
-	switch {
-	case head.EventAt != nil && (head.CheckedAt == nil || head.EventAt.After(*head.CheckedAt)):
-		basis.LearnedAt = &model.BasisLearnedAt{At: *head.EventAt, Kind: model.BasisLearnedUpdatedAt}
-	case head.CheckedAt != nil:
-		basis.LearnedAt = &model.BasisLearnedAt{At: *head.CheckedAt, Kind: model.BasisLearnedReadAt}
-	}
-	return basis
 }
 
 // branchBases is the branches an `after_merge` or a `default_branch` check compares its
@@ -439,9 +430,11 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // another commit, or not known with the reason. It says nothing about the check's words, which
 // answer carries beside it.
 //
-// A commit one of the bases names is the whole answer, whatever Dispatch can read now. Where
-// the check named no basis, the reason it named none decides: nothing to compare with leaves
-// the commit at another commit, while a repository Dispatch could not read leaves it unknown.
+// A commit one of the bases names is the whole answer, whatever Dispatch can read now. A result a
+// head's check run derived stands at that head's basis (derivedAt), so where two repositories are
+// open at one commit, each one's derived result names its own pull request. Where the check
+// named no basis, the reason it named none decides: nothing to compare with leaves the commit at
+// another commit, while a repository Dispatch could not read leaves it unknown.
 // Where the check named bases and none is this commit, a `before_merge` result turns on
 // whether the repository the commit is taken to be of can be read at all, and a branch check
 // walks the branches of that repository (onNamedBranch). Those two, beside learn's read-through
@@ -476,6 +469,9 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
+	if basis := compared.derivedAt(result); basis != nil {
+		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
+	}
 	if basis := basisAt(compared.bases, result.CommitSHA); basis != nil {
 		return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: basis}
 	}
@@ -490,13 +486,17 @@ func (c *comparisonReader) commitStands(
 	}
 	if check.When == docs.CheckWhenBeforeMerge {
 		// The heads are the whole of this check's comparison, and none of them is this commit.
-		// Two answers Dispatch cannot give stand against reading that as another commit: a
-		// repository the App cannot read, where nothing can have taught Dispatch this commit's
-		// pull request, and a read of Dispatch's own that did not answer. The repository is
-		// the one the commit is taken to be of: a linked one, whose own read gives the reason,
-		// and else the issue's own, whose reason nothingReason gives and tells from an issue
-		// that resolves to no repository, where the heads Dispatch holds are every head it will
-		// ever hold.
+		// Three answers Dispatch cannot give stand against reading that as another commit: the
+		// head of a branch a CI job pushed that GitHub did not answer for, which may be this
+		// commit; a repository the App cannot read, where nothing can have taught Dispatch this
+		// commit's pull request; and a read of Dispatch's own that did not answer. The repository
+		// is the one the commit is taken to be of: a linked one, whose own read gives the reason,
+		// and else the issue's own, whose reason nothingReason gives and tells from an issue that
+		// resolves to no repository, where the heads Dispatch holds are every head it will ever
+		// hold.
+		if compared.unread != "" {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: compared.unread}
+		}
 		if owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); owner.linked != "" {
 			if !owner.readable {
 				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable, Repo: owner.linked}
@@ -509,6 +509,18 @@ func (c *comparisonReader) commitStands(
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
 	return c.onNamedBranch(ctx, check, compared, result)
+}
+
+// derivedAt is the basis of the subject whose read of a check CI proves derived result, the head
+// its run was read at, and nil for every other result.
+func (c comparison) derivedAt(result model.CheckResult) *model.CheckBasis {
+	for _, subject := range c.subjects {
+		if read := c.ci[ciHeadKey{repo: subject.repo, commit: subject.basis.Commit}]; read != nil && read.Result != "" && read.Result == result.ID {
+			basis := subject.basis
+			return &basis
+		}
+	}
+	return nil
 }
 
 // basisAt is the basis naming that commit, and nil where none does. A branch basis names no
@@ -620,57 +632,6 @@ func (c *comparisonReader) onNamedBranch(
 		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason, Repo: named}
 	}
 	return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: named}
-}
-
-// standingCommit is where a result's commit stands while the check's words have not moved
-// and no retraction stands against it. It answers no standing without both comparison fields.
-func standingCommit(result model.CheckResult) string {
-	if result.Retracted != nil || result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
-		return ""
-	}
-	return result.CommitStands.Answer
-}
-
-// passStandsOf is the one line that answers the gate's question for a check: whether a pass of
-// it stands at what it compared with, against the check's words now, and from which roles.
-//
-// A pass stands when its commit is at one of the bases, the check's words have not moved since
-// it was recorded, and no retraction stands against it. The roles are those of the passes that
-// stand, in the order the results come, which is newest first.
-//
-// A check whose repository Dispatch could not read answers unknown, since it could compare
-// nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
-// holds no result, and the read that would have made one failed. So does a check whose standing
-// pass is held up only by a commit Dispatch could not place. A check that compared with nothing
-// because there is no pull request and no branch answers no: there is nothing for a pass to
-// stand at, and that is a fact about the work rather than a failed read.
-func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
-	if compared.reason == model.ReasonRepositoryUnreadable ||
-		(check.CI != nil && check.CI.State == model.CIStateUnread) {
-		return model.CheckPassStands{Answer: model.PassStandsUnknown}
-	}
-	var roles []string
-	unknown := false
-	for _, result := range check.Results {
-		if result.Verdict != "pass" {
-			continue
-		}
-		switch standingCommit(result) {
-		case model.CommitAtBasis:
-			if !slices.Contains(roles, result.Role) {
-				roles = append(roles, result.Role)
-			}
-		case model.CommitUnknown:
-			unknown = true
-		}
-	}
-	switch {
-	case len(roles) > 0:
-		return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles}
-	case unknown:
-		return model.CheckPassStands{Answer: model.PassStandsUnknown}
-	}
-	return model.CheckPassStands{Answer: model.PassStandsNo}
 }
 
 // measuredBranches is the branches a check measured against a branch compares its results
