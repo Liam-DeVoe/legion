@@ -55,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -282,7 +283,7 @@ type PendingRequest struct {
 type Machine struct {
 	Store      *store.Store
 	Policy     *policy.Current
-	Secrets    secrets.Reader
+	Secrets    secretstore.Reader
 	PendingTTL time.Duration
 	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
 	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).

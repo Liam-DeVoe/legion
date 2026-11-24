@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // MintFailedMessage is logged, at ERROR, each time a type secret's minter fails a release,
@@ -490,7 +491,7 @@ func grantLocations(granted []requestedSecret) []string {
 // and handed back as it is, and any other failure named with the secret.
 func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, error) {
 	minted, err := m.release(ctx, g, served)
-	if errors.Is(err, secrets.ErrNotFound) {
+	if errors.Is(err, secretstore.ErrNotFound) {
 		return secrets.Minted{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
