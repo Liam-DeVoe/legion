@@ -252,11 +252,12 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "going-capability":
     "what the command bar can do on this deployment, and the label and session a new issue from it takes",
   "going-conversations":
-    "the reader's command-bar runs: the words they typed, each run's state and what it spent",
+    "the reader's command-bar runs: the words they typed, each run's state and what it spent; a run that read a comment or an issue message deleted since reads stopped with ANSWER_WITHDRAWN, and a delete reads the family again (`eventRefreshTargets`)",
   "going-plan":
-    "a command-bar run's plan: each change's tool, the arguments its run proposed and its item's fields as read; the words a change would post are the run's proposal, not a copy of a stored post",
+    "a command-bar run's plan: each change's tool, the arguments its run proposed and its item's fields as read; the words a change would post are the run's proposal, not a copy of a stored post, and a withdrawn run's plan gives no summary, arguments or value now, which a delete reads again (`eventRefreshTargets`)",
   "going-settings": "the reader's command-bar mode",
-  "going-waiting-plans": "the reader's command-bar runs whose plan waits for them",
+  "going-waiting-plans":
+    "the reader's command-bar runs whose plan waits for them, a withdrawn run left out, which a delete reads again (`eventRefreshTargets`)",
   handoff: "one phase handoff with its body: a handoff is no comment or message",
   handoffs: "an issue's phase handoffs, without their bodies",
   "issue-ancestors": "the parents of the issues a listing holds: keys and titles",

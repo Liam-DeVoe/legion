@@ -37,6 +37,7 @@ import {
   newestRun,
   type QueuedWords,
   type RunEntry,
+  runWithdrawn,
   type StartingRun,
   shownState,
   useGoing,
@@ -45,7 +46,7 @@ import {
 import { PlanCard } from "./PlanRows";
 import { appliedWords, undoneStateWords, undoRecord } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
-import { type EndWords, endWords, type RunState, runEnded } from "./run-states";
+import { type EndWords, endWords, type RunState, runEnded, WITHDRAWN_WORDS } from "./run-states";
 import { foldWords, RunTimer, StepSection } from "./step-section/StepSection";
 import { type PlanAnswering, usePlan } from "./usePlan";
 
@@ -362,6 +363,24 @@ function RunTurn({
   // What this page's Undo of the run answered, where it was pressed here.
   const lines = useGoingValue((of) => of.undone.get(run.id));
   const pressed = lines !== undefined;
+  if (runWithdrawn(run)) {
+    // A run that read a post deleted since draws its words and one line in place of its steps,
+    // its answer, its blocks and its plan, all of which may quote the post; its Undo stays, as
+    // Undo reads and shows none of what the run wrote.
+    return (
+      <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
+        <Words testId="going-run-words" words={run.record.words} />
+        <p
+          className={`text-sm ${textSecondaryOnSurface}`}
+          data-testid="going-run-withdrawn"
+          role="status"
+        >
+          {WITHDRAWN_WORDS}
+        </p>
+        {run.record.undoable || pressed ? <RunUndo run={run.id} /> : null}
+      </li>
+    );
+  }
   // A call with no words draws no line, and nor does a change of an approved plan, which its
   // row's tick on the plan's card shows.
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");

@@ -4163,6 +4163,15 @@ One process serves at most 4 streams of one run and 20 of one person's runs, and
 `GET /api/v1/me/going-runs`, History, answers the caller's own conversations, each with its runs newest first, while the conversation's newest run is younger than seven days, with `?issue=` and `?q=`; the maintenance sweep deletes a conversation whole once its newest run is seven days old, and stops a run that works under no live lease longer than its working budget allows (`TIME_BUDGET`).
 `GET /api/v1/me/going-plans` answers the caller's runs whose plan waits for them, which the Inbox shows; each change of what it lists appends `going_plan.updated` `{login}`, which names no owner and wakes nobody.
 
+A run is withdrawn once a comment or an issue message whose words it was given is deleted, or its row is gone (R3 of `dispatch://INFRA-1523`, as the short answer is withdrawn by `going_request_posts`).
+Each answer a call of the run gets records, before the agent is given it, each post whose words it carries in `going_run_posts` (`api/going_run_posts.go`, migration `20261124130831_going_run_posts`): a post named anywhere in the answer or in the request's path, or a comment whose accepted suggestion named a version of a document the read names, whose words a string of the answer holds four in a row or holds alone; an id with none of a post's words records nothing.
+A follow-up's claim records as its own the posts of each earlier run whose turns it is handed, and hands on no turn of a withdrawn run.
+Every read reads the verdict as it reads the run, and the delete writes nothing of runs.
+The stream of a withdrawn run writes none of its frames and one `end` frame, `{state: stopped, reason: "ANSWER_WITHDRAWN: …", offers: []}`, under the id of the run's last end, and nothing to a reader at or past it.
+Its record and History read it `stopped` with that reason, its words kept; its plan gives no summary, no arguments and no value now (`withdrawn: true`); `GET /api/v1/me/going-plans` leaves it out; and an approval or a revision of its plan is refused `409 GOING_RUN_WITHDRAWN`.
+A withdrawn run that has not ended is stopped with that reason by its stream, its read, its plan's routes, its next call or its next claim, whichever comes first, so it stores nothing more.
+What it stored keeps its words, and its Undo still works.
+
 A run acts with its grant (`api/going_grant.go`, `going_run_grants`): whom the request that started the run, or that approved its plan, names and by what, with no secret.
 A sign-in is recorded by its sessions' generation and its cookie's expiry, a sign-in through IAP by its login alone, a personal agent token by its row, and the header identity of a test server or a local deployment by its login.
 Each call of the run is made as the person the grant resolves to at that call, checked against the store as it is then, as the person's own request would be: a sign-out, a sign-in past its expiry, a revoked token or one no longer its person's, and a person the deployment's membership no longer admits each refuse the call, and the run stops with that reason (`SESSION_ENDED`, `SIGN_IN_EXPIRED`, `TOKEN_REVOKED`, `MEMBERSHIP_ENDED`).

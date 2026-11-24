@@ -74,6 +74,7 @@ import {
   messageReach,
   needsUnticked,
   newIssueTitles,
+  planWaits,
   ROW_MARKS,
   type RowChange,
   type RowMark,
@@ -968,7 +969,7 @@ export function PlanRowView({
   readonly undo?: GoingUndoLine;
 }): ReactNode {
   const agents = useAgentText();
-  const waiting = rowWaits(row) && plan.state === "waiting";
+  const waiting = rowWaits(row) && planWaits(plan);
   const ticked = !draft.unticked.has(row.row);
   const edits = draft.edits.get(row.row);
   const newIssues = newIssueTitles(plan.rows ?? [], draft);
@@ -1170,7 +1171,7 @@ export function PlanControls({
   const count = tickedCount(plan, draft);
   return (
     <div className="space-y-1">
-      {plan.state === "waiting" ? (
+      {planWaits(plan) ? (
         <div className="flex flex-wrap items-center gap-2">
           <button
             className={primaryButton}
@@ -1282,7 +1283,7 @@ export function PlanCard({
   const ranAt = useRanAt(plan);
   const [open, setOpen] = useState(false);
   const list = useRef<HTMLUListElement>(null);
-  const waiting = plan?.state === "waiting";
+  const waiting = plan !== undefined && planWaits(plan);
   useEffect(() => {
     if (!waiting) return undefined;
     return holdCardFocus(() => {

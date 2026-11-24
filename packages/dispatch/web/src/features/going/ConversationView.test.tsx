@@ -1817,3 +1817,59 @@ test("a run whose stream dropped reads Reconnecting… until the stream comes ba
     stream.mockRestore();
   }
 });
+
+/** The stop reason of a withdrawn run, as Dispatch writes it (`goingRunWithdrawnReason`). */
+const WITHDRAWN_REASON =
+  "ANSWER_WITHDRAWN: a comment or an issue message this run read was deleted, so nothing the run wrote is shown";
+
+/** The frames of a run that read a comment and answered with its words. */
+const QUOTING_FRAMES: readonly (readonly [string, unknown])[] = [
+  ["tool", { items: ["DEMO-15"], kind: "read", label: "Read the comment", step: 2, tool: "read" }],
+  ["reply", { labels: [], text: "The comment says the harbour comet came in.", tools: [] }],
+];
+
+/** Whether the run's turn draws its words and the withdrawal's one line, and nothing of what the
+ *  run wrote: no step, no answer, no block and no end card. */
+function drawsTheWithdrawalAlone(): void {
+  const run = screen.getByTestId("going-run");
+  expect(within(run).getByTestId("going-run-words").textContent).toBe("where is DEMO-15");
+  expect(within(run).getByTestId("going-run-withdrawn").textContent).toBe(
+    "Dispatch withdrew this answer because a comment or message it read was deleted."
+  );
+  expect(within(run).queryByTestId("going-run-answer")).toBeNull();
+  expect(within(run).queryByTestId("going-step-words")).toBeNull();
+  expect(within(run).queryByTestId("going-run-end")).toBeNull();
+  expect(run.textContent ?? "").not.toMatch(/harbour comet|ANSWER_WITHDRAWN|Read the comment/u);
+}
+
+// A run still streaming when the post it read is deleted is written the withdrawal's end frame:
+// what it drew before, a delivery already sent, goes, and the one line stands in its place.
+test("a run whose stream ends on the withdrawal draws one line in place of its steps and its answer", async () => {
+  const restore = await showRun("working", [
+    ...QUOTING_FRAMES,
+    ["end", { offers: [], reason: WITHDRAWN_REASON, state: "stopped" }],
+  ]);
+  try {
+    await waitFor(() => expect(screen.getByTestId("going-run-withdrawn")).toBeTruthy());
+    drawsTheWithdrawalAlone();
+  } finally {
+    restore();
+  }
+});
+
+// A run read to its end before the delete holds its frames; its record, read again on the delete,
+// says it is withdrawn, and the turn draws the one line in place of all it holds.
+test("a run whose record reads withdrawn draws one line though its frames ended it done", async () => {
+  const restore = await showRun(
+    "stopped",
+    [...QUOTING_FRAMES, ["end", { offers: [], reason: "", state: "done" }]],
+    { run: { stop_reason: WITHDRAWN_REASON } }
+  );
+  try {
+    await waitFor(() => expect(screen.getByTestId("going-run-withdrawn")).toBeTruthy());
+    drawsTheWithdrawalAlone();
+    expect(goingState().runs.get("r-1")?.frames.replies).toHaveLength(1);
+  } finally {
+    restore();
+  }
+});

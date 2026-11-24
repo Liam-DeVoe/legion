@@ -704,23 +704,36 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 // goingRunHistoryTooLarge and answers nil where its last model turns pass goingHistoryLimit. The
 // run's first claim writes how long it waited in the queue into its budget_used, as queued_ms:
 // from its created_at to the claim. A later claim of the run leaves it.
+//
+// A withdrawn run (goingRunWithdrawnOf) is stopped with goingRunWithdrawnReason and answers nil,
+// so no agent works it again. The turns hand on no note of a withdrawn earlier run, and the run
+// records as its own each post of the earlier runs whose notes they hand on (going_run_posts), in
+// the claim's own transaction, so the delete of a post an earlier run read withdraws the follow-up
+// that was given what that run read.
 func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agentwire.ClaimedRun, error) {
 	claimed := agentwire.ClaimedRun{ID: run}
 	var continues *string
 	var chip []byte
 	var budget []byte
+	var withdrawn bool
 	if err := tx.QueryRow(ctx, `
-		update going_runs set state = 'working', lease_token = gen_random_uuid(), lease_owner = $2,
+		update going_runs r set state = 'working', lease_token = gen_random_uuid(), lease_owner = $2,
 		  lease_ends_at = now() + make_interval(secs => $3),
 		  budget_used = case when budget_used ? 'queued_ms' then budget_used
 		    else budget_used || jsonb_build_object('queued_ms',
 		      greatest(floor(extract(epoch from clock_timestamp() - created_at) * 1000), 0)::bigint) end
 		where id = $1::uuid
 		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(line, ''), coalesce(level, ''), coalesce(mode, ''),
-		  shape, budget_used, lease_token::text, lease_ends_at
+		  shape, budget_used, lease_token::text, lease_ends_at, `+goingRunWithdrawnOf("r.id")+`
 	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip, &claimed.Kind, &claimed.Line,
-		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt); err != nil {
+		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt, &withdrawn); err != nil {
 		return nil, fmt.Errorf("lease run %s: %w", run, err)
+	}
+	if withdrawn {
+		if err := stopGoingRunIn(ctx, tx, run, goingRunWithdrawnReason, []string{}); err != nil {
+			return nil, fmt.Errorf("stop run %s, which is withdrawn: %w", run, err)
+		}
+		return nil, nil
 	}
 	if continues != nil {
 		claimed.Continues = *continues
@@ -777,7 +790,7 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 		select e.id::text, e.words, array(select s.note from going_run_steps s where s.run_id = e.id order by s.step)
 		from going_runs r
 		join going_runs e on coalesce(e.conversation_id, e.id) = coalesce(r.conversation_id, r.id) and e.created_at < r.created_at
-		where r.id = $1::uuid
+		where r.id = $1::uuid and not `+goingRunWithdrawnOf("e.id")+`
 		order by e.created_at desc
 		limit $2
 	`, run, agentwire.EarlierTurns)
@@ -795,6 +808,19 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 	slices.Reverse(claimed.Turns)
 	if claimed.Turns == nil {
 		claimed.Turns = []agentwire.Turn{}
+	}
+	if len(claimed.Turns) > 0 {
+		earlier := make([]string, 0, len(claimed.Turns))
+		for _, turn := range claimed.Turns {
+			earlier = append(earlier, turn.Run)
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into going_run_posts (run_id, comment_id, message_id)
+			select $1::uuid, comment_id, message_id from going_run_posts where run_id = any($2::uuid[])
+			on conflict do nothing
+		`, run, earlier); err != nil {
+			return nil, fmt.Errorf("record the posts the turns before run %s read: %w", run, err)
+		}
 	}
 	return &claimed, nil
 }

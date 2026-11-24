@@ -40,10 +40,11 @@ import (
 const goingRunsKept = 7 * 24 * time.Hour
 
 // goingRunColumns is the going_runs select list scanGoingRun reads, in scan order, ending with
-// what Undo makes of the run (goingRunUndoColumns).
-const goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.continues::text, r.words, r.context,
-	coalesce(r.level, 'standard'), coalesce(r.mode, 'ask'), r.line, r.state, r.stop_reason, r.issues, r.budget_used,
-	r.created_at, r.finished_at, ` + goingRunUndoColumns
+// what Undo makes of the run (goingRunUndoColumns). Whether the run is withdrawn
+// (goingRunWithdrawnOf) is read beside its state, which a withdrawn run reads in place of its own.
+var goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.continues::text, r.words, r.context,
+	coalesce(r.level, 'standard'), coalesce(r.mode, 'ask'), r.line, r.state, r.stop_reason, ` + goingRunWithdrawnOf("r.id") + `,
+	r.issues, r.budget_used, r.created_at, r.finished_at, ` + goingRunUndoColumns
 
 // goingRunUndoColumns reads what Undo makes of the run r, off its landings as the undo route reads
 // them (goingLandedWrites, goingUndoLanded): the run's person; each call of the run that landed a
@@ -176,6 +177,11 @@ type goingRunUsed struct {
 // and every write Dispatch does not undo - is in none of them, and so is a call that changed
 // nothing and one whose undo's request its route answered as changing nothing (recordUndo); a call
 // whose undo's request failed is still in the first.
+//
+// A withdrawn run (goingRunWithdrawnOf) reads stopped with goingRunWithdrawnReason, whatever its
+// row holds, which is what the bar draws a withdrawn run by: its words, its person's own, and the
+// rest of its record read as they stand, Undo's counts among them. withdrawn says so to the server,
+// which stops such a run where it has not ended (readCallersGoingRun).
 type goingRun struct {
 	ID            string        `json:"id"`
 	Conversation  string        `json:"conversation"`
@@ -196,6 +202,7 @@ type goingRun struct {
 	UndoableCount int           `json:"undoable_count"`
 	UndoneCount   int           `json:"undone_count"`
 	StandingCount int           `json:"standing_count"`
+	withdrawn     bool
 }
 
 // goingOpenCall is a call of a run that landed a request and whose undo has not landed, as the
@@ -445,11 +452,16 @@ func scanGoingRun(row pgx.Row, lead ...any) (goingRun, error) {
 	var author string
 	// StandingCount starts at the calls whose undo landed and kept another writer's change; the
 	// refusals the open calls' records settle are added below.
+	var withdrawn bool
 	targets := append(lead, &run.ID, &run.Conversation, &run.Continues, &run.Words, &chip, &run.Level, &run.Mode,
-		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &author, &open, &run.UndoneAt,
-		&run.UndoneCount, &run.StandingCount)
+		&run.Line, &run.State, &run.StopReason, &withdrawn, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &author, &open,
+		&run.UndoneAt, &run.UndoneCount, &run.StandingCount)
 	if err := row.Scan(targets...); err != nil {
 		return goingRun{}, err
+	}
+	if withdrawn {
+		reason := goingRunWithdrawnReason
+		run.State, run.StopReason, run.withdrawn = agentwire.StateStopped, &reason, true
 	}
 	if chip != nil {
 		run.Context = &goingContext{}

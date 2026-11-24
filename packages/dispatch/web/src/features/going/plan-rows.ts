@@ -1356,12 +1356,19 @@ export function tickedCount(plan: GoingPlanAnswer, draft: PlanDraft): number {
   return (plan.rows ?? []).filter((row) => rowWaits(row) && !draft.unticked.has(row.row)).length;
 }
 
+/** Whether `plan` waits for its person's answer: it waits, and its run is not withdrawn - a run
+ *  that read a comment or an issue message deleted since, whose plan Dispatch approves and revises
+ *  for nobody (`409 GOING_RUN_WITHDRAWN`). */
+export function planWaits(plan: GoingPlanAnswer): boolean {
+  return plan.state === "waiting" && plan.withdrawn !== true;
+}
+
 /** Whether the person can approve `plan` with `draft` now, by Approve or by Enter in the box,
- *  which both ask this: the plan waits, no answer to it is out (`pending`), and the draft leaves
- *  a waiting row ticked. An approval with no row ticked runs nothing, and a second one while the
- *  first is out names a plan that no longer waits. */
+ *  which both ask this: the plan waits (`planWaits`), no answer to it is out (`pending`), and the
+ *  draft leaves a waiting row ticked. An approval with no row ticked runs nothing, and a second
+ *  one while the first is out names a plan that no longer waits. */
 export function approvable(plan: GoingPlanAnswer, draft: PlanDraft, pending: boolean): boolean {
-  return plan.state === "waiting" && !pending && tickedCount(plan, draft) > 0;
+  return planWaits(plan) && !pending && tickedCount(plan, draft) > 0;
 }
 
 /** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): the

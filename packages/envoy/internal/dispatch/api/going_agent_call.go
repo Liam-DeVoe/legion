@@ -323,15 +323,19 @@ func (a *goingHeldAnswer) WriteHeader(status int)      { a.status = status }
 func (a *goingHeldAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
 
 // callRun reads the call's run and refuses a call whose lease token is not the run's, or whose
-// run no longer works.
+// run no longer works. A withdrawn run (goingRunWithdrawnOf) is stopped with
+// goingRunWithdrawnReason and refused as one that no longer works, so it reads nothing more, and
+// writes nothing more of what it may quote.
 func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallRequest) (goingCallRun, *agentwire.Error) {
 	run := goingCallRun{id: request.Run}
 	var token *string
 	var state *string
 	var used []byte
+	var withdrawn bool
 	err := a.s.deps.Store.Pool.QueryRow(ctx, `
-		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state from going_runs where id = $1::uuid
-	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state)
+		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state, `+goingRunWithdrawnOf("r.id")+`
+		from going_runs r where id = $1::uuid
+	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state, &withdrawn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
@@ -339,6 +343,12 @@ func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallReque
 		return goingCallRun{}, goingAgentFailed(agentwire.CallCall, err)
 	}
 	if token == nil || *token != request.LeaseToken || state == nil || *state != "working" {
+		return goingCallRun{}, goingStaleLease(request.Run)
+	}
+	if withdrawn {
+		if _, err := a.s.stopGoingRun(ctx, request.Run, goingRunWithdrawnReason); err != nil {
+			return goingCallRun{}, goingAgentFailed(agentwire.CallCall, err)
+		}
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
 	if err := json.Unmarshal(used, &run.used); err != nil {
@@ -431,6 +441,21 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 			"an earlier try of call %d of step %d still runs, and whether it landed is unknown", request.Call, request.Step)
 	}
 	defer release()
+	// answered is the path of the request whose answer the call answers, "" while none answered.
+	// Each comment and issue message that answer carries the words of is recorded as the run's
+	// before the agent is given it (recordGoingRunPosts), which withdraws the run once one of them
+	// is deleted; a call whose posts cannot be recorded gives the agent nothing. The record is
+	// deferred ahead of a write's own, so a write that landed is kept as landed whatever comes of
+	// this, and a second try answers its landing and records again.
+	answered := ""
+	defer func() {
+		if refusal != nil || answered == "" {
+			return
+		}
+		if err := a.s.recordGoingRunPosts(ctx, request.Run, answered, answer.Body); err != nil {
+			answer, refusal = agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, fmt.Errorf("record the posts its answer carries: %w", err))
+		}
+	}()
 	var arguments map[string]any
 	if len(request.Arguments) > 0 {
 		if err := json.Unmarshal(request.Arguments, &arguments); err != nil {
@@ -466,6 +491,7 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 	if last := goingLastLanded(landed); last != nil && goingOwnLanded(a.s.going, request.Tool, *last) {
 		// The call's own request, its last, landed under this key, so the whole call did: this
 		// try answers that landing and prepares nothing.
+		answered = last.path
 		return last.answer(), nil
 	}
 	// resumed is this key's landings, with what an earlier try of the row landed of first, the
@@ -507,7 +533,7 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 					"request %d of this call landed as %s %s, and this try sends %s %s: a call key names one call", index,
 					landed[index].method, landed[index].path, spec.method, spec.path)
 			}
-			answer = landed[index].answer()
+			answer, answered = landed[index].answer(), landed[index].path
 			continue
 		}
 		landing := goingRunLanding{key: key, token: request.LeaseToken, request: index, method: spec.method, path: spec.path,
@@ -522,7 +548,7 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 			return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 		}
 		recorded := doer.serve(sent)
-		answer = goingCallAnswerOf(recorded)
+		answer, answered = goingCallAnswerOf(recorded), spec.path
 		if spec.file != nil {
 			answer = spec.file.told(answer)
 		}
@@ -540,7 +566,7 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		}
 		if index < len(rows) && rows[index] != nil && rows[index].sends(spec) {
 			if answer.Status >= http.StatusInternalServerError {
-				answer = rows[index].answer()
+				answer, answered = rows[index].answer(), spec.path
 			}
 			continue
 		}

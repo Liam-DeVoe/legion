@@ -14,10 +14,23 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { openConversation, shownState, titleWords, useGoingValue } from "./going-store";
+import {
+  openConversation,
+  runWithdrawn,
+  shownState,
+  titleWords,
+  useGoingValue,
+} from "./going-store";
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
-import { providerRefused, providerRefusedWords, type RunState, runEnded } from "./run-states";
+import {
+  answerWithdrawn,
+  providerRefused,
+  providerRefusedWords,
+  type RunState,
+  runEnded,
+  WITHDRAWN_WORDS,
+} from "./run-states";
 
 /** How a conversation stands, as History names it by its newest run (design v3, state 11). */
 const STATE_WORDS: Readonly<Record<RunState, string>> = {
@@ -50,13 +63,14 @@ function groupOf(at: number, now: Date): HistoryGroup {
 
 /** One conversation as History lists it: its title (its first question), how its newest run
  *  stands, what the model's provider refused that run to read where it did (undefined where it
- *  did not), its group, and that run where it ended holding a write Undo can take back, or where
- *  this page undid it, whose Undo the row holds. */
+ *  did not), whether that run is withdrawn, its group, and that run where it ended holding a write
+ *  Undo can take back, or where this page undid it, whose Undo the row holds. */
 interface Listed {
   readonly conversation: GoingConversation;
   readonly title: string;
   readonly state: RunState;
   readonly refused: string | undefined;
+  readonly withdrawn: boolean;
   readonly group: HistoryGroup;
   readonly undo: string | undefined;
 }
@@ -71,7 +85,9 @@ interface Listed {
  * refusing to read part of what it found, says so under it, by its reason's code; the row offers
  * no Continue, as no row does, and the conversation it opens draws Continue where the run's end
  * offers it. A row whose newest run ended holding a write Undo can still take back (`undoable`),
- * as a filing from the line on top does (R9), holds that run's Undo (R6).
+ * as a filing from the line on top does (R9), holds that run's Undo (R6). A row whose newest run
+ * is withdrawn - it read a comment or an issue message deleted since - says so under it in one
+ * line.
  *
  * The box at its top takes the focus as it opens, and typing filters the rows by the words of
  * every question of a conversation. While the focus is in it, the first row is drawn selected,
@@ -114,6 +130,8 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         ? stateOfRecord(newest.state, newest.stop_reason)
         : shownState(followed);
     const reason = followed?.frames.end?.reason ?? newest.stop_reason ?? "";
+    const withdrawn =
+      followed === undefined ? answerWithdrawn(newest.stop_reason ?? "") : runWithdrawn(followed);
     return [
       {
         conversation,
@@ -123,6 +141,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
             ? providerRefusedWords(reason)
             : undefined,
         state,
+        withdrawn,
         title: titleWords(held.at(-1)?.words ?? ""),
         // Undo is offered only while the run holds a write Undo can still take back, as
         // Dispatch keeps it: not once it was undone, on this page or another, and not for a
@@ -243,6 +262,14 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                       {row.refused}
                     </p>
                   )}
+                  {row.withdrawn ? (
+                    <p
+                      className={`px-2 pb-1 text-xs ${textSecondaryOnSurface}`}
+                      data-testid="going-history-withdrawn"
+                    >
+                      {WITHDRAWN_WORDS}
+                    </p>
+                  ) : null}
                   {row.undo === undefined ? null : (
                     <div className="px-2 pb-1">
                       {/* One run's Undo: the row names its conversation's newest run, and a newer

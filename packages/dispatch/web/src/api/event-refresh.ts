@@ -1847,5 +1847,15 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   if (POST_CORRECTIONS[event.type] !== undefined) {
     targets.push(SEARCH_ANSWERS);
   }
+  if (event.type === "comment.deleted" || event.type === "message.deleted") {
+    // A delete withdraws each command-bar run that read the post, which the event does not name:
+    // History, every run's plan and the plans that wait are read again, and a withdrawn run's
+    // reads give none of what it wrote.
+    targets.push(
+      { queryKey: goingConversationsQuery().queryKey },
+      { queryKey: ["going-plan"] },
+      { queryKey: goingWaitingPlansQuery().queryKey }
+    );
+  }
   return targets;
 }

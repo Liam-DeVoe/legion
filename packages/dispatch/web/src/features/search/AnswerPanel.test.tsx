@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun
 import {
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
 } from "@legion/contracts";
 import { focusManager } from "@tanstack/react-query";
@@ -803,7 +804,8 @@ test("the short answer shows at most 3 lines, with ↵ for the full answer while
 
 // A failed short answer says why in one sentence, in the words a run's same failure says, and
 // its one next step, the full answer; never its code (design v3, rules 1 and 7). A Dispatch with
-// no answering model says the one sentence of state 13, and offers no step.
+// no answering model says the one sentence of state 13, and offers no step. A withdrawn answer -
+// one that read a comment or an issue message deleted since - says so in a withdrawn run's words.
 test("a failed short answer says why in words with its next step, and never its code", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -816,6 +818,10 @@ test("a failed short answer says why in words with its next step, and never its 
     [
       GOING_ERROR_NO_MODEL_CONFIGURED,
       "Answers are off on this Dispatch: it has no answering model.",
+    ],
+    [
+      GOING_ERROR_ANSWER_WITHDRAWN,
+      "Dispatch withdrew this answer because a comment or message it read was deleted. Ask for the full answer.",
     ],
     ["A_LATER_CODE", "Dispatch could not write a short answer. Ask for the full answer."],
   ];

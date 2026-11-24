@@ -5,6 +5,8 @@
  * press sends, if any. Nothing here sends anything.
  */
 
+import { GOING_ERROR_ANSWER_WITHDRAWN } from "@legion/contracts";
+
 /** Where a run stands: none started yet (idle), working, waiting for the person's approval of its
  *  plan, done, stopped at a pause the server offers Continue on (`stopped_bound`: at a bound of
  *  its level, or where the model's provider refused part of what it found once it had withheld
@@ -208,6 +210,18 @@ const FAILURE_WORDS: Readonly<
 /** The sentence of a Dispatch with no answering model (design v2, state 13). */
 export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answering model.";
 
+/** The sentence of a withdrawn answer: a run, or a short answer, that read a comment or an issue
+ *  message deleted since, whose words Dispatch then gives none of (dispatch://INFRA-1523, R3). It
+ *  stands in place of the answer, its steps and its blocks, and offers no next step. */
+export const WITHDRAWN_WORDS =
+  "Dispatch withdrew this answer because a comment or message it read was deleted.";
+
+/** Whether `reason`, a run's stop reason or a short answer's error code, is a withdrawal: its code
+ *  is `GOING_ERROR_ANSWER_WITHDRAWN`. */
+export function answerWithdrawn(reason: string): boolean {
+  return reasonCode(reason) === GOING_ERROR_ANSWER_WITHDRAWN;
+}
+
 /**
  * How the end of a run in `state`, stopped or failed with `reason` (its end frame's, or its
  * record's), reads for its person (design v2, state 9, rule 7): never a code or the reason's own
@@ -220,8 +234,8 @@ export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answe
  * ask in other words. A Stop is the person's own pause, so it says what the run did before it,
  * "Stopped · read 1 item", and offers Continue; one its grant ended says why, and offers nothing
  * a lapsed grant would refuse again. A failure is one sentence and Try again, or the sentence of
- * state 13 for a Dispatch with no answering model. Undefined for a run that has not stopped or
- * failed.
+ * state 13 for a Dispatch with no answering model. A withdrawn run, stopped or failed, says
+ * `WITHDRAWN_WORDS` and offers nothing. Undefined for a run that has not stopped or failed.
  */
 export function endWords(
   state: RunState,
@@ -230,6 +244,10 @@ export function endWords(
   didSoFar: string
 ): EndWords | undefined {
   const code = reasonCode(reason);
+  const ended = state === "stopped_bound" || state === "stopped_person" || state === "failed";
+  if (ended && answerWithdrawn(reason)) {
+    return { action: undefined, continueInDeep: false, noModel: false, text: WITHDRAWN_WORDS };
+  }
   switch (state) {
     case "stopped_bound": {
       if (code === CONTENT_FILTER) {

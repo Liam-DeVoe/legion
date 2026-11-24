@@ -11,7 +11,7 @@ import type {
 import { newSendKey } from "../../lib/send-key";
 import { type PanelEvent, type PanelKeys, type PanelPlace, panelNext } from "./panel-states";
 import { type RunFrames, STARTED_RUN, stateOfRecord, withRunFrame } from "./run-frames";
-import { endWords, type RunState, runEnded, runNext } from "./run-states";
+import { answerWithdrawn, endWords, type RunState, runEnded, runNext } from "./run-states";
 
 /**
  * The command bar's conversation, which outlives every open of the bar: where it is on the screen
@@ -235,15 +235,30 @@ export function useGoingValue<T>(select: (of: GoingState) => T): T {
   return useSyncExternalStore(subscribe, read, read);
 }
 
-/** A run's state as the page shows it: what its frames say once any came, else what its record
- *  said. */
+/** A run's state as the page shows it: stopped once it is withdrawn (`runWithdrawn`), else what its
+ *  frames say once any came, else what its record said. */
 export function shownState(run: RunEntry): RunState {
+  if (runWithdrawn(run)) {
+    return "stopped_person";
+  }
   return run.read > 0 ? run.frames.state : stateOfRecord(run.record.state, run.record.stop_reason);
 }
 
-/** The reason `run` stopped or failed with: its end frame's, else its record's; "" for none. */
+/** The reason `run` stopped or failed with: the withdrawal its record says where it says one, else
+ *  its end frame's, else its record's; "" for none. */
 export function endReason(run: RunEntry): string {
-  return run.frames.end?.reason ?? run.record.stop_reason ?? "";
+  const recorded = run.record.stop_reason ?? "";
+  return answerWithdrawn(recorded) ? recorded : (run.frames.end?.reason ?? recorded);
+}
+
+/** Whether `run` is withdrawn: it read a comment or an issue message that was deleted since, as its
+ *  end frame or its record says (`answerWithdrawn`). Dispatch gives none of what the run wrote from
+ *  then on, so the page draws none of what it holds of it either: a frame read before the delete
+ *  stays in `frames`, and no surface draws it. */
+export function runWithdrawn(run: RunEntry): boolean {
+  return (
+    answerWithdrawn(run.frames.end?.reason ?? "") || answerWithdrawn(run.record.stop_reason ?? "")
+  );
 }
 
 /** Whether how `run` ended offers Continue (`endWords`): a bound, a refusal of part of what it
@@ -642,6 +657,16 @@ export function rereadRun(run: string): void {
 export function setUndone(run: string, lines: readonly GoingUndoLine[]): void {
   set({ ...state, undone: new Map(state.undone).set(run, lines) });
   rereadRun(run);
+}
+
+/** Reads the record of every run the page holds again (`rereadRun`), on the delete of a comment or
+ *  an issue message (`comment.deleted`, `message.deleted`): the delete withdraws each run that read
+ *  the post, whose record then reads stopped with `ANSWER_WITHDRAWN` (`runWithdrawn`), and the page
+ *  cannot tell which of its runs read it. */
+export function rereadEveryRun(): void {
+  for (const run of state.runs.keys()) {
+    rereadRun(run);
+  }
 }
 
 /** Opens a conversation History lists: its runs, oldest first, each read from its stream's first

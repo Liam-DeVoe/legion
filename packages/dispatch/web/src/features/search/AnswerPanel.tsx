@@ -1,6 +1,7 @@
 import {
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
 } from "@legion/contracts";
 import type { ReactNode } from "react";
@@ -25,11 +26,13 @@ import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 const noteClassName = `text-xs ${textMutedOnSurface}`;
 
 /** The run's failure (`run-states.ts`) that each failure of the short answer is, by the code its
- *  `error` frame carries: the model's time ran out, the model failed or refused, or the Dispatch
- *  has no answering model. */
+ *  `error` frame carries: the model's time ran out, the model failed or refused, the Dispatch
+ *  has no answering model, or the answer is withdrawn, as a comment or an issue message it read
+ *  was deleted since, which a run reads in the same words (`WITHDRAWN_WORDS`). */
 const RUN_FAILURES: Readonly<Record<string, string>> = {
   [GOING_ERROR_ANSWER_DID_NOT_ARRIVE]: "MODEL_CALL_TIME",
   [GOING_ERROR_ANSWER_FAILED]: "MODEL_FAILED",
+  [GOING_ERROR_ANSWER_WITHDRAWN]: GOING_ERROR_ANSWER_WITHDRAWN,
   [GOING_ERROR_NO_MODEL_CONFIGURED]: "NO_MODEL",
 };
 
