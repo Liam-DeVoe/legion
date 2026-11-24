@@ -12,13 +12,15 @@ name: Large PR lanes
 # and leaves no check named ci-ok. large-pr-label.yaml puts the label on at every push of a large
 # pull request (.github/scripts/large-pr-lanes.sh label).
 #
-# Who is trusted: an approval whose author_association is OWNER, MEMBER or COLLABORATOR, or whose
-# author is the legion-reviewer App. The repository is public, and GitHub lets any signed-in
-# account approve one of its pull requests; without this term any account could start these runs
-# on any large pull request as often as it liked. The App needs its login named: its approvals
-# carry author_association CONTRIBUTOR, like any account with one merged commit, which no gate may
-# admit (167 approvals by legion-reviewer[bot] on pull requests merged from 2026-11-23, all
-# CONTRIBUTOR, and 2 by a MEMBER; review 6042186091 on #5346 reads CONTRIBUTOR too).
+# Who is trusted: an approval whose author_association is OWNER, MEMBER or COLLABORATOR, which is
+# a person with write access, or whose author is a GitHub App (`user.type == 'Bot'`), which can
+# review here only where it is installed on this repository. The repository is public, and GitHub
+# lets any signed-in account approve one of its pull requests; without this term any account could
+# start these runs, a three-hour hold and every slow suite, as often as it liked. An App's
+# approvals carry author_association CONTRIBUTOR, as does any account with one merged commit, so
+# the association alone cannot admit the reviewer Legion uses (167 approvals by
+# legion-reviewer[bot] on pull requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person
+# MEMBER; review 6042186091 on #5346 reads CONTRIBUTOR too).
 #
 # `lead` decides whether this approval runs the suites or follows the approval-time run already at
 # this head (large-pr-lanes.sh lead), so two approvals never test one head at once. `approval`
@@ -50,8 +52,8 @@ jobs:
     # (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own). The
     # name repeats the job's whole condition, so it is ci-ok only where the job runs even if
     # GitHub did evaluate it.
-    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.login == 'legion-reviewer[bot]') && 'ci-ok' || 'large-pr-lanes (not run)' }}
-    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.login == 'legion-reviewer[bot]') }}
+    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'ci-ok' || 'large-pr-lanes (not run)' }}
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
@@ -71,12 +73,13 @@ jobs:
           CALLER: approval
           REVIEWER: ${{ github.event.review.user.login }}
           ASSOCIATION: ${{ github.event.review.author_association }}
+          REVIEWER_TYPE: ${{ github.event.review.user.type }}
         run: |
-          echo "approved by $REVIEWER (author_association $ASSOCIATION)"
+          echo "approved by $REVIEWER ($REVIEWER_TYPE, author_association $ASSOCIATION)"
           .github/scripts/large-pr-lanes.sh hold
 
   lead:
-    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.login == 'legion-reviewer[bot]') }}
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:

@@ -1582,15 +1582,17 @@ Three pieces make it:
   the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
   mechanism writes has to start one. Its jobs run only on an approval of a pull request that is
   not a draft and carries `large-pr`, by a reviewer this repository trusts: author_association
-  OWNER, MEMBER or COLLABORATOR, or the legion-reviewer App by its login. The repository is
-  public, and any signed-in account may approve one of its pull requests, so without that term any
-  account could start these runs, a three-hour hold and every slow suite with this repository's
-  secrets, as often as it liked. The App's approvals carry author_association CONTRIBUTOR, as does
-  any account with one merged commit, so only its login can admit it (167 approvals by
-  legion-reviewer[bot] on pull requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person
-  MEMBER; the hold step prints the association of the approval it runs for). Every other review's
-  run is decided by the `if:`s, from the event alone, before any runner starts, and leaves no
-  check named ci-ok.
+  OWNER, MEMBER or COLLABORATOR, which is a person with write access, or a GitHub App
+  (`github.event.review.user.type == 'Bot'`), which can review here only where it is installed on
+  this repository. The repository is public, and any signed-in account may approve one of its
+  pull requests, so without that term any account could start these runs, a three-hour hold and
+  every slow suite with this repository's secrets, as often as it liked. An App's approvals carry
+  author_association CONTRIBUTOR, as does any account with one merged commit, so the association
+  alone cannot admit the reviewer Legion uses (167 approvals by legion-reviewer[bot] on pull
+  requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person MEMBER; the hold step prints
+  the type and association of the approval it runs for).
+  Every other review's run is decided by the `if:`s, from the event alone, before any runner
+  starts, and leaves no check named ci-ok.
   - `lead` decides whether this approval runs the suites or follows the approval-time run
     already at this head: the earliest older run of this workflow at the same head whose ci-ok is
     still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at
