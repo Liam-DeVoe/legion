@@ -1116,7 +1116,7 @@ export const dispatchToolSpecs = [
       advances_revision: z
         .number()
         .describe(
-          "The issue's advances revision, which a 409 ADVANCES_REVISION names. To change two or more priorities, read the issue, then send this revision with the whole list you mean. Alone it changes nothing."
+          "The issue's advances revision, which the Advances line of dispatch read --issue <KEY> prints and a 409 ADVANCES_REVISION names. To change two or more priorities, read the issue, then send this revision with the whole list you mean. Alone it changes nothing."
         )
         .optional(),
       components: componentsArgument(z).optional(),

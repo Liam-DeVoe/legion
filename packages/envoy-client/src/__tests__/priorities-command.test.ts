@@ -156,6 +156,10 @@ const advancesOf = (): IssueAdvance[] => [
  *  refusal of the write, with the code and the sentence the server writes. */
 let patchRefusal: { readonly code: string; readonly error: string } | undefined;
 
+/** What the next read of DSP-1 answers in place of the fields `issueBody` writes, when a case
+ *  sets it: a field set to undefined is left out of the answer. */
+let readFields: Record<string, unknown> = {};
+
 /** The sentence the server refuses a write of DSP-1's advances with when the write carries no
  *  revision and moves two relations, as `refuseAdvancesRevision`
  *  (internal/dispatch/api/issue_advances.go) writes it, naming revision 8, the one another
@@ -228,7 +232,7 @@ const server = Bun.serve({
       return Response.json(issueBody());
     }
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "GET") {
-      return Response.json(issueBody());
+      return Response.json({ ...issueBody(), ...readFields });
     }
     if (pathname === "/api/v1/issues/DSP-1/events") return Response.json([]);
     if (pathname === "/api/v1/issues/DSP-1/coverage") return Response.json({ gaps: [] });
@@ -247,6 +251,7 @@ beforeEach(() => {
   priorities = recorded;
   ownAdvances = ["ship-the-daemon"];
   patchRefusal = undefined;
+  readFields = {};
   stateDir = makeDirectory();
   resetAdviceMemory();
 });
@@ -454,6 +459,34 @@ describe("the priorities an issue advances", () => {
 
     expect(code).toBe(0);
     expect(stdout).toContain("Advances: ship-the-daemon (own), legion-first (inherited)");
+  });
+
+  // A change of two or more priorities carries the revision of the read it answers, so the read
+  // prints that revision beside the set, for --advances-revision. A read that carries no
+  // revision prints the set alone, never a number the issue does not hold.
+  test.each([
+    [
+      "the revision beside the priorities",
+      {},
+      "Advances: ship-the-daemon (own), legion-first (inherited); revision 7",
+    ],
+    [
+      "the revision beside no priority",
+      { advances: [], advances_revision: 0 },
+      "Advances: no priority; revision 0",
+    ],
+    [
+      "the priorities alone when the read carries no revision",
+      { advances_revision: undefined },
+      "Advances: ship-the-daemon (own), legion-first (inherited)",
+    ],
+  ] as const)("an issue read prints %s", async (_, fields, line) => {
+    readFields = fields;
+
+    const { code, stdout } = await run(["read", "--issue", "DSP-1"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain(`\n${line}\n`);
   });
 });
 

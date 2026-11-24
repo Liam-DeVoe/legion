@@ -1,6 +1,10 @@
 kind: Changed
 body: |-
-  When Dispatch refuses a `dispatch issue-update` with 409 ADVANCES_REVISION, the command's error
-  tells the caller what to do: read the issue with `dispatch read --issue <KEY>`, then send the
-  whole set with `--advances-revision <n>`, n being the revision the refusal names. A refusal with
+  `dispatch issue-update` sends `advances_revision` only when `--advances-revision <n>` names it.
+  A change of two or more priorities with no `--advances-revision` is refused with
+  409 ADVANCES_REVISION, as is an update whose revision the issue does not hold. On that refusal
+  the command's error says to read the issue with `dispatch read --issue <KEY>` and to send the
+  whole set with `--advances-revision <n>`, n being the revision the refusal names.
+  `dispatch read --issue` prints the issue's advances revision on its `Advances:` line, for
+  example `Advances: ship-the-daemon (own), legion-first (inherited); revision 7`. A refusal with
   any other code reads as before.

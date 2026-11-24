@@ -1,6 +1,7 @@
 kind: Changed
 body: |-
   The `advances` and `advances_revision` descriptions of `dispatch_issue_update`, from which the
-  command derives the help of `--advance` and `--advances-revision`, say how to answer
-  409 ADVANCES_REVISION: read the issue, then send the revision the refusal names with the whole
-  list. `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
+  command derives the help of `--advance` and `--advances-revision`, say that a change of two or
+  more priorities needs the issue's advances revision, sent with the whole list. The revision is
+  on the `Advances:` line of `dispatch read --issue <KEY>`, and a 409 ADVANCES_REVISION names it
+  too. `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
