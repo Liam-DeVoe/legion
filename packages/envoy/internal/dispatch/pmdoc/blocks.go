@@ -619,43 +619,116 @@ func removeAtPath(root *Node, path []int) {
 
 // removalRoot is the path of the outermost node a removal of the node at path takes
 // (removeAtPath): that node, or the list, list item or blockquote that holds nothing else, up
-// through every such container that holds nothing but the one inside it.
+// through every such container that holds nothing but the one inside it (wrapsBlocks).
 func removalRoot(root *Node, path []int) []int {
 	for len(path) > 1 {
 		parent := nodeAtPath(root, path[:len(path)-1])
-		if len(parent.Children) > 1 {
+		if len(parent.Children) > 1 || !wrapsBlocks(parent.Type) {
 			return path
 		}
-		switch parent.Type {
-		case "bullet_list", "ordered_list", "list_item", "blockquote":
-			path = path[:len(path)-1]
-		default:
-			return path
-		}
+		path = path[:len(path)-1]
 	}
 	return path
 }
 
+// wrapsBlocks reports a node type that holds blocks and nothing of its own but its attributes: a
+// list, a list item or a quote. A removal that empties one takes it too (removalRoot), and a guard
+// that covers every block one holds covers it too (uncoveredIn).
+func wrapsBlocks(nodeType string) bool {
+	switch nodeType {
+	case "bullet_list", "ordered_list", "list_item", "blockquote":
+		return true
+	}
+	return false
+}
+
+// Removal is what a delete or a move takes out of the tree a ValidDocument validated: Node, the
+// outermost node it removes with all that node holds, and Path, the child indexes from the
+// document down to Node. The zero Removal takes nothing.
+type Removal struct {
+	Path []int
+	Node *Node
+}
+
 // BlockRemoval is the outermost node DeleteBlockKeeping(blockID, held) removes from the tree d
-// validated: the block carrying blockID where blocks inside it that held does not name take its
-// place (keptBlocks), and otherwise that block or the list, list item or blockquote its removal
-// empties, up through every such container (removalRoot). MoveBlock takes the block it moves out
-// of its place by the same removal, so BlockRemoval(blockID, nil) is what a move of blockID
-// removes there; a paragraph that is its list item's whole content moves as that item, and the
-// item's removal empties the containers the paragraph's does. The zero ValidDocument wants a
+// validated, with its path: the block carrying blockID where blocks inside it that held does not
+// name take its place (keptBlocks), and otherwise that block or the list, list item or blockquote
+// its removal empties, up through every such container (removalRoot). MoveBlock takes the block it
+// moves out of its place by the same removal, so BlockRemoval(blockID, nil) is what a move of
+// blockID removes there; a paragraph that is its list item's whole content moves as that item, and
+// the item's removal empties the containers the paragraph's does. The zero ValidDocument wants a
 // document.
-func (d ValidDocument) BlockRemoval(blockID string, held map[string]struct{}) (*Node, error) {
+func (d ValidDocument) BlockRemoval(blockID string, held map[string]struct{}) (Removal, error) {
 	if d.doc == nil {
-		return nil, wantsDocument("BlockRemoval")
+		return Removal{}, wantsDocument("BlockRemoval")
 	}
 	path, _, ok := findBlock(d.doc, blockID)
 	if !ok {
-		return nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
+		return Removal{}, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
 	}
 	if block := nodeAtPath(d.doc, path); len(keptBlocks(block, held)) > 0 {
-		return block, nil
+		return Removal{Path: path, Node: block}, nil
 	}
-	return nodeAtPath(d.doc, removalRoot(d.doc, path)), nil
+	path = removalRoot(d.doc, path)
+	return Removal{Path: path, Node: nodeAtPath(d.doc, path)}, nil
+}
+
+// UncoveredBlocks is what of the node at path, the outermost node a removal takes from doc
+// (Removal), a guard naming the block ids in named leaves uncovered, as the listing names blocks
+// (ListedBlocks): nothing where a node from the document down to that node, the node included,
+// carries a named id, and otherwise what uncoveredIn finds in that node. An empty path, the zero
+// Removal's, takes nothing, so it leaves nothing uncovered.
+func UncoveredBlocks(doc *Node, path []int, named map[string]struct{}) []string {
+	if len(path) == 0 {
+		return nil
+	}
+	node := doc
+	for _, index := range path {
+		node = node.Children[index]
+		if carriesNamedID(node, named) {
+			return nil
+		}
+	}
+	return uncoveredIn(node, named)
+}
+
+// uncoveredIn is what of node, a block no named block holds, a guard naming the block ids in named
+// leaves uncovered: nothing where node is named; for a list, a list item or a quote that holds a
+// named block, what each block it holds leaves uncovered, since such a wrapper holds nothing of its
+// own but its attributes, which no listed token covers, so one emptied of covered blocks is covered
+// too; and otherwise node as the listing names it (ListedBlocks), whose tokens cover all it holds.
+func uncoveredIn(node *Node, named map[string]struct{}) []string {
+	if carriesNamedID(node, named) {
+		return nil
+	}
+	if !wrapsBlocks(node.Type) || !holdsNamedBlock(node, named) {
+		return ListedBlocks(node)
+	}
+	var uncovered []string
+	for _, child := range node.Children {
+		uncovered = append(uncovered, uncoveredIn(child, named)...)
+	}
+	return uncovered
+}
+
+// carriesNamedID reports a node carrying a block id among named.
+func carriesNamedID(node *Node, named map[string]struct{}) bool {
+	id, _ := node.Attrs[BlockIDAttr].(string)
+	if id == "" {
+		return false
+	}
+	_, found := named[id]
+	return found
+}
+
+// holdsNamedBlock reports a node that holds a block carrying an id among named.
+func holdsNamedBlock(node *Node, named map[string]struct{}) bool {
+	holds := false
+	Walk(node, func(inner *Node) bool {
+		holds = holds || (inner != node && carriesNamedID(inner, named))
+		return !holds
+	})
+	return holds
 }
 
 // ListedBlocks is the ids of the outermost blocks in node, node included, that the document's
@@ -725,25 +798,28 @@ func (d ValidDocument) DeleteTextblock(r Range) (*Node, bool, error) {
 }
 
 // TextblockRemoval is the outermost node DeleteTextblock(r) removes from the tree d validated with
-// all it holds, and nil where it removes none: the textblock whose whole text r covers, or the list
-// item that goes with that text, or else the list, list item or blockquote that removal empties, up
-// through every such container (removalRoot). A list item whose one nested list's items take its
-// place keeps every block it held but its text, so the textblock is what it removes. Its error is
-// DeleteTextblock's refusal of r (ErrListItemContent). The zero ValidDocument wants a document.
-func (d ValidDocument) TextblockRemoval(r Range) (*Node, error) {
+// all it holds, with its path, and the zero Removal where it removes none: the textblock whose
+// whole text r covers, or the list item that goes with that text, or else the list, list item or
+// blockquote that removal empties, up through every such container (removalRoot). A list item
+// whose one nested list's items take its place keeps every block it held but its text, so the
+// textblock is what it removes. Its error is DeleteTextblock's refusal of r (ErrListItemContent).
+// The zero ValidDocument wants a document.
+func (d ValidDocument) TextblockRemoval(r Range) (Removal, error) {
 	if d.doc == nil {
-		return nil, wantsDocument("TextblockRemoval")
+		return Removal{}, wantsDocument("TextblockRemoval")
 	}
 	removePath, hoistNested, found, err := textblockRemoval(d.doc, r)
 	if err != nil || !found {
-		return nil, err
+		return Removal{}, err
 	}
 	// Hoisted items take the item's place, so the list that held it keeps them: the item's text
 	// goes, and of its nested list only the node that held those items.
 	if hoistNested {
-		return nodeAtPath(d.doc, removePath).Children[0], nil
+		removePath = append(slices.Clip(removePath), 0)
+	} else {
+		removePath = removalRoot(d.doc, removePath)
 	}
-	return nodeAtPath(d.doc, removalRoot(d.doc, removePath)), nil
+	return Removal{Path: removePath, Node: nodeAtPath(d.doc, removePath)}, nil
 }
 
 // textblockRemoval is what DeleteTextblock(r) removes from doc: the path of the textblock whose

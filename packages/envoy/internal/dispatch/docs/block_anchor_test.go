@@ -251,6 +251,8 @@ func TestPreconditionBlocksRefuseARemovalOfABlockTheGuardDoesNotCover(t *testing
 				return model.EditOp{Op: "move", Block: ids["Only"], After: "Intro."}
 			},
 			covered: []string{"Intro.", "Only"},
+			// The move writes Only after Intro. as a plain paragraph; the list it emptied goes.
+			written: "Intro.\n\nOnly\n",
 		},
 		{
 			name:     "a move of a list's only item, under the anchor and the list",

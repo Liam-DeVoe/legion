@@ -617,44 +617,6 @@ func TestATextDeleteThatHoistsANestedListIsTakenUnderAGuardOnItsParagraph(t *tes
 	}
 }
 
-// A guarded removal is refused when it takes a block that neither the guard names nor a named
-// block contains, and taken where every block it takes is covered (INFRA-341, open-items version
-// 177). A marker delete of an item whose nested list holds two items, under a guard on the item's
-// paragraph and one nested item, is refused naming only the other nested item, at its token, with
-// nothing written. A delete of a list's only item, by its text, under a guard on that text's
-// paragraph is taken: the list it empties held nothing but that covered item.
-func TestAGuardedRemovalIsRefusedOnlyForWhatTheGuardDoesNotCover(t *testing.T) {
-	t.Run("a wrapper the guard covers part of", func(t *testing.T) {
-		handler, _, _ := preconditionTestHandler(t)
-		issue := createInteractionIssue(t, handler, "TEST", "Partly covered", "- Parent\n  - First\n  - Second\n- Other\n")
-		artifact := issue.PrimaryArtifactID
-		before := readDocumentPrecondition(t, handler, artifact)
-		parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
-		first := listedBlock(t, handler, artifact, "paragraph", "First")
-		second := listedBlock(t, handler, artifact, "paragraph", "Second")
-		response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "- Parent"}, parent, first)
-		if !refusedUnguarded(t, response, before.Token, second) {
-			t.Fatalf("status=%d body=%s, want 409 PRECONDITION_FAILED naming the uncovered item %s at its token %s", response.Code, response.Body.String(), second.ID, second.Token)
-		}
-		if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != before.Markdown {
-			t.Fatalf("document after the refused delete = %q, want it unchanged, %q", got, before.Markdown)
-		}
-	})
-	t.Run("a list emptied of the item the guard covers", func(t *testing.T) {
-		handler, _, _ := preconditionTestHandler(t)
-		issue := createInteractionIssue(t, handler, "TEST", "Emptied list", "Intro.\n\n- Only\n")
-		artifact := issue.PrimaryArtifactID
-		only := listedBlock(t, handler, artifact, "paragraph", "Only")
-		response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "Only"}, only)
-		if response.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
-		}
-		if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != "Intro.\n" {
-			t.Fatalf("document after the guarded delete = %q, want %q", got, "Intro.\n")
-		}
-	})
-}
-
 // guardedEditAnswer is the part of a guarded edit's answer these cases read.
 type guardedEditAnswer struct {
 	UnguardedBlocks []model.EditBlockPrecondition `json:"unguarded_blocks"`

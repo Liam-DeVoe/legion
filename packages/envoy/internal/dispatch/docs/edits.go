@@ -867,16 +867,16 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 // (operationPreconditionBlocks): the block an operation names or whose text it matched, and a
 // move's block and its anchor's - what a block guard has always required. A guarded removal is
 // refused when it takes a block that neither the guard names nor a named block contains
-// (uncoveredBlocks): it is refused as a stale token is (ErrPreconditionFailed.Unguarded), with
-// nothing written, and the refusal names each such block with the token it carries now. The caller
-// compares that token with the token its own read listed: where they match, it adds the block to
-// its guard at the token it read and sends the edit again; where they differ, another writer
-// changed the block since that read, and the caller reads the document again before it removes
-// it. A list, a list item or a quote the removal empties of blocks the guard covers holds nothing
-// of its own but its attributes, which no listed token covers, so it is taken. A guard that names
-// a block is held to its token as to any other block (checkEditPrecondition). A typed block a
-// replace's with rewrites in place under its own id is not refused: the edit answers each such
-// block the guard does not name, with the token it carried before the edit rewrote it
+// (pmdoc.UncoveredBlocks): it is refused as a stale token is (ErrPreconditionFailed.Unguarded),
+// with nothing written, and the refusal names each such block with the token it carries now. The
+// caller compares that token with the token its own read listed: where they match, it adds the
+// block to its guard at the token it read and sends the edit again; where they differ, another
+// writer changed the block since that read, and the caller reads the document again before it
+// removes it. A list, a list item or a quote the removal empties of blocks the guard covers holds
+// nothing of its own but its attributes, which no listed token covers, so it is taken. A guard
+// that names a block is held to its token as to any other block (checkEditPrecondition). A typed
+// block a replace's with rewrites in place under its own id is not refused: the edit answers each
+// such block the guard does not name, with the token it carried before the edit rewrote it
 // (unguarded), for the caller to compare with the token its own read listed, and naming them in
 // the guard refuses the edit when one of them changed. A block the tree the batch starts from
 // does not hold - one an earlier insert of the batch wrote - has no token a caller read, so the
@@ -891,17 +891,15 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 	}
 	required, uncovered, rewritten := make(map[string]struct{}), make(map[string]struct{}), make(map[string]struct{})
 	if _, err := applyBatch(tree, ops, func(current *batchTree, op model.EditOp) error {
-		names, removes, rewrites, err := operationPreconditionBlocks(current, op)
+		names, removal, rewrites, err := operationPreconditionBlocks(current, op)
 		if err != nil {
 			return err
 		}
 		for _, id := range names {
 			required[id] = struct{}{}
 		}
-		for _, id := range removes {
-			for _, block := range uncoveredBlocks(current.node, id, covered) {
-				uncovered[block] = struct{}{}
-			}
+		for _, block := range pmdoc.UncoveredBlocks(current.node, removal.Path, covered) {
+			uncovered[block] = struct{}{}
 		}
 		for _, id := range rewrites {
 			rewritten[id] = struct{}{}
@@ -956,195 +954,94 @@ func readBlockTokens(ids []string, tokens map[string]string) []model.EditBlockPr
 	return read
 }
 
-// uncoveredBlocks is what of the block carrying id, which an operation removes from root, a guard
-// naming covered does not cover, as the listing names it: nothing where that block or a block
-// holding it is named, and otherwise what uncoveredIn finds in it. An id root does not carry is
-// itself uncovered.
-func uncoveredBlocks(root *pmdoc.Node, id string, covered map[string]struct{}) []string {
-	path := blockPath(root, id)
-	if path == nil {
-		return []string{id}
-	}
-	for _, node := range path {
-		if namedBlock(node, covered) {
-			return nil
-		}
-	}
-	return uncoveredIn(path[len(path)-1], covered)
-}
-
-// uncoveredIn is what of node, a block no named block holds, a guard naming covered does not
-// cover: nothing where node is named; for a list, a list item or a quote that holds a named
-// block, what each block it holds leaves uncovered, since such a wrapper holds nothing of its own
-// but its attributes, which no listed token covers, so one emptied of covered blocks is covered
-// too; and otherwise node as the listing names it (pmdoc.ListedBlocks), whose tokens cover all it
-// holds.
-func uncoveredIn(node *pmdoc.Node, covered map[string]struct{}) []string {
-	if namedBlock(node, covered) {
-		return nil
-	}
-	if !wrapsBlocks(node.Type) || !holdsNamedBlock(node, covered) {
-		return pmdoc.ListedBlocks(node)
-	}
-	var uncovered []string
-	for _, child := range node.Children {
-		uncovered = append(uncovered, uncoveredIn(child, covered)...)
-	}
-	return uncovered
-}
-
-// wrapsBlocks reports a node that holds blocks and nothing of its own but its attributes: a list,
-// a list item or a quote, the containers a removal empties (pmdoc's removalRoot).
-func wrapsBlocks(nodeType string) bool {
-	switch nodeType {
-	case "bullet_list", "ordered_list", "list_item", "blockquote":
-		return true
-	}
-	return false
-}
-
-// namedBlock reports a node carrying a block id covered names.
-func namedBlock(node *pmdoc.Node, covered map[string]struct{}) bool {
-	id := blockID(node)
-	if id == "" {
-		return false
-	}
-	_, named := covered[id]
-	return named
-}
-
-// holdsNamedBlock reports a node that holds a block covered names.
-func holdsNamedBlock(node *pmdoc.Node, covered map[string]struct{}) bool {
-	holds := false
-	pmdoc.Walk(node, func(inner *pmdoc.Node) bool {
-		holds = holds || (inner != node && namedBlock(inner, covered))
-		return !holds
-	})
-	return holds
-}
-
-// blockPath is the nodes from root down to the block carrying id, the last of them in pre-order
-// where several carry it, as an edit addressing the id reads (spanTokens), and nil where none does.
-func blockPath(root *pmdoc.Node, id string) []*pmdoc.Node {
-	var found []*pmdoc.Node
-	var walk func(node *pmdoc.Node, path []*pmdoc.Node)
-	walk = func(node *pmdoc.Node, path []*pmdoc.Node) {
-		path = append(path, node)
-		if blockID(node) == id {
-			found = append(found[:0], path...)
-		}
-		for _, child := range node.Children {
-			walk(child, path)
-		}
-	}
-	walk(root, nil)
-	return found
-}
-
 // operationPreconditionBlocks is, for op read over the tree it applies to, the blocks a block
-// guard must name (required), the blocks op removes beyond them (removed), which the guard must
-// name or hold in a block it names, and the typed block op rewrites in place (rewritten), which
-// the edit's answer names where the guard does not (requirePreconditionCoverage). An operation
-// must name the block it names or the block holding the text it matched, and a move the block it
-// moves and its anchor's block. One that removes a block holding others removes the whole of it
-// (INFRA-341): a delete what its removal takes (deletePreconditionBlocks), and a move the list or
-// quote its block's leaving empties (anchoredPreconditionBlocks). A replace removes no block: it
-// rewrites the typed block its with names under that block's own id (rewrittenTypedBlock).
-func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, removed, rewritten []string, err error) {
+// guard must name (required), what op removes (removed), which the guard must cover
+// (pmdoc.UncoveredBlocks), and the typed block op rewrites in place (rewritten), which the edit's
+// answer names where the guard does not (requirePreconditionCoverage). An operation must name the
+// block it names or the block holding the text it matched, and a move the block it moves and its
+// anchor's block. One that removes a block holding others removes the whole of it (INFRA-341): a
+// delete what its removal takes (deletePreconditionBlocks), and a move the list or quote its
+// block's leaving empties (anchoredPreconditionBlocks). A replace removes no block: it rewrites
+// the typed block its with names under that block's own id (rewrittenTypedBlock).
+func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required []string, removed pmdoc.Removal, rewritten []string, err error) {
 	switch op.Op {
 	case "replace":
 		r, at, _, byMarker, err := findEditQuote(tree, op)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, pmdoc.Removal{}, nil, err
 		}
 		if required, err = rangePreconditionBlock(tree, r); err != nil {
-			return nil, nil, nil, err
+			return nil, pmdoc.Removal{}, nil, err
 		}
 		if typed := rewrittenTypedBlock(tree, at, r, op, byMarker); typed != nil && blockID(typed) != "" {
 			rewritten = []string{blockID(typed)}
 		}
-		return required, nil, rewritten, nil
+		return required, pmdoc.Removal{}, rewritten, nil
 	case "delete":
 		target, err := resolveDelete(tree, op)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, pmdoc.Removal{}, nil, err
 		}
-		named := op.Block != ""
-		if named {
+		if op.Block != "" {
 			required = []string{op.Block}
 		} else if required, err = rangePreconditionBlock(tree, target.text); err != nil {
-			return nil, nil, nil, err
+			return nil, pmdoc.Removal{}, nil, err
 		}
-		removed, err = deletePreconditionBlocks(tree, target, named)
+		removed, err = deletePreconditionBlocks(tree, target)
 		return required, removed, nil, err
 	case "retype", "delete_row", "delete_column":
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
-			return nil, nil, nil, err
+			return nil, pmdoc.Removal{}, nil, err
 		}
-		return []string{op.Block}, nil, nil, nil
+		return []string{op.Block}, pmdoc.Removal{}, nil, nil
 	case "insert", "move":
 		required, removed, err = anchoredPreconditionBlocks(tree, op)
 		return required, removed, nil, err
 	default:
-		return nil, nil, nil, nil
+		return nil, pmdoc.Removal{}, nil, nil
 	}
 }
 
-// removalPreconditionBlocks is what a block guard covers for a removal that starts at the block
-// carrying id and removes held (deleteTarget.held), or for a move taking that block from its place
-// (held nil): the outermost node the removal takes (pmdoc.ValidDocument.BlockRemoval), as the
-// listing names it (pmdoc.ListedBlocks), whose tokens cover every block inside it. That is the
-// list or quote the removal empties, where it empties one, and otherwise the removed block; an
-// operation that names the very block it removes (named) asks for that block, as it always has.
-// A list item, which a find's marker selects, is no block the listing names, so its delete asks
-// for the item's paragraph and the blocks after it - its nested lists, its typed blocks - whose
-// tokens cover every block the item holds. The known limit is the item's own attributes, which
-// lie on the list_item and in no listed token: a guard on those blocks does not see a task item's
-// checked mark another writer set.
-func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struct{}, named bool) ([]string, error) {
+// removalPreconditionBlocks is what a block guard must cover for a removal that starts at the
+// block carrying id and removes held (deleteTarget.held), or for a move taking that block from its
+// place (held nil): the outermost node the removal takes, with its path
+// (pmdoc.ValidDocument.BlockRemoval), which the guard must cover as the listing names its blocks,
+// whose tokens cover every block inside it (pmdoc.UncoveredBlocks). That is the list or quote the
+// removal empties, where it empties one, and otherwise the removed block. A list item, which a
+// find's marker selects, is no block the listing names, so its delete asks for the item's
+// paragraph and the blocks after it - its nested lists, its typed blocks - whose tokens cover
+// every block the item holds. The known limit is the item's own attributes, which lie on the
+// list_item and in no listed token: a guard on those blocks does not see a task item's checked
+// mark another writer set.
+func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struct{}) (pmdoc.Removal, error) {
 	valid, err := tree.validated("BlockRemoval")
 	if err != nil {
-		return nil, err
+		return pmdoc.Removal{}, err
 	}
-	removed, err := valid.BlockRemoval(id, held)
-	if err != nil {
-		return nil, err
-	}
-	if named && blockID(removed) == id {
-		return []string{id}, nil
-	}
-	listed := pmdoc.ListedBlocks(removed)
-	if len(listed) > 0 {
-		return listed, nil
-	}
-	return []string{id}, nil
+	return valid.BlockRemoval(id, held)
 }
 
-// deletePreconditionBlocks is what a block guard covers for the delete of target (resolveDelete),
-// named where the delete names its block: for a block, the whole of what its removal takes
-// (removalPreconditionBlocks), which for a list item a find's marker selected is the item with the
-// items nested in it; where a find covers a textblock's whole text, the outermost node that
-// removal takes (pmdoc.ValidDocument.TextblockRemoval) - the textblock, which is all a list item
-// whose one nested list takes its place loses, the list item whose text it is, or the list or
-// quote that empties - as the listing names it; otherwise the block holding the text it deletes.
-func deletePreconditionBlocks(tree *batchTree, target deleteTarget, named bool) ([]string, error) {
+// deletePreconditionBlocks is what a block guard must cover for the delete of target
+// (resolveDelete): for a block, the whole of what its removal takes (removalPreconditionBlocks),
+// which for a list item a find's marker selected is the item with the items nested in it; where a
+// find covers a textblock's whole text, the outermost node that removal takes
+// (pmdoc.ValidDocument.TextblockRemoval) - the textblock, which is all a list item whose one
+// nested list takes its place loses, the list item whose text it is, or the list or quote that
+// empties. A find that covers part of a textblock's text removes no block, so it is the zero
+// pmdoc.Removal.
+func deletePreconditionBlocks(tree *batchTree, target deleteTarget) (pmdoc.Removal, error) {
 	if target.block != "" {
-		return removalPreconditionBlocks(tree, target.block, target.held, named)
+		return removalPreconditionBlocks(tree, target.block, target.held)
 	}
 	valid, err := tree.validated("TextblockRemoval")
 	if err != nil {
-		return nil, invalidSchemaOp("find", err)
+		return pmdoc.Removal{}, invalidSchemaOp("find", err)
 	}
 	removed, err := valid.TextblockRemoval(target.text)
 	if err != nil {
-		return nil, invalidSchemaOp("find", err)
+		return pmdoc.Removal{}, invalidSchemaOp("find", err)
 	}
-	if removed != nil {
-		if listed := pmdoc.ListedBlocks(removed); len(listed) > 0 {
-			return listed, nil
-		}
-	}
-	return rangePreconditionBlock(tree, target.text)
+	return removed, nil
 }
 
 // rewrittenTypedBlock is the outermost typed block a replace's with rewrites in place under its
@@ -1180,39 +1077,39 @@ func rewrittenTypedBlock(tree *batchTree, at pmdoc.TextblockAt, r pmdoc.Range, o
 // the whole of what that block's leaving takes (removalPreconditionBlocks): the list or quote it
 // empties. The document's edges and a `heading:` anchor resolve to no block of their own, so an
 // operation naming none is refused and the batch takes the document token instead.
-func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) (required, taken []string, err error) {
+func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) (required []string, taken pmdoc.Removal, err error) {
 	required = make([]string, 0, 2)
 	if op.Op == "move" && op.Block != "" {
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
-			return nil, nil, err
+			return nil, pmdoc.Removal{}, err
 		}
 		required = append(required, op.Block)
-		if taken, err = removalPreconditionBlocks(tree, op.Block, nil, true); err != nil {
-			return nil, nil, err
+		if taken, err = removalPreconditionBlocks(tree, op.Block, nil); err != nil {
+			return nil, pmdoc.Removal{}, err
 		}
 	}
 	anchor, after, err := anchorOf(op)
 	if err != nil {
-		return nil, nil, err
+		return nil, pmdoc.Removal{}, err
 	}
 	field := anchorField(after)
 	if blockID, ok := strings.CutPrefix(anchor, "block:"); ok {
 		if blockID == "" {
-			return nil, nil, invalidOp("block")
+			return nil, pmdoc.Removal{}, invalidOp("block")
 		}
 		if err := requireBlock(tree, op, field, blockID); err != nil {
-			return nil, nil, err
+			return nil, pmdoc.Removal{}, err
 		}
 		required = append(required, blockID)
 	} else if anchor != "start" && anchor != "end" && !strings.HasPrefix(anchor, "heading:") {
 		anchored, err := quotePreconditionBlock(tree, field, anchor, op.Occurrence)
 		if err != nil {
-			return nil, nil, err
+			return nil, pmdoc.Removal{}, err
 		}
 		required = append(required, anchored...)
 	}
 	if len(required) == 0 {
-		return nil, nil, &ErrInvalidPrecondition{Reason: fmt.Sprintf(
+		return nil, pmdoc.Removal{}, &ErrInvalidPrecondition{Reason: fmt.Sprintf(
 			"%s anchored on %q names no block to guard. The document token guards that operation.", op.Op, anchor,
 		)}
 	}
