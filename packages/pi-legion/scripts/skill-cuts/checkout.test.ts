@@ -1450,9 +1450,9 @@ test("a command one of whose programs is on no directory of the sandbox's PATH i
 // Catches: a grep whose regular expression backtracks (`(a+)+b` over a long run of one character)
 // run in the runner's own thread with no time limit, which stops every run of the process.
 test("a grep whose regular expression backtracks past the 30 s limit is not answered, and its answer comes within the limit while the runner's own thread runs on", async () => {
-  // 200 lines, over each of which JavaScript's engine backtracks before it gives up on it (0.6 to
-  // 1.5 s a line on this pod), so far past the limit.
-  const copy = filesCopy("grep-backtracks", { "line.txt": `${"a".repeat(40)}\n`.repeat(200) });
+  // 20,000 lines, over each of which JavaScript's engine backtracks for a few milliseconds (about
+  // 6 ms a line of 20 a's on this pod, under the 100 ms one test may take), so far past the limit.
+  const copy = filesCopy("grep-backtracks", { "line.txt": `${"a".repeat(20)}\n`.repeat(20_000) });
   // Real time, deliberately: the limit under test is the platform clock's 30 s, and a tick every
   // 100 ms that keeps firing shows that the runner's own thread is free while the worker matches.
   let ticks = 0;
@@ -1571,5 +1571,294 @@ test("a glob word that bash expands, from the shell's directory in the copy, to 
     ["cd opts && cat ./*", "a\n"],
   ] as const) {
     expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+}, 60_000);
+
+// The third security review of the read-only answers (its round 2, at f0445b6f) found calls that
+// read outside the copy, answer from a store the session never read, or stop the runner's own
+// thread, through the forms 53a8e283 answers and the second review's fixes; each row below is made
+// from the review's own call and checkout.
+
+/** The review's made-up checkout of its cd rows under `name`, with the files `more` (each path to
+ *  its text): the directories `a/b/c/d`, `e/f` and `e/g`, each with a file `keep` naming it, the
+ *  guide, and the link `a/b/c/d/l` to `e/f`, which stays inside the copy, so removeOutsideLinks
+ *  keeps it. */
+function linkedDirsCopy(name: string, more: Record<string, string> = {}): CheckoutCopy {
+  const copy = filesCopy(name, {
+    "a/b/c/d/keep": "d\n",
+    "e/f/keep": "f\n",
+    "e/g/keep": "g\n",
+    "docs/guide.md": GUIDE,
+    ...more,
+  });
+  symlinkSync("../../../../e/f", path.join(copy.dir, "a/b/c/d/l"));
+  expect(removeOutsideLinks(copy.dir)).toEqual([]);
+  return copy;
+}
+
+/** Runs `jj args` in `cwd` as a made-up user, with no configuration of this machine's (its home a
+ *  directory of the file's own); a failure fails the test. */
+function jjIn(cwd: string, ...args: string[]): void {
+  const home = path.join(scratch, "jj-home");
+  mkdirSync(home, { recursive: true });
+  const ran = Bun.spawnSync([Bun.which("jj") ?? "jj", ...args], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: home,
+      JJ_USER: "Acme",
+      JJ_EMAIL: "dev@acme.test",
+    },
+  });
+  expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
+}
+
+// Catches: a `cd` that bash refuses (an option word, a second operand, a part before `..` that the
+// copy lacks) taken as done, so the later commands were checked from a directory the shell never
+// entered, and `cat ../../etc/hostname`, run from the root, read the machine's host name.
+test("a cd that bash refuses, for an option word, a second operand or a part before .. that is no directory of the copy, may leave the shell where it was, so a later path that leaves the root from there is not answered; a cd of one word to a directory the copy holds, part by part, still moves the shell", async () => {
+  const copy = linkedDirsCopy("cd-refused");
+  for (const command of [
+    "cd -x a/b; cat ../../etc/hostname",
+    "cd --bogus a/b; cat ../../etc/hostname",
+    "cd a/b -x; cat ../../etc/hostname",
+    "cd x/../a/b; cat ../../etc/hostname",
+  ]) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: "../../etc/hostname is outside the session's checkout /work/acme/proj" },
+    });
+  }
+  for (const [command, text] of [
+    [
+      "cd a/b; cat ../../etc/hostname",
+      "cat: ../../etc/hostname: No such file or directory\n\n\nCommand exited with code 1",
+    ],
+    ["cd a/b/../../docs; cat ../docs/guide.md", GUIDE],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+}, 60_000);
+
+// Catches: a working directory, or a cd, through a link of the checkout that stays inside it: the
+// kernel walks a later `..` from the real directory behind the link (the sandbox enters the working
+// directory as it is real, `cd -P` goes there, and bash's own cd does where its walk of the path
+// finds no directory), where the walk follows `..` from the path as written, so `cat
+// ../../../etc/hostname` read the machine's host name; or a glob expanded there, which the walk
+// read in another directory, so `wc` took `--files0-from=list` from a file's name.
+test("a working directory or a cd through a symbolic link of the checkout is not answered where a later word holds .., nor where a path or a glob leaves the copy or makes an option from the directory the kernel's walk ends at; a call with no .. is answered from the real directory", async () => {
+  const outside = path.join(scratch, "outside-cd-linked.txt");
+  writeFileSync(outside, `${SECRET}\n`);
+  const copy = linkedDirsCopy("cd-linked", {
+    "e/--files0-from=list": "",
+    "e/list": `${outside}\0`,
+    "e/g/--files0-from=list": "",
+    "e/g/list": `${outside}\0`,
+  });
+  const deep = { ...copy, cwd: `${ROOT}/a/b/c/d` };
+  const linked = { ...copy, cwd: `${ROOT}/a/b/c/d/l` };
+  const through = "through a symbolic link of the checkout";
+  const leaves = "is outside the session's checkout";
+  const option = "which the program reads as an option";
+  const answers: unknown[] = [];
+  for (const [at, command, cwd, why] of [
+    [deep, "cd l/../g; cat ../../../../etc/hostname", undefined, leaves],
+    [deep, "cd -P l/..; cat ../../../etc/hostname", undefined, leaves],
+    [copy, "cd ..; cat ../../../etc/hostname", "a/b/c/d/l", through],
+    [linked, "cd ..; cat ../../../etc/hostname", undefined, through],
+    [deep, "cd l; cd ../g; wc [[:punct:]]*", undefined, through],
+    [deep, "cd l/../g; wc [[:punct:]]*", undefined, "which the copy does not hold"],
+    [deep, "cd -P l/..; wc [[:punct:]]*", undefined, option],
+  ] as const) {
+    const answer = await bashText(at, command, cwd);
+    answers.push(answer);
+    expect({ command, cwd, answer }).toEqual({
+      command,
+      cwd,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+  for (const [at, command, cwd, text] of [
+    [deep, "cd l && cat keep", undefined, "f\n"],
+    [deep, "cd l/../g && cat keep", undefined, "g\n"],
+    [copy, "cat keep", "a/b/c/d/l", "f\n"],
+    [linked, "cat keep", undefined, "f\n"],
+  ] as const) {
+    const answer = await bashText(at, command, cwd);
+    answers.push(answer);
+    expect({ command, cwd, answer }).toEqual({ command, cwd, answer: text });
+  }
+  expect(JSON.stringify(answers)).not.toContain(outside);
+}, 60_000);
+
+// Catches: a glob whose bracket expression the glob-to-option check misread (`[[:punct:]]*`,
+// `[]-]*`), so `wc` took `--files0-from=list` from a file's name and counted the files outside the
+// copy that `list` names; the same check's matcher backtracking in the runner's own thread for
+// minutes (`*a*a*a*a*a*a*a*a*b` beside a file `-aaa…`); or a glob part starting with `.`, which
+// bash expands to `.git` (`.gi*/config`), read as written.
+test("a glob word is not answered, at once, where the directory it expands in holds a name starting with -, whatever its bracket expressions; nor one whose part starts with ., which bash may expand to .git; a glob that expands below a named directory is answered", async () => {
+  const outside = path.join(scratch, "outside-glob-class.txt");
+  writeFileSync(outside, `${SECRET}\n`);
+  const copy = filesCopy("glob-class", { "--files0-from=list": "", list: `${outside}\0` });
+  const answers: unknown[] = [];
+  for (const command of [
+    "wc [[:punct:]]*",
+    "wc []-]*",
+    "wc -c [[:punct:]]*",
+    "wc *",
+    "wc [!a-z]*",
+  ]) {
+    const answer = await bashText(copy, command);
+    answers.push(answer);
+    expect({ command, answer }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("which the program reads as an option") },
+    });
+  }
+  const listBytes = Buffer.byteLength(`${outside}\0`);
+  const width = String(listBytes).length;
+  expect(await bashText(copy, "wc -c ./*")).toBe(
+    `${"0".padStart(width)} ./--files0-from=list\n${listBytes} ./list\n${listBytes} total\n`
+  );
+  expect(JSON.stringify(answers)).not.toContain(outside);
+
+  const dashed = filesCopy("glob-dashed", { [`-${"a".repeat(60)}`]: "" });
+  const started = performance.now();
+  expect(await bashText(dashed, `cat ${"*a".repeat(8)}*b`)).toEqual({
+    why: expect.stringContaining("which the program reads as an option"),
+  });
+  expect(performance.now() - started).toBeLessThan(1_000);
+
+  const git = { dir: gitCopy("glob-dotted"), root: ROOT, cwd: ROOT, git: true };
+  for (const command of ["cat .gi*/config", "cat .g?t/HEAD"]) {
+    expect({ command, answer: await bashText(git, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("may match a name starting with .") },
+    });
+  }
+  expect(await bashText(git, "cat docs/*.md")).toBe(GUIDE);
+}, 60_000);
+
+// Catches: the rule's brace-expansion test, a regular expression run on each word in the runner's
+// own thread, taking time cubic in the word's length (`cat {,{,{,…`: 4 KB took about a second, so
+// 64 KB would take about an hour), which stops every run of the process meanwhile.
+test("readOnlyCall reads a 64 KB command of brace openings with no close in under 1 s, and finds the brace expansion where one closes", () => {
+  const open = `cat ${"{,".repeat(32_766)}`;
+  expect(open.length).toBe(65_536);
+  for (const [command, readOnly] of [
+    [open, true],
+    [`${open}}`, false],
+  ] as const) {
+    const started = performance.now();
+    expect(readOnlyCall("bash", { command })).toBe(readOnly);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  }
+});
+
+// Catches: a jj command answered from a jj store that the checkout tracks at its root, in a copy
+// whose context session ran no jj, so no colocation of the runner's made it: the session saw
+// `There is no jj repo`, and such a store may name a git repository outside the copy (the nested
+// `.jj` check stopped below the root).
+test("no jj command is answered in a copy whose root holds a .jj that the runner's colocation did not make", async () => {
+  const dir = gitCopy("tracked-jj");
+  jjIn(dir, "git", "init", "--colocate");
+  jjIn(dir, "describe", "-m", "From the tracked store");
+  gitIn(dir, "add", "-f", ".jj");
+  gitIn(dir, "commit", "--quiet", "-m", "Track .jj");
+  gitIn(dir, "checkout", "--quiet", "--detach", gitIn(dir, "rev-parse", "HEAD"));
+  const copy = { dir, root: ROOT, cwd: ROOT, git: true };
+  for (const command of [
+    "jj root",
+    "jj log --no-graph -r 'all()' -T 'description ++ \"\\n\"'",
+    "cd docs && jj st",
+    "cat $(jj root)/docs/guide.md",
+  ]) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("a .jj at its root") },
+    });
+  }
+}, 60_000);
+
+// Catches: a grep answered `No matches found` where the pin's search matches: JavaScriptCore stops
+// a backtracking match after a count of its steps (`(a+)+b` over 40 a's, then `xab`: about 0.7 s)
+// and gives no match, where Rust's regex finds the `ab` at the line's end, so the run was judged
+// on a wrong answer.
+test("a grep one test of whose regular expression takes past 100 ms is not answered, since JavaScript's engine may have stopped it early with no match; a quick pattern over the same line is answered", async () => {
+  const copy = filesCopy("grep-early-stop", { "one.txt": `${"a".repeat(40)}xab\n` });
+  expect(await grepText(copy, { pattern: "(a+)+b", path: "one.txt" })).toEqual({
+    why: expect.stringContaining("took past 100 ms"),
+  });
+  expect(await grepText(copy, { pattern: "a+b", path: "one.txt" })).toBe(`*1|${"a".repeat(40)}xab`);
+}, 60_000);
+
+// Catches: a glob's matching (Bun.Glob's, of every path under its base) run in the runner's own
+// thread with no time limit: a long pattern against each path of a large checkout takes seconds to
+// minutes, which stops every run of the process meanwhile.
+test("a glob whose matching runs past the 30 s limit is not answered, and its answer comes within the limit while the runner's own thread runs on", async () => {
+  // 10,000 paths, each matched against a 57 KB pattern (about 16 ms a path on this pod), so far
+  // past the limit.
+  const copy = filesCopy(
+    "glob-slow",
+    Object.fromEntries(
+      Array.from({ length: 10_000 }, (_, n) => [`big/${"a".repeat(60)}${n}`, ""] as const)
+    )
+  );
+  // Real time, deliberately: the limit under test is the platform clock's 30 s, and a tick every
+  // 100 ms that keeps firing shows that the runner's own thread is free while the worker matches.
+  let ticks = 0;
+  const tick = setInterval(() => {
+    ticks++;
+  }, 100);
+  const started = performance.now();
+  const answer = await answerCall(
+    copy,
+    "glob",
+    { path: `**/${"{a*,*a,*}".repeat(6_400)}` },
+    "hashline"
+  );
+  const tookMs = performance.now() - started;
+  clearInterval(tick);
+  expect(answer).toEqual({ why: "it ran past the 30 s limit" });
+  expect(tookMs).toBeLessThan(32_000);
+  expect(ticks).toBeGreaterThan(200);
+}, 60_000);
+
+// Catches: `pwd` from a working directory reached through a link of the checkout answered with the
+// real directory's path (`…/e/f`), where the session's showed the path as written (`…/a/l`): the
+// sandbox enters the working directory as it is real, so bash's `pwd` and `$PWD`, the environment
+// that `env` and `export` print, and git and jj, which start from it, give the real path.
+test("where the shell may be in a directory reached through a symbolic link, no answer that prints the working directory's own path is given: pwd, $PWD, env, export, git rev-parse --show-prefix, --show-cdup and --show-toplevel, jj root; from a directory with no link they are answered", async () => {
+  const dir = gitCopy("pwd-linked", { "e/f/keep": "f\n" });
+  mkdirSync(path.join(dir, "a"));
+  symlinkSync("../e/f", path.join(dir, "a", "l"));
+  expect(removeOutsideLinks(dir)).toEqual([]);
+  expect(await colocateJj(dir)).toBe(true);
+  const linked = { dir, root: ROOT, cwd: `${ROOT}/a/l`, git: true, jj: true as const };
+  for (const command of [
+    "pwd",
+    "echo $PWD",
+    "cat $(pwd)/keep",
+    "env",
+    "export -p",
+    "git rev-parse --show-prefix",
+    "git rev-parse --show-cdup",
+    "git rev-parse --show-toplevel",
+    "jj root",
+  ]) {
+    expect({ command, answer: await bashText(linked, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining("may print the working directory's path") },
+    });
+  }
+  expect(await bashText(linked, "cat keep")).toBe("f\n");
+  const real = { ...linked, cwd: `${ROOT}/e/f` };
+  for (const [command, text] of [
+    ["pwd", `${ROOT}/e/f\n`],
+    ["echo $PWD", `${ROOT}/e/f\n`],
+    ["git rev-parse --show-prefix", "e/f/\n"],
+    ["jj root", `${ROOT}\n`],
+  ] as const) {
+    expect({ command, answer: await bashText(real, command) }).toEqual({ command, answer: text });
   }
 }, 60_000);

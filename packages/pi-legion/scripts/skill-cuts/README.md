@@ -404,7 +404,8 @@ workspace at the commit where the copy is a colocated jj repository, each run wi
 `--ignore-working-copy`, so it reads the snapshot the colocation took, takes no lock of the working
 copy and writes nothing (answers given at once agree); and as jj does in a checkout that is no jj
 repository (`Error: There is no jj repo in "."`) where the case's session ran no jj and no case made
-it one, since the sandbox shows jj no directory above the copy. The answers are
+it one, since the sandbox shows jj no directory above the copy (where such a checkout tracks a
+`.jj` at its root, no jj command is answered: jj would answer from that store). The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
 case's reads by path show them, or `Path '<path>' not found`; a file that is no prose too (no
 notebook, SVG or document), and one of 100 lines or more, which Oh My Pi may show summarized,
@@ -425,10 +426,15 @@ checkout does not keep, so every entry is taken as changed at one time, by name,
 alone, as Oh My Pi shows an entry with no age; a listing that would show `.git` or `.jj`, or a
 ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
 forms (`glob`'s paths in path order, since a checkout keeps no times of change; `.git` and `.jj`
-left out of both); a `grep` is worked out in a worker thread, never the runner's own, since its
-JavaScript regular expression may backtrack where Oh My Pi's Rust one does not (`(a+)+b` over a
-long line), and past 30 s the worker is ended and the call is not answered. A `grep` path may be
-a list joined by `;` (outside braces): its parts that
+left out of both); a `grep` and a `glob` are each worked out in a worker thread, never the
+runner's own, since grep's JavaScript regular expression may backtrack where Oh My Pi's Rust one
+does not (`(a+)+b` over a long line), and glob's matcher of each path may take seconds for a long
+pattern in a large checkout; past 30 s the worker is ended and the call is not answered. A `grep`
+one test of whose regular expression (or of its exclusions') takes more than 100 ms is not
+answered either: JavaScript's engine stops a backtracking match after a count of its steps and
+gives no match (`(a+)+b` over 40 a's and then `xab`, about 0.7 s), where Oh My Pi's search finds
+one, so its `No matches found` would be wrong. A `grep` path may be a list joined by `;` (outside
+braces): its parts that
 start with `!` and name no path of the checkout are exclusions (one with no `/`, or that starts
 with `**`, matches at any depth; another is anchored where it resolves), and the rest are
 searched, each on its own in their order, or as the one directory that holds the others, a part
@@ -481,25 +487,41 @@ its letters, so `grep -f..` and `git ls-files -X..` too: an option that reads on
 --contents`, has its value read as a path), or a path that leaves the copy as the kernel walks it
 there, through a link that stays inside followed by `..` (`l/../x` through a link `l` to the root:
 each part's links are followed, one part at a time, before the `..` after it); nor, of a word whose
-unquoted text holds a glob character (`*`, `?`, `[`), a `cd` to it, one that bash would make into a
-word starting with `-` (the copy is fixed, so the runner matches its first part against the names
-of the directory the shell is in there, `dotglob` and `nullglob` off: `wc *` or `cat *` beside a
-file named `--files0-from=.list` or `-n`; `wc opts/*` stays answered), or a path whose glob may match
-`.` or `..` (`.*`, `.?`; `.*` matches `..` before bash 5.2) or comes before a `..` (`a/l*/../x`:
-the kernel walks the `..` from what the glob matches, a link among them); nor a `cd` that names no
+unquoted text holds a glob character (`*`, `?`, `[`), a `cd` to it, one that bash may make into a
+word starting with `-` (read with no matcher: a word whose first part holds a glob character,
+which bash expands in the directory the shell is in, `nullglob` off, where a directory the shell
+may be in holds any name starting with `-`, or is none the checkout holds; so `wc *`, `wc
+[[:punct:]]*` or `cat *` beside a file named `--files0-from=.list` or `-n` are not answered, and
+`wc opts/*` or `cat ./*` are), or a path whose glob part starts with `.` (bash matches a name's
+leading `.` only so, `dotglob` off, so it may match `.`, `..` before bash 5.2, or `.git`: `cat
+.gi*/config`) or comes before a `..` (`a/l*/../x`: the kernel walks the `..` from what the glob
+matches, a link among them); nor a `cd` that names no
 directory, which goes to `$HOME`; nor one that expands `$HOME` or `$PATH`, whose value would be the
 runner's, or holds, in a word of any command (`echo`'s among them), an unquoted `~` at its start
 or after its `=` or a `:`, where bash puts a home directory of the runner's (`~legion`, `~root`);
-nor a `jj` command whose repository may be a `.jj` the checkout tracks below its root (one between
-the directory jj starts from, its `-R`'s or the working directory, and the root: in the sandbox jj
-stops there at its configuration, which it cannot move to the read-only home, and such a store may
-name a git repository outside the copy). A quoted word is a literal
+nor a `jj` command whose repository may be a `.jj` the checkout tracks (one between the directory
+jj starts from, its `-R`'s or the working directory, and the root: in the sandbox jj stops there
+at its configuration, which it cannot move to the read-only home, and such a store may name a git
+repository outside the copy), nor any jj command of a checkout whose root holds a `.jj` that no
+colocation of the runner's made (its session ran no jj: jj would answer from the store the
+checkout tracks, where the session saw `There is no jj repo`). A quoted word is a literal
 (a single-quoted one, or a double-quoted one whose every `$` is escaped and that holds no
-backtick), whatever `$`, `?`, `*`, braces or `~` it holds. A `cd` to a literal directory the
-checkout holds, inside its root, succeeds, so where it surely runs (no `&&` or `||` before it in
-its list) every later command of the call, until another `cd`, runs from there alone, and a
-relative path is read from there (`cd <root>/pkg/src && …; cat ../package.json` reads
-`pkg/package.json`); after any other `cd`, the shell may still be where it was.
+backtick), whatever `$`, `?`, `*`, braces or `~` it holds. A `cd` of one word (a literal, no
+option) to a directory the checkout holds, inside its root, each part of it before a `..` a
+directory too (as bash's own `cd` walks it), succeeds, so where it surely runs (no `&&` or `||`
+before it in its list) every later command of the call, until another `cd`, runs from there
+alone, and a relative path is read from there (`cd <root>/pkg/src && …; cat ../package.json`
+reads `pkg/package.json`); after any other `cd` (with an option, a second operand, a part before
+a `..` the checkout lacks: `cd -x a/b`, `cd a/b -x`, `cd x/../a/b`, each of which bash refuses),
+the shell may still be where it was, or, where the kernel's walk of the path as written ends
+elsewhere (`cd -P`, or bash's own `cd` where its walk finds no directory), there. The kernel walks
+a `..` from the directory the shell is in as it is real, and the runner from its path as written:
+so where the working directory's real path in the checkout is not its path (the sandbox enters it
+as it is real), or a `cd` may go through a symbolic link of the checkout, a later word that holds
+`..` is not answered (`cwd` `a/l` through a link `l` to `e/f`: `cd ..; cat ../../x`), nor a command
+that prints the working directory's own path (`pwd`, `$PWD`, `env`, `export`, `git rev-parse
+--show-prefix`, `--show-cdup` or `--show-toplevel`, `jj root`): bash, git and jj give it from the
+real directory (`…/e/f`), where the session showed the path as written (`…/a/l`).
 
 The read-only rule decides which calls are answered; it does not make running them safe. So each
 answered `bash` command, and each jj command of a checkout's colocation, runs in a sandbox
@@ -542,10 +564,11 @@ as though the rule had let each through: the key is in no answer, the home and `
 
 A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
 path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj
-command where its colocation failed, a command whose sandbox cannot be made or one of whose
-programs the sandbox lacks, an output whose notice would name an artifact (past 50 KB, a line past
-768 bytes, or one the minimizer may rewrite), a `find` or `ls` tool, a run past its time, a `grep`
-past 30 s) gets no
+command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
+sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
+name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a `find`
+or `ls` tool, a run past its time, a `grep` or `glob` past 30 s, a `grep` one regex test of which
+took more than 100 ms) gets no
 verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
 why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
 an arm that cannot finish for such runs and those that read past round 5 drops its case as

@@ -55,9 +55,11 @@
  * the call not read-only. So does a brace expansion (`{a,b}`, `{1..3}`) in the unquoted text of
  * any word of any command, or of a redirection's target, which bash makes into several words (a
  * quoted or escaped `}` or `,` neither ends nor splits one, as bash reads it: `{x\},-e1e\ id}` is
- * two words). A quoted word is a literal: a single-quoted one, and a double-quoted one whose
- * every `$` is escaped and that holds no backtick, expands to itself, whatever `$`, `?`, `*`,
- * `{…}` or `~` it holds. A redirection to a file anywhere makes the call not read-only (a
+ * two words; `holdsBrace` finds one in one pass, in time linear in the word, since the rule runs
+ * in the runner's own thread). A quoted word is a literal: a single-quoted one, and a
+ * double-quoted one whose every `$` is escaped and that holds no backtick, expands to itself,
+ * whatever `$`, `?`, `*`, `{…}` or `~` it holds. A redirection to a file anywhere makes the call
+ * not read-only (a
  * redirection to `/dev/null`, a copy of one stream into another such as `2>&1`, and a read of a
  * file with `<` are none). So do a process substitution, an arithmetic expansion (`$((…))`, and
  * bash's old `$[…]`, which runs the substitutions a variable it reads holds) or command, any other
@@ -86,25 +88,39 @@
  * leaves the root from any directory the shell may be in there, an option's value that does
  * (after a long option's `=`, or any rest of a short one's word after one of its letters, so
  * `grep -f..` too: `optionPaths`), a path that the kernel's walk of it in the copy takes out of
- * it, through a link that stays inside followed by `..` (`walksInCopy`), a glob word that makes
- * a word starting with `-` (a name in the copy that it matches, as bash expands it from the
- * directory the shell is in, `dotglob` and `nullglob` off: `wc *` with a file named
- * `--files0-from=x`; `globOption`), a path of a glob word whose glob may match `.` or `..` or
- * comes before a `..` (the kernel walks the `..` from what the glob matches, a link among them),
- * a `cd` to a glob word, and a `cd` that names no directory), would show a value of
+ * it, through a link that stays inside followed by `..` (`walksInCopy`), a glob word that may make
+ * a word starting with `-` (read with no matcher, `globOptionFault`: one whose first part holds a
+ * glob character, which bash expands in the directory the shell is in, `nullglob` off, where a
+ * directory the shell may be in holds any name starting with `-`, as `wc *` beside a file named
+ * `--files0-from=x` or `wc [[:punct:]]*` does, or is no directory the copy holds), a path of a
+ * glob word whose glob part starts with `.` (bash matches a name's leading `.` only so, `dotglob`
+ * off, so it may match `.`, `..` or `.git`) or comes before a `..` (the kernel walks the `..` from
+ * what the glob matches, a link among them), a `cd` to a glob word, a `cd` that names no
+ * directory, and, where the shell may be in a directory whose real path in the copy is not its
+ * path as written, a word holding `..`), would show a value of
  * the runner's (`$HOME`, `$PATH`, and a word of any command, `echo`'s among them, with an
  * unquoted `~` at its start or after its `=` or a `:`, where bash puts a home directory of the
- * runner's), or runs jj where its repository may be one the checkout tracks below its root (a
- * `.jj` between the directory jj starts from, its `-R`'s or the working directory, and the root:
- * in the sandbox jj stops there at its configuration, which it cannot move to the read-only home,
- * and such a store may name a git repository outside the copy). `$(git rev-parse
- * --show-toplevel)` is the root only where no directory between the working directory and the
- * root holds a `HEAD` (git dies at a directory laid out as a bare repository, and prints
- * nothing). The copy is fixed and read-only, so a `cd` to a literal directory it holds inside the
- * root, walked so, succeeds: where it surely runs (no `&&` or `||` before it in its list), every
- * later command of the call, until another `cd`, runs from there alone (`Walk.enters`); any other
- * `cd` (to a path the copy lacks, a file, a path outside the root, a word that is not a literal,
- * or one that may not run) may fail, so the shell may be where it was or where it leads.
+ * runner's), or runs jj where its repository may be one the checkout tracks (a `.jj` between the
+ * directory jj starts from, its `-R`'s or the working directory, and the root, or at the root where
+ * no colocation of the runner's made it: in the sandbox jj stops there at its configuration, which
+ * it cannot move to the read-only home, and such a store may name a git repository outside the
+ * copy). `$(git rev-parse --show-toplevel)` is the root only where no directory between the
+ * working directory and the root holds a `HEAD` (git dies at a directory laid out as a bare
+ * repository, and prints nothing). The copy is fixed and read-only, so a `cd` of one word, a
+ * literal and no option, to a directory it holds inside the root, each part before a `..` a
+ * directory too, as bash's own cd walks it (`cdLanding`), succeeds: where it surely runs (no `&&`
+ * or `||` before it in its list), every later command of the call, until another `cd`, runs from
+ * there alone (`Walk.cd`); any other `cd` (with an option or a second operand, to a path the copy
+ * lacks, a file, a path outside the root, a word that is not a literal, or one that may not run)
+ * may fail, so the shell may be where it was, where it leads, or where the kernel's walk of the
+ * path as written ends (`cd -P`, and bash's own cd where its walk finds no directory). The kernel
+ * walks a `..` from the directory the shell is in as it is real, the walk from its path as
+ * written: so where the working directory's real path in the copy is not its path (the sandbox
+ * enters it as it is real), or a `cd` may have gone through a symbolic link, a later word holding
+ * `..` is not answered (`ShellState.linked`); nor, there, is a command that prints the working
+ * directory's own path (`pwd`, `$PWD`, the environment `env` and `export` print, git's `rev-parse
+ * --show-prefix`, `--show-cdup` and `--show-toplevel`, `jj root`), which bash, git and jj give
+ * from the real directory, where the session showed the path as written.
  *
  * **The sandbox.** The rule decides which calls are answered; it does not make running them safe.
  * So each answered `bash` command, and each jj command of a copy's colocation, runs in a sandbox
@@ -213,14 +229,17 @@
  *   relative to the working directory when under it, else absolute (path-utils.ts lines
  *   512-531); its regular expression is JavaScript's in Unicode mode, case-sensitive unless `case`
  *   is false, which backtracks where the pin's (Rust's regex) does not, so the answer is worked
- *   out in a worker thread (`grepInWorker`), never the runner's own, within BASH_TIME_LIMIT_MS
- *   (30 s), past which the worker is ended. Not answered: a glob or a selector in a searched
+ *   out in a worker thread (`answerInWorker`), never the runner's own, within BASH_TIME_LIMIT_MS
+ *   (30 s), past which the worker is ended; and since JavaScriptCore stops a backtracking match
+ *   after a count of its steps and gives no match where the pin finds one, a call one test of
+ *   whose expression (or of its exclusions') takes past REGEX_TEST_MS (100 ms) is not answered
+ *   (`timedExec`). Not answered: a glob or a selector in a searched
  *   path, a path outside the root, a path (or every path of a list) the copy lacks, a path named
  *   twice, an exclusion of a form the runner does not read (`dialectGlob`), a list joined by
  *   commas or blanks, a file named alone past 4 MiB (which the pin streams), a pattern over lines
  *   or with a look-around, a back-reference or a named group in Rust's own form, one JavaScript
  *   does not take, a cut match line of a file that is not UTF-8, an output past 50 KB with its
- *   notices, and a search past the time limit.
+ *   notices, a test of its expression past 100 ms, and a search past the time limit.
  * - `glob` (keys `path`, `hidden`, `gitignore`, `limit`, `i`): GlobTool's output
  *   (packages/coding-agent/src/tools/glob.ts lines 197-375, path-utils.ts's `parseFindPattern`
  *   and `splitDelimitedPathEntry`): `path` (`.` when absent) a pattern, or a list of patterns
@@ -232,10 +251,12 @@
  *   matching pattern`; dotfiles left out when `hidden` is false; then, each on a line of its own,
  *   `Requested limit <n> clamped to the max of 200` for a limit above it and `Skipped missing
  *   paths: <patterns>` for the patterns of a list whose directory is not there. Oh My Pi orders
- *   them by their time of change, which the copy does not keep, so in path order. Not answered: a
+ *   them by their time of change, which the copy does not keep, so in path order. Its matching
+ *   (Bun.Glob's, of each path under its base) is worked out in a worker thread (`answerInWorker`),
+ *   within BASH_TIME_LIMIT_MS, as grep's is. Not answered: a
  *   list joined by commas or blanks, a base outside the root, one pattern (or every pattern of a
- *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt), and
- *   more matches than `limit` (200 when absent).
+ *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt),
+ *   more matches than `limit` (200 when absent), and a search past the time limit.
  * - `bash` (keys `command`, `cwd`, `timeout`, `i`): the command run in the sandbox of the copy
  *   (above; its working directory the session's mapped into the copy; the checkout's root in the
  *   command mapped to CHECKOUT_MOUNT, and that path and the copy's own, as given and as its real
@@ -261,7 +282,8 @@
  *   the copy is GitHub's tarball instead (the fetch failed: `CheckoutCopy.git` false), a jj
  *   command where the copy could not be made a jj repository (`CheckoutCopy.jj` a why) or the
  *   runner has no jj, a command a word of which may lead outside the copy (`escapes`), a jj
- *   command whose repository may be one the checkout tracks below its root, a command one of
+ *   command whose repository may be one the checkout tracks below its root, a jj command of a
+ *   copy whose root holds a `.jj` no colocation of the runner's made, a command one of
  *   whose programs is on no directory of the sandbox's PATH (this pod's has no `rg`: bash would
  *   answer `command not found`, which the session did not see), a command whose sandbox cannot be
  *   made, and a run past the time limit. Nor is an output Oh My Pi shows
@@ -583,9 +605,6 @@ const SHELL_BUILTINS: Readonly<Record<string, true>> = {
 };
 /** The most values a word may take that the confinement follows. */
 const MAX_VALUES = 64;
-/** A brace expansion (`{a,b}`, `{1..3}`) in a word's unquoted text (`bareText`), which bash makes
- *  into several words. */
-const BRACE_EXPANSION = /\{[^}]*(,|\.\.)[^}]*\}/;
 
 /** A part of a word: literal text, a variable's expansion (`$NAME`, `${NAME}`), or a command
  *  substitution (`$(…)` or a backtick, its text `source`), each in quotes or not (`quoted`). */
@@ -907,31 +926,60 @@ function globbed(word: Word): boolean {
   return /[*?[]/.test(bareText(word));
 }
 
+/** Whether `bare`, a word's unquoted text (`bareText`), holds a brace expansion (`{a,b}`,
+ *  `{1..3}`), which bash makes into several words: a `{`, then a `,` or a `..`, then a `}`, with no
+ *  other `}` between them. One pass, in time linear in the text (a regular expression of it
+ *  backtracks, cubic in a word of `{,` repeated). */
+function holdsBrace(bare: string): boolean {
+  let open = false;
+  let split = false;
+  for (let at = 0; at < bare.length; at++) {
+    const ch = bare[at];
+    if (ch === "{") open = true;
+    else if (ch === "}") {
+      if (open && split) return true;
+      open = false;
+      split = false;
+    } else if (open && (ch === "," || (ch === "." && bare[at + 1] === "."))) split = true;
+  }
+  return false;
+}
+
 /** What a variable or a word may hold at a point of a command: each value it may take, or
  *  undefined when one of them is unknown. */
 type Values = ReadonlySet<string> | undefined;
 
 /** A command's shell at a point of it: each variable the command assigned, exported or unset
- *  before it, with what it may hold; and every directory it may be in (the session's paths; none
- *  where the walk follows no directory). */
+ *  before it, with what it may hold; every directory it may be in (the session's paths; none where
+ *  the walk follows no directory); and whether one of those may be, as the kernel holds it,
+ *  elsewhere than its path as written (`linked`: a working directory whose real path in the copy is
+ *  not its path, or a `cd` that may have gone through a symbolic link, `Walk.cd`), where the kernel
+ *  walks a later `..` from the real directory and the walk from the path. */
 interface ShellState {
   readonly vars: Map<string, Values>;
   cwds: readonly string[];
+  linked: boolean;
 }
 
 /** A walk of a command (`walkScript`): `check`, why one simple command at its point fails, or
- *  undefined; `subValues`, what a command substitution may print, as a word's value; `enters`,
- *  whether a `cd` to the directory `dir` (a session path) surely succeeds (absent, any `cd` may
- *  fail). */
+ *  undefined; `subValues`, what a command substitution may print, as a word's value; `cd`, what a
+ *  `cd` from the directory `from` (a session path) to `to` (a value of its word) does: `enters`,
+ *  whether it surely succeeds, the shell then at `path.posix.resolve(from, to)`; `elsewhere`,
+ *  another directory it may end at (a session path); and `linked`, whether the directory it may
+ *  end at may be, as the kernel holds it, elsewhere than its path as written (absent, any `cd` may
+ *  fail, and none goes through a link). */
 interface Walk {
   readonly check: (command: SimpleCommand, state: ShellState) => string | undefined;
   readonly subValues: (script: Script, state: ShellState) => Values;
-  readonly enters?: (dir: string) => boolean;
+  readonly cd?: (
+    from: string,
+    to: string
+  ) => { readonly enters: boolean; readonly linked: boolean; readonly elsewhere?: string };
 }
 
 /** `state` for a shell of its own: what that shell changes stays there. */
 function forked(state: ShellState): ShellState {
-  return { vars: new Map(state.vars), cwds: state.cwds };
+  return { vars: new Map(state.vars), cwds: state.cwds, linked: state.linked };
 }
 
 /** What the variable `name` may hold at `state`: what the command gave it, or for `$PWD` each
@@ -1062,21 +1110,29 @@ function changeState(command: SimpleCommand, state: ShellState, maybe: boolean, 
     const operands = args.filter((word) => !(literal(word) ?? "").startsWith("-"));
     const [target] = operands;
     const values = target === undefined ? undefined : valuesOf(target, state, walk);
-    if (values === undefined) return;
-    const moved = [
-      ...new Set(state.cwds.flatMap((at) => [...values].map((to) => path.posix.resolve(at, to)))),
-    ];
-    // A `cd` to a literal directory that `walk.enters` succeeds; where it surely runs, the shell is
-    // then there alone. Any other may fail, and the shell stay where it was.
-    const enters = walk.enters;
+    if (target === undefined || values === undefined) return;
+    const landings = state.cwds.flatMap((from) =>
+      [...values].map((to) => ({
+        dir: path.posix.resolve(from, to),
+        ...(walk.cd?.(from, to) ?? { enters: false, linked: false }),
+      }))
+    );
+    // bash's cd fails at an option it lacks, at a second operand, and at a path a part of which
+    // before a `..`, or whose whole, is no directory: a cd of one word, a literal and no option, that
+    // `walk.cd` enters from each directory surely moves the shell there where it surely runs. Any
+    // other may fail, and the shell stay where it was, or end where the kernel's walk of the path
+    // as written does (`cd -P`, or bash's own where its walk finds no directory).
     const certain =
       !maybe &&
-      operands.length === 1 &&
-      literal(target ?? []) !== undefined &&
-      enters !== undefined &&
-      moved.length > 0 &&
-      moved.every((dir) => enters(dir));
-    state.cwds = certain ? moved : [...new Set([...state.cwds, ...moved])];
+      args.length === 1 &&
+      literal(target) !== undefined &&
+      landings.length > 0 &&
+      landings.every((landing) => landing.enters);
+    const moved = landings.flatMap((landing) =>
+      certain || landing.elsewhere === undefined ? [landing.dir] : [landing.dir, landing.elsewhere]
+    );
+    state.cwds = [...new Set(certain ? moved : [...state.cwds, ...moved])];
+    state.linked ||= landings.some((landing) => landing.linked);
   }
 }
 
@@ -1513,7 +1569,7 @@ function readOnlyFault(command: SimpleCommand, state: ShellState): string | unde
   // bash makes of a word with a brace expansion several words, each of which may be an option or
   // a path no word shows as written (an assignment's value it does not expand so).
   for (const word of [...command.words, ...command.redirects.map((each) => each.target)]) {
-    if (BRACE_EXPANSION.test(bareText(word))) return `${wordText(word)} holds a brace expansion`;
+    if (holdsBrace(bareText(word))) return `${wordText(word)} holds a brace expansion`;
   }
   for (const { name, value } of command.assignments) {
     if (PROTECTED_NAME.test(name)) return `it assigns ${name}`;
@@ -1550,7 +1606,12 @@ function readOnlyScript(command: unknown): Script | undefined {
   if (typeof command !== "string" || command.trim() === "") return undefined;
   const script = parseScript(command);
   if (script === undefined) return undefined;
-  const fault = walkScript(script, { vars: new Map(), cwds: [] }, false, READ_ONLY_WALK);
+  const fault = walkScript(
+    script,
+    { vars: new Map(), cwds: [], linked: false },
+    false,
+    READ_ONLY_WALK
+  );
   return fault === undefined ? script : undefined;
 }
 
@@ -2016,9 +2077,9 @@ const HEAD_TAIL_OPTIONS: OptionSpec = {
 /** The files the `bash` command `command`, run from the session's directory `cwd`, reads with
  *  `cat`, `head`, `tail` or `sed -n`: each operand of such a command (its options read as
  *  `parseOptions` reads them; a `sed` script given as its first operand is none), as the absolute
- *  path it names from each directory the shell may be in there (a `cd` to a literal directory,
- *  where it surely runs, taken as done), each once, in order. None for a command the read-only
- *  rule's parser does not take, nor for an operand whose value the command does not show.
+ *  path it names from each directory the shell may be in there (a `cd` of one word, a literal and
+ *  no option, where it surely runs, taken as done), each once, in order. None for a command the
+ *  read-only rule's parser does not take, nor for an operand whose value the command does not show.
  *  build.ts's written build reads a context session's `bash` calls with it. */
 export function bashFileReads(command: string, cwd: string): string[] {
   const script = parseScript(command);
@@ -2050,9 +2111,9 @@ export function bashFileReads(command: string, cwd: string): string[] {
       return undefined;
     },
     subValues: () => undefined,
-    enters: () => true,
+    cd: () => ({ enters: true, linked: false }),
   };
-  walkScript(script, { vars: new Map(), cwds: [cwd] }, false, walk);
+  walkScript(script, { vars: new Map(), cwds: [cwd], linked: false }, false, walk);
   return [...read];
 }
 
@@ -2128,6 +2189,12 @@ const GREP_CONTEXT_AFTER = 3;
  *  file is searched over its first 4 MiB, and a NUL byte in its first 64 KiB makes it binary. */
 const GREP_FILE_BYTES = 4 * 1024 * 1024;
 const GREP_BINARY_WINDOW = 64 * 1024;
+/** How long one test of a grep call's regular expression, or of its exclusions', may take.
+ *  JavaScriptCore stops a backtracking match after a count of its steps (`(a+)+b` over 40 a's, then
+ *  `xab`: about 0.7 s on this pod) and gives no match, where the pin's search (Rust's regex, which
+ *  does not backtrack) finds one; a test past this may have stopped so, and the call is not
+ *  answered, so that the run is made again, never judged on that answer. */
+const REGEX_TEST_MS = 100;
 /** GlobTool's limit when the call gives none, and the largest it takes (glob.ts lines 46-47). */
 const GLOB_LIMIT = 200;
 /** The read tool's directory listing (read.ts lines 3289-3358): its depth below the directory, and
@@ -2454,6 +2521,16 @@ function grepContextLine(line: string): string {
   return `${bytes.subarray(0, floorBoundary(bytes, GREP_COLUMNS - 3)).toString("utf8")}...`;
 }
 
+/** `regex.exec(text)`, or why not where that one test took past REGEX_TEST_MS (see there). */
+function timedExec(regex: RegExp, text: string): RegExpExecArray | null | Unanswered {
+  const started = performance.now();
+  const found = regex.exec(text);
+  if (performance.now() - started <= REGEX_TEST_MS) return found;
+  return {
+    why: `a test of its regular expression took past ${REGEX_TEST_MS} ms, after which JavaScript's engine may have stopped a backtracking match early, with no match where Oh My Pi's search finds one`,
+  };
+}
+
 /** A matching line as grep shows it, with whether it was cut, or why not (render.rs lines 36-139,
  *  grep.ts line 1196): its trailing whitespace taken off; past GREP_COLUMNS bytes, the head that
  *  `grepContextLine` keeps where `regex`'s first match ends in it, else a window of
@@ -2476,7 +2553,8 @@ function grepMatchLine(
   }
   const headEnd = floorBoundary(bytes, GREP_COLUMNS - 3);
   const head = `${bytes.subarray(0, headEnd).toString("utf8")}...`;
-  const found = regex.exec(line);
+  const found = timedExec(regex, line);
+  if (found !== null && "why" in found) return found;
   if (found === null) return { text: head, cut: true };
   const byteAt = (index: number) =>
     floorBoundary(bytes, Math.min(Buffer.byteLength(line.slice(0, index)), bytes.length));
@@ -2517,7 +2595,8 @@ interface GrepMatch {
  *  NUL byte is in its first GREP_BINARY_WINDOW bytes; each with up to GREP_CONTEXT_BEFORE lines
  *  before it that no earlier report holds and up to GREP_CONTEXT_AFTER lines after it before the
  *  next matching line; ending before a line to report that holds a NUL byte. Why not, where a
- *  matching line is shown in a form the runner does not place (`grepMatchLine`). */
+ *  matching line is shown in a form the runner does not place (`grepMatchLine`), or a test of
+ *  `regex` took past REGEX_TEST_MS (`timedExec`). */
 function grepScan(
   file: string,
   bytes: Buffer,
@@ -2548,8 +2627,10 @@ function grepScan(
     return true;
   };
   for (const [index, line] of lines.entries()) {
-    if (!regex.test(line)) continue;
     const n = index + 1;
+    const found = timedExec(regex, line);
+    if (found === null) continue;
+    if ("why" in found) return { why: `line ${n} of ${file}: ${found.why}` };
     if (!flush(n) || out.length >= cap) return out;
     const before: GrepLine[] = [];
     for (let at = Math.max(reported + 1, n - GREP_CONTEXT_BEFORE); at < n; at++) {
@@ -2712,19 +2793,27 @@ function grepExclusions(
  *  573-690): every regular file below it, no symbolic link followed, `.git`, `.jj` (which a
  *  colocated copy's own `.gitignore` leaves out) and `node_modules` not entered, and each file or
  *  directory `exclude` matches (its path below `root`) left out; in path order, a file past
- *  GREP_FILE_BYTES after all others. */
+ *  GREP_FILE_BYTES after all others. Why not, where a test of `exclude` took past REGEX_TEST_MS
+ *  (`timedExec`). */
 function grepFiles(
   copy: CheckoutCopy,
   root: string,
   exclude: RegExp | undefined
-): { inside: string; oversized: boolean }[] {
+): { inside: string; oversized: boolean }[] | Unanswered {
   const found: { inside: string; below: string; oversized: boolean }[] = [];
+  let slow: Unanswered | undefined;
   const walk = (at: string, below: string) => {
     for (const entry of readdirSync(path.join(copy.dir, at), { withFileTypes: true })) {
+      if (slow !== undefined) return;
       if (entry.name === ".git" || entry.name === ".jj") continue;
       const inside = at === "" ? entry.name : `${at}/${entry.name}`;
       const under = below === "" ? entry.name : `${below}/${entry.name}`;
-      if (exclude?.test(under) === true) continue;
+      const excluded = exclude === undefined ? null : timedExec(exclude, under);
+      if (excluded !== null && "why" in excluded) {
+        slow = { why: `its exclusions over ${under}: ${excluded.why}` };
+        return;
+      }
+      if (excluded !== null) continue;
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(inside, under);
       } else if (entry.isFile()) {
@@ -2734,6 +2823,7 @@ function grepFiles(
     }
   };
   walk(root, "");
+  if (slow !== undefined) return slow;
   return found.sort(
     (a, b) =>
       Number(a.oversized) - Number(b.oversized) ||
@@ -2872,7 +2962,9 @@ function grepAnswer(
     if (root.dir) {
       const exclude = grepExclusions(copy, scope.exclusions, root.inside);
       if ("why" in exclude) return exclude;
-      files = grepFiles(copy, root.inside, exclude.regex);
+      const found = grepFiles(copy, root.inside, exclude.regex);
+      if ("why" in found) return found;
+      files = found;
     }
     let emitted = 0;
     for (const file of files) {
@@ -3007,34 +3099,41 @@ function grepAnswer(
   return { text: `${body}${suffix}${cutNotice}`, isError: false };
 }
 
-/** The key of a grep worker's data (`grepInWorker`) under which its call is. */
-const GREP_WORK = "skill-cuts checkout grep";
+/** The key of a worker's data (`answerInWorker`) under which its call is. */
+const WORKER_CALL = "skill-cuts checkout call";
 
-/** The call a grep worker answers (`grepInWorker`): its copy (with no kept answers), its input and
- *  its rows. */
-interface GrepWork {
+/** The call a worker answers (`answerInWorker`): its tool, its copy (with no kept answers), its
+ *  input and its rows. */
+interface WorkerCall {
+  readonly tool: "grep" | "glob";
   readonly copy: CheckoutCopy;
   readonly input: Record<string, unknown>;
   readonly rows: PathRows;
 }
 
-/** The `grep` call's answer (`grepAnswer`), worked out in a worker thread of this module (its last
- *  lines), never in the runner's own thread, and unanswered once BASH_TIME_LIMIT_MS pass, the
- *  worker then ended, as a bash answer is: its regular expression is JavaScript's, which
- *  backtracks, so a pattern such as `(a+)+b` over a long line may take longer than any run has,
- *  where the pin's search, Rust's regex, takes time linear in the line. A worker that fails throws
- *  its error, as the answer would have. */
-function grepInWorker(
+/** A `grep` or `glob` call's answer (`grepAnswer`, `globAnswer`), worked out in a worker thread of
+ *  this module (its last lines), never in the runner's own thread, and unanswered once
+ *  BASH_TIME_LIMIT_MS pass, the worker then ended, as a bash answer is: grep's regular expression
+ *  is JavaScript's, which backtracks, so a pattern such as `(a+)+b` over many long lines may take
+ *  longer than any run has, where the pin's search, Rust's regex, takes time linear in the line;
+ *  and glob's matcher (Bun.Glob's, in time linear in the pattern) of each path under its base may
+ *  take seconds for a long pattern in a large checkout (a 57 KB one, about 16 ms a path on this
+ *  pod). A worker that fails throws its error, as the answer would have. */
+function answerInWorker(
+  tool: WorkerCall["tool"],
   copy: CheckoutCopy,
   input: Record<string, unknown>,
   rows: PathRows
 ): Promise<CheckoutAnswer | Unanswered> {
-  const work: GrepWork = {
+  const call: WorkerCall = {
+    tool,
     copy: { dir: copy.dir, root: copy.root, cwd: copy.cwd, git: copy.git },
     input,
     rows,
   };
-  const worker = new Worker(fileURLToPath(import.meta.url), { workerData: { [GREP_WORK]: work } });
+  const worker = new Worker(fileURLToPath(import.meta.url), {
+    workerData: { [WORKER_CALL]: call },
+  });
   const { promise, resolve, reject } = Promise.withResolvers<CheckoutAnswer | Unanswered>();
   const end = () => {
     resolve({ why: `it ran past the ${BASH_TIME_LIMIT_MS / 1000} s limit` });
@@ -3052,7 +3151,7 @@ function grepInWorker(
   });
   worker.once("exit", (code) => {
     limit.clear();
-    reject(new Error(`the grep worker ended with code ${code} before it answered`));
+    reject(new Error(`the ${tool} worker ended with code ${code} before it answered`));
   });
   return promise;
 }
@@ -3226,14 +3325,19 @@ function optionPaths(word: string): string[] {
   return Array.from({ length: Math.max(0, word.length - 2) }, (_, n) => word.slice(n + 2));
 }
 
-/** Whether the path `rest` (relative, as written), taken from the session's directory `from`
- *  (inside the root), stays in the copy as the kernel walks it there: from the copy's own directory
- *  at `from`, each part that is there has its symbolic links followed (realpath, one part at a
- *  time), `..` is the parent of where that got, and the first part that is not there ends the walk
- *  (the kernel goes no further, so the rest is read as written). So `l/../x`, through a link `l` of
- *  the checkout to its root, goes to the copy's parent, which the path read as written, `x`, does
- *  not show. */
-function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
+/** Where the path `rest` (relative, as written), taken from the session's directory `from` (inside
+ *  the root), leads as the kernel walks it in the copy: from the copy's own directory at `from`,
+ *  each part that is there has its symbolic links followed (realpath, one part at a time), `..` is
+ *  the parent of where that got, and the first part that is not there ends the walk (the kernel
+ *  goes no further, so the rest is read as written). `at`, where it got (a real path where each
+ *  part is there, `there`); undefined where a step of it leaves the copy. So `l/../x`, through a
+ *  link `l` of the checkout to its root, goes to the copy's parent, which the path read as written,
+ *  `x`, does not show. */
+function kernelWalk(
+  copy: CheckoutCopy,
+  from: string,
+  rest: string
+): { readonly at: string; readonly there: boolean } | undefined {
   const real = realpathSync(copy.dir);
   const parts = [...(insideRoot(copy.root, from) ?? "").split("/"), ...rest.split("/")];
   let at = real;
@@ -3244,80 +3348,128 @@ function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
       try {
         at = realpathSync(path.join(at, part));
       } catch {
-        return insideRoot(real, path.resolve(at, ...parts.slice(n))) !== undefined;
+        const written = path.resolve(at, ...parts.slice(n));
+        return insideRoot(real, written) === undefined ? undefined : { at: written, there: false };
       }
     }
-    if (insideRoot(real, at) === undefined) return false;
+    if (insideRoot(real, at) === undefined) return undefined;
   }
-  return true;
+  return { at, there: true };
 }
 
-/** A matcher of one part (no `/`) of a path as a bash glob reads it (`*`, `?`, and a class
- *  `[…]` taken as any one character, so it matches wide); every other character literal. */
-function globPart(part: string): RegExp {
-  const source = part.replace(/\[[^\]]*\]|[\s\S]/g, (token) =>
-    token === "*"
-      ? "[\\s\\S]*"
-      : token === "?" || token.startsWith("[")
-        ? "[\\s\\S]"
-        : token.replace(/[\\^$.+()[\]{}|]/g, "\\$&")
-  );
-  return new RegExp(`^(?:${source})$`);
+/** Whether the path `rest` (relative, as written), taken from the session's directory `from`,
+ *  stays in the copy as the kernel walks it there (`kernelWalk`). */
+function walksInCopy(copy: CheckoutCopy, from: string, rest: string): boolean {
+  return kernelWalk(copy, from, rest) !== undefined;
+}
+
+/** What a `cd` from the session's directory `from` to `to` (a value of its word) does in the copy
+ *  (`Walk.cd`). bash's own cd (`-L`, its default) first makes the path logical from `from` (`..`
+ *  the parent of the part before it) and goes there where each part before a `..`, and the whole,
+ *  is a directory of the copy (links followed): then it surely succeeds (`enters`), at
+ *  `path.posix.resolve(from, to)`. Else it goes, as `cd -P` always does, to the path as written,
+ *  the kernel walking it (`kernelWalk`); where that ends at a directory other than the logical one,
+ *  `elsewhere` is that directory's session path. `linked`: whether the directory it may end at, as
+ *  the kernel holds it (the logical one's real path, or `elsewhere`), is not its path as written,
+ *  through a symbolic link in it, so that the kernel walks a later `..` from elsewhere than the
+ *  walk does; true too where it may leave the copy. */
+function cdLanding(
+  copy: CheckoutCopy,
+  from: string,
+  to: string
+): { enters: boolean; linked: boolean; elsewhere?: string } {
+  const [base, rest] = to.startsWith("/") ? [copy.root, insideRoot(copy.root, to)] : [from, to];
+  const start = insideRoot(copy.root, base);
+  const logical = insideRoot(copy.root, path.posix.resolve(from, to));
+  const walked = rest === undefined ? undefined : kernelWalk(copy, base, rest);
+  if (rest === undefined || start === undefined || logical === undefined || walked === undefined) {
+    return { enters: false, linked: true };
+  }
+  const real = realpathSync(copy.dir);
+  const local = (inside: string) => path.join(real, inside);
+  const directory = (at: string) => statSync(at, { throwIfNoEntry: false })?.isDirectory() === true;
+  const parts = start === "" ? [] : start.split("/");
+  let canonical = true;
+  for (const part of rest.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part !== "..") parts.push(part);
+    else if (parts.length > 0 && directory(local(parts.join("/")))) parts.pop();
+    else {
+      canonical = false;
+      break;
+    }
+  }
+  const there = directory(local(logical));
+  const landed = walked.there && directory(walked.at) ? insideRoot(real, walked.at) : undefined;
+  const elsewhere =
+    landed === undefined || landed === logical
+      ? undefined
+      : landed === ""
+        ? copy.root
+        : `${copy.root}/${landed}`;
+  const linked =
+    elsewhere !== undefined || (there && realpathSync(local(logical)) !== local(logical));
+  return { enters: canonical && there, linked, ...(elsewhere === undefined ? {} : { elsewhere }) };
 }
 
 /** Whether the path `value`, of a word whose unquoted text holds a glob character, may walk out of
- *  where it is written to go: a part with a glob character that may match `.` or `..` (bash matches
- *  a name's leading `.` only with a `.` of the pattern, or in some versions a class, and `.*`
- *  matches `..` where `globskipdots` is off, as before bash 5.2), or one a `..` part follows (the
- *  kernel walks the `..` from the file the glob matches, which may be a link). */
+ *  where it is written to go, read with no matcher: a part with a glob character that starts with
+ *  a `.` (bash matches a name's leading `.` only where the pattern starts with one, `dotglob` off,
+ *  so such a part may match `.`, `..` where `globskipdots` is off, as before bash 5.2, `.git` or
+ *  `.jj`), or one a `..` part follows (the kernel walks the `..` from the file the glob matches,
+ *  which may be a link). */
 function globLeadsOut(value: string): boolean {
   const parts = value.split("/");
-  return parts.some((part, n) => {
-    if (!/[*?[]/.test(part)) return false;
-    if (parts.slice(n + 1).includes("..")) return true;
-    if (!/^[.[]/.test(part)) return false;
-    const matcher = globPart(part);
-    return matcher.test(".") || matcher.test("..");
-  });
+  return parts.some(
+    (part, n) => /[*?[]/.test(part) && (part.startsWith(".") || parts.slice(n + 1).includes(".."))
+  );
 }
 
-/** The first word starting with `-` that bash makes of a glob word of the values `values`, run
- *  from one of the session's directories `cwds` in the copy (which is fixed, so its names are the
- *  session's), or undefined: the value itself where it starts with `-` (as it is where nothing
- *  matches, `nullglob` off), else, where its first part starts with a glob character, a name in
- *  that directory starting with `-` that the part matches (one starting with `.` it matches only
- *  with a `.` of its own, `dotglob` off, and no name starting with `-` does). */
-function globOption(
+/** Why the glob word `text`, of the values `values`, run from the session's directories `cwds` in
+ *  the copy (which is fixed, so its names are the session's), may make a word starting with `-`,
+ *  read with no matcher, or undefined: a value that starts with `-` (as it stays where nothing
+ *  matches, `nullglob` off); a value whose first part holds a glob character, which bash expands
+ *  in the directory the shell is in, where one of those holds any name starting with `-` (no
+ *  pattern is matched against it, so no bracket expression is misread and no matcher runs in the
+ *  runner's thread), or is no directory the copy holds, whose names the runner cannot read. */
+function globOptionFault(
   copy: CheckoutCopy,
+  text: string,
   values: Iterable<string>,
   cwds: readonly string[]
 ): string | undefined {
   const real = realpathSync(copy.dir);
   for (const value of values) {
-    if (value.startsWith("-")) return value;
-    if (!/^[*?[]/.test(value)) continue;
-    const matcher = globPart(value.split("/")[0] ?? "");
+    if (value.startsWith("-")) {
+      return `${text} may make the word ${value}, which the program reads as an option`;
+    }
+    if (!/[*?[]/.test(value.split("/")[0] ?? "")) continue;
     for (const cwd of cwds) {
       const inside = insideRoot(copy.root, cwd);
-      let names: string[] = [];
+      let names: string[] | undefined;
       try {
-        if (inside !== undefined) names = readdirSync(path.join(real, inside));
+        names = inside === undefined ? undefined : readdirSync(path.join(real, inside));
       } catch {
-        names = [];
+        names = undefined;
       }
-      const found = names.find((name) => name.startsWith("-") && matcher.test(name));
-      if (found !== undefined) return found;
+      if (names === undefined) {
+        return `${text} expands in ${cwd}, which the copy does not hold as a directory, so the runner cannot read the names it may make`;
+      }
+      const found = names.find((name) => name.startsWith("-"));
+      if (found !== undefined) {
+        return `${text} expands in ${cwd}, which holds ${found}, so it may make the word ${found}, which the program reads as an option`;
+      }
     }
   }
   return undefined;
 }
 
 /** Whether a directory on the walk up from the session's directory `dir` to the checkout's root
- *  (the root left out), as the kernel walks it in the copy (`dir`'s real path, then each parent),
- *  holds an entry `name`: where git (a `HEAD`, a repository's layout) or jj (a `.jj`) finds a
- *  repository the checkout tracks before the copy's own. True too where `dir` is no directory the
- *  copy holds inside the root, which the runner does not walk. */
-function nestedUnder(copy: CheckoutCopy, dir: string, name: string): boolean {
+ *  (the root too where `withRoot`), as the kernel walks it in the copy (`dir`'s real path, then
+ *  each parent), holds an entry `name`: where git (a `HEAD`, a repository's layout) or jj (a `.jj`)
+ *  finds a repository the checkout tracks before the copy's own. True too where `dir` is no
+ *  directory the copy holds inside the root, which the runner does not walk. */
+function nestedUnder(copy: CheckoutCopy, dir: string, name: string, withRoot = false): boolean {
   const real = realpathSync(copy.dir);
   const inside = insideRoot(copy.root, dir);
   if (inside === undefined) return true;
@@ -3327,10 +3479,11 @@ function nestedUnder(copy: CheckoutCopy, dir: string, name: string): boolean {
   } catch {
     return true;
   }
-  for (; at !== real; at = path.dirname(at)) {
-    if (insideRoot(real, at) === undefined || existsSync(path.join(at, name))) return true;
+  for (; ; at = path.dirname(at)) {
+    if (insideRoot(real, at) === undefined) return true;
+    if ((at !== real || withRoot) && existsSync(path.join(at, name))) return true;
+    if (at === real) return false;
   }
-  return false;
 }
 
 /** jj's options that name the repository a command reads (`-R`, `--repository`), and its other
@@ -3380,9 +3533,9 @@ function escapeFault(
   for (const word of [...(reaches ? args : []), ...command.redirects.map((each) => each.target)]) {
     const text = wordText(word);
     // A word whose unquoted text holds a glob character names the files it matches: a `cd` to one
-    // is not followed, nor one that makes a word starting with `-` (an option a file's name makes,
-    // `--files0-from=x`, `-n`: `globOption`), nor a path whose glob may match `.` or `..`, or
-    // comes before a `..` (`globLeadsOut`).
+    // is not followed, nor one that may make a word starting with `-` (an option a file's name
+    // makes, `--files0-from=x`, `-n`: `globOptionFault`), nor a path whose glob may match a name
+    // starting with `.`, or comes before a `..` (`globLeadsOut`).
     const glob = globbed(word);
     if (glob && program === "cd") {
       return `${text} holds a glob, and the runner does not follow a cd to what it matches`;
@@ -3391,14 +3544,12 @@ function escapeFault(
     if (values === undefined) {
       return `${text} expands to a value the runner cannot place inside the session's checkout`;
     }
-    const option = glob ? globOption(copy, values, state.cwds) : undefined;
-    if (option !== undefined) {
-      return `${text} may make the word ${option}, which the program reads as an option`;
-    }
+    const option = glob ? globOptionFault(copy, text, values, state.cwds) : undefined;
+    if (option !== undefined) return option;
     for (const value of [...values].flatMap(optionPaths)) {
       if (value === "" || value === "/dev/null") continue;
       if (glob && globLeadsOut(value)) {
-        return `${text} holds a glob that may match . or .., or one before .., and the runner does not walk what it matches`;
+        return `${text} holds a glob that may match a name starting with . (., .., .git), or one before .., and the runner does not walk what it matches`;
       }
       if (value.split("/").includes(".git")) return `${text} names .git`;
       const fulls = value.startsWith("/")
@@ -3415,11 +3566,49 @@ function escapeFault(
       }
     }
   }
+  // The kernel walks a `..` from the directory the shell is in as it is real, the walk from its
+  // path as written: where the shell may be in a directory whose real path is not that path (a
+  // working directory, or a `cd`, through a symbolic link: `cdLanding`), no word may hold a `..`.
+  if (state.linked) {
+    for (const word of words) {
+      const text = wordText(word);
+      if (
+        text.includes("..") ||
+        [...(valuesOf(word, state, walk) ?? [])].some((value) => value.includes(".."))
+      ) {
+        return `${text} holds .., which the kernel walks from the directory the shell is in as it is real, and the shell may be in one it reached through a symbolic link of the checkout, elsewhere than its path as written`;
+      }
+    }
+    // There, too, what prints the working directory's own path may print its real one (the
+    // sandbox enters it as it is real, so bash's `pwd` and `$PWD` are that path, and git and jj
+    // start from it), where the session's printed the path as written: `pwd`, `$PWD`, the
+    // environment `env` and `export` print (`PWD` in it), git's `rev-parse --show-prefix`,
+    // `--show-cdup` and `--show-toplevel`, and `jj root`.
+    const given = args.map((word) => {
+      const held = valuesOf(word, state, walk);
+      return held?.size === 1 ? [...held][0] : undefined;
+    });
+    if (
+      program === "pwd" ||
+      program === "env" ||
+      (program === "export" &&
+        given.every((value) => value === undefined || value.startsWith("-"))) ||
+      (program === "git" &&
+        given.some((value) =>
+          ["--show-prefix", "--show-cdup", "--show-toplevel"].includes(value ?? "")
+        )) ||
+      (program === "jj" && given.includes("root")) ||
+      words.some((word) => word.some((part) => part.kind === "var" && part.name === "PWD"))
+    ) {
+      return `its ${program ?? "command"} command may print the working directory's path, which the shell, in a directory it may have reached through a symbolic link of the checkout, gives as its real path, not the path as written that the session saw`;
+    }
+  }
   if (program === "jj") {
     // jj reads the repository whose `.jj` is in the directory its `-R` names, else in the nearest
-    // of the working directory and its parents: one the checkout tracks below its root is not the
-    // copy's (in the sandbox jj stops at its configuration, which it cannot move to the read-only
-    // home, and its store may name a git repository outside the copy).
+    // of the working directory and its parents: one the checkout tracks below its root, or at it
+    // where the runner's colocation did not make it (`bashAnswer` refuses every jj command of such a
+    // copy), is not the copy's (in the sandbox jj stops at its configuration, which it cannot move
+    // to the read-only home, and its store may name a git repository outside the copy).
     const parsed = parseOptions(
       args.map((word) => {
         const held = valuesOf(word, state, walk);
@@ -3434,7 +3623,7 @@ function escapeFault(
     const starts = state.cwds.flatMap((at) =>
       named.length === 0 ? [at] : named.map((each) => path.posix.resolve(at, each))
     );
-    if (starts.some((dir) => nestedUnder(copy, dir, ".jj"))) {
+    if (starts.some((dir) => nestedUnder(copy, dir, ".jj", copy.jj !== true))) {
       return "its jj command may read a jj repository the checkout holds below its root, not the copy's";
     }
   }
@@ -3452,22 +3641,31 @@ function escapeFault(
  *  source and whose files are the runner's), an absolute one not under the root, a relative one
  *  that leaves the root from any of those directories, or an option's value (after a long
  *  option's `=`, or any rest of a short one's word after one of its letters: `optionPaths`) that
- *  does so; nor, of a word whose unquoted text holds a glob character, a `cd` to it, one that
- *  makes a word starting with `-` from a name in the copy (`globOption`), or a path whose glob may
- *  match `.` or `..` or comes before a `..` (`globLeadsOut`). A word of any command with an
- *  unquoted `~` at its start, or after its
+ *  does so; nor, of a word whose unquoted text holds a glob character, a `cd` to it, one that may
+ *  make a word starting with `-` (`globOptionFault`: one whose first part holds a glob character,
+ *  where a directory the shell may be in holds any name starting with `-`, or is none the copy
+ *  holds), or a path whose glob part starts with `.` or comes before a `..` (`globLeadsOut`). A
+ *  word of any command with an unquoted `~` at its start, or after its
  *  `=` or a `:`, would show a home directory of the runner's; so would any other variable's
  *  expansion (`$HOME`, `$PATH`), and a `cd` that names no directory goes to $HOME, the runner's.
  *  A quoted word, as any quoted part, is a literal: it expands nothing (a single-quoted one, or a
- *  double-quoted one whose every `$` is escaped and that holds no backtick). A `cd` to a literal
- *  directory the copy holds inside the root, walked as the kernel walks it (`walksInCopy`),
- *  succeeds: where it surely runs (no `&&` or `||` before it in its list), every later command
- *  runs from there alone, until another `cd`; any other `cd` may fail, and leave the shell where
- *  it was. The copy holds no symbolic link that leaves it (`removeOutsideLinks`), and each path is
- *  walked as the kernel walks it in the copy (`walksInCopy`), so a link that stays inside,
- *  followed by `..`, cannot lead out; an absolute path must name the root as written. A jj
+ *  double-quoted one whose every `$` is escaped and that holds no backtick). A `cd` of one word, a
+ *  literal and no option, to a directory the copy holds inside the root, each part before a `..`
+ *  a directory too (`cdLanding`, as bash's cd walks it), succeeds: where it surely runs (no `&&`
+ *  or `||` before it in its list), every later command runs from there alone, until another `cd`;
+ *  any other `cd` may fail, and leave the shell where it was, or end, as the kernel walks the path
+ *  as written (`cd -P`, and bash's own where its walk finds no directory), at another directory,
+ *  which the shell may be in too. The copy holds no symbolic link that leaves it
+ *  (`removeOutsideLinks`), and each path is walked as the kernel walks it in the copy
+ *  (`walksInCopy`), so a link that stays inside, followed by `..`, cannot lead out; an absolute
+ *  path must name the root as written. Where the working directory's real path in the copy is not
+ *  its path, or a `cd` may have gone through a symbolic link (`cdLanding`), a later word that holds
+ *  `..` is not answered: the kernel walks it from the real directory, the walk from the path; nor
+ *  is a command that prints the working directory's own path (`pwd`, `$PWD`, `env`, `export`,
+ *  git's `rev-parse --show-prefix`, `--show-cdup` and `--show-toplevel`, `jj root`). A jj
  *  command whose repository may be one the checkout tracks below its root (a `.jj` between the
- *  directory jj starts from and the root) is not answered. */
+ *  directory jj starts from and the root, or at the root where no colocation of the runner's made
+ *  it) is not answered. */
 function escapes(copy: CheckoutCopy, cwd: string, script: Script): string | undefined {
   const walk: Walk = {
     check: (command, state) => escapeFault(copy, command, state, walk),
@@ -3496,16 +3694,18 @@ function escapes(copy: CheckoutCopy, cwd: string, script: Script): string | unde
           return undefined;
       }
     },
-    enters: (dir) => {
-      const inside = insideRoot(copy.root, dir);
-      return (
-        inside !== undefined &&
-        statSync(path.join(copy.dir, inside), { throwIfNoEntry: false })?.isDirectory() === true &&
-        walksInCopy(copy, dir, "")
-      );
-    },
+    cd: (from, to) => cdLanding(copy, from, to),
   };
-  return walkScript(script, { vars: new Map(), cwds: [cwd] }, false, walk);
+  // The sandbox enters the working directory as it is real (`cd -P`): where that is not its path in
+  // the copy (a symbolic link in it), the shell is elsewhere than the walk's path.
+  const local = path.join(realpathSync(copy.dir), insideRoot(copy.root, cwd) ?? "");
+  let linked = true;
+  try {
+    linked = realpathSync(local) !== local;
+  } catch {
+    // No such directory: bashAnswer refuses the working directory.
+  }
+  return walkScript(script, { vars: new Map(), cwds: [cwd], linked }, false, walk);
 }
 
 /** The `bash` call's answer (see the file's header). */
@@ -3530,6 +3730,17 @@ async function bashAnswer(
     if (copy.jj !== undefined && copy.jj !== true) {
       return {
         why: `the copy could not be made a colocated jj repository, so no jj command is answered: ${copy.jj.why}`,
+      };
+    }
+    // A `.jj` at the root that no colocation of the runner's made (the session ran no jj) is a
+    // store the checkout tracks: jj would answer from it, where the session saw `There is no jj
+    // repo`, and it may name a git repository outside the copy.
+    if (
+      copy.jj !== true &&
+      lstatSync(path.join(realpathSync(copy.dir), ".jj"), { throwIfNoEntry: false }) !== undefined
+    ) {
+      return {
+        why: "the checkout tracks a .jj at its root, a jj repository no colocation of the runner's made, so no jj command is answered",
       };
     }
     if (Bun.which("jj") === null) return { why: "jj is not on the runner's PATH" };
@@ -3607,11 +3818,9 @@ export async function answerCall(
     const held = copy.answers?.get(key);
     if (held !== undefined) return held;
     const answer =
-      name === "grep"
-        ? await grepInWorker(copy, fields, rows)
-        : name === "read"
-          ? readAnswer(copy, fields, rows)
-          : globAnswer(copy, fields);
+      name === "read"
+        ? readAnswer(copy, fields, rows)
+        : await answerInWorker(name, copy, fields, rows);
     copy.answers?.set(key, answer);
     return answer;
   }
@@ -3619,11 +3828,14 @@ export async function answerCall(
   return { why: `no capture declares a ${name} tool, so the runner rebuilds none of its forms` };
 }
 
-// A grep worker (`grepInWorker`): this module, loaded in a worker thread whose data names a grep
-// call, answers it, once every constant above is set.
-const grepWork = isMainThread
+// A worker (`answerInWorker`): this module, loaded in a worker thread whose data names a grep or
+// glob call, answers it, once every constant above is set.
+const workerCall = isMainThread
   ? undefined
-  : (workerData as Record<string, GrepWork> | null)?.[GREP_WORK];
-if (grepWork !== undefined) {
-  parentPort?.postMessage(grepAnswer(grepWork.copy, grepWork.input, grepWork.rows));
+  : (workerData as Record<string, WorkerCall> | null)?.[WORKER_CALL];
+if (workerCall !== undefined) {
+  const { tool, copy, input, rows } = workerCall;
+  parentPort?.postMessage(
+    tool === "grep" ? grepAnswer(copy, input, rows) : globAnswer(copy, input)
+  );
 }
