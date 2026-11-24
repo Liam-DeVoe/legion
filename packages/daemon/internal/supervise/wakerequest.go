@@ -249,7 +249,8 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // holds this launch as it holds every other, so the retry is refused and the wake parked again,
 // for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's gate
 // held whose pause has ended, before the gate's own stop or the resume's event let it out
-// (pauseStopDue, resumePause), is let out here as those let it out (letOutHeldLaunch), unpaced.
+// (pauseStopDue, resumePause), runs here too, out of that gate, but unpaced and with no token
+// reserved, where their let-out reserves one for a launch that has not paid (letOutHeldLaunch).
 //
 // The launch takes no second token, as an operator's task over a parked launch takes none
 // (runParkedLaunchNow): the wakes behind it keep the turns they already hold.

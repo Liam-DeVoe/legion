@@ -554,12 +554,14 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
 // take-back a launch makes first, the one line the wake writes (none for a launch that wrote it at
-// the wake gate already, wake.ran), and the work itself. Its three callers are the turn the pacing
+// the wake gate already, wake.ran), and the work itself. Its four callers are the turn the pacing
 // gave (wakeNow), an operator's delivery, which runs a parked launch where it arrives rather than
-// let a person wait for that turn (runParkedLaunchNow), and the let-out of a launch the pause's
-// gate held once its pause is over (letOutHeldLaunch); all go through here, or through launchWake
-// past the recheck, so that the launch an operator's task or a resume starts is the same launch in
-// every step it takes, timers, charges and take-backs included.
+// let a person wait for that turn (runParkedLaunchNow), an operator's retry of a claim whose
+// launch waits over no process in a state no retry row acts on (runDroppedLaunchForRetry), and the
+// let-out of a launch the pause's gate held once its pause is over (letOutHeldLaunch); all go
+// through here, or through launchWake past the recheck, so that the launch an operator's task, a
+// retry or a resume starts is the same launch in every step it takes, timers, charges and
+// take-backs included.
 //
 // paced is whether the pacing decided when this wake ran, which is what the line says of it
 // (wakeRan): true of the turn and of a let-out the pacing held, false of the launch a request
