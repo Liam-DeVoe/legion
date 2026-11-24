@@ -35,6 +35,7 @@ import {
   openAsk,
   personDecision,
   READER,
+  SPEC_DOCUMENT,
   shaped,
   shapedTuples,
   issueTree as specIssueTree,
@@ -43,7 +44,9 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider } from "../focused-node";
 import { ContentsList, contentsOf } from "../IssueContents";
+import { IssuePresets } from "../IssuePresets";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
+import { presetPath } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import {
   buildIssueTree,
@@ -72,6 +75,7 @@ import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
 import { filterSignals, presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
+import { drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
   answerNode,
@@ -1345,17 +1349,21 @@ test("the Spec view draws no No check on a proposed statement and marks it", () 
   }
 });
 
-// The Contents list draws no entry for an overtaken question, nor for a
-// question under one, and its count, the view row's, agrees with what it draws. A live question
-// beside it keeps its entry.
-test("the Contents list draws no entry for an overtaken question", () => {
+// Contents lists an overtaken question in tree order, but neither it nor the entry above it
+// counts work under an overtaken node.
+test("an overtaken open question is a Contents entry with no branch counts", () => {
+  const countedStatement = (block: string) => specStatement(block, { statement: true });
   const root = stamped(
     node(KEY, "issue", [
-      node("ask-1", "ask"),
-      node("ask-2", "ask", [node("ask-3", "ask")]),
+      node("ask-1", "ask", [
+        countedStatement("live"),
+        openAsk("ask-2", true, { children: [countedStatement("old")] }),
+        node("old-thread", "comment", [countedStatement("under-thread")]),
+        node("ask-3", "ask"),
+      ]),
       node("ask-4", "ask"),
     ]),
-    { "ask-2": { life: "overtaken" } }
+    { "ask-2": { life: "overtaken" }, "old-thread": { life: "overtaken" } }
   );
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -1377,8 +1385,17 @@ test("the Contents list draws no entry for an overtaken question", () => {
     const entries = [...view.container.querySelectorAll("[data-contents-entry]")].map((entry) =>
       entry.getAttribute("data-contents-entry")
     );
-    expect(entries).toEqual(["ask-1", "ask-4"]);
+    expect(entries).toEqual(["ask-1", "ask-2", "ask-3", "ask-4"]);
     expect(contentsEntries(root, undefined)).toBe(entries.length);
+    expect(
+      view.container.querySelector('[data-contents-entry="ask-2"] [data-contents-mark]')
+    ).toBeNull();
+    expect(
+      textOf(
+        view.container,
+        '[data-contents-entry="ask-1"] [data-contents-mark="statements"] [data-author-text]'
+      )
+    ).toBe("1");
   } finally {
     view.unmount();
   }
@@ -2327,6 +2344,89 @@ function drawDecisions(
   );
 }
 
+test("Decisions draws an overtaken review row without counting it in the to-review flag", () => {
+  const old = decisionNode("old", { waiting: true });
+  const live = decisionNode("live", { waiting: true });
+  const root = stamped(node(KEY, "issue", [specStatement("s1"), old, live]), {
+    [old.id]: { life: "overtaken" },
+  });
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const view = drawDecisions(root, [decision("old", tied), decision("live", tied)]);
+  try {
+    const row = rowOf(view.container, old.id);
+    expect(row?.closest("[data-decisions-part]")).toHaveAttribute("data-decisions-part", "review");
+    const mark = row?.querySelector('[data-node-mark="overtaken"]');
+    expect(mark).toHaveTextContent(ROW_MARK_WORDS.overtaken);
+    expect(mark?.querySelector("svg")).toHaveAttribute("data-glyph", GLYPH_TOKENS.marks.overtaken);
+    expect(rowOf(view.container, live.id)?.closest("[data-decisions-part]")).toHaveAttribute(
+      "data-decisions-part",
+      "review"
+    );
+  } finally {
+    view.unmount();
+  }
+
+  readWide();
+  const row = render(
+    createElement(
+      MemoryRouter,
+      null,
+      createElement(IssuePresets, {
+        active: "decisions",
+        issueKey: KEY,
+        signals: { ...filterSignals(root, ""), conversation: { count: 0 } },
+      })
+    )
+  );
+  try {
+    expect(textOf(row.container, '[data-preset-count="decisions"]')).toBe("2");
+    expect(textOf(row.container, '[data-preset-flag="to_review"]')).toBe("· 1 to review");
+  } finally {
+    row.unmount();
+  }
+});
+
+test("an address to an overtaken decision keeps Decisions on and focuses its row", async () => {
+  readWide();
+  const old = decision("old", {
+    decision: { links: [shaped(specRef("s1"))] },
+    state: "overtaken",
+  });
+  const tree = decisionsAnswer([
+    treeNode("s1", "requirement", KEY, {
+      document: { artifact_id: SPEC_DOCUMENT.id, position: 1, slug: SPEC_DOCUMENT.slug },
+      text: "A statement the decision shaped.",
+    }),
+    old,
+  ]);
+  const reads = [
+    spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead([])),
+    spyOn(api, "getIssueResults").mockResolvedValue({
+      checks: [],
+      issue: KEY,
+      verification_artifact_id: "",
+    }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "getIssueTree").mockResolvedValue(tree),
+    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: READER }),
+  ];
+  const view = drawAtBrowserEntry(`${presetPath(KEY, "decisions")}#b-old`, decisionsIssue());
+  try {
+    const id = decisionNode("old").id;
+    await waitFor(() => expect(focusedRow(view.container)).toBe(id));
+    expect(drawnSlot(view)).toBe("the view");
+    expect(rowOf(view.container, id)?.closest("[data-decisions-body]")).not.toBeNull();
+    expect(rowOf(view.container, id)).toHaveAttribute("tabindex", "0");
+  } finally {
+    view.unmount();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
 // Under Decisions a proposed decision is marked in its margin, after the word for how it
 // stands on that line, and on a line of its own where it stands in none. The line naming its
 // parent carries the parent's marks after the parent's words, and each statement it informs
@@ -2436,45 +2536,21 @@ test("under Decisions a statement an answered question informs carries its own m
   }
 });
 
-// An overtaken decision is drawn nowhere under Decisions, and that holds for one that restates
-// an answer too: the answered question draws none of the statements it shaped.
-test("under Decisions an answered question draws no tie of an overtaken decision that restates it", () => {
-  const restate = decisionNode("restate");
-  const root = stamped(
-    node(KEY, "issue", [
-      specStatement("s1"),
-      answeredAsk("a-put", { at: "2026-11-14T09:00:00Z", text: "Keep the rail." }),
-      restate,
-    ]),
-    { [restate.id]: { life: "overtaken" } }
-  );
-  const view = drawDecisions(root, [
-    decision("restate", {
-      decision: { asks: ["a-put"], kind: "person", links: [shaped(specRef("s1"))] },
-    }),
-  ]);
-  try {
-    const asked = rowOf(view.container, "a-put");
-    expect(asked).not.toBeNull();
-    expect(
-      asked?.querySelector(`[data-decision-statement="${specStatement("s1").id}"]`)
-    ).toBeNull();
-  } finally {
-    view.unmount();
-  }
-});
-
-// The Decisions view draws no overtaken question or decision, nor any node under one, and the
-// tree its keys walk holds none either: `q` goes past an overtaken open question to the live one
-// after it, and `w` on a statement goes past an overtaken decision that names it to a live one
-// that names it too, rather than to a node the view draws nowhere.
-test("under Decisions `q` and `w` go past an overtaken question and decision", async () => {
+// From the statement above it `q` reaches the overtaken question, and `w` reaches the overtaken
+// decision behind that statement, without leaving the view.
+test("under Decisions `q` and `w` focus the overtaken question and decision", async () => {
   const user = userEvent.setup();
   const statementId = specStatement("s1").id;
   const past = decisionNode("d-past", { chips: [chip(specRef("s1"))] });
   const live = decisionNode("d-live", { chips: [chip(specRef("s1"))] });
   const root = stamped(
-    node(KEY, "issue", [specStatement("s1"), openAsk("q-past"), openAsk("q-live"), past, live]),
+    node(KEY, "issue", [
+      specStatement("s1"),
+      openAsk("q-past"),
+      openAsk("q-live", false),
+      past,
+      live,
+    ]),
     { "q-past": { life: "overtaken" }, [past.id]: { life: "overtaken" } }
   );
   const view = drawDecisions(
@@ -2486,18 +2562,18 @@ test("under Decisions `q` and `w` go past an overtaken question and decision", a
     [statementId]
   );
   try {
-    expect(rowOf(view.container, "q-past")).toBeNull();
-    expect(rowOf(view.container, past.id)).toBeNull();
-    expect(rowOf(view.container, "q-live")).not.toBeNull();
-    expect(rowOf(view.container, live.id)).not.toBeNull();
+    const statement = rowOf(view.container, statementId);
+    expect(statement).not.toBeNull();
+    act(() => statement?.focus());
+    expect(focusedRow(view.container)).toBe(statementId);
 
     await user.keyboard("q");
-    await waitFor(() => expect(focusedRow(view.container)).toBe("q-live"));
+    await waitFor(() => expect(focusedRow(view.container)).toBe("q-past"));
 
     act(() => rowOf(view.container, statementId)?.focus());
     expect(focusedRow(view.container)).toBe(statementId);
     await user.keyboard("w");
-    await waitFor(() => expect(focusedRow(view.container)).toBe(live.id));
+    await waitFor(() => expect(focusedRow(view.container)).toBe(past.id));
   } finally {
     view.unmount();
   }

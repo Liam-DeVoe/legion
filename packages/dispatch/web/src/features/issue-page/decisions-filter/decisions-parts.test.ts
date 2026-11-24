@@ -832,52 +832,39 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
-/** The parent a case names by `name`, as `tree-fixtures.ts`'s `treeParent` gives it: written
- *  here, since this part's spec lets it add lines to this file but change none of its imports. */
-function parentNamed(name: string): NonNullable<TreeAnswerNode["parent"]> {
-  return { first_line: "", id: name, kind: "", supertag: "" };
-}
-
-// An overtaken decision is in none of the parts, though the decisions view answers it waiting for
-// review and tied to a statement, and neither is any node under it - a question whose turn is the
-// reader's, a decision the read hangs under it: a later node took their place, so the Decisions
-// view draws them nowhere and none of them waits on the reader. The live decision beside it is
-// still on the review list, and the same tree with nothing overtaken holds all of them.
-test("an overtaken decision waiting for review is in no part", () => {
+test("an overtaken decision waiting for review stands in the review part and waits on nobody", () => {
   const tied = { decision: { links: [shaped(specRef("s1"))] } };
-  // The tree as the page stamps it (`node-states.ts`): the overtaken decision and each node
-  // under it closed.
-  const children = (overtaken: boolean) => {
-    const under: Partial<TreeNode> = overtaken ? { closed: true } : {};
-    return [
-      statement("s1"),
-      decisionNode("old", {
-        children: [openAsk("q-under", true, under), decisionNode("inner", under)],
-        ...(overtaken ? { closed: true, life: "overtaken" as const } : {}),
-      }),
-      decisionNode("review"),
-    ];
-  };
-  const made = [
-    decision("old", tied),
-    { ...decision("inner", tied), parent: parentNamed("old") },
-    decision("review", tied),
-  ];
-
-  const parts = partsOf(children(true), made);
-  expect(idsOf(parts)).toEqual({
-    agents: [],
-    named: [],
-    open_questions: [],
-    others: [],
-    review: [D("review")],
-    yours: [],
+  const old = decisionNode("old", {
+    children: [decisionNode("inner", { closed: true, waiting: false })],
+    closed: true,
+    life: "overtaken",
+    waiting: false,
   });
-  expect(waitingOrder(parts)).toEqual([D("review")]);
+  const children = [statement("s1"), old, decisionNode("review")];
+  const parts = partsOf(
+    children,
+    [decision("old", tied), decision("inner", tied), decision("review", tied)],
+    [],
+    presetView(issueTree(children), "decisions", "").root
+  );
 
-  const live = partsOf(children(false), made);
-  expect(idsOf(live).open_questions).toEqual(["q-under"]);
-  expect(idsOf(live).review).toEqual([D("old"), D("inner"), D("review")]);
+  expect(idsOf(parts).review).toEqual([D("old"), D("inner"), D("review")]);
+  expect(parts.review[0]?.node.life).toBe("overtaken");
+  expect(parts.review[0]?.standing).toBe("waiting_review");
+  expect(waitingOrder(parts)).toEqual([D("review")]);
+});
+
+test("an overtaken open question stands with the open questions and waits on nobody", () => {
+  const children = [
+    openAsk("q-old", false, { closed: true, life: "overtaken" }),
+    openAsk("q-mine"),
+  ];
+  const parts = partsOf(children, [], [], presetView(issueTree(children), "decisions", "").root);
+
+  expect(idsOf(parts).open_questions).toEqual(["q-mine", "q-old"]);
+  expect(parts.open_questions[1]?.node.life).toBe("overtaken");
+  expect(parts.open_questions[1]?.node.waiting).toBe(false);
+  expect(waitingOrder(parts)).toEqual(["q-mine"]);
 });
 
 // The tree draws from the reads that have answered: before the decisions view and the asks

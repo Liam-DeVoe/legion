@@ -57,13 +57,12 @@ export interface ContentsEntry {
 /**
  * The entries of the list, read off the tree the outline draws: each node the Contents rule
  * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
- * begins a thread - and that stands at or under no overtaken node (`closed`), each under the
- * nearest such entry above it in the tree, in the tree's own order, so the list holds as many
- * entries as the view row's Conversation count says (`contentsEntries`). The issue itself is no
- * entry: the header is the issue, as the outline draws no row of it. A node drawn under a second
- * parent is listed once, at its own place, and counted once: a transcluded copy and the branch
- * under it are the same nodes as at the edited place, so they are neither listed nor counted
- * again.
+ * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
+ * order, so the list holds as many entries as the view row's Conversation count says
+ * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
+ * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
+ * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
+ * place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, and at or under no overtaken node, so a node counts once, on the entry whose branch it
@@ -82,6 +81,7 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     statements: 0,
   });
   const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
+    if (node.closed === true) return;
     // A check no count reads - proposed, or at or under an overtaken node - marks no statement
     // failing, nor does any check of a statement no count reads - a proposed one - as the
     // Verification view and the failing flag leave them out: the statement is read once more with
@@ -108,10 +108,8 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
-      // A node at or under an overtaken one is no entry, and no mark counts it: a later node
-      // took its place, as the view row's count reads it (`contents-entries.ts`). A proposed ask
-      // is still one, since it asks the reader.
-      if (child.closed === true) continue;
+      // The list keeps each entry that Conversation counts, even at or under an overtaken
+      // node, because the entry rule reads what kind of node it is, not what its branch holds.
       if (isContentsEntry(node, child, viewer)) {
         const children: ContentsEntry[] = [];
         const own = tally();

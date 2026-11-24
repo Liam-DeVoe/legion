@@ -61,9 +61,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * filter's view keeps the asks and the decisions alone (`presets.ts`), so a reading is an entry
  * only where the address names it, as any other node the address names is.
  *
- * No part holds an overtaken node or a node under one (`TreeNode.closed`), and no ask's entry
- * carries the ties of an overtaken section that restates its answer: a later node took its
- * place, so the view draws it nowhere, and none of them waits on the reader (`waitingOrder`).
+ * An overtaken node stands in the same part as a live node in its state. Nothing at or under
+ * an overtaken node (`TreeNode.closed`) waits on the reader (`waitingOrder`).
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
@@ -102,10 +101,11 @@ export interface ShapedStatement {
   readonly id: string;
   /** Its first line, as R1 cuts a row's: the page draws one line for it here. */
   readonly line: string;
-  /** The statement's own life and whether it is reserved for its author (`NodeMarks`), drawn
-   *  after its name: a question's entry holds no chip for a tie of the decision that restates
-   *  its answer, so the shape carries them. Absent for a statement that is live or settled. */
+  /** The chip draws the statement's life, where it is proposed or overtaken, after its name
+   *  in the chip's own size. */
   readonly life?: NodeLife;
+  /** The chip draws this mark beside the statement's life, after its name, where the
+   *  statement is reserved for its author, who is the reader. */
   readonly onlyYou?: true;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
@@ -209,8 +209,17 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
  * what waits walks: each press goes to the next of them (R13, the tester's F12).
+ * An entry at or under an overtaken node stands in its part but waits on nobody, so the walk
+ * leaves it out.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
+  if (parts.review.some((entry) => entry.node.closed === true)) {
+    // Leave those review entries out, so the same walk below reads the ones that wait.
+    return waitingOrder({
+      ...parts,
+      review: parts.review.filter((entry) => entry.node.closed !== true),
+    });
+  }
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
     ...parts.review.map((entry) => entry.node.id),
@@ -270,7 +279,6 @@ export function decisionsParts({
     isReader(by, reader) ? yours : others;
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
-    if (node.closed === true) continue;
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),
