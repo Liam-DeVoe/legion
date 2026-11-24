@@ -123,9 +123,10 @@ func diskNotice(kind record.NoticeKind) bool {
 // commit runs again and queues nothing more. The undelivered row then finishes.
 //
 // It does nothing for a kind that is no disk notice, as parkDecision does nothing for a kind that
-// is no spec decision, so a place a notice finishes undelivered because nobody will hold its
+// is no spec decision, so every place a notice finishes undelivered because nobody will hold its
 // architect's role calls both, before its own line: an architect that will not hold its role
-// again (noticeAnswered), and one that stopped with its finished tree, found before a re-hold
+// again (noticeAnswered), and one that stopped with its finished tree, found before a publish
+// (deliverNotice, INFRA-341's reviewer's point 3 on R6's review fixes) or before a re-hold
 // (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of
 // its notice, sent or handed over before under the same key, once the transaction has committed.
 func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row int64, notice record.Notice, key string,
