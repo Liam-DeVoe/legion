@@ -2164,11 +2164,13 @@ func (s *supervision) liveGroup(group []supervise.Claim) (told, live []supervise
 }
 
 // noticeGroup is the group as its claims hold their answers: liveGroup's told alone. It is what
-// every reader that decides no deletion of a disk reads — the round's post and ask, the operator's
-// notices, and the names on the lines and messages of a round's end — because the mask is a
-// decision the replacement makes (masked), not a fact about a claim. The controller's notice, for
-// one, marks each claim the round asks with whether it answered (record.UpdateWaiting.Answered),
-// and a masked claim would read there as one that said nothing although it answered.
+// every reader that decides no deletion of a disk reads — the round's post and ask (unaskedClaims
+// says why the ask), the operator's notices, the read of the workspace before a replacement, which
+// stops nothing in the pod (readRoundWorkspace), and the names on the lines and messages of a
+// round's end — because the mask is a decision the replacement makes (masked), not a fact about a
+// claim. The controller's notice, for one, marks each claim the round asks with whether it
+// answered (record.UpdateWaiting.Answered), and a masked claim would read there as one that said
+// nothing although it answered.
 func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 	read, _ := s.roundGroup(group)
 	return read
@@ -2207,9 +2209,9 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 //
 // Each claim is read as its machine published it, its answer included, which is a fact about the
 // claim. Where its machine was deciding something at the same read (Machine.Deciding, which
-// waits on nothing either), its position in read is kept in deciding, nil where no machine was
-// deciding, for the one kind of reader that weighs it: a decision to replace the pod, which
-// reads the claims masked. liveGroup alone pairs the two.
+// waits on nothing either), its position in read is kept in deciding, for the one kind of reader
+// that weighs it: a decision to replace the pod, which reads the claims masked. liveGroup alone
+// pairs the two.
 func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Claim, deciding []int) {
 	read = make([]supervise.Claim, 0, len(group))
 	for _, c := range group {
@@ -2247,9 +2249,7 @@ func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Clai
 // (replacePodForRound, replacementDue, issuePodKept). The launch hook may delete a disk and masks
 // nothing (roundPodEndsAtLaunch says why).
 //
-// Every other reader takes the answer as the claim holds it (noticeGroup): the ask
-// (unaskedClaims says why), the notices, the read of the workspace before a replacement, which
-// stops nothing in the pod (readRoundWorkspace), and the lines and messages of a round's end.
+// Every other reader takes the answer as the claim holds it (noticeGroup names them).
 //
 // Where no machine was deciding, masked is read itself, so no reader of either may write it;
 // otherwise it is a copy.
