@@ -278,7 +278,10 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // at another step its key works. An issue past its review (record.PastReview) stands on a review
 // of the old head, so the reviewer is asked to read the merge and approve the new head or request
 // changes (record.MergeForwardReview), whoever pushed the merge, since the merger waits for that
-// approval.
+// approval. The review is addressed as the reviewer, to the claim of the agent of the task's
+// reviewer step (workAgent): the owner's own claim where that step's key is owner (record.OwnerClaim),
+// as every message to the worker of an owner's step is, and never the claim the reviewer's phases
+// row names, which can be the architect above (ownerAgent), an architect that does not do the step.
 // That holds only where the issue's task has a reviewer step (the walk's line holds reviewing): a
 // task whose plan has none stands on no review of the old head, no reviewer step runs for it, and a
 // merger told to wait for a reviewer's approval would wait for good, so nothing is asked and the
@@ -310,7 +313,16 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	}
 	var sends []mergeForwardSend
 	if record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing) {
-		sends = append(sends, mergeForwardSend{step: record.MergeForwardReview, to: roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key}})
+		// The review goes to the agent of the task's reviewer step (workAgent): the owner's claim where
+		// that step's key is owner, and never the reviewer's row, which can name the architect above.
+		reviewer, named, err := e.workAgent(ctx, tx, issue, w, at, claim.RoleReviewer)
+		if err != nil {
+			return err
+		}
+		if named {
+			sends = append(sends, mergeForwardSend{step: record.MergeForwardReview,
+				to: roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key, claim: reviewer.claim}})
+		}
 	}
 	worker, token, told, err := record.MergeForwardWorker(record.MergeForwardLanded, issue, at)
 	if err != nil {
