@@ -8,18 +8,19 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-import { inputClasses } from "../../theme/classes";
+import { card, dangerText, inputClasses } from "../../theme/classes";
 import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
 import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";
 import { DIALOG_SCOPE, useKeymapScope } from "./keymap";
-import { useCloseOnNavigation } from "./useDialog";
+import { useCloseOnNavigation, useDialog } from "./useDialog";
 
 /** What a surface drawn through `askedSurface` takes, beside its own props. */
 export interface AskedSurfaceProps {
   /** Closes the surface: what its host does when the reader closes it, and what this does when
    *  the reader cancels the open before the surface's chunk is in, when the chunk cannot load,
-   *  and when a render under the surface throws (`ChunkBoundary`'s `onError`). */
+   *  and when the reader closes the alert that stands in the surface's place after a render
+   *  under it threw (`CouldNotOpen`). */
   readonly onClose: () => void;
   /** Whether the reader has the surface open. A host that draws its surface only while it is
    *  open - the Create issue dialog, the shortcut sheet - leaves it unset, and the surface is
@@ -57,12 +58,13 @@ export interface AskedSurfaceProps {
  * so no key reaches the page's shortcuts or a field of the page. What the reader types into it
  * is handed to the surface as `typed` when the chunk lands - into its text box, or nowhere for
  * the Inbox peek, whose keys are shortcuts (`typed` says why) - and the surface then takes the
- * box's place and the focus. The reader can call the open off: Escape in the box, a press or a
- * Tab that takes the focus out of it, or a move to another address each close it, and a chunk
- * that lands after that opens nothing and takes no focus - a dialog must not open on its own
- * against a page the reader has left or a field they went on to, which a download held by an
- * outage would otherwise do minutes later (`importWhenOnline`). A window that loses the focus to
- * another application cancels nothing: the box gets the focus back with the window.
+ * box's place and the focus. The reader can call the open off: Escape in the box, a press that
+ * takes the focus out of it, or a move to another address each close it, and a chunk that lands
+ * after that opens nothing and takes no focus - a dialog must not open on its own against a page
+ * the reader has left or a field they went on to, which a download held by an outage would
+ * otherwise do minutes later (`importWhenOnline`). A window that loses the focus to another
+ * application cancels nothing: the box gets the focus back with the window. Tab and Shift+Tab
+ * stay in the box, as they stay in an open dialog (`Placeholder` says what each key does there).
  *
  * WHEN THE CHUNK IS ASKED FOR. On every open while it is not in, under `renderChunk` and
  * `importWhenOnline`: the reader is waiting on it, so a download that fails online spends one of
@@ -75,12 +77,23 @@ export interface AskedSurfaceProps {
  * before the press, as most of these do, starts it itself with `prefetchChunk`.
  *
  * Each surface draws under a `ChunkBoundary`, since every one of these hosts sits outside the
- * page's error boundary (`app.tsx`): a render that throws under it - a chunk the surface draws
+ * page's error boundary (`app.tsx`). A render that throws under it - a chunk the surface draws
  * from failing online, the decision card of a body in the peek among them
- * (`features/doc/TextAskCardHost.tsx`) - closes the surface and leaves the page drawn and
- * signed in, rather than reaching the app's top boundary (`main.tsx`).
+ * (`features/doc/TextAskCardHost.tsx`), or any other fault of the surface - draws an alert in
+ * the surface's place, "Could not open <name>." with Close and Reload (`CouldNotOpen`), and the
+ * page stays drawn and signed in, rather than reaching the app's top boundary (`main.tsx`). A
+ * render error is never silent: a surface that closed with no word would look like a key that
+ * did nothing, and the reader would press it again into the same fault. The surface's own chunk
+ * failing to download is no throw in a render: it rejects the download above, which closes the
+ * open, as "WHEN THE CHUNK IS ASKED FOR" says.
+ *
+ * `name` is the name the surface's own element carries - "Create issue", "Keyboard shortcuts",
+ * "Search", "Inbox" - and names the box and the alert that stand in its place.
  */
-export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): ComponentType<P> {
+export function askedSurface<P extends AskedSurfaceProps>(
+  source: Chunk<P>,
+  name: string
+): ComponentType<P> {
   function AskedSurface(props: P): ReactNode {
     const { onClose } = props;
     const open = props.open !== false;
@@ -91,6 +104,10 @@ export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): Com
     // open starts empty.
     const held = useRef<Held>({ opener: null, text: "" }).current;
     if (!open) held.text = "";
+    // How many times the reader has closed the alert that stood in the surface's place: the key
+    // of the surface's boundary, so each close mounts a boundary that has not failed, and the
+    // next open draws the surface afresh.
+    const [closes, closed] = useState(0);
     // biome-ignore lint/correctness/useExhaustiveDependencies: `onClose` is a new function at every render of the host and closes the same surface; with it here every render would start another wait on the one download.
     useEffect(() => {
       if (!open || Component !== undefined) {
@@ -113,10 +130,11 @@ export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): Com
           // and with the box focused it would withdraw every row bound to the card or the page
           // the reader was on - and its `useDialog` records the opener as what the focus goes
           // back to when it closes. The box's blur on the way cancels nothing: its opener is
-          // taken first.
+          // taken first. The page does not scroll to the opener: a reader who scrolled while the
+          // box was up stays where they scrolled to.
           const { opener } = held;
           held.opener = null;
-          if (opener instanceof HTMLElement) opener.focus();
+          if (opener instanceof HTMLElement) opener.focus({ preventScroll: true });
           flushSync(() => landed({}));
         },
         () => {
@@ -130,16 +148,64 @@ export function askedSurface<P extends AskedSurfaceProps>(source: Chunk<P>): Com
       };
     }, [open, Component]);
     return (
-      <ChunkBoundary onError={onClose}>
+      <ChunkBoundary
+        fallback={
+          <CouldNotOpen
+            name={name}
+            onClose={() => {
+              closed(closes + 1);
+              onClose();
+            }}
+          />
+        }
+        key={closes}
+      >
         {Component !== undefined ? (
           <Component {...props} typed={held.text} />
         ) : open ? (
-          <Placeholder held={held} onCancel={onClose} />
+          <Placeholder held={held} name={name} onCancel={onClose} />
         ) : null}
       </ChunkBoundary>
     );
   }
   return AskedSurface;
+}
+
+/** Where the box and the alert stand: in the top middle of the window, over the page. */
+const FLOATING =
+  "fixed top-20 left-1/2 z-50 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-lg border px-3 py-2 text-sm shadow-2xl";
+
+/** The alert's Close and Reload. */
+const ACTION = "ml-3 font-medium underline";
+
+/**
+ * What stands in a surface's place once a render under it has thrown: the reader is told that
+ * the surface could not open, and can close this or reload the tab. It is a dialog, as the
+ * surface was (`useDialog`): it takes the focus and the keys, so a key typed after the throw
+ * reaches no shortcut of the page under it. Close and Escape close the surface, and the focus goes
+ * back to where the open found it: the surface's opener, which a surface that was open hands to
+ * this as it goes (`handOverFocus` in `useDialog.ts`).
+ */
+function CouldNotOpen({ name, onClose }: { name: string; onClose: () => void }): ReactNode {
+  const { containerRef } = useDialog<HTMLDivElement>({ onClose, open: true });
+  const text = `Could not open ${name}.`;
+  return (
+    <div
+      aria-label={text}
+      aria-modal="true"
+      className={`${FLOATING} ${card} ${dangerText}`}
+      ref={containerRef}
+      role="alertdialog"
+    >
+      {text}
+      <button className={ACTION} onClick={onClose} type="button">
+        Close
+      </button>
+      <button className={ACTION} onClick={() => window.location.reload()} type="button">
+        Reload
+      </button>
+    </div>
+  );
 }
 
 /** What the placeholder holds for the surface that takes its place: what held the focus at the
@@ -152,16 +218,38 @@ interface Held {
 /**
  * The box that holds the keys while an asked-for surface's chunk is on its way: the focus from
  * the commit of the press, and the `dialog` scope, which masks every shortcut beneath it
- * (`keymap.ts`). Its Escape is its own and goes no further, so a dialog the box sits over is not
- * closed with it.
+ * (`keymap.ts`). It is named for the surface it holds the keys for, "<name> (loading)", and it is
+ * busy (`aria-busy`) until the surface takes its place.
+ *
+ * A key in the box does what it would do in the open surface, or nothing:
+ * - Tab and Shift+Tab stay in the box, as they stay in an open dialog (`useDialog`), and move
+ *   nothing, since the box is its one control. Let through, Shift+Tab would put the focus on the
+ *   page, the box's blur would call the open off, and the next digit would write the issue's
+ *   priority; Tab from the box, the shell's last control, would take the focus out of the
+ *   document, cancel nothing, and let the surface open later while the reader's keys went
+ *   elsewhere.
+ * - Escape calls the open off, and goes no further, so a dialog the box sits over is not closed
+ *   with it. An Escape that ends an input method's composition only ends it, as it does in the
+ *   open surface (`keymap.ts` and `app.tsx` skip such a key too), and what the reader typed stays.
+ * - Enter does nothing: the box is in no form. That is the safe choice: in the surface an Enter
+ *   can submit, and a submit the reader made before they saw the surface is one they did not see.
+ * - Every other key types into the box, and the surface takes what it holds as `typed`.
  *
  * Called off while it holds the focus - an Escape, a move to another address - it gives the focus
- * back to where the press found it as it goes, as a closing dialog does (`useDialog`). That runs
- * in the commit that removes the box, and React fires no `onBlur` for a focus moved in a commit,
- * so that move cancels nothing more. A box the focus has already left gives nothing back: the
- * reader is where they went.
+ * back to where the press found it as it goes, as a closing dialog does (`useDialog`), and the
+ * page does not scroll to it. That runs in the commit that removes the box, and React fires no
+ * `onBlur` for a focus moved in a commit, so that move cancels nothing more. A box the focus has
+ * already left gives nothing back: the reader is where they went.
  */
-function Placeholder({ held, onCancel }: { held: Held; onCancel: () => void }): ReactNode {
+function Placeholder({
+  held,
+  name,
+  onCancel,
+}: {
+  held: Held;
+  name: string;
+  onCancel: () => void;
+}): ReactNode {
   const box = useRef<HTMLInputElement>(null);
   useKeymapScope(DIALOG_SCOPE);
   useCloseOnNavigation(true, onCancel);
@@ -171,13 +259,15 @@ function Placeholder({ held, onCancel }: { held: Held; onCancel: () => void }): 
     input?.focus();
     return () => {
       const { opener } = held;
-      if (document.activeElement === input && opener instanceof HTMLElement) opener.focus();
+      if (document.activeElement === input && opener instanceof HTMLElement)
+        opener.focus({ preventScroll: true });
     };
   }, [held]);
   return (
     <input
-      aria-label="Loading"
-      className={`fixed top-20 left-1/2 z-50 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-lg border px-3 py-2 text-sm shadow-2xl ${inputClasses(false)}`}
+      aria-busy="true"
+      aria-label={`${name} (loading)`}
+      className={`${FLOATING} ${inputClasses(false)}`}
       onBlur={() => {
         if (held.opener !== null && document.hasFocus()) onCancel();
       }}
@@ -185,7 +275,8 @@ function Placeholder({ held, onCancel }: { held: Held; onCancel: () => void }): 
         held.text = event.target.value;
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (event.key === "Tab") event.preventDefault();
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
           event.stopPropagation();
           onCancel();
         }

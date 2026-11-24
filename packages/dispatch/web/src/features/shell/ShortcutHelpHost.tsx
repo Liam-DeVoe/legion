@@ -30,7 +30,7 @@ const shortcutHelpChunk = chunk(() =>
   import("./ShortcutHelp").then((module) => module.ShortcutHelp)
 );
 
-const Sheet = askedSurface(shortcutHelpChunk);
+const Sheet = askedSurface(shortcutHelpChunk, "Keyboard shortcuts");
 
 export function ShortcutHelpHost({
   onClose,

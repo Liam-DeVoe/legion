@@ -612,7 +612,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await page.evaluate(() => {
         const boxes: string[] = [];
         Reflect.set(window, "__loadingBoxes", boxes);
-        const box = 'input[aria-label="Loading"]';
+        const box = 'input[aria-label$=" (loading)"]';
         new MutationObserver((records) => {
           for (const record of records) {
             for (const node of record.addedNodes) {
@@ -683,7 +683,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       expect(patched()).toBe(0);
       expect(await keptWrites(page)).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
-      const box = page.getByRole("textbox", { name: "Loading" });
+      const box = page.getByRole("textbox", { exact: true, name: "Inbox (loading)" });
       await expect(box).toBeFocused();
       await expect(box).toHaveValue("1");
 
@@ -727,6 +727,92 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     }
   });
 
+  // Tab and Shift+Tab stay in the box that holds the keys, as they stay in an open dialog
+  // (`Placeholder` in `web/src/features/shell/asked-surface.tsx`). Before, Shift+Tab put the focus
+  // on the page, the box's blur called the open off, and the next digit wrote the issue's
+  // priority; Tab from the box, the shell's last control, took the focus out of the document, so
+  // the open stood while the reader's keys went elsewhere. The box is found by the text it shows,
+  // so each row reads the keys' claim before the box's name.
+  for (const key of ["Shift+Tab", "Tab"]) {
+    test(`c, ${key} and 1 while the create dialog's chunk is on its way write no priority, and the dialog opens with 1 in its title`, async ({
+      browser,
+    }) => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: `Held ${key}` });
+      const context = await asUser(browser, "alice");
+      try {
+        const page = await context.newPage();
+        await page.setViewportSize({ width: 1280, height: 900 });
+        const { release } = await holdAssetUntilReleased(page, chunkFile("CreateIssueDialog"));
+        const patched = await patchesOf(page, issue.key);
+        await openIssue(page, issue.key, `Held ${key}`);
+
+        await page.keyboard.press("c");
+        const box = page.getByPlaceholder("Loading…");
+        await expect(box).toBeFocused();
+        await page.keyboard.press(key);
+        await page.keyboard.press("1");
+        await afterAnyWrite(page);
+        expect(patched(), `${key} let the digit reach the page`).toBe(0);
+        expect(await keptWrites(page)).toBe(0);
+        await expect(box, `${key} took the focus out of the box`).toBeFocused();
+        await expect(box).toHaveValue("1");
+        await expect(box).toHaveAccessibleName("Create issue (loading)");
+        await expect(box).toHaveAttribute("aria-busy", "true");
+
+        release();
+        const title = page
+          .getByRole("dialog", { name: "Create issue" })
+          .getByRole("textbox", { name: "Title" });
+        await expect(title).toHaveValue("1");
+        await expect(title).toBeFocused();
+        await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  // The focus goes back to the control the open was pressed from as the chunk lands, and the page
+  // does not scroll to it: a reader who scrolled while the box was up stays where they scrolled
+  // to. Before, the landing scrolled the page back to that control.
+  test("a create dialog whose chunk lands after the reader scrolled leaves the page where they scrolled it", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Scrolled away" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 400 });
+      const { release } = await holdAssetUntilReleased(page, chunkFile("CreateIssueDialog"));
+      await openIssue(page, issue.key, "Scrolled away");
+      const opener = page.getByTestId("issue-header").getByRole("button", { name: "Pin issue" });
+      await opener.focus();
+
+      await page.keyboard.press("c");
+      await expect(page.getByPlaceholder("Loading…")).toBeFocused();
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      // What makes a focus on the opener scroll the page: the scroll took it out of view.
+      await expect
+        .poll(() => opener.evaluate((element) => element.getBoundingClientRect().bottom), {
+          message: "the page did not scroll the opener out of view",
+        })
+        .toBeLessThan(0);
+      const from = await page.evaluate(() => window.scrollY);
+
+      release();
+      await expect(
+        page.getByRole("dialog", { name: "Create issue" }).getByRole("textbox", { name: "Title" })
+      ).toBeFocused();
+      // Two frames on, so a scroll the landing's focus started is read.
+      await nextFrames(page);
+      expect(await page.evaluate(() => window.scrollY), "the landing scrolled the page").toBe(from);
+    } finally {
+      await context.close();
+    }
+  });
+
   // A dialog whose chunk lands after the reader has moved on opens nothing: neither on a page they
   // went back to, whose address moved under the box that held the open, nor over a field they went
   // on to after calling the open off. The late chunk takes no focus from where they are. Before,
@@ -765,7 +851,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`, "u"));
       await page.locator("body").focus();
       await page.keyboard.press("c");
-      const box = page.getByRole("textbox", { name: "Loading" });
+      const box = page.getByRole("textbox", { exact: true, name: "Create issue (loading)" });
       await expect(box).toBeFocused();
       await page.goBack();
       await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`, "u"));

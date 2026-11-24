@@ -38,7 +38,7 @@ const searchPaletteChunk = chunk(() =>
   import("./SearchPalette").then((module) => module.SearchPalette)
 );
 
-const Palette = askedSurface(searchPaletteChunk);
+const Palette = askedSurface(searchPaletteChunk, "Search");
 
 export function SearchPaletteHost({
   onClose,

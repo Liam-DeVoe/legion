@@ -5,11 +5,6 @@ interface ChunkBoundaryProps {
   /** What draws in the place of `children` once a render under them has thrown: nothing, unless
    *  a host names something. */
   readonly fallback?: ReactNode;
-  /** For a host whose part the reader opened (`askedSurface`): called once a render under
-   *  `children` has thrown, to close that part, and the boundary then draws `children` again,
-   *  closed, so the reader's next open draws it afresh rather than meeting a boundary that stays
-   *  failed for the life of the page. */
-  readonly onError?: () => void;
   /** For a host whose part draws with no reader action (the two lists of writes, the
    *  reference-preview layer): a value that changes whenever the part may be wanted again - a
    *  change of which writes a list shows or of where one stands, pressed by the reader or
@@ -52,22 +47,14 @@ interface ChunkBoundaryProps {
  * in the region's own place. A list of writes in the status corner draws nothing while it has
  * nothing to show, and one that cannot load draws nothing too; React logs the failure itself
  * (`onCaughtError`). A host whose part has something else to stand for it names it as
- * `fallback`, and a dialog or a drawer closes (`onError`).
+ * `fallback`: a surface a reader opened names an alert that says it could not open
+ * (`askedSurface`).
  */
 export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: boolean }> {
   state = { failed: false };
 
   static getDerivedStateFromError(): { failed: boolean } {
     return { failed: true };
-  }
-
-  componentDidCatch(): void {
-    const { onError } = this.props;
-    if (onError === undefined) return;
-    // The host's close and this reset are both updates of the commit that caught the throw, so
-    // React draws them in one render: the children come back with their part closed.
-    onError();
-    this.setState({ failed: false });
   }
 
   componentDidUpdate({ reset }: ChunkBoundaryProps): void {

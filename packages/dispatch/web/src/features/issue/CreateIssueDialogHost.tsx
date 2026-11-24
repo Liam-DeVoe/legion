@@ -34,7 +34,7 @@ const createIssueDialogChunk = chunk(() =>
   import("./CreateIssueDialog").then((module) => module.CreateIssueDialog)
 );
 
-const Dialog = askedSurface(createIssueDialogChunk);
+const Dialog = askedSurface(createIssueDialogChunk, "Create issue");
 
 export function CreateIssueDialogHost({
   onClose,
