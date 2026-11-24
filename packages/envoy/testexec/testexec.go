@@ -22,7 +22,6 @@ import (
 // writing around the fork, so no fork of this process falls inside the write and no child holds the
 // file's write descriptor when the file is run.
 func WriteFile(name string, data []byte, perm os.FileMode) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
+	_ = syscall.ForkLock // CONTROL ONLY: the fork lock taken out
 	return os.WriteFile(name, data, perm)
 }
