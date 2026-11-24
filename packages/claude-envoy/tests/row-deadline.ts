@@ -55,15 +55,16 @@ export function untilTheGuard(guardMs: number = ROW_GUARD_MS): number {
 /**
  * `promise`, or a failure naming `what` and what `state` reports once the row's time up to
  * `NAMED_BEFORE_GUARD_MS` before its guard has passed; `onLate` runs first, to end the child the
- * row is waiting on.
+ * row is waiting on. `guardMs` is the limit the row states, as for `untilTheGuard`.
  */
 export async function beforeTheGuard<T>(
   promise: Promise<T>,
   what: string,
   state: () => string,
   onLate?: () => void,
+  guardMs: number = ROW_GUARD_MS,
 ): Promise<T> {
-  const left = untilTheGuard()
+  const left = untilTheGuard(guardMs)
   const late = Promise.withResolvers<{ readonly late: true }>()
   const timer = setTimeout(() => late.resolve({ late: true }), left)
   try {
@@ -71,7 +72,7 @@ export async function beforeTheGuard<T>(
     if ("value" in first) return first.value
     onLate?.()
     throw new Error(
-      `${what} had not happened ${ROW_GUARD_MS - NAMED_BEFORE_GUARD_MS} ms into the row: ${state()}`,
+      `${what} had not happened ${guardMs - NAMED_BEFORE_GUARD_MS} ms into the row: ${state()}`,
     )
   } finally {
     clearTimeout(timer)
@@ -79,11 +80,12 @@ export async function beforeTheGuard<T>(
 }
 
 /** `child`'s exit code once it exits, or a failure naming it (`what`) and what it wrote, with the
- *  child ended, when it has not exited by the time `beforeTheGuard` gives up. */
+ *  child ended, when it has not exited by the time `beforeTheGuard` gives up under `guardMs`. */
 export function exitBeforeTheGuard(
   child: Subprocess,
   what: string,
   wrote: () => string,
+  guardMs: number = ROW_GUARD_MS,
 ): Promise<number> {
-  return beforeTheGuard(child.exited, `${what}'s exit`, wrote, () => child.kill("SIGKILL"))
+  return beforeTheGuard(child.exited, `${what}'s exit`, wrote, () => child.kill("SIGKILL"), guardMs)
 }

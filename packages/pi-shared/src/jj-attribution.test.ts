@@ -12,6 +12,15 @@ import {
   userConfigChain,
 } from "./jj-attribution";
 
+// The hang guard of every row of this file that awaits a file, a temporary directory or a fake jj
+// and names no other limit below: what can hang is that wait, an event with no deadline of its own.
+// This package's `bun test` sets no `--timeout`, so these rows ran at bun's 5 s default. Worst
+// measured cost among them: 3 389 ms over 20 runs of this file whole at the 240 rung in the Job
+// infra-1580-r27jw-c468r of the cluster's `builds` namespace, two CPUs and 8 GiB (483 busy loops
+// for the 240 rung, row A 32.0 s), at 82306880, where bun's 5 s was 1.5 times it. 30_000 is 8.9
+// times that worst.
+const JJ_ROW_LIMIT_MS = 30_000;
+
 const ROOT_TRANSCRIPT =
   "/sessions/-legion-default/2026-08-30T03-47-40-329Z_01a050c7-b4a9-7000-a539-240e20271441.jsonl";
 const ROOT_ID = "01a050c7-b4a9-7000-a539-240e20271441";
@@ -86,102 +95,118 @@ describe("exportJjSessionAttribution", () => {
     return await realpath(dir);
   }
 
-  it("writes the trailer overlay and chains it after the resolved user config", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    const chain = await exportJjSessionAttribution(ROOT_ID, dir, {
-      env,
-      resolveBase: async () => "/u/a.toml:/u/b.toml",
-    });
+  it(
+    "writes the trailer overlay and chains it after the resolved user config",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      const chain = await exportJjSessionAttribution(ROOT_ID, dir, {
+        env,
+        resolveBase: async () => "/u/a.toml:/u/b.toml",
+      });
 
-    const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
-    expect(chain).toBe(`/u/a.toml:/u/b.toml:${overlay}`);
-    expect(env.JJ_CONFIG).toBe(chain);
-    await expectSessionLineAlone(dir);
-  });
+      const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
+      expect(chain).toBe(`/u/a.toml:/u/b.toml:${overlay}`);
+      expect(env.JJ_CONFIG).toBe(chain);
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // The whole text, written out once: the session line, then the role line, in each template.
-  it("writes the pair in order into the three templates of the unscoped table", async () => {
-    const dir = await stateDir();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      role: "tester",
-      env: {},
-      resolveBase: async () => "/u/base.toml",
-    });
-    const text = await overlayText(dir);
-    expect(text).toBe(
-      [
-        "[templates]",
-        `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`,
-        "revert_description = '''",
-        "concat(",
-        `  'Revert "' ++ description.first_line() ++ '"' ++ "\\n",`,
-        `  "\\n",`,
-        `  "This reverts commit " ++ commit_id ++ ".\\n",`,
-        `  "\\n",`,
-        `  "Omp-Session: ${ROOT_ID}\\n",`,
-        `  "Legion-Role: tester\\n",`,
-        ")",
-        "'''",
-        "duplicate_description = '''",
-        "concat(",
-        "  description,",
-        "  if(description, concat(",
-        `    if(!trailers, "\\n"),`,
-        `    if(!trailers.any(|t| t.key() == "Omp-Session" && t.value() == "${ROOT_ID}"), "Omp-Session: ${ROOT_ID}\\n"),`,
-        `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "tester"), "Legion-Role: tester\\n"),`,
-        "  )),",
-        ")",
-        "'''",
-        "",
-      ].join("\n")
-    );
-  });
+  it(
+    "writes the pair in order into the three templates of the unscoped table",
+    async () => {
+      const dir = await stateDir();
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        role: "tester",
+        env: {},
+        resolveBase: async () => "/u/base.toml",
+      });
+      const text = await overlayText(dir);
+      expect(text).toBe(
+        [
+          "[templates]",
+          `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`,
+          "revert_description = '''",
+          "concat(",
+          `  'Revert "' ++ description.first_line() ++ '"' ++ "\\n",`,
+          `  "\\n",`,
+          `  "This reverts commit " ++ commit_id ++ ".\\n",`,
+          `  "\\n",`,
+          `  "Omp-Session: ${ROOT_ID}\\n",`,
+          `  "Legion-Role: tester\\n",`,
+          ")",
+          "'''",
+          "duplicate_description = '''",
+          "concat(",
+          "  description,",
+          "  if(description, concat(",
+          `    if(!trailers, "\\n"),`,
+          `    if(!trailers.any(|t| t.key() == "Omp-Session" && t.value() == "${ROOT_ID}"), "Omp-Session: ${ROOT_ID}\\n"),`,
+          `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "tester"), "Legion-Role: tester\\n"),`,
+          "  )),",
+          ")",
+          "'''",
+          "",
+        ].join("\n")
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("scopes the pair, then the Dispatch line, to the pane's workspace", async () => {
-    const dir = await stateDir();
-    const ws = await workspace();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: ws,
-      role: "tester",
-      env: {},
-      resolveBase: async () => "/u/base.toml",
-    });
-    const [unscoped, scope] = await overlayTables(dir);
-    expect(unscoped.split("\n")).toContain(
-      `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`
-    );
-    expect(unscoped).not.toContain("Dispatch");
-    // The scope, written out once: the pair, then the issue line, for this workspace alone.
-    expect(scope).toBe(
-      [
-        "[[--scope]]",
-        `--when.workspaces = ["${ws}"]`,
-        "[--scope.templates]",
-        `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester\\nDispatch: ACME-7"'`,
-        "",
-      ].join("\n")
-    );
-  });
+  it(
+    "scopes the pair, then the Dispatch line, to the pane's workspace",
+    async () => {
+      const dir = await stateDir();
+      const ws = await workspace();
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: ws,
+        role: "tester",
+        env: {},
+        resolveBase: async () => "/u/base.toml",
+      });
+      const [unscoped, scope] = await overlayTables(dir);
+      expect(unscoped.split("\n")).toContain(
+        `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`
+      );
+      expect(unscoped).not.toContain("Dispatch");
+      // The scope, written out once: the pair, then the issue line, for this workspace alone.
+      expect(scope).toBe(
+        [
+          "[[--scope]]",
+          `--when.workspaces = ["${ws}"]`,
+          "[--scope.templates]",
+          `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester\\nDispatch: ACME-7"'`,
+          "",
+        ].join("\n")
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // `legion controller start` sets LEGION_ROLE=controller, which is no LegionRole.
-  it("writes Legion-Role: controller for the controller", async () => {
-    const dir = await stateDir();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      ...paneAttributionOptions({ LEGION_ROLE: "controller" }),
-      env: {},
-      resolveBase: async () => "/u/base.toml",
-    });
-    const lines = (await overlayText(dir)).split("\n");
-    expect(lines).toContain(
-      `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: controller"'`
-    );
-    expect(lines).toContain(`  "Legion-Role: controller\\n",`);
-    expect(lines).toContain(
-      `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "controller"), "Legion-Role: controller\\n"),`
-    );
-  });
+  it(
+    "writes Legion-Role: controller for the controller",
+    async () => {
+      const dir = await stateDir();
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        ...paneAttributionOptions({ LEGION_ROLE: "controller" }),
+        env: {},
+        resolveBase: async () => "/u/base.toml",
+      });
+      const lines = (await overlayText(dir)).split("\n");
+      expect(lines).toContain(
+        `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: controller"'`
+      );
+      expect(lines).toContain(`  "Legion-Role: controller\\n",`);
+      expect(lines).toContain(
+        `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "controller"), "Legion-Role: controller\\n"),`
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // The role is read from LEGION_ROLE in one place, and only a role name passes it on.
   it.each([
@@ -217,84 +242,104 @@ describe("exportJjSessionAttribution", () => {
     await expectSessionLineAlone(dir);
   });
 
-  it("scopes the Dispatch line to the pane's workspace for a key of the accepted shape", async () => {
-    const dir = await stateDir();
-    const ws = await workspace();
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: ws,
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    const [unscoped, scope] = await overlayTables(dir);
-    expect(unscoped).not.toContain("Dispatch");
-    const scoped = scope?.split("\n");
-    expect(scoped).toContain(`--when.workspaces = ["${ws}"]`);
-    expect(scoped).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nDispatch: ACME-7"'`);
-  });
+  it(
+    "scopes the Dispatch line to the pane's workspace for a key of the accepted shape",
+    async () => {
+      const dir = await stateDir();
+      const ws = await workspace();
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: ws,
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      const [unscoped, scope] = await overlayTables(dir);
+      expect(unscoped).not.toContain("Dispatch");
+      const scoped = scope?.split("\n");
+      expect(scoped).toContain(`--when.workspaces = ["${ws}"]`);
+      expect(scoped).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nDispatch: ACME-7"'`);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // Without a workspace there is nothing to scope the key to, and an unscoped key would stamp
   // this deployment's issue into every jj repository the pane's shell commits in.
-  it("writes no scope for an accepted key with no workspace", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  it(
+    "writes no scope for an accepted key with no workspace",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // jj resolves a workspace root before it matches a scope, so the link's own path would match
   // nothing — and say nothing about it.
-  it("scopes to the real path when the workspace is reached through a symlink", async () => {
-    const dir = await stateDir();
-    const real = await workspace("real-ws");
-    const link = path.join(path.dirname(real), "link-ws");
-    await symlink(real, link);
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: resolvedWorkspace(link),
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    const [, scope] = await overlayTables(dir);
-    expect(scope?.split("\n")).toContain(`--when.workspaces = ["${real}"]`);
-  });
+  it(
+    "scopes to the real path when the workspace is reached through a symlink",
+    async () => {
+      const dir = await stateDir();
+      const real = await workspace("real-ws");
+      const link = path.join(path.dirname(real), "link-ws");
+      await symlink(real, link);
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: resolvedWorkspace(link),
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      const [, scope] = await overlayTables(dir);
+      expect(scope?.split("\n")).toContain(`--when.workspaces = ["${real}"]`);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("writes no scope for a workspace path that does not exist", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: resolvedWorkspace(path.join(dir, "no-such-workspace")),
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  it(
+    "writes no scope for a workspace path that does not exist",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: resolvedWorkspace(path.join(dir, "no-such-workspace")),
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // The path goes into a TOML basic string inside an array; a raw quote would end that string
   // and a raw backslash would open an escape, leaving jj a file it refuses.
-  it("escapes a workspace path holding a double quote and a backslash", async () => {
-    const dir = await stateDir();
-    const ws = await workspace('ws "quoted\\odd');
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: ws,
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    // The last name of the path, `ws "quoted\odd`, with its `"` and its `\` escaped for TOML.
-    const [, scope] = await overlayTables(dir);
-    expect(scope?.split("\n")).toContain(
-      `--when.workspaces = ["${path.dirname(ws)}/ws \\"quoted\\\\odd"]`
-    );
-  });
+  it(
+    "escapes a workspace path holding a double quote and a backslash",
+    async () => {
+      const dir = await stateDir();
+      const ws = await workspace('ws "quoted\\odd');
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: ws,
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      // The last name of the path, `ws "quoted\odd`, with its `"` and its `\` escaped for TOML.
+      const [, scope] = await overlayTables(dir);
+      expect(scope?.split("\n")).toContain(
+        `--when.workspaces = ["${path.dirname(ws)}/ws \\"quoted\\\\odd"]`
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // No escape of ours is worth guessing at here: a scope jj cannot parse breaks every `jj`
   // command in the pane, which is far worse than a missing trailer.
@@ -338,90 +383,118 @@ describe("exportJjSessionAttribution", () => {
     await expectSessionLineAlone(dir);
   });
 
-  it("carries a state directory holding a space and a single quote whole", async () => {
-    const dir = path.join(await stateDir(), "state 'dir");
-    const ws = await workspace();
-    const env: NodeJS.ProcessEnv = {};
-    const chain = await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: ws,
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
-    expect(chain).toBe(`/u/base.toml:${overlay}`);
-    expect(await readFile(overlay, "utf8")).toStartWith("[templates]\n");
-  });
+  it(
+    "carries a state directory holding a space and a single quote whole",
+    async () => {
+      const dir = path.join(await stateDir(), "state 'dir");
+      const ws = await workspace();
+      const env: NodeJS.ProcessEnv = {};
+      const chain = await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: ws,
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
+      expect(chain).toBe(`/u/base.toml:${overlay}`);
+      expect(await readFile(overlay, "utf8")).toStartWith("[templates]\n");
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("strips stale attribution overlays from an inherited JJ_CONFIG, keeping user layers", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {
-      JJ_CONFIG: `/u/base.toml:/home/x/.cache/omp/jj/omp-attribution-${ROOT_ID.replace("b4a9", "dead")}.toml`,
-    };
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env,
-      resolveBase: async () => {
-        throw new Error("must not resolve");
-      },
-    });
-    expect(env.JJ_CONFIG).toBe(`/u/base.toml:${path.join(dir, `omp-attribution-${ROOT_ID}.toml`)}`);
-  });
+  it(
+    "strips stale attribution overlays from an inherited JJ_CONFIG, keeping user layers",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {
+        JJ_CONFIG: `/u/base.toml:/home/x/.cache/omp/jj/omp-attribution-${ROOT_ID.replace("b4a9", "dead")}.toml`,
+      };
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        env,
+        resolveBase: async () => {
+          throw new Error("must not resolve");
+        },
+      });
+      expect(env.JJ_CONFIG).toBe(
+        `/u/base.toml:${path.join(dir, `omp-attribution-${ROOT_ID}.toml`)}`
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("re-resolves the base when the inherited chain was only stale overlays", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = { JJ_CONFIG: "/tmp/omp-attribution-old.toml" };
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    expect(env.JJ_CONFIG).toBe(`/u/base.toml:${path.join(dir, `omp-attribution-${ROOT_ID}.toml`)}`);
-  });
+  it(
+    "re-resolves the base when the inherited chain was only stale overlays",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = { JJ_CONFIG: "/tmp/omp-attribution-old.toml" };
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      expect(env.JJ_CONFIG).toBe(
+        `/u/base.toml:${path.join(dir, `omp-attribution-${ROOT_ID}.toml`)}`
+      );
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("returns the live chain and leaves the file alone when the overlay is already chained", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    const first = await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
-    const written = await readFile(overlay, "utf8");
+  it(
+    "returns the live chain and leaves the file alone when the overlay is already chained",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      const first = await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
+      const written = await readFile(overlay, "utf8");
 
-    const again = await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "OTHER-9",
-      env,
-      resolveBase: async () => {
-        throw new Error("must not resolve");
-      },
-    });
-    expect(again).toBe(first);
-    expect(env.JJ_CONFIG).toBe(first);
-    expect(await readFile(overlay, "utf8")).toBe(written);
-  });
+      const again = await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "OTHER-9",
+        env,
+        resolveBase: async () => {
+          throw new Error("must not resolve");
+        },
+      });
+      expect(again).toBe(first);
+      expect(env.JJ_CONFIG).toBe(first);
+      expect(await readFile(overlay, "utf8")).toBe(written);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("publishes the clean base and exports nothing when the overlay cannot be written", async () => {
-    const dir = await stateDir();
-    const blocked = path.join(dir, "not-a-directory");
-    await Bun.write(blocked, "occupied");
-    const env: NodeJS.ProcessEnv = { JJ_CONFIG: "/u/base.toml:/tmp/omp-attribution-old.toml" };
-    const chain = await exportJjSessionAttribution(ROOT_ID, path.join(blocked, "nested"), {
-      issueKey: "ACME-7",
-      env,
-    });
-    expect(chain).toBeUndefined();
-    expect(env.JJ_CONFIG).toBe("/u/base.toml"); // stale overlay gone, no new one
-    expect(await readFile(blocked, "utf8")).toBe("occupied");
-  });
+  it(
+    "publishes the clean base and exports nothing when the overlay cannot be written",
+    async () => {
+      const dir = await stateDir();
+      const blocked = path.join(dir, "not-a-directory");
+      await Bun.write(blocked, "occupied");
+      const env: NodeJS.ProcessEnv = { JJ_CONFIG: "/u/base.toml:/tmp/omp-attribution-old.toml" };
+      const chain = await exportJjSessionAttribution(ROOT_ID, path.join(blocked, "nested"), {
+        issueKey: "ACME-7",
+        env,
+      });
+      expect(chain).toBeUndefined();
+      expect(env.JJ_CONFIG).toBe("/u/base.toml"); // stale overlay gone, no new one
+      expect(await readFile(blocked, "utf8")).toBe("occupied");
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("leaves the environment untouched when jj is unavailable", async () => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    expect(
-      await exportJjSessionAttribution(ROOT_ID, dir, { env, resolveBase: async () => undefined })
-    ).toBeUndefined();
-    expect(env.JJ_CONFIG).toBeUndefined();
-  });
+  it(
+    "leaves the environment untouched when jj is unavailable",
+    async () => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      expect(
+        await exportJjSessionAttribution(ROOT_ID, dir, { env, resolveBase: async () => undefined })
+      ).toBeUndefined();
+      expect(env.JJ_CONFIG).toBeUndefined();
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // The id reaches both the TOML literal and the overlay's file name, so an id that is not one
   // (`SESSION_ID_PATH_SEGMENT`) passes nothing on: a single quote would end the literal and break
@@ -582,27 +655,39 @@ describe("resolvedWorkspace", () => {
     return await realpath(dir);
   }
 
-  it("answers the real path of an existing directory", async () => {
-    const dir = await scratch();
-    expect(resolvedWorkspace(dir)).toBe(dir);
-  });
+  it(
+    "answers the real path of an existing directory",
+    async () => {
+      const dir = await scratch();
+      expect(resolvedWorkspace(dir)).toBe(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  it("follows a symlink to the path jj would resolve the workspace to", async () => {
-    const dir = await scratch();
-    const real = path.join(dir, "real");
-    await mkdir(real);
-    const link = path.join(dir, "link");
-    await symlink(real, link);
-    expect(resolvedWorkspace(link)).toBe(real);
-  });
+  it(
+    "follows a symlink to the path jj would resolve the workspace to",
+    async () => {
+      const dir = await scratch();
+      const real = path.join(dir, "real");
+      await mkdir(real);
+      const link = path.join(dir, "link");
+      await symlink(real, link);
+      expect(resolvedWorkspace(link)).toBe(real);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // A relative path matches no scope and says nothing about it, so the absolute one is written.
-  it("answers an absolute path for a relative one", async () => {
-    const dir = await scratch();
-    const relative = path.relative(process.cwd(), dir);
-    expect(path.isAbsolute(relative)).toBe(false);
-    expect(resolvedWorkspace(relative)).toBe(dir);
-  });
+  it(
+    "answers an absolute path for a relative one",
+    async () => {
+      const dir = await scratch();
+      const relative = path.relative(process.cwd(), dir);
+      expect(path.isAbsolute(relative)).toBe(false);
+      expect(resolvedWorkspace(relative)).toBe(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   it.each([
     ["an unset workspace", undefined],
@@ -611,9 +696,13 @@ describe("resolvedWorkspace", () => {
     expect(resolvedWorkspace(workspace)).toBeUndefined();
   });
 
-  it("answers undefined for a path that does not exist", async () => {
-    expect(resolvedWorkspace(path.join(await scratch(), "gone"))).toBeUndefined();
-  });
+  it(
+    "answers undefined for a path that does not exist",
+    async () => {
+      expect(resolvedWorkspace(path.join(await scratch(), "gone"))).toBeUndefined();
+    },
+    JJ_ROW_LIMIT_MS
+  );
 });
 
 describe("userConfigChain", () => {
@@ -751,7 +840,10 @@ describe("userConfigChain", () => {
     // the row has ended). It ran at bun's 5 s default, which this package's `bun test` sets no flag
     // over, and that default ended a correct run at the 240 rung, charged 6 697.61 ms, in the
     // tester's Job infra-1580-t26-k4-p99sv of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (350 busy loops for the 240 rung, row A 36.6 s), at fe0e876b. 100_000 is 14.9 times that.
+    // (350 busy loops for the 240 rung, row A 36.6 s), at fe0e876b. With this limit it is 20 of 20
+    // at that rung, charged 7 / 1 381 / 5 182 ms (min / median / max), in the Job
+    // infra-1580-r27jf-lswkw (600 busy loops for the 240 rung, row A 38.0 s), at 82306880.
+    // 100_000 is 14.9 times the worst of them.
   }, 100_000);
 
   it("chains the user config files jj prints, in order", async () => {

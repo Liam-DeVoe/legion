@@ -11,7 +11,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
-import { collected, exitBeforeTheGuard, ROW_GUARD_MS, rowStarted } from "./row-deadline"
+import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -20,11 +20,23 @@ const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 // A row waits for its hooks to exit and decides on what they printed and wrote. A hook that never
-// exits fails its row by name before the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). Fixed limits of 20 s and 30 s decided rows before: each hook first wrote
+// exits fails its row by name before the hang guard this file sets as its rows' default
+// (`OPEN_ASKS_ROW_GUARD_MS`, below), which each wait for a hook's exit is given too
+// (`exitBeforeTheGuard`). Fixed limits of 20 s and 30 s decided rows before: each hook first wrote
 // Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at loads of 790 to 960
 // a hook did not exit within them.
+//
+// The guard is the claude-envoy job's, not six times a reading: its rows read up to 59 101 ms
+// over 20 runs at the 80 rung (the resume row, in the Job infra-1580-r27oa-rl5gq of the cluster's
+// `builds` namespace, two CPUs and 8 GiB, 201 busy loops for the 80 rung, row A 39.7 s), and up to
+// 50 694 ms in this file run whole there (infra-1580-r27ow-46ct9, 183 busy loops, row A 36.6 s),
+// both at 82306880, where `row-deadline.ts`'s 120 s was 2.0 times the worst. Six times it is
+// 355 s, past what the job leaves one row's hang: its `timeout-minutes: 10` less its test step's
+// 285 s and its other steps' 51 s at 82306880 (CI run 45394586867) leaves 264 s. So the job
+// decides 240_000, which is 4.1 times the worst.
+const OPEN_ASKS_ROW_GUARD_MS = 240_000
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
+setDefaultTimeout(OPEN_ASKS_ROW_GUARD_MS)
 
 /** The pidfile directories of the fake jjs that never answer (`hangingJjDirectory`), one per jj,
  * each recorded before its row runs the hook. The hook spawns jj in a process group of its own
@@ -37,8 +49,8 @@ const hangingJjPidDirectories: string[] = []
 // A hang guard, not a bound on the work: the body is a read, a signal and a removal per hanging
 // jj, which no row of this file has more than one of. A limit does not interrupt a synchronous
 // body: bun fails the hook after the fact once the body ran past it. So this one carries its own,
-// the file's `ROW_GUARD_MS`, rather than bun's 5 s default, which a starved host can pass on its
-// charge alone.
+// the file's `OPEN_ASKS_ROW_GUARD_MS`, rather than bun's 5 s default, which a starved host can
+// pass on its charge alone.
 afterEach(() => {
   for (const directory of hangingJjPidDirectories.splice(0)) {
     let pid = 0
@@ -56,7 +68,7 @@ afterEach(() => {
     }
     rmSync(directory, { recursive: true, force: true })
   }
-}, ROW_GUARD_MS)
+}, OPEN_ASKS_ROW_GUARD_MS)
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment (and Bun's transpiler
  * cache off, `./transpiler-cache.ts`) and `options.preload` given to Bun first where set. The
@@ -81,6 +93,7 @@ async function runHook(
     "the open-asks hook",
     () =>
       `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
+    OPEN_ASKS_ROW_GUARD_MS,
   )
   return { exitCode, stdout: await stdout.ended, stderr: await stderr.ended }
 }
@@ -210,7 +223,12 @@ test("a summary larger than a pipe holds arrives whole before the hook ends its 
       }
       return text + decoder.decode()
     })()
-    const exitCode = await exitBeforeTheGuard(run, "the open-asks hook", () => stderr.text())
+    const exitCode = await exitBeforeTheGuard(
+      run,
+      "the open-asks hook",
+      () => stderr.text(),
+      OPEN_ASKS_ROW_GUARD_MS,
+    )
     const stdout = await read
 
     expect(exitCode).toBe(0)
@@ -697,9 +715,9 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
 
 /** A `jjDirectory` whose jj never answers: it writes its pid to a pidfile, in a directory of its
  * own the afterEach above kills it from, and only then sleeps 600 s in that same process. 600 s is
- * five times the row's guard (`ROW_GUARD_MS`, 120 s), and the sleep starts after its row has
- * started, so a hook that stopped bounding its wait for jj is still waiting when that guard ends
- * the row, and the row fails naming the hook's exit. A 30 s sleep would have let such a hook
+ * 2.5 times the row's guard (`OPEN_ASKS_ROW_GUARD_MS`, 240 s), and the sleep starts after its row
+ * has started, so a hook that stopped bounding its wait for jj is still waiting when that guard
+ * ends the row, and the row fails naming the hook's exit. A 30 s sleep would have let such a hook
  * return inside the guard and left the row green while broken. The sleep leaves no process behind:
  * the hook's own bound kills the jj's group, and the afterEach above kills the pid the jj wrote
  * before it slept; a jj that had not written its pid when the afterEach removed its directory
@@ -1560,7 +1578,14 @@ test("the census sees each child a script starts through node:child_process", as
       stderr: "pipe",
     })
     const stderr = collected(run.stderr)
-    expect(await exitBeforeTheGuard(run, "the routing script", () => stderr.text())).toBe(0)
+    expect(
+      await exitBeforeTheGuard(
+        run,
+        "the routing script",
+        () => stderr.text(),
+        OPEN_ASKS_ROW_GUARD_MS,
+      ),
+    ).toBe(0)
     const census: Census = JSON.parse(await readFile(record, "utf8"))
     expect(census.waits.map((wait) => `${wait.kind} ${wait.command}`)).toEqual([
       "Bun.spawnSync true",

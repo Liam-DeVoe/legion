@@ -26876,7 +26876,14 @@ describe("consumer delivery", () => {
       stopSink();
       await session.stop();
     }
-  });
+    // A hang guard: what can hang is the consumer's boot or its delivery of the frame, and the
+    // parse of a payload nested 9,999 deep is the row's work. Worst measured cost: 60 004 ms in
+    // envoy.test.ts run whole at the 96 rung in the Job infra-1580-r27wf-4rk46 of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (148 busy loops, row A 39.8 s), at 82306880, where the
+    // package's 250 s was 4.2 times it. 390_000 is 6.5 times it, and a hang of it fits what the
+    // pi-envoy job's `timeout-minutes: 15` leaves beside its 314 s at 82306880 (CI run
+    // 45394586867).
+  }, 390_000);
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");
