@@ -415,9 +415,12 @@ func TestAFailureWhileThePlannerRunsStartsNoFix(t *testing.T) {
 }
 
 // A failure while the task stands at its retro goes to the merger, which reads GitHub: the
-// failure names the merger, and nothing else happens.
+// failure names the merger, and nothing else happens. Each CI check passed at the head before the
+// review's approval, so the task entered its retro; k-ci fails there afterwards.
 func TestAFailureInTheRetroGoesToTheMerger(t *testing.T) {
-	r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer"}, TriggerImplementationReady, TriggerReviewApproved)
+	r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer"}, TriggerImplementationReady)
+	r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+	r.move(TriggerReviewApproved, "", record.PhaseRow{})
 	assertPhase(t, r.pool, phase.Retro)
 	r.fails(fixHead, "k-ci")
 	assertStrings(t, "the fixes", r.fixes(), nil)
