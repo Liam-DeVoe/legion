@@ -1155,7 +1155,7 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of seven families with
+included). The jobs that cache Go restore, in steps of their own, one of eight families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
@@ -1164,9 +1164,12 @@ build the same listener and natsd, listener-server-change and envoy-go-build, wh
 listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
 job, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, and the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set), go-envoy-darwin-vet (envoy-go-build's darwin vet,
+the API's of that set, and the multiprocess and visual jobs of dispatch-browser.yaml, which
+build the Dispatch server with cgo on out of that same set), go-browser-binaries (the binaries
+job of dispatch-browser.yaml, whose CGO_ENABLED=0 builds of the Dispatch server and the real
+broker's commands share no cache key with a cgo build: on a go-envoy-test entry 427 of the
+1,034 packages they build missed, and an entry over 3 GB outlasted that job's 10 minutes in its
+untar, job 138563907113), go-envoy-darwin-vet (envoy-go-build's darwin vet,
 whose step's env gives it a build cache directory of its own, so the standard library and the
 envoy module's dependencies compiled for darwin ride in neither the go-envoy nor the
 go-envoy-test entry, which the other envoy jobs download), go-envoy-infra (envoy-infra-build
@@ -1181,7 +1184,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-darwin-vet and go-browser-binaries are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -1205,7 +1208,7 @@ only when that key is missing, and ci-caches.yaml deletes the entry each such fi
 envoy-infra job says how); its save takes the key its lookup computed, since a hash of the module
 files taken after the build drifted from the lookup's and made every push build it again (run
 45088325195). What changed under it in eleven days had cost its linux vet 83 to 85%
-of what the same vet for darwin took with nothing cached. Since no entry of the five refilled
+of what the same vet for darwin took with nothing cached. Since no entry of the six refilled
 families carries a job's key itself, every restore of them takes the newest entry by prefix, on
 main too: the key is a prefix of the fill's keys, so the dispatch-browser.yaml jobs that hold
 their restore-keys off main still find the last fill's entry. Those restore-keys were held off

@@ -127,18 +127,21 @@ run that misses it builds four commands cold, which the planner measured at 3m37
 rather than the warm one, as the multiprocess job's Playwright install step, "Install Playwright Chromium", carries
 its own retry arithmetic rather than its measured maximum.
 
-## Why the binaries job restores go-envoy-test
+## Why the binaries job restores go-browser-binaries
 
-go-envoy-test, restored only: this job builds the Dispatch server and the real broker's
-three commands, and that family's entry is the one that holds them. go-envoy is filled
-by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
-(.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
-downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
-job 129055096326 of run 42585736615, where this build still sat inside the alone job's
-3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
-the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
-restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
-here saves either one.
+go-browser-binaries, restored only: .github/workflows/ci-caches.yaml fills it on every push to
+main with this job's two build steps word for word, the four `CGO_ENABLED=0` builds and the `go
+run` of the connections command, and saves only what those builds used. The job restored
+go-envoy-test before, which is filled by `go test -c -o /dev/null ./...` over the whole envoy
+module with cgo on. With `CGO_ENABLED=0`, net and os/user build other files, so every package
+above them has other cache keys: on a go-envoy-test entry, 427 of the 1,034 packages of this
+job's closure were stale (`go list -deps -f {{.Stale}}`), against 4 with cgo on. Measured in one
+4-CPU build-cluster pod (main 1cd586b462b, three runs each): the job's builds took 94-103 s on
+no build cache, 77-80 s on go-envoy-test (423 compiles), and 7.5 s on this family's entry (0
+compiles). An entry of 2.37 GB raw build cache (go-envoy-test) against 1.37 GB (this family),
+before the module cache each carries. A go-envoy-test entry of 3.18 GB took 6 min 37 s to untar
+on one runner (job 138563907113), past this job's 10 minutes with the build. No job here saves
+either one.
 
 ## What the binaries build writes, and why it is static
 
@@ -911,9 +914,11 @@ go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
 ## Why the two-process job restores go-envoy-test
 
-go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-this job builds the Dispatch server and the dev OIDC issuer, which only that family's
-entry holds. It saves none.
+go-envoy-test, restored only: this job's `go build -o ./dispatch-e2e ./cmd/dispatch` builds with
+cgo on, as go-envoy-test's fill does, so that family's entry holds its closure. Measured in the
+pod the binaries job's step names: 6.2 s and 1 compile on a go-envoy-test entry, against 26.7 s
+and 250 compiles on a go-browser-binaries entry, whose objects are `CGO_ENABLED=0` ones. It
+saves none.
 
 ## Why the two-process job builds contracts
 
@@ -1143,9 +1148,9 @@ six columns above, the sixth being run 42614920253 (job 129152410516). So the su
 
 ## Why the visual job restores go-envoy-test
 
-go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
-this job's run-server.sh builds the Dispatch server, which only that family's entry
-holds. It saves none.
+go-envoy-test, restored only, for the reason the two-process job's step of this name gives:
+this job's run-server.sh builds the Dispatch server with `go build -o ./dispatch-e2e
+./cmd/dispatch`, cgo on, the same build. It saves none.
 
 ## Why the visual job builds contracts
 

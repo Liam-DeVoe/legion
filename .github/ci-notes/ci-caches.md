@@ -65,3 +65,66 @@ and alone jobs run in the image this repository builds, which carries the browse
 packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
 restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
 them.
+
+## The go-envoy-darwin-vet family
+
+What envoy-go-build's "Vet envoy for darwin, its tagged tests included" compiles, the standard
+library and every package the envoy module builds for darwin/arm64, in a build cache directory of
+its own, the GOCACHE that step's env names, so neither this entry nor go-envoy's carries the
+other's objects. Restored from nothing, that vet compiled all of it on every run: 137.9 s of
+envoy-go-checks job 137308591036 (the vet was envoy-go-checks' step then), 172 s at the median of
+550 pull request runs; on a devbox, 803 s cold against 82 s on a warm cache of 1.7 GB. Each push
+fills it again from its newest entry. It restores go-envoy first, as envoy-go-build does, for the
+module cache the vet reads. It runs on ubuntu-24.04 alone, the runner envoy-go-build runs on, and
+its key carries that runner's architecture as every family's does. A job of its own, so neither
+this fill nor the envoy job's can stop the other.
+
+## The go-browser-binaries family
+
+What dispatch-browser.yaml's binaries job compiles, and nothing else: the four `CGO_ENABLED=0`
+builds of its "Build the binaries the browser suite runs" step and the `go run` of its connections
+step. The fill's two steps are that job's word for word, so the entry holds each object under the
+key that job asks for: a change to either side changes those keys, so change both together.
+
+The job restored go-envoy-test before, whose objects are compiled with cgo on. With
+`CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache
+keys: on a go-envoy-test entry, 427 of the 1,034 packages of the job's closure were stale (`go
+list -deps -f {{.Stale}}`), against 4 with cgo on. In one 4-CPU build-cluster pod (main
+1cd586b462b, three runs each), the job's builds took 94-103 s on no build cache, 77-80 s on
+go-envoy-test (423 compiles) and 7.5 s on this family's entry (0 compiles). A go-envoy-test entry
+of 3.18 GB took 6 min 37 s to untar on one runner (job 138563907113), past the job's 10 minutes
+with the build.
+
+The family starts with no module cache, so its builds download only the 106 modules this closure
+reads. Measured the same way (main 5df00e2f133, zstd -3 as actions/cache packs): those modules
+are 1,023,997,084 B raw and 274,265,456 B packed, against 2,598,744,009 B and 829,189,505 B for
+the whole module graph, and the build cache 1,371,428,044 B raw and 252,319,747 B packed. So an
+entry is about 527 MB, against about 1,082 MB had the fill downloaded every module. It runs on
+ubuntu-24.04 alone, the runner the binaries job runs on; from nothing its builds took 94-103 s
+in that pod, and the module download is the rest.
+
+## Why and how the replaced entries are deleted
+
+The refill-superseded job deletes the entries of go-daemon, go-notices, go-envoy, go-envoy-test,
+go-envoy-darwin-vet and go-browser-binaries that the fills replaced, once each fill has saved its
+new one. Each fill saves a new entry, over a gigabyte for most families, so without this the
+entries would pile up: GitHub drops an entry only after seven days unread, and over the
+repository's cache limit it evicts the least recently used entries, which can be another family's
+live one. For each family and architecture it keeps one entry of this ref, the one the fill just
+saved, and deletes every other one of that family, runner and Go: those whose key is the readers'
+key followed by `-`, and the one under the readers' key itself, which the fills saved before they
+named the commit and which would otherwise win every reader's restore as an exact match. The
+family then holds one entry per runner, in a repository near its cache limit. A job that is
+downloading a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the
+job goes on, compiling what the entry would have given it, slower but not failed. An entry of
+another runner or another Go is no such entry and stays. None is deleted unless the new key is
+among this ref's entries, so a save that did not land leaves the old entries in place.
+
+It is a job of its own, so the token that may delete caches is in no job that builds code. A
+cache key is text any build that saves on this ref chose, so the step never splits or prints one
+raw: the list stays JSON, jq selects the numeric ids to delete, and each id is checked to be a
+number before `gh cache delete` gets it. One leg per family and architecture, each keeping the key
+that fill's leg saved, under the output name the fill gives it; a leg whose fill saved nothing (it
+failed before its save) skips its steps, and the job runs when any fill failed, so one failed
+fill does not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need
+nothing of an x64 machine.
