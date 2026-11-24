@@ -443,11 +443,7 @@ jobs:
             fi
             sources+=("$IMAGE@sha256:$hex")
           done
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline as the
-          # release jobs write it: this job holds packages: write. A fresh token from /dev/urandom,
-          # both markers on stderr, the end marker on a line of its own after the command exits, so
-          # the registry's error that imagetools prints stays text; the step's own ::error:: after
-          # a block goes to stderr, in order with it.
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -743,12 +739,7 @@ jobs:
           OWN_DIGEST: ${{ needs.image_index.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds contents: write and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
-          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
-          # command exits. A registry's or GitHub's reply that git, docker or gh copies to the log
-          # stays text; this step's own workflow commands go to stderr, in order with the blocks.
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -887,11 +878,7 @@ jobs:
           SHA: ${{ steps.latest.outputs.latest_sha }}
           DIGEST: ${{ steps.latest.outputs.latest_digest }}
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds contents: write and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): a fresh token from /dev/urandom, both
-          # markers on stderr, the end marker on a line of its own after the command exits. The
-          # registry's error that imagetools prints stays text.
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -1029,8 +1016,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if ! gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds; then
-            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it"
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
+          if ! ci_log_guard_stderr gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds >&2; then
+            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it" >&2
           fi
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this

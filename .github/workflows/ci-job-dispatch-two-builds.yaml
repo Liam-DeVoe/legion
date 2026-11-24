@@ -134,10 +134,11 @@ jobs:
       - name: Fetch main's history and the release tags, without their files
         timeout-minutes: 2
         run: |
+          . .github/scripts/ci-log-guard.sh
           for attempt in 1 2 3; do
             args=(--no-tags --filter=blob:none)
             [[ -f .git/shallow ]] && args+=(--unshallow)
-            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+            if ci_log_guard timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
               '+refs/heads/main:refs/remotes/origin/main' \
               '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
               echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
@@ -149,7 +150,7 @@ jobs:
             while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
             find .git -name '*.lock' -delete
           done
-          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each." >&2
           exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -392,10 +393,11 @@ jobs:
       - name: Fetch main's history and the release tags, without their files
         timeout-minutes: 2
         run: |
+          . .github/scripts/ci-log-guard.sh
           for attempt in 1 2 3; do
             args=(--no-tags --filter=blob:none)
             [[ -f .git/shallow ]] && args+=(--unshallow)
-            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+            if ci_log_guard timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
               '+refs/heads/main:refs/remotes/origin/main' \
               '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
               echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
@@ -407,7 +409,7 @@ jobs:
             while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
             find .git -name '*.lock' -delete
           done
-          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each." >&2
           exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
