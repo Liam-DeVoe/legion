@@ -395,6 +395,17 @@ count_prefix() { grep -c "^$1" <<<"$output" || true; }
 want_status() { [ "$status" -eq "$1" ] || fail "$2: exit $status, want $1"; }
 want_line() { has_line "$1" || fail "$2: no line '$1'"; }
 want_text() { has_prefix "$1" || fail "$2: no line holding '$1'"; }
+# want_rbac_unknown TEXT WHAT: the operator's RBAC step read UNKNOWN holding TEXT, the run reached its
+# end with no finding (its last line says so, which a run that stopped mid-way does not), exit 2, and
+# the step did not pass. The rows that break a read share it, so a text one of them changes is
+# fixed here once, and a run that stopped fails it by its own last line.
+want_rbac_unknown() {
+  want_status 2 "$2"
+  want_text "UNKNOWN live: RBAC on operator-cluster: $1" "$2"
+  has_prefix "operator-token-minters: no finding, " ||
+    fail "$2: the run did not reach its end with no finding; its last line is '$(tail -n 1 <<<"$output")'"
+  ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "$2: the RBAC step passed"
+}
 rows=0
 passed() {
   rows=$((rows + 1))

@@ -222,6 +222,27 @@ if [ -e "$dir/token-secret-data" ]; then
     [ -z "$found" ] || printf '%s\n' "$found" >>"$dir/secret-data-in-work"
   done
 fi
+# A list answered with exit 0 but not as a List, as a proxy between kubectl and the API server can
+# answer (rows cu, bu and al): a world holding garbage-<list> answers an error page, empty-<list>
+# an empty body and object-<list> `{}`. jq reads an empty body as no value and `{}` as an object
+# whose .items[]? is nothing, so a program over either prints nothing or an empty list and exits 0;
+# only a check of the answer's shape tells them from an empty list.
+answered_list=""
+case "${args[*]}" in
+  "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json") answered_list=webhooks ;;
+  "get customresourcedefinitions -o json") answered_list=crds ;;
+  "get workloadallowlists.auto.gke.io -o json") answered_list=allowlists ;;
+  "get "*admissionpolic*" -o json") answered_list=policies ;;
+  "get serviceaccounts --all-namespaces -o json") answered_list=serviceaccounts ;;
+  "get clusterrolebindings,rolebindings --all-namespaces -o json") answered_list=bindings ;;
+  "get roles,clusterroles --all-namespaces -o json") answered_list=roles ;;
+  "get service -n "*" -o json") answered_list=service ;;
+esac
+if [ -n "$answered_list" ]; then
+  [ ! -e "$dir/garbage-$answered_list" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
+  [ ! -e "$dir/empty-$answered_list" ] || exit 0
+  [ ! -e "$dir/object-$answered_list" ] || { echo '{}'; exit 0; }
+fi
 case "${args[*]}" in
   "create -f - -o json")
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
@@ -251,11 +272,6 @@ case "${args[*]}" in
     ;;
   "get serviceaccounts --all-namespaces -o json")
     [ ! -e "$dir/refuse-list" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
-    # An answer that is not the JSON it should be, which stops a run that reads it unguarded.
-    if [ -e "$dir/garbage-serviceaccounts" ]; then
-      echo "<html>502 Bad Gateway</html>"
-      exit 0
-    fi
     jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
@@ -344,23 +360,18 @@ case "${args[*]}" in
     { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get customresourcedefinitions -o json")
-    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none. A world
-    # marked garbage-crds answers a proxy's error page with exit 0, as garbage-serviceaccounts does
-    # (row cu); so do garbage-allowlists and garbage-policies below.
+    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
     [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
-    [ ! -e "$dir/garbage-crds" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get workloadallowlists.auto.gke.io -o json")
     # Autopilot's installed workload allowlists: the world's allowlists.json (names), or none.
     [ ! -e "$dir/refuse-allowlists" ] || forbidden workloadallowlists.auto.gke.io 'list resource "workloadallowlists" in API group "auto.gke.io"' container.thirdPartyObjects.list
-    [ ! -e "$dir/garbage-allowlists" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/allowlists.json" ]; then cat "$dir/allowlists.json"; else echo '[]'; fi; } |
       jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
     ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
-    [ ! -e "$dir/garbage-policies" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get --raw "*)

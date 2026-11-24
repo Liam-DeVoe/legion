@@ -1850,18 +1850,18 @@ def hold_database_skips_packages():
 
 hold_database_skips_packages()
 
-# The unit step runs the module less five things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs. Its
-# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
-# alone, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone. It runs the
-# broker's tree, its command and DATABASE_SKIPS_PACKAGES too, whose skips it counts
-# (DATABASE_SKIPS_PKGS above), and so it keeps the lane's packages under the tree whose skips it
-# counts, those DATABASE_SKIPS_RACE_ONLY does not name (the auth service's natscallout today):
-# database-skips.sh would add each to the run in any case, and the step's Run must name it
-# (hold_counted_in_unit_run).
+# The unit step runs the module less five things: the lane's packages but those under the broker's
+# tree whose skips it counts (DATABASE_SKIPS_RACE_ONLY names none, so the auth service's natscallout
+# runs here), which the three race jobs run under the detector, internal/integration, which
+# envoy-go's integration step runs, the text checks, which the text-check job runs, and the
+# architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+# internal/wirecheck), which envoy-go-build runs. Its `grep -Ev` is `/integration`, then the text
+# checks, then those packages, each the package alone, then, in the lane's own order, each of the
+# lane's packages it leaves out in the form go list's import paths need - a tree matching the
+# package and everything under it, any other the package alone. It runs the broker's tree, its
+# command and DATABASE_SKIPS_PACKAGES, whose skips it counts (DATABASE_SKIPS_PKGS above):
+# database-skips.sh would add each counted package to the run in any case, and the step's Run must
+# name it (hold_counted_in_unit_run).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
@@ -3496,13 +3496,14 @@ GATES = [
             (ENVOY, DATABASE_SKIPS_TEST_PKGS,
              "packages/envoy/scripts/database-skips.test.sh's runs of the counter on each package", {}),
         ]),
-        # The module but the race lane's packages, internal/integration, which the integration
-        # step tests, the text checks, which the text-check job runs, and the architecture-note
-        # and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck),
-        # which envoy-go-build runs, in one go test -json through database-skips.sh, which counts
-        # the skips of the broker's tree, its command and the writer hold's client
-        # (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, all kept by the pattern:
-        # hold_counted_in_unit_run()), the lane's packages under the tree among them.
+        # The module but the race lane's packages other than those under the broker's tree whose
+        # skips the step counts (the auth service's natscallout runs here), internal/integration,
+        # which the integration step tests, the text checks, which the text-check job runs, and the
+        # architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+        # internal/wirecheck), which envoy-go-build runs, in one go test -json through
+        # database-skips.sh, which counts the skips of the broker's tree, its command and the writer
+        # hold's client (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, all kept by the pattern:
+        # hold_counted_in_unit_run()).
         # The Run names the packages the step's own --module-except keeps (packages_kept over
         # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
         # beside it. A Run saying more would credit this job with tests other jobs run: the race
