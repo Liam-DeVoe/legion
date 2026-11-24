@@ -67,7 +67,7 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		}
 		ownerStepAgain(t, pool, engine, root.Key, "head-2")
 		told := ownerSteps(t, pool, root.Key)
-		if len(told) != 2 || told[1].Role != acceptanceRole {
+		if len(told) != 2 || told[1].Role != claim.RoleAcceptance {
 			t.Fatalf("the owner was told %+v, want two owner-steps of the acceptance", told)
 		}
 		if strings.Contains(told[0].Reason, reviewround.CommitLabel) {

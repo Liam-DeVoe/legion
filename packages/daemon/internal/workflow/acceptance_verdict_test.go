@@ -12,9 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// acceptanceRole is the role of the fresh agent of acceptance, a step of `acceptance` with no key.
-const acceptanceRole claim.Role = "acceptance"
-
 // freshAgentAccepting is the root LEGION-208 on `implementer reviewer acceptance`, with its open
 // pull request #42 at head, moved by the review's approval into accepting, step 3, which the fresh
 // agent of acceptance does: the move started that agent's claim.
@@ -24,7 +21,7 @@ func freshAgentAccepting(t *testing.T, pool *pgxpool.Pool, engine *Engine) recor
 	seedStepsAt(t, pool, root.Key, root.Generation, 2, nil, "implementer", "reviewer", "acceptance")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(3))
-	if starts := roleStartsOf(t, pool, root.Key, acceptanceRole); len(starts) != 1 {
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleAcceptance); len(starts) != 1 {
 		t.Fatalf("the move into accepting wrote %d starts of the fresh agent of acceptance, want one", len(starts))
 	}
 	return root
@@ -35,8 +32,8 @@ func freshAgentAccepting(t *testing.T, pool *pgxpool.Pool, engine *Engine) recor
 // to the engine: no handoff record, since accepting has none.
 func acceptanceVerdict(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, verdict string) intake.HandoffComplete {
 	t.Helper()
-	row := roleRowOf(t, pool, engine, key, acceptanceRole)
-	return intake.HandoffComplete{Issue: key, Role: acceptanceRole, Claim: row.Claim, Generation: 1, Entry: row.Entry,
+	row := roleRowOf(t, pool, engine, key, claim.RoleAcceptance)
+	return intake.HandoffComplete{Issue: key, Role: claim.RoleAcceptance, Claim: row.Claim, Generation: 1, Entry: row.Entry,
 		Summary: "The rollback path is not in the change.", Commit: "head", Verdict: verdict}
 }
 

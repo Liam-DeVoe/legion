@@ -148,13 +148,13 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, nil, "implementer", "tester", "reviewer", "acceptance:owner")
 		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 
-		if notices := ownerSteps(t, pool, root.Key); len(notices) != 1 || notices[0].Role != "acceptance" || notices[0].Phase != phase.Accepting {
+		if notices := ownerSteps(t, pool, root.Key); len(notices) != 1 || notices[0].Role != claim.RoleAcceptance || notices[0].Phase != phase.Accepting {
 			t.Fatalf("the approval told %+v, want one owner-step of the acceptance", notices)
 		}
 		if starts := stepStartsAt(t, pool, root.Key, "step", 4); len(starts) != 1 || starts[0].Agent != owner {
 			t.Fatalf("the start records of step 4 = %+v, want one naming the owner", starts)
 		}
-		if starts := roleStartsOf(t, pool, root.Key, "acceptance"); len(starts) != 0 {
+		if starts := roleStartsOf(t, pool, root.Key, claim.RoleAcceptance); len(starts) != 0 {
 			t.Fatalf("the approval wrote starts of the role acceptance %+v, want none", starts)
 		}
 	})

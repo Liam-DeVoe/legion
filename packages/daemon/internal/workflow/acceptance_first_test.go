@@ -84,8 +84,8 @@ func TestAnAcceptanceWithNoStepBeforeItPassesAndFails(t *testing.T) {
 		engine := returnEngine()
 		root := acceptingFirst(t, pool, engine, "acceptance:owner", "implementer")
 		owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
-		row := roleRowOf(t, pool, engine, root.Key, acceptanceRole)
-		fail := intake.HandoffComplete{Issue: root.Key, Role: acceptanceRole, Claim: owner, Generation: 1, Entry: row.Entry, Step: 1,
+		row := roleRowOf(t, pool, engine, root.Key, claim.RoleAcceptance)
+		fail := intake.HandoffComplete{Issue: root.Key, Role: claim.RoleAcceptance, Claim: owner, Generation: 1, Entry: row.Entry, Step: 1,
 			Summary: "The issue asks for a rollback path, and the working copy has none.", Commit: stepHead, Verdict: "fail"}
 		if result := applyFacts(t, pool, engine)("owner-fail", fail); result.Refusal != nil {
 			t.Fatalf("the owner's fail of step 1 was refused: %+v", result.Refusal)

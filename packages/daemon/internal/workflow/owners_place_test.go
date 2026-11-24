@@ -23,7 +23,7 @@ func TestAnAcceptanceStartNamesTheAgentThatDoesIt(t *testing.T) {
 		want  string
 	}{
 		{"the owner's acceptance", []string{"implementer", "acceptance:owner"}, treeRoleToken(t, "LEGION-208", claim.RoleArchitect)},
-		{"the fresh agent's acceptance", []string{"implementer", "acceptance"}, treeRoleToken(t, "LEGION-208", "acceptance")},
+		{"the fresh agent's acceptance", []string{"implementer", "acceptance"}, treeRoleToken(t, "LEGION-208", claim.RoleAcceptance)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
