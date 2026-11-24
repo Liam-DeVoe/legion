@@ -6,8 +6,9 @@ body: |-
   owner's system prompt (today each architect's) holds that copy after its addressing and before
   `instructions`; no other agent's prompt holds it. Boot and `legion config check` refuse a file
   that is missing, unreadable or blank, `legion config check` prints the path it reads, and the
-  state serves it as `settings.plan_guidance`. A changed file reaches an owner at its first launch
-  after the daemon restarts. Each owner's prompt also tells it to read `dispatch plans --project
+  state serves it as `settings.plan_guidance`. The daemon reads the file again before every
+  launch, as it reads `instructions`, so a changed file reaches each owner at its next launch with
+  no restart. Each owner's prompt also tells it to read `dispatch plans --project
   <PROJECT>` before it writes a plan and to say in the task's text what the earlier plans showed.
   An earlier daemon refuses the key, so take it out of `legion.yaml` before you roll back.
 time: 2026-11-21T21:01:42Z

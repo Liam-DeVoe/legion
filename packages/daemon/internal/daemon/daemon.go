@@ -949,8 +949,8 @@ type plan struct {
 	// each launch reads again first (writeInstructionsCopies).
 	instructions       string
 	instructionsCopies *instructionsCopies
-	// planGuidance is the path of boot's copy of the owners' plan guidance
-	// (config.WritePlanGuidance); "" when the configuration names none.
+	// planGuidance is the path of the daemon's copy of the owners' plan guidance, one of
+	// instructionsCopies, which each launch reads again first; "" when the configuration names none.
 	planGuidance string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
@@ -1113,15 +1113,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	copies, instructions, planGuidance, err := writeInstructionsCopies(cfg, reads, log)
 	if err != nil {
 		return plan{}, err
-	}
-	planGuidance := ""
-	if reads.planGuidance != nil {
-		if planGuidance, err = config.WritePlanGuidance(reads.planGuidance, cfg.StateDir, cfg.Project); err != nil {
-			return plan{}, err
-		}
 	}
 
 	clock := o.clock

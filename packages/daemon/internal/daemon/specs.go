@@ -43,8 +43,9 @@ type specs struct {
 	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
 	copies       *instructionsCopies
-	// planGuidance is the path of boot's copy of the deployment's plan guidance, which an owner's
-	// launch reads after its addressing (OwnsPlan); "" when the deployment sets none.
+	// planGuidance is the path of the daemon's copy of the deployment's plan guidance, which copies
+	// refreshes before each launch and an owner's launch reads after its addressing (OwnsPlan); ""
+	// when the deployment sets none.
 	planGuidance string
 	secrets      map[string]string
 	prompts      *prompts.Composer

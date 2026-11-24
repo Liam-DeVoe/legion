@@ -23,6 +23,12 @@ func DeploymentInstructionsCopy(stateDir string) string {
 	return filepath.Join(stateDir, DeploymentInstructionsFile)
 }
 
+// PlanGuidanceCopy is the copy of the operator's plan guidance under stateDir: the one path
+// WritePlanGuidance writes and every owner's launch reads.
+func PlanGuidanceCopy(stateDir string) string {
+	return filepath.Join(stateDir, PlanGuidanceFile)
+}
+
 // ExperimentsDir is the directory under the state directory holding the copies of every declared
 // variant's instructions, a directory per experiment: a launch's prompt reads the copy of each
 // arm its unit was drawn into. It is a directory per experiment rather than one flat
@@ -235,21 +241,22 @@ func ReadPlanGuidance(path string) ([]byte, error) {
 
 // WritePlanGuidance writes `# Plan guidance of this deployment (<legionID>)`, a blank line,
 // Legion's sentence that the guidance binds no plan, a blank line, and contents, which
-// ReadPlanGuidance answered, verbatim to `<stateDir>/plan-guidance.md`, returning that path. Boot
-// writes it once, before the first pane opens, so no launch reads the operator's own path, which
-// may change underneath a running daemon. Each owner launch reads this copy again when the daemon
-// composes its prompt (runtime.ComposePrompt). Under Kubernetes the copy is on the daemon's own
-// disk, which no pod reaches, and the composed prompt goes to the pod in its start command. Under
-// tmux every pane runs as the daemon's Unix user, so a pane can rewrite the copy, mode 0644, and
-// the next owner launch reads what it wrote, as every launch reads the deployment instructions'
-// copy.
+// ReadPlanGuidance answered, verbatim to PlanGuidanceCopy, returning that path. Boot writes it
+// before the first pane opens, so no launch reads the operator's own path, and the daemon writes it
+// again whenever a launch reads an edited file, as it does the instructions' copies
+// (instructionsCopies in internal/daemon). The copy is replaced whole, so an owner's launch
+// composing its prompt while it is written reads the old copy or the new one, never half of one.
+// Under Kubernetes the copy is on the daemon's own disk, which no pod reaches, and the composed
+// prompt goes to the pod in its start command. Under tmux every pane runs as the daemon's Unix
+// user, so a pane can rewrite the copy, and the next owner launch reads what it wrote until the
+// daemon next reads an edit of the operator's file, as with the deployment instructions' copy.
 func WritePlanGuidance(contents []byte, stateDir, legionID string) (string, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
 	}
-	target := filepath.Join(stateDir, PlanGuidanceFile)
+	target := PlanGuidanceCopy(stateDir)
 	body := fmt.Sprintf("# Plan guidance of this deployment (%s)\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n%s", legionID, contents)
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+	if err := writeAtomically(target, body); err != nil {
 		return "", fmt.Errorf("write %s: %w", target, err)
 	}
 	return target, nil

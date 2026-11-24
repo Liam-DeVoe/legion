@@ -11,9 +11,10 @@ import (
 )
 
 // instructionsCopies is the daemon's copy, under its state directory, of each instructions file
-// its configuration names: the deployment's own (`instructions`) and each declared arm's, the
-// `memory` block's among them. A launch's prompt ends with these copies (runtime.ComposePrompt),
-// never with the operator's files, which a pod cannot read.
+// its configuration names: the deployment's own (`instructions`), the owners' plan guidance
+// (`plan_guidance`, which an owner's launch alone reads) and each declared arm's, the `memory`
+// block's among them. A launch's prompt ends with these copies (runtime.ComposePrompt), never with
+// the operator's files, which a pod cannot read.
 //
 // Boot writes each copy from the file it read with its other refusals (writeInstructionsCopies),
 // and every launch reads each file again first (refresh), so an edit of one reaches the next
@@ -58,14 +59,15 @@ func readArmInstructions(experiment string, variant config.Variant) ([]byte, err
 }
 
 // writeInstructionsCopies writes the copy of each instructions file boot read (readBoot) before
-// the first pane opens, and returns the copies a launch refreshes with the path of the
-// deployment's own, "" when the configuration names none. The deployment's copy is
-// config.DeploymentInstructionsCopy; each arm's is under its
+// the first pane opens, and returns the copies a launch refreshes with the paths of the
+// deployment's own copy and of the owners' plan guidance's, each "" when the configuration names
+// none. The deployment's copy is config.DeploymentInstructionsCopy, the plan guidance's
+// config.PlanGuidanceCopy, which an owner's launch alone reads (OwnsPlan); each arm's is under its
 // experiment's own directory, since two names may hold `-` and neither may hold `/`, and the
 // `memory` block's arm at the block's own `memory-instructions.md`
 // (config.VariantInstructionsFile, where a launch's arms read the copies back from:
 // experiment.Launch).
-func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logger) (*instructionsCopies, string, error) {
+func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logger) (*instructionsCopies, string, string, error) {
 	copies := &instructionsCopies{log: log}
 	keep := func(file instructionsCopy) error {
 		if err := file.write(file.contents); err != nil {
@@ -85,9 +87,25 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 				return config.WriteDeploymentInstructions(contents, cfg.StateDir, cfg.Project)
 			},
 		}); err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		deployment = config.DeploymentInstructionsCopy(cfg.StateDir)
+	}
+	guidance := ""
+	if reads.planGuidance != nil {
+		source := cfg.PlanGuidancePath
+		if err := keep(instructionsCopy{
+			source:   source,
+			contents: reads.planGuidance,
+			read:     func() ([]byte, error) { return config.ReadPlanGuidance(source) },
+			write: func(contents []byte) error {
+				_, err := config.WritePlanGuidance(contents, cfg.StateDir, cfg.Project)
+				return err
+			},
+		}); err != nil {
+			return nil, "", "", err
+		}
+		guidance = config.PlanGuidanceCopy(cfg.StateDir)
 	}
 	for _, arm := range reads.variantInstructions {
 		experiment, variant := arm.experiment, arm.variant
@@ -99,10 +117,10 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 				return config.WriteVariantInstructions(contents, cfg.StateDir, cfg.Project, experiment, variant)
 			},
 		}); err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 	}
-	return copies, deployment, nil
+	return copies, deployment, guidance, nil
 }
 
 // refresh reads each operator's file again and replaces the copy of each one that changed, so the

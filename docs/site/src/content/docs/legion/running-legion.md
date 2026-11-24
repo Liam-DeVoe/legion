@@ -695,10 +695,12 @@ What each part is for:
   that does not follow it. The daemon reads the file at boot and refuses to start, as
   `legion config check` refuses, when it is missing, unreadable or holds only blank lines
   (`plan guidance file <path> is empty`); it writes its copy to `<state_dir>/plan-guidance.md`
-  under the line `# Plan guidance of this deployment (<project>)`. A changed file reaches an owner
-  at its first launch after the daemon restarts; a running owner keeps the prompt it started with,
-  and no pod is replaced. `legion state --json` answers the path at `settings.plan_guidance`. It
-  must hold no secret.
+  under the line `# Plan guidance of this deployment (<project>)`. It reads the file again before
+  every launch, as it reads `instructions`, so a changed file reaches each owner at its next launch
+  with no restart; a running owner keeps the prompt it started with, and no pod is replaced. An
+  edit that leaves the file missing, unreadable or blank stops no launch: owners launch with the
+  text last read, and the daemon logs a warning naming the file. `legion state --json` answers the
+  path at `settings.plan_guidance`. It must hold no secret.
 - **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
