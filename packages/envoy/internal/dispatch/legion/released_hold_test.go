@@ -271,10 +271,13 @@ func TestADaemonWhoseReadsAllFailedMakesOneReadOnceTheSettingNamesAVerifiedDaemo
 // TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages: every write of the setting
 // that resets the cursor clears the marks of stores that are no daemon of the project, since a
 // mark says only that the store is no daemon the setting named before the write. After markedRig,
-// B's store is marked; a write back to B's URL clears the mark, the write's starting read of B is
-// good and gives the cursor B's store, and B's next messages are applied, each in turn.
+// B's store is marked; a minute after the store read that marked it, a write back to B's URL
+// clears the mark, the write's starting read of B is due at once (whole reads of one project start
+// ReadRetryAfter apart), is good and gives the cursor B's store, and B's next messages are
+// applied, each in turn.
 func TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages(t *testing.T) {
 	rig, b := markedRig(t)
+	rig.clock.advance(ReadRetryAfter + time.Second)
 	b.serves(daemonStateIn("INFRA", 30, inPhase("testing"), bStore, bRun))
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", b.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA back at B: %v", err)

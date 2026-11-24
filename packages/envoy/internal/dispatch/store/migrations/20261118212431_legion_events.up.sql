@@ -37,11 +37,12 @@
 -- - state_url is the daemon the row follows: the setting's state_url when the row was written. A
 --   row naming another daemon than the setting is no starting point, so the intake reads the
 --   setting's daemon whole. A write of the setting (legion.PutSettings) sets it to '', which no
---   setting names, and every column below but previous_state_id, previous_state_url and
---   released_holder to its empty value: that is what makes a PUT of the same URL a fresh whole
---   read. A write of the URL the row follows while a message holds the owed read (read_holder)
---   leaves the row as it is instead: that message's read, a whole read, is the read the write
---   calls for. A delete of the setting deletes the row (legion.DeleteSettings).
+--   setting names, and every column below but last_read_started_at, previous_state_id,
+--   previous_state_url and released_holder to its empty value: that is what makes a PUT of the
+--   same URL a fresh whole read, made once a minute has passed since the project's newest whole
+--   read began. A write of the URL the row follows while a message holds the owed read
+--   (read_holder) leaves the row as it is instead: that message's read, a whole read, is the read
+--   the write calls for. A delete of the setting deletes the row (legion.DeleteSettings).
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -61,10 +62,14 @@
 --   read is recorded under the first reason and logged with them all.
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
--- - read_tried_at is when the whole read the next one waits a minute after began, whatever the
---   next one's reason: each read but a good starting read sets it to the moment before its call
---   to the daemon, so a read the daemon is slow to answer, or never answers, adds no time to the
---   minute, and a good starting read clears it, since no message called for it.
+-- - last_read_started_at is when the project's newest whole read began, whatever its reason and
+--   whatever it came to: every read's record, a good starting read's included, sets it to the
+--   moment before the read's call to the daemon, and so does a read whose record the intake drops
+--   because the setting moved meanwhile. The next whole read of the project, for any reason and
+--   the starting read included, waits a minute after it (legion.ReadRetryAfter; R3: whole reads of
+--   one project start at least 60 seconds apart), so a read the daemon is slow to answer, or never
+--   answers, adds no time to the minute. A write of the setting keeps it, so the starting reads of
+--   two writes within a minute start a minute apart. Null only while the row has recorded no read.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
 --   redelivery makes the read, whatever store the message is of. Null where no message holds it.
@@ -196,7 +201,7 @@ create table legion_event_cursors (
   last_seq bigint,
   read_reasons text[] not null default '{}',
   read_owed boolean generated always as (cardinality(read_reasons) > 0) stored,
-  read_tried_at timestamptz,
+  last_read_started_at timestamptz,
   read_holder bigint,
   read_holds integer not null default 0,
   state_id text,

@@ -199,21 +199,24 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     (skipped_state_ids, skipped_seqs) and mark of a store that is no daemon of the project
 //     (foreign_state_ids) back to its empty value, and deletes the parts of a split transaction
 //     held for it, so the intake has no starting point for the project and reads the setting's
-//     daemon whole at the wake (ReadReasonStart). A mark says only that its store is no daemon the
-//     setting named before the write, so no mark outlives a write. A reset records the stream
-//     sequence of the message that held the owed read (released_holder), which can only be a write
-//     that names another daemon, and keeps the one recorded already where no message held the read:
-//     that message is finished unapplied at its next delivery, which clears the record and marks
-//     the message's store as no daemon of the project, unless it is the store recorded below or the
-//     cursor's own (cursor.releases, endHold). A write that names another daemon records the store
-//     the cursor held with the URL it followed, or keeps the pair recorded already where it held
-//     none, as the store of the daemon the setting named before (previous_state_id,
-//     previous_state_url): the intake finishes each message of that store unapplied
-//     (outcomeForgotten). A write of the URL recorded there names that daemon again, so it clears
-//     the pair, and the daemon's messages are judged as the setting's daemon's: they hold and make
-//     an owed read as every message does. A good read that gives the cursor the store recorded
-//     there clears the pair too (recordWhole). A write of the same daemon keeps what is recorded
-//     there.
+//     daemon whole at the wake (ReadReasonStart), once that read is due. The reset keeps the start
+//     of the project's newest whole read (last_read_started_at): whole reads of one project start
+//     ReadRetryAfter apart whatever their reasons, so a write within a minute of a read makes its
+//     starting read when that minute ends (Intake.startingPoint). A mark says only that its store
+//     is no daemon the setting named before the write, so no mark outlives a write. A reset records
+//     the stream sequence of the message that held the owed read (released_holder), which can only
+//     be a write that names another daemon, and keeps the one recorded already where no message
+//     held the read: that message is finished unapplied at its next delivery, which clears the
+//     record and marks the message's store as no daemon of the project, unless it is the store
+//     recorded below or the cursor's own (cursor.releases, endHold). A write that names another
+//     daemon records the store the cursor held with the URL it followed, or keeps the pair
+//     recorded already where it held none, as the store of the daemon the setting named before
+//     (previous_state_id, previous_state_url): the intake finishes each message of that store
+//     unapplied (outcomeForgotten). A write of the URL recorded there names that daemon again, so
+//     it clears the pair, and the daemon's messages are judged as the setting's daemon's: they hold
+//     and make an owed read as every message does. A good read that gives the cursor the store
+//     recorded there clears the pair too (recordWhole). A write of the same daemon keeps what is
+//     recorded there.
 //   - A delete deletes the cursor, and with it the held parts (their foreign key).
 func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
 	var err error
@@ -226,7 +229,7 @@ func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) er
 		_, err = tx.Exec(ctx, `
 			with forgotten as (
 				update legion_event_cursors set
-					state_url = '', run = null, last_seq = null, read_reasons = '{}', read_tried_at = null,
+					state_url = '', run = null, last_seq = null, read_reasons = '{}',
 					read_holder = null, read_holds = 0, state_id = null, schema_version = null, foreign_state_ids = '{}',
 					skipped_state_ids = '{}', skipped_seqs = '{}',
 					released_holder = coalesce(read_holder, released_holder),

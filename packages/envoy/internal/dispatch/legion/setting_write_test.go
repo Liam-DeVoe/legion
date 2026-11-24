@@ -81,9 +81,11 @@ func TestAMessageOfTheStoreASettingNamedBeforeMakesNoStartingRead(t *testing.T) 
 // a daemon the setting names once a good read has read it. INFRA's setting names another daemon,
 // whose starting read fails, so the cursor holds no store and keeps the store of the daemon named
 // before recorded, with the URL it followed (previous_state_id, previous_state_url). A write back
-// to that URL names that daemon again, so it clears the record. The wake's starting read of the
-// daemon is good and gives the cursor that same store, so the daemon's next events are applied,
-// each in turn, as every message of the cursor's store is, and none is dropped.
+// to that URL names that daemon again, so it clears the record. The write back comes a minute
+// after the other daemon's read, so its wake's starting read is due at once (whole reads of one
+// project start ReadRetryAfter apart). That read is good and gives the cursor that same store, so
+// the daemon's next events are applied, each in turn, as every message of the cursor's store is,
+// and none is dropped.
 func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -102,7 +104,8 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
 
-	// The setting names the first daemon again, which has moved on meanwhile.
+	// A minute on, the setting names the first daemon again, which has moved on meanwhile.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 	daemon.serves(daemonState("INFRA", 12, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, actor); err != nil {
 		t.Fatalf("point INFRA back at its first daemon: %v", err)
@@ -138,13 +141,14 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 // again at the project's next message, and a write back to the daemon a setting named before names
 // that daemon again. INFRA's setting names another daemon, whose starting read fails, so the cursor
 // keeps the first daemon's store recorded with the URL it followed (previous_state_id,
-// previous_state_url). Then the setting names the first daemon again, which does not answer
-// either. The write back clears the record, so the cursor holds no store, owes the read for retry
-// and records no store. The first daemon's own messages are then the setting's daemon's, as every
-// message is: its next message arrives left before the read is due, holds the owed read and goes
-// back to the stream until the read is due, and its redelivery makes the read. The read is good
-// and gives the cursor the daemon's store, and the daemon's later messages are applied, each in
-// turn. None of its messages is dropped as one of the daemon the setting named before.
+// previous_state_url). A minute on, the setting names the first daemon again, which does not
+// answer either, so the write's starting read is due at once and fails. The write back clears the
+// record, so the cursor holds no store, owes the read for retry and records no store. The first
+// daemon's own messages are then the setting's daemon's, as every message is: its next message
+// arrives left before the read is due, holds the owed read and goes back to the stream until the
+// read is due, and its redelivery makes the read. The read is good and gives the cursor the
+// daemon's store, and the daemon's later messages are applied, each in turn. None of its messages
+// is dropped as one of the daemon the setting named before.
 func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *testing.T) {
 	const left = 3 * time.Second
 	rig := newIntakeRig(t)
@@ -168,7 +172,9 @@ func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *test
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
 
-	// The setting names the first daemon again, which does not answer its starting read.
+	// A minute on, the setting names the first daemon again, which does not answer its starting
+	// read.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 	daemon.refuses(http.StatusServiceUnavailable)
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, actor); err != nil {
 		t.Fatalf("point INFRA back at its first daemon: %v", err)
@@ -381,7 +387,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 		reads := wholeReadsOf(t, rig.database, "INFRA")
 		requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, true)
 		if _, err := rig.database.Pool.Exec(t.Context(), `
-			update legion_event_cursors set read_reasons = '{retry}', read_tried_at = now() - interval '2 minutes', read_holder = null, read_holds = 0
+			update legion_event_cursors set read_reasons = '{retry}', last_read_started_at = now() - interval '2 minutes', read_holder = null, read_holds = 0
 			where project = 'INFRA'
 		`); err != nil {
 			t.Fatalf("write INFRA's cursor: %v", err)
@@ -493,7 +499,13 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsD
 	rig.awaitStartingRead("INFRA")
 	named := newFakeDaemon(t, "")
 	named.refuses(http.StatusServiceUnavailable)
-	rig.pointAt(named, 2)
+	// The write is made here rather than through pointAt, which moves the intake's clock past the
+	// minute of the read it waits for: this test stays inside that minute.
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("point INFRA at the named daemon: %v", err)
+	}
+	rig.wake <- struct{}{}
+	rig.awaitWholeReads(2)
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil ||
 		c.previousStateID == nil || *c.previousStateID != rigStateID {
 		t.Fatalf("INFRA's cursor after the failed starting read is %s, want the read owed for retry, no store, no holder and the store %s recorded", c, rigStateID)
@@ -524,7 +536,8 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsD
 // setting leaves the project no starting point. INFRA's daemon is read at 10, and the first part of
 // a transaction of 11 and 12 is held (legion_event_parts). A write of the same URL, while no
 // message holds a read, resets the cursor and deletes the held part, and its wake reads the daemon
-// whole. The transaction's last part then writes nothing of the transaction:
+// whole. A minute later on the intake's clock, so that a read the last part calls for is due at
+// once, the transaction's last part arrives and writes nothing of the transaction:
 //   - where the write's read holds the transaction (it serves 12), the last part is at or below the
 //     read's snapshot, and no read follows;
 //   - where the write's read is older than the transaction (it serves 10), the last part is past
@@ -563,6 +576,7 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 			rig.wake <- struct{}{}
 			rig.awaitWholeReads(2)
 
+			rig.clock.advance(ReadRetryAfter + time.Second)
 			daemon.serves(daemonState("INFRA", 12, inPhase("implementing")))
 			rig.publishIn("INFRA", rig.run, rigStateID, at, false, change(12, "INFRA-1", claimMoved("tester", "working")))
 			rig.settled()
@@ -646,6 +660,9 @@ func inPhase(phase string) string {
 
 // pointAt writes INFRA's setting naming daemon's URL, signals the write's wake, and waits until
 // reads whole reads of every project are recorded: the wake's starting read of daemon among them.
+// Whole reads of a project start ReadRetryAfter apart whatever their reasons (read-rule-cases v11),
+// so it then moves the intake's clock past that read's minute, and the next read a message calls
+// for is due at once, as the tests that point INFRA so expect.
 func (r *intakeRig) pointAt(daemon *fakeDaemon, reads int) {
 	r.t.Helper()
 	if _, err := PutSettings(r.t.Context(), r.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
@@ -653,4 +670,5 @@ func (r *intakeRig) pointAt(daemon *fakeDaemon, reads int) {
 	}
 	r.wake <- struct{}{}
 	r.awaitWholeReads(reads)
+	r.clock.advance(ReadRetryAfter + time.Second)
 }

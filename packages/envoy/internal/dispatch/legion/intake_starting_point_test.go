@@ -57,6 +57,8 @@ func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsAppl
 	rig.wake <- struct{}{}
 	rig.awaitWholeReads(2)
 	requireLastSeq(t, rig.database, "INFRA", 5)
+	// The write's read starts a minute that the old daemon's message would otherwise wait out (read-rule-cases v11, rule 1).
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	// A message of the daemon the setting no longer names, under that daemon's run.
 	rig.publishOf("INFRA", "0b6f2d1e-7c4a-4e93-a8d5-3f1b9e6c2a70", time.Now().UTC().Truncate(time.Microsecond),
@@ -278,4 +280,112 @@ func requireOwedWithNoHolder(t *testing.T, rig *intakeRig, project string) {
 	if c := cursorOf(t, rig.database, project); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.readHolder != nil || c.readHolds != 0 {
 		t.Fatalf("%s's cursor is %s, want the read owed for retry, no holder and no hand-back counted", project, c)
 	}
+}
+
+// lastReadStartedAt is when project's newest whole read began, as its cursor keeps it
+// (last_read_started_at), on the intake's clock.
+func lastReadStartedAt(t *testing.T, rig *intakeRig, project string) time.Time {
+	t.Helper()
+	var started *time.Time
+	if err := rig.database.Pool.QueryRow(t.Context(), `select last_read_started_at from legion_event_cursors where project = $1`, project).Scan(&started); err != nil || started == nil {
+		t.Fatalf("read the start of %s's newest whole read: %v, %v", project, orNone(started), err)
+	}
+	return *started
+}
+
+// TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart: R3 starts the whole reads
+// of one project at least 60 seconds apart, whatever their reasons (read-rule-cases v11, rules 1
+// and 3; the reviewer's review 6040785045). A minute after INFRA's take-over read, a write of
+// INFRA's setting naming its daemon A again is read at once. Ten seconds later on the intake's
+// clock, a write names a second daemon B. Its starting read is not due, so the write's wake queues
+// the starting point once more for the end of the minute (startLater). B is not read before the
+// intake's clock is a minute past the start of A's second read; it is read then, with no message,
+// and its read starts at least a minute after A's. At d69f92b6, a starting read was always due, so
+// B was read at its write's wake, ten seconds after A.
+func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *testing.T) {
+	rig := newIntakeRig(t)
+	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", a.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	write := func(daemon *fakeDaemon) {
+		t.Helper()
+		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+			t.Fatalf("write INFRA's setting: %v", err)
+		}
+		rig.wake <- struct{}{}
+	}
+
+	write(a)
+	rig.awaitWholeReads(2)
+	first := lastReadStartedAt(t, rig, "INFRA")
+	b := newFakeDaemon(t, daemonStateIn("INFRA", 20, inPhase("implementing"), bStore, bRun))
+	rig.clock.advance(10 * time.Second)
+	write(b)
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
+		t.Fatalf("the write naming B read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
+	}
+	rig.clock.advance(45 * time.Second)
+	if testwait.Holds(time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
+		t.Fatalf("B was read before a minute had passed since the read of A began, on the intake's clock")
+	}
+	rig.clock.advance(5 * time.Second)
+	rig.waitFor(10*time.Second, func() bool { return b.served() >= 1 && len(wholeReadsOf(t, rig.database, "INFRA")) >= 3 }, func() string {
+		return fmt.Sprintf("B was not read once a minute had passed since the read of A began: it served %d reads, and INFRA's whole reads are %v",
+			b.served(), wholeReadsOf(t, rig.database, "INFRA"))
+	})
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 3 || a.served() != 2 || b.served() != 1 {
+		t.Fatalf("INFRA's whole reads are %v, and A served %d and B %d, want the take-over's read and the first write's of A and the second write's of B", reads, a.served(), b.served())
+	}
+	requireWholeRead(t, reads[2], ReadReasonStart, true)
+	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(first); apart < ReadRetryAfter {
+		t.Errorf("the read of B started %s after the read of A on the intake's clock, want at least %s", apart, ReadRetryAfter)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateID == nil || *c.stateID != bStore || c.lastSeq == nil || *c.lastSeq != 20 {
+		t.Errorf("INFRA's cursor is %s, want B's store %s at 20", c, bStore)
+	}
+}
+
+// TestAGapFoundRightAfterAGoodStartingReadIsReadWhenItsMinuteEnds: R3 starts the whole reads of
+// one project at least 60 seconds apart, the read right after a good starting read included
+// (read-rule-cases v11, rule 2). INFRA's take-over read is good at 10. Ten seconds later on the
+// intake's clock, its message at 12 shows a gap: it holds the gap read and goes back to the stream
+// for the 50 s left of the starting read's minute, and the daemon is read no sooner. The message's
+// redelivery makes the gap read, which starts a minute after the starting read began, within a few
+// seconds, and INFRA-1's phase reaches 12's testing. At d69f92b6, a good starting read held back
+// no read, so the message made the gap read at once.
+func TestAGapFoundRightAfterAGoodStartingReadIsReadWhenItsMinuteEnds(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, true)
+	started := lastReadStartedAt(t, rig, "INFRA")
+
+	daemon.serves(daemonState("INFRA", 12, inPhase("testing")))
+	rig.clock.advance(10 * time.Second)
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	holder := rig.lastStreamSeq()
+	held := rig.awaitLogRecords(heldLine, 1)
+	if delay, _ := held[0]["delay"].(float64); held[0]["streamSeq"] != float64(holder) || held[0]["reason"] != ReadReasonGap ||
+		time.Duration(delay) < 45*time.Second || time.Duration(delay) > 50*time.Second {
+		t.Fatalf("the message sent back = %v, want the message at 12 (stream sequence %d) holding the gap read for what is left of the starting read's minute, about 50 s", held[0], holder)
+	}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 1 }) {
+		t.Fatalf("INFRA's daemon served %d reads within the starting read's minute, want the starting read alone", daemon.served())
+	}
+	rig.waitFor(70*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
+		return fmt.Sprintf("the gap read was not made once the starting read's minute ended: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[1], ReadReasonGap, true)
+	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(started); apart < ReadRetryAfter || apart > ReadRetryAfter+10*time.Second {
+		t.Errorf("the gap read started %s after the starting read on the intake's clock, want a minute, within 10 s", apart)
+	}
+	rig.waitFor(5*time.Second, func() bool { return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"testing"` }, func() string {
+		return fmt.Sprintf("INFRA-1's phase is %s after the gap read, want 12's testing", currentValues(t, rig.database, "INFRA")["INFRA-1/phase"])
+	})
 }

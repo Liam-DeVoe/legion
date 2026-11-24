@@ -146,10 +146,11 @@ var readRuleInvariants = map[int]string{
 //     message handed back with a delay. The take-over comes after invariant 2 is checked, so it
 //     reads nothing that check needs.
 //  4. Consecutive whole reads of the project start at least ReadRetryAfter apart on the intake's
-//     clock, but for a starting read and the first read after a good starting read (row 5.1,
-//     cursor.readFor). legion_reads.read_at is the read's time once the daemon answered (fetchWhole),
-//     not its start, so the start is read_tried_at as recordWhole writes it beside the read's row
-//     (readStartsTrigger).
+//     clock, whatever their reasons, with no exemption: a starting read, the read right after a
+//     good starting read and the starting reads of two writes of the setting within a minute
+//     included (read-rule-cases v11, cursor.readFor). legion_reads.read_at is the read's time once
+//     the daemon answered (fetchWhole), not its start, so the start is last_read_started_at as
+//     recordWhole writes it beside the read's row (readStartsTrigger).
 //
 // With no variable set it runs readRuleRows. LEGION_READ_RULE_SEED=<n> runs that seed alone,
 // LEGION_READ_RULE_SEEDS=<from>-<to> each seed of the range, and LEGION_READ_RULE_STEPS=<n> sets the
@@ -306,24 +307,31 @@ func newReadRuleModel(t *testing.T, seed uint64, steps int) *readRuleModel {
 }
 
 // readStartsTrigger records in the rig's database the start of each whole read beside its
-// legion_reads row: recordWhole writes the read's start (wholeRead.started) to read_tried_at in the
-// transaction that inserts the row, for every read but a good starting read. The trigger never
-// fails a write of the intake.
+// legion_reads row: recordWhole writes the read's start (wholeRead.started) to last_read_started_at
+// in the transaction that inserts the row, for every read, a good starting read's included. A read
+// whose record is dropped, since the setting moved meanwhile, writes its start with no row: the
+// trigger records a start only for a read row that has none yet, so it never gives such a start to
+// the read before it. The trigger never fails a write of the intake.
 func (m *readRuleModel) readStartsTrigger() {
 	for _, statement := range []string{
 		`create table read_rule_read_starts (id bigserial primary key, read_id bigint, started timestamptz)`,
 		`create function read_rule_read_start() returns trigger language plpgsql as $$
+		declare
+			newest bigint;
 		begin
-			if new.read_tried_at is null then
+			if new.last_read_started_at is null then
 				return null;
 			end if;
 			if tg_op = 'UPDATE' then
-				if new.read_tried_at is not distinct from old.read_tried_at then
+				if new.last_read_started_at is not distinct from old.last_read_started_at then
 					return null;
 				end if;
 			end if;
-			insert into read_rule_read_starts (read_id, started)
-				select max(id), new.read_tried_at from legion_reads where project = new.project and kind = 'read';
+			select max(id) into newest from legion_reads where project = new.project and kind = 'read';
+			if newest is null or exists (select 1 from read_rule_read_starts where read_id = newest) then
+				return null;
+			end if;
+			insert into read_rule_read_starts (read_id, started) values (newest, new.last_read_started_at);
 			return null;
 		end
 		$$`,
@@ -1126,7 +1134,7 @@ func (m *readRuleModel) checkHandBacks(index int) {
 }
 
 // readRuleRead is one whole read of INFRA: its legion_reads row and its start on the intake's
-// clock, nil for a good starting read, which records none.
+// clock (readStartsTrigger), nil where none was recorded beside the row.
 type readRuleRead struct {
 	id      int64
 	reason  string
@@ -1180,15 +1188,12 @@ func (m *readRuleModel) readList() string {
 }
 
 // checkReadsApart fails invariant 4 when two consecutive whole reads of INFRA started less than
-// ReadRetryAfter apart, but where the later one is a starting read or the earlier a good starting
-// read.
+// ReadRetryAfter apart, whatever their reasons: a starting read and the read right after a good
+// starting read included (read-rule-cases v11, rule 4).
 func (m *readRuleModel) checkReadsApart(index int) {
 	reads := m.reads()
 	for i := 1; i < len(reads); i++ {
 		earlier, later := reads[i-1], reads[i]
-		if later.reason == ReadReasonStart || (earlier.reason == ReadReasonStart && earlier.ok) {
-			continue
-		}
 		if earlier.started == nil || later.started == nil {
 			m.fail(index, 4, "whole read %v or %v records no start; INFRA's whole reads: %v", earlier, later, reads)
 		}

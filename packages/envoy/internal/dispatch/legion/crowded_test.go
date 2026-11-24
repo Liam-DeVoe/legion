@@ -3,6 +3,7 @@ package legion
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -48,6 +49,8 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 	seedLegionProject(t, rig.database, "QUICK", quick.URL)
 	rig.start()
 	rig.awaitWholeReads(slow + 1)
+	// Each starting read's minute passes, so each project's gap read is due at once.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	releases := make([]func(), slow)
 	for i, daemon := range daemons {
@@ -235,4 +238,187 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.readHolder != nil || c.lastSeq == nil || *c.lastSeq != 33 {
 		t.Errorf("INFRA's cursor is %s, want it at the gap read's 33 with nothing owed and no holder", c)
 	}
+}
+
+// TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain: read-rule-cases rows 3.5 and 8.1
+// (the reviewer's finding PRRT_kwDORFy7ds67Zthz). A boot of a store the cursor drops - a store
+// marked as no daemon of the project, or the recorded old store - while the cursor follows the
+// setting's URL in another store a read verified, is judged as a message of another store, on the
+// project's runner and past the cap of stateMaxWaiting alike: it owes the store read and holds
+// it, and its redelivery makes that read. So a daemon that a redeploy started behind the setting's
+// URL in that store is found again within about a minute, even where its boot is the project's
+// 17th waiting message and no read is in flight.
+//
+// Each case sets INFRA's setting as TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing
+// does: A read well in the rig's store, B whose starting read fails, then C read well in a store of
+// its own, so A's store is the recorded old store; for the marked store, B's message marks B's
+// store. C's URL comes to serve the dropped store at 40, with no write of the setting. Work queued
+// on INFRA's runner keeps it busy with no read in flight, 16 messages of C's store wait behind
+// that work, and the dropped store's boot at 41 arrives past the cap. The runner is let go. Within
+// 75 s, a minute on on the intake's clock, INFRA's cursor follows the dropped store at 41.
+//
+// At d69f92b6, judgeCrowded finished the boot as a message of a dropped store (cursor.forgets)
+// while no read was in flight: it owed nothing, and INFRA stayed on C's store.
+func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T) {
+	const bootRun = "4b8e1d6a-2c7f-4a93-b5e0-9d3c6f1a8e24"
+	for _, tc := range []struct {
+		name  string
+		store string // the store that boots
+		marks bool
+	}{
+		{name: "a store marked as no daemon of the project", store: bStore, marks: true},
+		{name: "the recorded old store", store: rigStateID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", a.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+			b := newFakeDaemon(t, "")
+			b.refuses(http.StatusServiceUnavailable)
+			rig.pointAt(b, 2)
+			c := newFakeDaemon(t, daemonStateIn("INFRA", 5, inPhase("implementing"), cStore, cRun))
+			rig.pointAt(c, 3)
+			if tc.marks {
+				rig.publishIn("INFRA", bRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(20, "INFRA-1", moved("phase", "merging")))
+				rig.settled()
+			}
+			if cur := cursorOf(t, rig.database, "INFRA"); cur.stateID == nil || *cur.stateID != cStore || cur.previousStateID == nil ||
+				*cur.previousStateID != rigStateID || slices.Contains(cur.foreignStateIDs, bStore) != tc.marks || cur.readOwed {
+				t.Fatalf("control: INFRA's cursor before the redeploy is %s, want C's store %s, A's store %s recorded, B's store marked %v and nothing owed",
+					cur, cStore, rigStateID, tc.marks)
+			}
+
+			// The redeploy: C's URL serves the dropped store, with no write of the setting.
+			c.serves(daemonStateIn("INFRA", 40, inPhase("reviewing"), tc.store, bootRun))
+			rig.clock.advance(ReadRetryAfter + time.Second)
+			release := make(chan struct{})
+			released := false
+			let := func() {
+				if !released {
+					released = true
+					close(release)
+				}
+			}
+			t.Cleanup(let)
+			if !rig.intake.durable.Queue("INFRA", func(ctx context.Context) {
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			}) {
+				t.Fatal("control: the intake took no work on INFRA's runner")
+			}
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			for seq := 6; seq < 6+stateMaxWaiting; seq++ {
+				rig.publishIn("INFRA", cRun, cStore, at, false, change(seq, "INFRA-1", moved("phase", "implementing")))
+			}
+			rig.waitFor(20*time.Second, func() bool {
+				info := rig.consumerInfo()
+				return info.NumPending == 0 && info.NumAckPending >= stateMaxWaiting
+			}, func() string {
+				return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
+			})
+			rig.publishIn("INFRA", bootRun, tc.store, at, false, booted(41, stateSchema, 2))
+			rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+				return fmt.Sprintf("control: the boot past the cap was not delivered: %+v", rig.consumerInfo())
+			})
+			time.Sleep(time.Second)
+			if rig.intake.readsNow("INFRA") {
+				t.Fatal("control: a whole read of INFRA is in flight while the boot past the cap is judged")
+			}
+			let()
+			if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+				cur := cursorOf(t, rig.database, "INFRA")
+				return cur.stateID != nil && *cur.stateID == tc.store && cur.lastSeq != nil && *cur.lastSeq == 41
+			}) {
+				t.Errorf("75 s after the boot of %s past the cap, with no read in flight, INFRA's cursor is %s and C's URL served %d reads: the boot owed no read, so the daemon behind the setting's URL was never found in that store",
+					tc.store, cursorOf(t, rig.database, "INFRA"), c.served())
+			}
+		})
+	}
+}
+
+// readsLockWaiters counts the statements of the rig's database that wait for a lock on
+// legion_reads.
+func readsLockWaiters(t *testing.T, rig *intakeRig) int {
+	t.Helper()
+	var waiters int
+	if err := rig.database.Pool.QueryRow(t.Context(), `
+		select count(*) from pg_locks
+		where not granted and relation = 'legion_reads'::regclass
+			and database = (select oid from pg_database where datname = current_database())
+	`).Scan(&waiters); err != nil {
+		t.Fatalf("count the waits for a lock on legion_reads: %v", err)
+	}
+	return waiters
+}
+
+// TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied: R3-h and the
+// second invariant of read-rule-cases (the reviewer's finding PRRT_kwDORFy7ds67ZtiA). A project
+// with no cursor row gives its starting read's record no row to lock. Messages past the cap of
+// stateMaxWaiting that judgeCrowded judges while that record is written give the project a cursor
+// that follows no daemon, and record on it the gap read they owe, its holder and the sequences
+// they skipped. The record must neither write over them nor miss them.
+//
+// INFRA has a setting and no cursor. Its first message makes the starting read, which serves 30,
+// and the test holds the read's record in the database: a lock on legion_reads keeps the insert of
+// the read's row waiting, after the record has read INFRA's position. Meanwhile 15 more messages
+// at or below 30 wait on INFRA's runner, and 31 to 33 arrive past the cap, past the read's
+// snapshot, near the end of the read's minute. The lock is let go. INFRA then goes quiet: within
+// the time left of the minute and 15 s, INFRA-1's phase reaches 33's reviewing.
+//
+// At d69f92b6, the record read no cursor and upserted one computed from none: it cleared the gap
+// read, its holder and the skipped sequences that judgeCrowded recorded meanwhile. The holder at 31
+// was then applied at its redelivery, and 32 and 33 were never read.
+func TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied(t *testing.T) {
+	// left is what is left of the starting read's minute when the messages past the cap arrive.
+	const left = 5 * time.Second
+	rig := newIntakeRig(t)
+	rig.start()
+	daemon := newFakeDaemon(t, daemonState("INFRA", 30, inPhase("implementing")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	var cursors int
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from legion_event_cursors where project = 'INFRA'`).Scan(&cursors); err != nil || cursors != 0 {
+		t.Fatalf("control: INFRA has %d cursors before its first message (%v), want none", cursors, err)
+	}
+	lock, err := rig.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("open the transaction that holds the read's record: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Rollback(context.Background()) })
+	if _, err := lock.Exec(t.Context(), `lock table legion_reads in share mode`); err != nil {
+		t.Fatalf("lock legion_reads: %v", err)
+	}
+
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 1 && readsLockWaiters(t, rig) > 0 }, func() string {
+		return fmt.Sprintf("control: the starting read's record does not wait on legion_reads: INFRA's daemon served %d reads", daemon.served())
+	})
+	// Any later read serves 33.
+	daemon.serves(daemonState("INFRA", 33, inPhase("reviewing")))
+	rig.clock.advance(ReadRetryAfter - left)
+	for seq := 12; seq < 12+stateMaxWaiting-1; seq++ {
+		rig.publish("INFRA", change(seq, "INFRA-1", moved("phase", "implementing")))
+	}
+	for seq, past := range []string{"testing", "merging", "reviewing"} {
+		rig.publish("INFRA", change(31+seq, "INFRA-1", moved("phase", past)))
+	}
+	rig.waitFor(20*time.Second, func() bool {
+		info := rig.consumerInfo()
+		return info.NumPending == 0 && info.NumAckPending > stateMaxWaiting
+	}, func() string {
+		return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner and the messages past the cap", rig.consumerInfo(), stateMaxWaiting)
+	})
+	time.Sleep(time.Second)
+	if err := lock.Rollback(t.Context()); err != nil {
+		t.Fatalf("let the read's record go: %v", err)
+	}
+	rig.waitFor(left+15*time.Second, func() bool {
+		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
+	}, func() string {
+		return fmt.Sprintf("after the starting read at 30, INFRA-1's phase is %s, INFRA's cursor is %s and its daemon served %d reads: the events past the cap were never read",
+			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
+	})
 }

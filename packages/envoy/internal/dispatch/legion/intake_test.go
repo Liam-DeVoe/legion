@@ -85,6 +85,27 @@ func (c *intakeClock) jumps(jump time.Duration) {
 	c.jump = jump
 }
 
+// after runs f on a goroutine of its own once the clock reads d past its reading now: once the wall
+// clock and the test's advances together have moved it that far. It is the rig's Intake.after, so
+// a starting point a wake deferred (Intake.startLater) runs when the test moves the clock past the
+// minute. It reads the clock without its jump, so it moves nothing.
+func (c *intakeClock) after(d time.Duration, f func()) {
+	at := c.peek().Add(d)
+	go func() {
+		for c.peek().Before(at) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		f()
+	}()
+}
+
+// peek is the clock's reading without the jump (jumps).
+func (c *intakeClock) peek() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
 // newIntakeRig opens the test's database and NATS account, and sends the default logger to a
 // buffer the test reads. It starts no intake (start).
 func newIntakeRig(t *testing.T) *intakeRig {
@@ -118,7 +139,8 @@ func (r *intakeRig) start() {
 	r.startOn(r.clock.now)
 }
 
-// startOn is start with now as the intake's clock rather than the rig's.
+// startOn is start with now as the intake's clock rather than the rig's. The intake's deferred
+// calls (Intake.after) run on the rig's clock either way.
 func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
@@ -127,7 +149,7 @@ func (r *intakeRig) startOn(now func() time.Time) {
 	}
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
-	intake.now = now
+	intake.now, intake.after = now, r.clock.after
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -518,7 +540,11 @@ func (r *intakeRig) awaitLogRecords(msg string, want int) []map[string]any {
 }
 
 // awaitStartingRead waits for the take-over's whole read of project's daemon, and fails unless it
-// is a good read for ReadReasonStart, in legion_reads and in its log line.
+// is a good read for ReadReasonStart, in legion_reads and in its log line. Whole reads of a project
+// start ReadRetryAfter apart whatever their reasons, the read right after a good starting read
+// included (read-rule-cases v11), so it then moves the intake's clock past that read's minute: the
+// next read a message, a write or a take-over calls for is due at once, as the tests that start
+// from a good starting read expect. A test of that minute itself waits with awaitWholeReads.
 func (r *intakeRig) awaitStartingRead(project string) {
 	r.t.Helper()
 	r.awaitWholeReads(1)
@@ -531,6 +557,7 @@ func (r *intakeRig) awaitStartingRead(project string) {
 	if line := lines[0]; line["level"] != "INFO" || line["project"] != project || line["reason"] != ReadReasonStart || line["ok"] != true {
 		r.t.Fatalf("the starting read's line = %v, want INFO for project %s, reason %s and ok", line, project, ReadReasonStart)
 	}
+	r.clock.advance(ReadRetryAfter + time.Second)
 }
 
 // requireWholeReadLines fails unless the whole reads logged are, in order, one per reason given,
@@ -1759,8 +1786,8 @@ func (r *intakeRig) wholeReadReasons(project string) []string {
 // TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead: R1 applies only a message whose stateId
 // is the starting point's daemon.stateId. A message of another store (a daemon the setting no
 // longer names, or a sender that is no daemon) writes no observation and moves no cursor, though it
-// is at the cursor's next sequence. A good starting read holds back no read after it, so it makes
-// one whole read (ReadReasonStore) at once, logged with its reason, which finds the store the
+// is at the cursor's next sequence. The starting read's minute is over (awaitStartingRead), so it
+// makes one whole read (ReadReasonStore) at once, logged with its reason, which finds the store the
 // daemon counts in now. The daemon still serves the starting point's store, so the read marks the
 // message's store as no daemon of INFRA (foreign_state_ids, row 3.1 of the read rule's cases), the
 // message is dropped, and the drop is logged once, with both ids and the message's sequences. A
@@ -2070,6 +2097,8 @@ func TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole(t *t
 	seedLegionProject(t, rig.database, "LINUX", linux.URL)
 	rig.start()
 	rig.awaitWholeReads(2)
+	// The starting reads' minute passes, so the read a message calls for is due at once.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	// The daemon's state once the event committed, as its own encoder writes the wait.
 	infra.serves(daemonState("INFRA", 11, `"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person","tree":"INFRA-1",
@@ -2360,10 +2389,11 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 // ReadRetryAfter apart, whatever calls for them, and its messages are not held behind reads. 300
 // messages of INFRA that each start past the cursor's next sequence (gaps, in the daemon's own store
 // and run, as forged messages or a bug's would), and a boot among them that does not follow, make
-// one whole read in the first minute: the first message's, which a good starting read does not
-// hold back. INFRA's daemon answers it late and holds it, and LINUX's messages are delivered and
-// applied while it is in flight. The first message past stateMaxWaiting since that read began is
-// the first that holds the next read (read-rule-cases row 8.1): it goes back to the stream until
+// one whole read in the first minute after the starting read's: the first message's, made at once
+// since the starting read's minute is over (awaitStartingRead). INFRA's daemon answers it late and
+// holds it, and LINUX's messages are delivered and applied while it is in flight. The first
+// message past stateMaxWaiting since that read began is the first that holds the next read
+// (read-rule-cases row 8.1): it goes back to the stream until
 // the read is due, the one message of the durable's window INFRA holds. Each later message of the
 // burst is finished as soon as the cursor records its reason, so none waits on more than that one
 // read and none is applied: 300 reads at the daemon's 200 ms would take a minute, past what
@@ -2379,6 +2409,8 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	seedLegionProject(t, rig.database, "LINUX", linux.URL)
 	rig.start()
 	rig.awaitWholeReads(2)
+	// The starting reads' minute passes, so the burst's first read is due at once.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	infra.slows(200 * time.Millisecond)
 	release := infra.holds(t)
@@ -2485,6 +2517,8 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	seedLegionProject(t, rig.database, "LINUX", linux.URL)
 	rig.start()
 	rig.awaitWholeReads(2)
+	// The starting reads' minute passes, so the first gap's read is due at once.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	// A gap past 10 whose read is good: INFRA's next read waits ReadRetryAfter after it.
 	infra.serves(daemonState("INFRA", 12, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
@@ -2768,6 +2802,8 @@ func TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder(t *testing.T) 
 	seedLegionProject(t, rig.database, "LINUX", linux.URL)
 	rig.start()
 	rig.awaitWholeReads(2)
+	// The starting reads' minute passes, so the first gap's read is due at once.
+	rig.clock.advance(ReadRetryAfter + time.Second)
 
 	// Before the holder: LINUX's 21, and a gap of INFRA's past 10 whose read is good, after which
 	// INFRA's next read waits ReadRetryAfter.
@@ -2903,7 +2939,7 @@ func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
 	daemon.refuses(http.StatusServiceUnavailable)
 	database, setting := configured(t, daemon.URL)
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into legion_event_cursors (project, state_url, read_reasons, read_tried_at, read_holder, read_holds)
+		insert into legion_event_cursors (project, state_url, read_reasons, last_read_started_at, read_holder, read_holds)
 		values ('INFRA', 'http://another-daemon.example', '{retry}', now() - interval '2 minutes', 42, 3)
 	`); err != nil {
 		t.Fatalf("write INFRA's cursor: %v", err)
@@ -3075,6 +3111,8 @@ func TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone(t *testing.T) {
 			rig.start()
 			rig.awaitWholeReads(1)
 			if !tc.failedStart {
+				// The starting read's minute passes, so the gap's read is due at once.
+				rig.clock.advance(ReadRetryAfter + time.Second)
 				daemon.serves(daemonState("INFRA", 12, planning("INFRA")))
 				rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "planning")))
 				rig.settled()
