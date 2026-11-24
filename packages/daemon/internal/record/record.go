@@ -1173,7 +1173,7 @@ type MergeForward struct {
 	Own         bool                 `json:"own,omitempty"`
 	Agent       claim.Token          `json:"agent,omitempty"`
 	Role        claim.Role           `json:"role,omitempty"`
-	Told        OwnerTold            `json:"told,omitzero"`
+	Told        OwnerTold            `json:"told,omitempty"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
