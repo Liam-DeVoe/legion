@@ -22,6 +22,7 @@ import {
 } from "../__tests__/correction-feed";
 import { graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { stripComments } from "../__tests__/strip-comments";
 import { useMarginItems } from "../features/margin/useMarginItems";
 import { replyRow } from "../features/threads/replies-fixture";
 import { ApiError, ambiguousItems, api } from "./client";
@@ -68,16 +69,22 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-/** One source file, by its path from `web/src`, with its text. */
+/** One source file, by its path from `web/src`, with its text, its comments taken out and its
+ *  lines where they were (`stripComments`): TypeScript decides what is a comment, so a `//` or a
+ *  `/*` inside a string, a template or a regular expression is code. */
 interface Source {
   readonly path: string;
   readonly text: string;
 }
 
-const SOURCES: readonly Source[] = sourceFiles(SOURCE_ROOT).map((path) => ({
-  path: relative(SOURCE_ROOT, path),
-  text: readFileSync(path, "utf8"),
-}));
+/** The source file at `path`, from `web/src`, as this test reads its `text`. */
+function sourceOf(path: string, text: string): Source {
+  return { path, text: stripComments(text, path) };
+}
+
+const SOURCES: readonly Source[] = sourceFiles(SOURCE_ROOT).map((path) =>
+  sourceOf(relative(SOURCE_ROOT, path), readFileSync(path, "utf8"))
+);
 
 /** C-Q1's own expression, `queryKey: *\[ *"[a-zA-Z_-]+"( *, *"[a-zA-Z_-]+")?`, held at the
  *  `queryKey:` it is tried at. */
@@ -109,7 +116,7 @@ function quotedEnd(text: string, from: number): number {
 }
 
 /** The expression that starts at `from`: up to the first `,` or `;` at its own depth, or the
- *  bracket that closes the one it stands in, with its comments left out. */
+ *  bracket that closes the one it stands in. */
 function expressionAt(text: string, from: number): string {
   let depth = 0;
   let at = from;
@@ -120,16 +127,6 @@ function expressionAt(text: string, from: number): string {
       const end = quotedEnd(text, at);
       expression += text.slice(at, end);
       at = end;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "/") {
-      const end = text.indexOf("\n", at);
-      at = end < 0 ? text.length : end;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "*") {
-      const end = text.indexOf("*/", at);
-      at = end < 0 ? text.length : end + 2;
       continue;
     }
     if ("([{".includes(char)) depth += 1;
@@ -334,14 +331,17 @@ interface KeySite {
   readonly families: readonly string[];
 }
 
-/** Each `queryKey:` of the source: C-Q1's literal families, and each computed key's (C-Q1's
+/** Each `queryKey:` of `sources`: C-Q1's literal families, and each computed key's (C-Q1's
  *  second command, `queryKey: *[^\[ ]`, and the keys neither of its commands reads: a literal
  *  spread from another key, `queryKey: [...myRepliesKey, "count"]`, or one whose array opens on
- *  the next line). A computed key in a comment is no key. */
-function keySites(): { readonly sites: KeySite[]; readonly unread: string[] } {
+ *  the next line). A key in a comment is no key: a source's comments are taken out (`sourceOf`). */
+function keySites(sources: readonly Source[]): {
+  readonly sites: KeySite[];
+  readonly unread: string[];
+} {
   const sites: KeySite[] = [];
   const unread: string[] = [];
-  for (const { path, text } of SOURCES) {
+  for (const { path, text } of sources) {
     for (const found of text.matchAll(/queryKey:/gu)) {
       const at = found.index ?? 0;
       const line = text.slice(0, at).split("\n").length;
@@ -352,8 +352,6 @@ function keySites(): { readonly sites: KeySite[]; readonly unread: string[] } {
         sites.push({ families: [familyName(literal[1] ?? "", literal[2])], where });
         continue;
       }
-      const lineStart = text.lastIndexOf("\n", at) + 1;
-      if (/\/\/|^\s*\*/u.test(text.slice(lineStart, at))) continue;
       const expression = expressionAt(text, at + found[0].length);
       const resolved = keyFamilies(expression, path, at);
       if (resolved === undefined) unread.push(`${where}: queryKey: ${expression}`);
@@ -363,7 +361,7 @@ function keySites(): { readonly sites: KeySite[]; readonly unread: string[] } {
   return { sites, unread };
 }
 
-const { sites: KEY_SITES, unread: UNREAD_KEYS } = keySites();
+const { sites: KEY_SITES, unread: UNREAD_KEYS } = keySites(SOURCES);
 
 /** Every family the source keys a query under, with the first place it does. */
 const SOURCE_FAMILIES: ReadonlyMap<string, string> = new Map(
@@ -381,6 +379,19 @@ test("every computed query key resolves to the families it names", () => {
   // The positive control: the reader finds C-Q1's families and the computed ones C-Q1 misses.
   expect(SOURCE_FAMILIES.has("issue-messages")).toBe(true);
   expect(SOURCE_FAMILIES.has("me replies")).toBe(true);
+});
+
+// A source is read as TypeScript reads it: a `//` inside a string is code, and a comment is no
+// code. A computed key on a line after a URL was taken for a key in a comment and never read.
+test("a computed key after a string holding // on its line is a key site, and a key in a comment is none", () => {
+  const text = [
+    'useQuery({ url: "https://dispatch.example/", queryKey: open ? ["probe", "open"] : ["probe", "shut"] });',
+    "// A comment that names queryKey: someKey keys nothing.",
+  ].join("\n");
+  expect(keySites([sourceOf("probe.ts", text)])).toEqual({
+    sites: [{ families: ["probe open", "probe shut"], where: "probe.ts:1" }],
+    unread: [],
+  });
 });
 
 test("every query family the source keys is written by a correction or listed as holding no post", () => {
