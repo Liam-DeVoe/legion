@@ -28,9 +28,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
-A `planner` step may stand at any place.
-`implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens.
-A plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
 The table lists the steps in the order of the default steps:
 
 | Step | Type | Phase | What leaving it out means |

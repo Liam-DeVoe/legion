@@ -9,25 +9,28 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 
 ## Adopting children
 
-Release a child a person created at once and as it is, with `release_children` (`skill://legion-architect`, section 2).
+Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
 The answer names `released`, `started` and `held`, each held child with what it waits on.
 A release refused with a code below writes nothing: release the rest again without the child it names.
 
-| Refusal | Do |
-| --- | --- |
-| `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own | Leave it, or ask the controller |
-| `CHILD_IN_OTHER_TREE` | Re-parent it back in Dispatch, or ask that tree's architect or the controller |
-| `ISSUE_NOT_OWNED`: the issue is another architect's | Send the move to the architect above you |
-| `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed | Release again after the step the refusal names |
+- `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own.
+  Leave it, or ask the controller.
+
+- `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the controller.
+
+- `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
+
+- `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed.
+  Release again once it has closed; where it is the tree's root, once the role running the root's phase has moved it back with `request_backward_move`, which the daemon takes until the root's pull request has merged.
 
 ## Creating children
 
-1. **Write each child's spec** as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
+1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
    Cite no item number of another document and copy no text that does not apply to the child.
    Weigh each separate pull request against combining its work: each round tests a large pull request whole again, and each small one costs a workspace, an admission wait, review, CI, a queue wait and a deploy.
    A repeated change is one child, and deleting what this tree replaced is this tree's work.
 
-2. **File each child:**
+2. File each child:
 
    ```bash
    dispatch issue --project <project> --parent "$LEGION_ISSUE" --title '<child outcome>' --spec-file - <<'EOF'
@@ -35,11 +38,10 @@ A release refused with a code below writes nothing: release the rest again witho
    EOF
    ```
 
-3. **Review the version you filed** ("Reviewing a child's spec") before `release_children`.
+3. Review the version you filed ("Reviewing a child's spec") before `release_children`.
 
 - `--project` is the key's prefix (`LEGSMOKE-3` → `LEGSMOKE`).
-
-- `--parent` is `$LEGION_ISSUE`, never a child of yours: that child's own architect files its children.
+  `--parent` is `$LEGION_ISSUE`, never a child of yours: that child's own architect files its children.
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
@@ -47,9 +49,8 @@ A release refused with a code below writes nothing: release the rest again witho
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
   Send it even when you also stop the task or give a later plan: that agent keeps its session and what it read of the whole issue.
 
-- Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it.
-
-- Building a missing path is this tree's work.
+- Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
+  building a missing path is this tree's work.
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
@@ -63,13 +64,13 @@ A release refused with a code below writes nothing: release the rest again witho
 
 No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
 
-1. **Read** the child's spec and its Verification document, at the versions you review, against your own spec (a root's at its approved version, a child's at the version its parent approved).
+1. Read the child's spec and its Verification document, at the versions you review, against your own spec (a root's at its approved version, a child's at the version its parent approved).
    Ask whether the version serves each requirement of your spec that it names, whether it narrows or contradicts any of them, whether it adds scope your spec does not ask for, and whether each fact it states holds in the code, the docs or a read-only command.
    Use a reader (`plan-reviewer`, `plan-gap-analyst`) where the reading needs one.
 
-2. **Approve or request changes,** with a reason either way.
+2. Approve or request changes, with a reason either way.
 
-3. **Post** one `dispatch comment` on the child whose first line is exactly one of these, and whose second line is `Verification document v<m>`;
+3. Post one `dispatch comment` on the child whose first line is exactly one of these, and whose second line is `Verification document v<m>`;
    then tell the child's architect with `envoy_publish`:
 
    ```text
@@ -77,23 +78,15 @@ No person reads a child's spec: review every version of it and of its Verificati
    Spec review of <child key> v<n> by <parent key>: changes requested
    ```
 
-As the child's architect:
-
-- tell the architect above you of each new version, naming each document and its version;
-
-- tell your workers of it only after its approving comment;
-
-- answer `changes requested` with a new version.
-
+As the child's architect: tell the architect above you of each new version, naming each document and its version;
+tell your workers of it only after its approving comment; answer `changes requested` with a new version.
 A decision only a person can make goes to the architect above you, never into your spec.
 
 ## Across repositories
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
-Release a child that builds on another repository's change only after that pull request merges.
-Never make it wait by `--blocked-by`, which starts it at the blocker's close.
-Name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
-For a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
+Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`);
+for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
