@@ -60,6 +60,27 @@ var (
 // a caller who is not that author: one code on every /api/v2 route that refuses one (R1.8, R7).
 var notAuthorRefusal = apicode.Refusal{Condition: apicode.NotTheAuthor, Code: apicode.NotAuthor}
 
+// commentInvalidRefusal and bodyDecisionBlockRefusal are the refusals of a post's body that the
+// comment writes share: a comment's input the write refuses, and a body holding a decision block.
+var (
+	commentInvalidRefusal    = apicode.Refusal{Condition: apicode.CommentInvalid, Code: apicode.InvalidComment}
+	bodyDecisionBlockRefusal = apicode.Refusal{Condition: apicode.BodyHoldsDecisionBlock, Code: apicode.DecisionBlockInBody}
+)
+
+// commentWriteRefusals are the refusals of the comment a document's or an issue's comment list
+// takes (writeComment), with more, the route's own, after them: its body and thread members, its
+// mentions, its anchor, the post it replies to deleted, and a delivery route that moved under it.
+func commentWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal, commentInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal,
+		anchorInvalidRefusal, artifactNotDocumentRefusal, postDeletedRefusal,
+		{Condition: apicode.MentionInvalid, Code: apicode.MentionInput},
+		{Condition: apicode.AskIDShort, Code: apicode.AskIDInput},
+		{Condition: apicode.RouteMoved, Code: apicode.RouteChanged},
+		{Condition: apicode.TurnWithoutAsk, Code: apicode.TurnRequiresAsk},
+	}, more...)
+}
+
 // correctionPosition is the position of a post's corrections (R5): the time of the write that
 // replaced each body and the correction's own id, `<RFC3339 time>,<id>`. Two corrections of one
 // post can carry one edited_at - post_body_history's edited_at is clock_timestamp(), unique in no
@@ -294,7 +315,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: commentWriteResponse{}, Advice: writeAdvice{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			Replay:   replayRecovered(s, s.replayComment),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: commentWriteRefusals(issueMissingRefusal, issueClosedRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/messages/{id}", Auth: authAny, Versions: onlyV2,

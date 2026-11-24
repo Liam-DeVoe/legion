@@ -28,6 +28,7 @@ import (
 	"github.com/swaggest/openapi-go/openapi31"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // OpenAPIDocumentPath and OpenAPIV2DocumentPath are where the emitted documents of /api/v1 and
@@ -971,8 +972,9 @@ var callerCodes = []apicode.Code{
 }
 
 // openAPIOperationCodes are the refusal codes one /api/v2 route can answer, by name, each with its
-// status: the refusals its row declares, and every code a layer the mount runs the route behind
-// (routeHandler) can write, under the condition that layer runs in:
+// status: the refusals its row declares, every code a layer the mount runs the route behind
+// (routeHandler) can write, under the condition that layer runs in, and the codes of the writer's
+// resolution every handler runs that a row's body or scopes say it runs:
 //
 //   - every route: the query decoder's (QUERY_KEY_UNKNOWN, INVALID_QUERY, and INVALID_LIMIT and
 //     INVALID_OFFSET where the query pages), the parameter check's (NUL_CHARACTER, INVALID_UTF8,
@@ -989,7 +991,14 @@ var callerCodes = []apicode.Code{
 //     SESSION_SCOPE;
 //   - a route that reads a JSON body or an upload: the body decoder's;
 //   - an upload to an issue: the closed-issue check's ISSUE_CLOSED and ISSUE_NOT_FOUND;
-//   - a keyed write: the keyed layer's.
+//   - a keyed write: the keyed layer's;
+//   - a write whose body names its writer in an actor member (bodyNamesWriter): the resolution's
+//     ACTOR_SESSION_MISMATCH for an actor naming another session than the credential proved, and,
+//     where the route does not act as the person on every request, bearerSessionActor's ACTOR_KIND
+//     for a bearer that proves no session and names none;
+//   - a route that acts as the person on every request (its OAuthScopes hold person): the acting
+//     person's ACTOR_SESSION_MISMATCH for a `session` parameter naming another session than the
+//     credential proved (actingPerson).
 //
 // Three answers stand outside the list, since no layer of the mount writes them for a request a
 // deployment serves: the router's guards in front of the mount (ORIGIN_REFUSED of the cookie-origin
@@ -1068,11 +1077,32 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 		codes = append(codes, apicode.KeyReused, apicode.KeyInFlight, apicode.KeyInvalid, apicode.KeyCommitted, apicode.AnswerNotKept,
 			apicode.RequestBodyUnreadable)
 	}
+	actsAsPerson := slices.Contains(route.OAuthScopes, model.ScopePerson)
+	if bodyNamesWriter(route.Body) || actsAsPerson {
+		codes = append(codes, apicode.ActorSessionMismatch)
+	}
+	if bodyNamesWriter(route.Body) && !actsAsPerson {
+		codes = append(codes, apicode.ActorKind)
+	}
 	named := map[string]any{}
 	for _, code := range codes {
 		named[code.Name()] = openAPICodeStatus(code)
 	}
 	return named
+}
+
+// bodyNamesWriter reports whether a body of this declaration, or of one of its arms, names the
+// writer its write records in an actor member, the model.Actor a handler resolves the writer from
+// (requireActor, actSessionFromBody).
+func bodyNamesWriter(body requestBody) bool {
+	actor := reflect.TypeFor[*model.Actor]()
+	return slices.ContainsFunc(bodyTypes(body), func(typ reflect.Type) bool {
+		if typ.Kind() != reflect.Struct {
+			return false
+		}
+		field, found := typ.FieldByName("Actor")
+		return found && field.Type == actor
+	})
 }
 
 // openAPICodeStatus is the status a code answers with as the document writes it: the status, or

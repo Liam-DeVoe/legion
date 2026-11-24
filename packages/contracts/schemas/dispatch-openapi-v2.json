@@ -1166,6 +1166,7 @@
           "INVALID_LIMIT": 400,
           "INVALID_OFFSET": 400,
           "INVALID_QUERY": 400,
+          "INVALID_SESSION_ID": 400,
           "INVALID_UTF8": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
@@ -1179,7 +1180,7 @@
         }
       },
       "post": {
-        "description": "Upload a file or image to an agent's conversation: ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. An upload that replaces a document the owner already holds names the token of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that names none is taken for now without a check, since older dispatch commands cannot name one, and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming in current the live token and the number of the version the document stands at, and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is 400 INVALID_PRECONDITION. An issue's plan, Verification document and decisions document are always documents: a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored a file or an image makes it that document as its next version, its earlier versions still served as the files they are. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A conversation holds files and images only. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name, a markdown document, as JSON content or a text/markdown file), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID.",
+        "description": "Upload a file or image to an agent's conversation: ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. A conversation holds files and images only, which have no version token, so a precondition is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name, a markdown document, as JSON content or a text/markdown file), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID.",
         "operationId": "postApiV2AgentsBySessionIdArtifacts",
         "parameters": [
           {
@@ -1281,18 +1282,26 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_INPUT": 400,
+          "ARTIFACT_KIND_MISMATCH": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ARTIFACT": 400,
           "INVALID_BODY": 400,
           "INVALID_JSON": 400,
+          "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
+          "INVALID_SESSION_ID": 400,
           "INVALID_UTF8": 400,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
@@ -1414,6 +1423,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -1513,6 +1523,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1708,8 +1719,11 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
+          "ARTIFACT_NOT_UNTOUCHED": 409,
+          "ARTIFACT_PROJECT_DOCUMENT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -1721,6 +1735,7 @@
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
@@ -1818,8 +1833,13 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_KIND_MISMATCH": 400,
+          "ARTIFACT_NAME_TAKEN": 409,
           "ARTIFACT_NOT_FOUND": 404,
+          "ARTIFACT_PRIMARY": 400,
+          "ARTIFACT_ROLE_NAME": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -1829,9 +1849,11 @@
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ARTIFACT": 400,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
@@ -1938,7 +1960,10 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "APPROVAL_WAITS_ON_HUMAN": 409,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -1946,22 +1971,29 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
+          "NOT_SPEC_DOCUMENT": 409,
           "NO_IDENTITY": 401,
+          "NO_VERIFICATION_DOCUMENT": 409,
+          "NO_VERSION": 409,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PLAN_APPROVED_BY_REVIEW": 409,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
@@ -1969,6 +2001,7 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "SUMMARY_INPUT": 400,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -2102,6 +2135,8 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -2200,17 +2235,25 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
+          "ASK_KIND_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ANCHOR": 400,
+          "INVALID_ASK": 400,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
@@ -2220,6 +2263,7 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -2321,6 +2365,7 @@
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -2530,6 +2575,8 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -2627,17 +2674,26 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
+          "ASK_ID_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
+          "DECISION_BLOCK_IN_BODY": 400,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
+          "INVALID_ANCHOR": 400,
+          "INVALID_COMMENT": 400,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
@@ -2647,18 +2703,23 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "MENTION_INPUT": 400,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "POST_DELETED": 409,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
+          "ROUTE_CHANGED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
           "TOKEN_REVOKED": 401,
+          "TURN_REQUIRES_ASK": 400,
           "UNAUTHORIZED": 401
         },
         "x-write-scope": "project"
@@ -2760,6 +2821,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -2768,29 +2831,36 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "EDIT_LOST_TO_CONCURRENT_CHANGE": 409,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
+          "INVALID_OP": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PRECONDITION_FAILED": 409,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
+          "REPLACE_FIELDS": 400,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "TARGET_AMBIGUOUS": 409,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -2955,7 +3025,7 @@
     },
     "/api/v2/artifacts/{id}/plan-reviews": {
       "post": {
-        "description": "Record a plan review's approval of a plan version {version, actor?}, any authenticated caller, on an issue's plan.md alone, and only while it is a document (409 NOT_PLAN_DOCUMENT otherwise; for a plan an upload stored as a file or an image, the refusal names its kind, and a Markdown upload under its name makes it a document): version is any settled version from 1 to the latest (400 INVALID_REVIEW otherwise). A plan is never sent to a person for approval, so POST /api/v2/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale. Answers 201 the review. 409 NO_VERSION, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND.",
+        "description": "Record a plan review's approval of a plan version {version, actor?}, any authenticated caller, on an issue's plan.md alone, and only while it is a document (409 NOT_PLAN_DOCUMENT otherwise; for a plan an upload stored as a file or an image, the refusal names its kind, and a Markdown upload under its name makes it a document): version is any settled version from 1 to the latest (400 INVALID_REVIEW otherwise). A plan is never sent to a person for approval, so POST /api/v2/artifacts/{id}/approval-requests refuses it; a later plan version makes this approval stale, as a spec's goes stale. Answers 201 the review. 409 NO_VERSION, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND.",
         "operationId": "postApiV2ArtifactsByIdPlanReviews",
         "parameters": [
           {
@@ -3026,6 +3096,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3039,14 +3111,18 @@
           "INTERNAL": 500,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
+          "INVALID_REVIEW": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_PLAN_DOCUMENT": 409,
           "NO_IDENTITY": 401,
+          "NO_VERSION": 409,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
@@ -3139,6 +3215,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3147,18 +3224,22 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "DOCUMENT_LIVE": 409,
+          "DOCUMENT_LOADS": 409,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
@@ -3490,6 +3571,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3498,19 +3580,24 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
+          "INVALID_REVIEW": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
+          "NO_VERSION": 409,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -3518,8 +3605,10 @@
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
+          "REASON_REQUIRED": 400,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
+          "REVIEW_VERSION_MOVED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
           "TOKEN_REVOKED": 401,
@@ -3618,6 +3707,9 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3625,6 +3717,8 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "ENVOY_REFILLING": 503,
+          "ENVOY_UNAVAILABLE": 503,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -3712,7 +3806,10 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_AGENT_OWNED": 400,
+          "ARTIFACT_LINKED": 400,
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -3720,6 +3817,9 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "ENVOY_REFILLING": 503,
+          "ENVOY_UNAVAILABLE": 503,
+          "ENVOY_UNSUBSCRIBE_FAILED": 502,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -3730,6 +3830,7 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_REMOVABLE": 409,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OAUTH_SCOPE_REQUIRED": 403,
@@ -3742,6 +3843,7 @@
           "REQUEST_TOO_LARGE": 413,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "SUBSCRIBER_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -3944,6 +4046,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -3958,12 +4062,15 @@
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "INVALID_VERSION": 400,
+          "ISSUE_CLOSED": 409,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
           "KEY_INVALID": 400,
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -4082,6 +4189,8 @@
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "FILE_MISSING": 500,
+          "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "ID_AMBIGUOUS": 409,
           "INTERNAL": 500,
@@ -4515,6 +4624,8 @@
           }
         ],
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4634,6 +4745,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4742,6 +4855,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -4941,6 +5056,8 @@
           }
         ],
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -5240,6 +5357,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -5331,6 +5449,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5433,6 +5552,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROADCAST_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5750,6 +5870,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -5859,6 +5981,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6102,6 +6226,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6229,6 +6355,8 @@
         },
         "x-auth": "bearer",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6424,6 +6552,8 @@
           }
         ],
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6545,6 +6675,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6631,6 +6762,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -6749,6 +6881,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -6936,6 +7069,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8332,6 +8466,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8563,6 +8699,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8838,17 +8976,25 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_INPUT": 400,
+          "ARTIFACT_KIND_MISMATCH": 400,
+          "ARTIFACT_ROLE_NAME": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ARTIFACT": 400,
           "INVALID_BODY": 400,
           "INVALID_JSON": 400,
+          "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "ISSUE_CLOSED": 409,
@@ -8863,6 +9009,7 @@
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PRECONDITION_FAILED": 409,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
@@ -9100,18 +9247,25 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ASK_KIND_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ANCHOR": 400,
+          "INVALID_ASK": 400,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "ISSUE_NOT_FOUND": 404,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
@@ -9119,6 +9273,7 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -9345,6 +9500,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -9468,6 +9625,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -9809,18 +9968,26 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ASK_ID_INPUT": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "CAP_EXCEEDED": 400,
+          "DECISION_BLOCK_IN_BODY": 400,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ANCHOR": 400,
+          "INVALID_COMMENT": 400,
           "INVALID_JSON": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
+          "ISSUE_CLOSED": 409,
           "ISSUE_NOT_FOUND": 404,
           "JSON_CONTENT_TYPE": 415,
           "KEY_COMMITTED": 409,
@@ -9828,18 +9995,23 @@
           "KEY_IN_FLIGHT": 409,
           "KEY_REUSED": 422,
           "LOGIN_CHANGED": 409,
+          "MENTION_INPUT": 400,
+          "NOT_DOCUMENT": 400,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "POST_DELETED": 409,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
           "READ_ONLY_TOKEN": 403,
           "REQUEST_BODY_UNREADABLE": 400,
           "REQUEST_TOO_LARGE": 413,
+          "ROUTE_CHANGED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
           "TOKEN_REVOKED": 401,
+          "TURN_REQUIRES_ASK": 400,
           "UNAUTHORIZED": 401
         },
         "x-write-scope": "project"
@@ -10169,6 +10341,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BLOCK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -10585,6 +10758,8 @@
         },
         "x-auth": "bearer",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10804,6 +10979,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -10921,6 +11098,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11158,6 +11337,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11267,6 +11448,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11460,6 +11643,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11688,6 +11873,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11806,6 +11993,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -11933,6 +12122,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12026,6 +12216,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12207,6 +12398,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12326,6 +12518,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12412,6 +12605,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12706,6 +12900,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -12798,6 +12993,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -12893,6 +13089,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_TOKEN_NOT_FOUND": 404,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -13002,6 +13199,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "AGENT_TOKEN_NOT_FOUND": 404,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -13120,6 +13318,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13252,6 +13451,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13360,6 +13560,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
@@ -13475,6 +13676,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
@@ -13633,6 +13835,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "ARTIFACT_NOT_FOUND": 404,
           "ASK_NOT_FOUND": 404,
@@ -13757,6 +13960,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -13850,6 +14054,7 @@
           "approve"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14028,6 +14233,7 @@
           "type": "time,id"
         },
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -14225,6 +14431,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14334,6 +14542,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14577,6 +14787,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14722,6 +14934,8 @@
         },
         "x-auth": "bearer",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -14857,6 +15071,8 @@
         },
         "x-auth": "bearer",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15078,6 +15294,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -15294,6 +15511,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15394,6 +15613,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15501,6 +15722,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15852,6 +16075,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -15969,6 +16194,8 @@
           }
         ],
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16293,6 +16520,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16408,6 +16637,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -16702,7 +16933,7 @@
         }
       },
       "post": {
-        "description": "Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. An upload that replaces a document the owner already holds names the token of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that names none is taken for now without a check, since older dispatch commands cannot name one, and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming in current the live token and the number of the version the document stands at, and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is 400 INVALID_PRECONDITION. An issue's plan, Verification document and decisions document are always documents: a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored a file or an image makes it that document as its next version, its earlier versions still served as the files they are. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. An upload that replaces a document the owner already holds names the token of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that names none is taken for now without a check, since older dispatch commands cannot name one, and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, writing nothing and naming in current the live token and the number of the version the document stands at, and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on an upload stored as a file, is 400 INVALID_PRECONDITION. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "postApiV2ProjectsByKeyArtifacts",
         "parameters": [
           {
@@ -16804,17 +17035,24 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
+          "ARTIFACT_INPUT": 400,
+          "ARTIFACT_KIND_MISMATCH": 400,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
           "BROKER_TOKEN_PROOF_INVALID": 401,
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
+          "FILE_STORE_UNAVAILABLE": 502,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
+          "INVALID_ARTIFACT": 400,
           "INVALID_BODY": 400,
           "INVALID_JSON": 400,
+          "INVALID_PRECONDITION": 400,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
           "JSON_CONTENT_TYPE": 415,
@@ -16827,6 +17065,7 @@
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
           "OIDC_TOKEN_INVALID": 401,
+          "PRECONDITION_FAILED": 409,
           "PROJECT_NOT_FOUND": 404,
           "PROJECT_SCOPE": 403,
           "QUERY_KEY_UNKNOWN": 400,
@@ -18362,6 +18601,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18708,6 +18949,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18808,6 +19051,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -18915,6 +19160,8 @@
         },
         "x-auth": "any",
         "x-refusal-codes": {
+          "ACTOR_KIND": 400,
+          "ACTOR_SESSION_MISMATCH": 403,
           "ANSWER_NOT_KEPT": "*",
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -19009,6 +19256,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,
@@ -19362,6 +19610,7 @@
           "person"
         ],
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
           "BROKER_TOKEN_NOT_A_SESSION": 401,

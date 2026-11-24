@@ -41,6 +41,18 @@ var (
 	projectMissingRefusal  = apicode.Refusal{Condition: apicode.ProjectMissing, Code: apicode.ProjectNotFound}
 )
 
+// The refusals of what a document route's request names or meets beside its path's objects
+// (dispatch://INFRA-4071/spec R7).
+var (
+	documentOfIssueRefusal        = apicode.Refusal{Condition: apicode.DocumentOfIssue, Code: apicode.ArtifactLinked}
+	documentOfConversationRefusal = apicode.Refusal{Condition: apicode.DocumentOfConversation, Code: apicode.ArtifactAgentOwned}
+	roleDocumentNameRefusal       = apicode.Refusal{Condition: apicode.RoleDocumentName, Code: apicode.ArtifactRoleName}
+	noSettledVersionRefusal       = apicode.Refusal{Condition: apicode.NoSettledVersion, Code: apicode.NoVersion}
+	reviewInvalidRefusal          = apicode.Refusal{Condition: apicode.ReviewInvalid, Code: apicode.InvalidReview}
+	quoteAmbiguousRefusal         = apicode.Refusal{Condition: apicode.QuoteAmbiguous, Code: apicode.TargetAmbiguous}
+	fileStoreDownRefusal          = apicode.Refusal{Condition: apicode.FileStoreDown, Code: apicode.FileStoreUnavailable}
+)
+
 // artifactRowText is what every description of a route answering artifacts says of the row.
 const artifactRowText = "Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, " +
 	"name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest " +
@@ -63,40 +75,65 @@ const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that s
 	"file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is " +
 	"another's slug or documents share a file name."
 
-// artifactUploadText is what the descriptions of the three uploads say alike before the refusals
-// of a body (artifactUploadRefusals).
+// artifactUploadText is what the descriptions of the three uploads say alike of the body and the
+// name, before what each says of a precondition and the refusals of a body
+// (artifactUploadRefusals).
 const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition?} stores a markdown document, or " +
 	"multipart with a file part and the fields name, summary, actor and precondition stores the file: a text/markdown " +
 	"file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its " +
 	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
-	"that artifact's next version. An upload that replaces a document the owner already holds names the token of the " +
-	"version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
+	"that artifact's next version."
+
+// artifactUploadPreconditionText is what the descriptions of the two uploads that store documents,
+// an issue's and a project's, say of the token an upload names.
+const artifactUploadPreconditionText = "An upload that replaces a document the owner already holds names the token " +
+	"of the version it replaces, precondition {document}, the whole-document token include=text answers (a multipart " +
 	"upload's precondition field holds the same JSON object), and the write checks it under its own lock. One that " +
 	"names none is taken for now without a check, since older dispatch commands cannot name one, and counted " +
 	"(envoy_dispatch_document_replacements_unguarded_total on /metrics); name the token, because a later release " +
 	"refuses a replacement that names none. 409 PRECONDITION_FAILED answers a token behind the live document, " +
 	"writing nothing and naming in current the live token and the number of the version the document stands at, " +
 	"and a precondition on a first upload of a name, which replaces no version. A precondition naming blocks, or on " +
-	"an upload stored as a file, is 400 INVALID_PRECONDITION. " +
-	"An issue's plan, Verification document and decisions document are always documents: a file or an image under " +
-	"the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, " +
-	"decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored " +
-	"a file or an image makes it that document as its next version, its earlier versions still served as the files they " +
-	"are. " +
-	"Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own " +
-	"fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and " +
-	"version the version the upload wrote, for a new artifact and for a new version alike."
+	"an upload stored as a file, is 400 INVALID_PRECONDITION."
+
+// artifactUploadRoleText is what the description of an issue's upload says of the documents that
+// play a role on an issue.
+const artifactUploadRoleText = "An issue's plan, Verification document and decisions document are always documents: " +
+	"a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, " +
+	"verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an " +
+	"earlier upload stored a file or an image makes it that document as its next version, its earlier versions still " +
+	"served as the files they are."
+
+// artifactUploadAnswerText is what the descriptions of the three uploads say of their answer.
+const artifactUploadAnswerText = "Answers 201 {artifact, version}, artifact the artifact's row as it stands once the " +
+	"upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a " +
+	"document's approval) and version the version the upload wrote, for a new artifact and for a new version alike."
 
 // artifactUploadRefusals is what the descriptions of the three uploads say of the bodies they
 // refuse, moreInput the cases of 400 ARTIFACT_INPUT an upload answers beyond the three every
 // upload does, each led by a comma ("" for none), so the one clause of that code names them all.
-// ARTIFACT_ROLE_NAME is not among them: artifactUploadText's sentence on the role documents, which
-// every upload's description carries, names it with its status.
+// ARTIFACT_ROLE_NAME is not among them: artifactUploadRoleText, which the issue's upload alone
+// carries, since only an issue's documents play a role, names it with its status.
 func artifactUploadRefusals(moreInput string) string {
 	return "A body that is neither JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 " +
 		"INVALID_JSON; 400 ARTIFACT_INPUT (primary given, content beside a file, blank content under an existing " +
 		"document's name" + moreInput + "), ARTIFACT_KIND_MISMATCH, INVALID_ARTIFACT (no name, no " +
 		"file, a new name or key over 2692 bytes), 413 REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
+}
+
+// uploadBodyRefusals are the refusals every upload answers for its body (storeUpload,
+// storeArtifact), with more, the upload's own, after them: a body with no name, no file or a
+// content type that does not parse, input the upload does not take, a kind other than its
+// artifact's, a precondition no upload can hold to, and a file the file store does not take.
+func uploadBodyRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal,
+		{Condition: apicode.UploadInvalid, Code: apicode.InvalidArtifact},
+		{Condition: apicode.UploadInputRefused, Code: apicode.ArtifactInput},
+		{Condition: apicode.UploadKindMismatch, Code: apicode.ArtifactKindMismatch},
+		{Condition: apicode.PreconditionMalformed, Code: apicode.InvalidPrecondition},
+		fileStoreDownRefusal,
+	}, more...)
 }
 
 // artifactChangesText is what GET /api/v2/artifacts/{id}/changes says of the change set it
@@ -153,13 +190,15 @@ func (s *server) v2DocumentRows() []routeRow {
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:    agentArtifactsV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
-			Refusals: listRefusals(),
+			Refusals: listRefusals(sessionIDMalformedRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed " +
 				"dispatch://agent/<session_id>/artifact/<slug>. " + artifactUploadText + " A conversation holds files and " +
-				"images only. " + artifactUploadRefusals(", a markdown document, as JSON content or a text/markdown file") +
+				"images only, which have no version token, so a precondition is 400 INVALID_PRECONDITION. " +
+				artifactUploadAnswerText + " " +
+				artifactUploadRefusals(", a markdown document, as JSON content or a text/markdown file") +
 				" No event is appended. A caller whose credential proves a session of its own uploads only into that " +
 				"session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 " +
 				"INVALID_SESSION_ID.",
@@ -168,7 +207,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body:  requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}},
 			Scope: scopeSession, SessionPath: "session_id",
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: uploadBodyRefusals(sessionIDMalformedRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/artifacts/{id}", Auth: authAny, Versions: onlyV2,
@@ -184,8 +223,12 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusNoContent},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal,
+				{Condition: apicode.ArtifactTouched, Code: apicode.ArtifactNotUntouched},
+				{Condition: apicode.ProjectDocumentRemoved, Code: apicode.ArtifactProjectDocument},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}", Auth: authAny, Versions: onlyV2,
@@ -213,8 +256,14 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: artifactV2{}},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, roleDocumentNameRefusal,
+				{Condition: apicode.ArtifactNameHeld, Code: apicode.ArtifactNameTaken},
+				{Condition: apicode.SpecRenamed, Code: apicode.ArtifactPrimary},
+				{Condition: apicode.RenamedNotDocument, Code: apicode.ArtifactKindMismatch},
+				{Condition: apicode.ArtifactNameInvalid, Code: apicode.InvalidArtifact},
+			},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/approval-requests", Auth: authAny, Versions: onlyV2,
@@ -236,8 +285,16 @@ func (s *server) v2DocumentRows() []routeRow {
 				Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestV2{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				valuePastBoundRefusal, noSettledVersionRefusal,
+				{Condition: apicode.ApprovalWaitsOnPerson, Code: apicode.ApprovalWaitsOnHuman},
+				{Condition: apicode.NotTheSpec, Code: apicode.NotSpecDocument},
+				{Condition: apicode.VerificationDocumentMissing, Code: apicode.NoVerificationDocument},
+				{Condition: apicode.ApprovalOfPlan, Code: apicode.PlanApprovedByReview},
+				{Condition: apicode.SummaryBlank, Code: apicode.SummaryInput},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/asks", Auth: authAny, Versions: onlyV2,
@@ -252,7 +309,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
 			IDs:         documentIDs(),
-			Refusals:    listRefusals(documentMissingRefusal),
+			Refusals:    listRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/asks", Auth: authAny, Versions: onlyV2,
@@ -273,7 +330,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			Refusals: askOpenRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/blocks/{block_id}", Auth: authAny, Versions: onlyV2,
@@ -288,7 +345,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			IDs: &idRoute{
 				Kind: "artifact", Blocks: true, NotFound: apicode.ArtifactNotFound, BlockNotFound: apicode.BlockNotFound,
 			},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal, blockMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal, blockMissingRefusal, artifactNotDocumentRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/changes", Auth: authAny, Versions: onlyV2,
@@ -324,7 +381,7 @@ func (s *server) v2DocumentRows() []routeRow {
 				Also: []routeAnswer{{Status: http.StatusNotModified}},
 			},
 			IDs:      documentIDs(),
-			Refusals: listRefusals(documentMissingRefusal),
+			Refusals: listRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/comments", Auth: authAny, Versions: onlyV2,
@@ -342,7 +399,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
 			Replay:   replayRecovered(s, s.replayComment),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			Refusals: commentWriteRefusals(documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/edits", Auth: authAny, Versions: onlyV2,
@@ -371,8 +428,14 @@ func (s *server) v2DocumentRows() []routeRow {
 				},
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				documentPreconditionRefusal, quoteAmbiguousRefusal,
+				{Condition: apicode.EditOpInvalid, Code: apicode.InvalidOp},
+				{Condition: apicode.ReplaceFieldsInvalid, Code: apicode.ReplaceFields},
+				{Condition: apicode.EditLost, Code: apicode.EditLostToConcurrentChange},
+			},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/plan-reviews", Auth: authAny, Versions: onlyV2,
@@ -380,16 +443,19 @@ func (s *server) v2DocumentRows() []routeRow {
 				"an issue's plan.md alone, and only while it is a document (409 NOT_PLAN_DOCUMENT otherwise; for a plan an " +
 				"upload stored as a file or an image, the refusal names its kind, and a Markdown upload under its name makes " +
 				"it a document): version is any settled version from 1 to the latest (400 INVALID_REVIEW otherwise). A plan " +
-				"is never sent to a person for approval, so POST /api/v2/artifacts/{id}/approval-requests refuses it with 409 " +
-				"PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale. Answers 201 " +
+				"is never sent to a person for approval, so POST /api/v2/artifacts/{id}/approval-requests refuses it; a " +
+				"later plan version makes this approval stale, as a spec's goes stale. Answers 201 " +
 				"the review. 409 NO_VERSION, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.createArtifactPlanReviewV2,
 			Resource: "plan-reviews", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: createPlanReviewInput{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: model.ArtifactReview{}},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, noSettledVersionRefusal, reviewInvalidRefusal,
+				{Condition: apicode.NotThePlan, Code: apicode.NotPlanDocument},
+			},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/rebuilds", Auth: authAny, Versions: onlyV2,
@@ -405,8 +471,12 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: docs.RebuildReport{}},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				{Condition: apicode.DocumentOpenInRoom, Code: apicode.DocumentLive},
+				{Condition: apicode.DocumentHistoryLoads, Code: apicode.DocumentLoads},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/references", Auth: authAny, Versions: onlyV2,
@@ -453,8 +523,13 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusCreated, Response: model.ArtifactReview{}},
 			OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 			Scope:       scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				valuePastBoundRefusal, noSettledVersionRefusal, reviewInvalidRefusal,
+				{Condition: apicode.ReasonMissing, Code: apicode.ReasonRequired},
+				{Condition: apicode.ReviewedVersionMoved, Code: apicode.ReviewVersionMoved},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/subscribers", Auth: authAny, Versions: onlyV2,
@@ -469,7 +544,10 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: page[subscriber]{}},
 			OAuthScopes: person,
 			IDs:         documentIDs(),
-			Refusals:    listRefusals(documentMissingRefusal),
+			Refusals: listRefusals(
+				documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal,
+				envoyUnreachableRefusal, envoyRefillingRefusal,
+			),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/artifacts/{id}/subscribers/{session_id}", Auth: authAny, Versions: onlyV2,
@@ -483,8 +561,9 @@ func (s *server) v2DocumentRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusNoContent},
 			OAuthScopes: person,
 			Scope:       scopeProject, ProjectOf: projectPathArtifact, SessionPath: "session_id",
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: append(unsubscribeRefusals(),
+				undeclaredKeyRefusal, documentMissingRefusal, documentOfIssueRefusal, documentOfConversationRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/versions", Auth: authAny, Versions: onlyV2,
@@ -509,8 +588,11 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: createVersionInput{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: model.Version{}},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
+				{Condition: apicode.VersionSummaryBlank, Code: apicode.InvalidVersion},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/versions/{number}", Auth: authAny, Versions: onlyV2,
@@ -535,8 +617,11 @@ func (s *server) v2DocumentRows() []routeRow {
 				// an answer by.
 				OpaqueContentTypes: []string{"*/*", "text/markdown"},
 			},
-			IDs:      documentIDs(),
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal, versionMissingRefusal},
+			IDs: documentIDs(),
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, documentMissingRefusal, versionMissingRefusal, fileStoreDownRefusal,
+				{Condition: apicode.FileBytesMissing, Code: apicode.FileMissing},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -553,7 +638,8 @@ func (s *server) v2DocumentRows() []routeRow {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
-			Description: "Upload an issue document or file. " + artifactUploadText + " " + artifactUploadRefusals("") +
+			Description: "Upload an issue document or file. " + artifactUploadText + " " + artifactUploadPreconditionText +
+				" " + artifactUploadRoleText + " " + artifactUploadAnswerText + " " + artifactUploadRefusals("") +
 				" The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one " +
 				"that does not exist, both answered before the body is read.",
 			Handler:  s.uploadIssueArtifactV2,
@@ -567,7 +653,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			RefusesClosedOwner: true,
-			Refusals:           []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals:           uploadBodyRefusals(issueMissingRefusal, documentPreconditionRefusal, roleDocumentNameRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -587,7 +673,8 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "Upload a project document or file, which no issue holds; its events are its own. " +
-				artifactUploadText + " " + artifactUploadRefusals("") + " 404 PROJECT_NOT_FOUND for a project that does " +
+				artifactUploadText + " " + artifactUploadPreconditionText + " " + artifactUploadAnswerText + " " +
+				artifactUploadRefusals("") + " 404 PROJECT_NOT_FOUND for a project that does " +
 				"not exist.",
 			Handler:  s.uploadProjectArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
@@ -596,7 +683,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			// half alone (storeArtifact, the withRawAdvice arm).
 			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: uploadBodyRefusals(projectMissingRefusal, documentPreconditionRefusal),
 		},
 	}
 }

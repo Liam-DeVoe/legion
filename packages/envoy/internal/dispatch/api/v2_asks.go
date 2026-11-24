@@ -49,6 +49,17 @@ var (
 	}
 )
 
+// askOpenRefusals are the refusals of the ask a document's or an issue's ask list opens (openAsk),
+// with more, the route's own, after them: its kind, its question, options and urgency, a value past
+// its bound, and its anchor.
+func askOpenRefusals(more ...apicode.Refusal) []apicode.Refusal {
+	return append([]apicode.Refusal{
+		undeclaredKeyRefusal, valuePastBoundRefusal, anchorInvalidRefusal, artifactNotDocumentRefusal,
+		{Condition: apicode.AskKindRefused, Code: apicode.AskKindInput},
+		{Condition: apicode.AskInvalid, Code: apicode.InvalidAsk},
+	}, more...)
+}
+
 // askRowText is what every description of a route answering asks says of the row it answers.
 const askRowText = "Each ask is one row: the ask's own fields at top level, opened_event_id, ref (its dispatch:// address, " +
 	"\"\" for an ask no address names), issue {key, title, assignee} or document {project, slug, name}, the issue's priority " +
@@ -224,7 +235,7 @@ func (s *server) v2AskRows() []routeRow {
 				OtherAdvice: []any{suggestionsOnlyAdvice{}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissing},
+			Refusals: askOpenRefusals(issueMissing, issueClosedRefusal),
 		},
 	}
 }

@@ -65,6 +65,149 @@ var (
 	// RunIDMalformed is the {id} of a deploy run (GET /api/v2/deploy-runs/{id}) that is no
 	// positive integer, the form of a GitHub run id.
 	RunIDMalformed = Condition{"run id malformed"}
+	// SessionIDMalformed is a {session_id} that is no session id: empty, or holding /, ?, #,
+	// whitespace, a control character or <>"'`[]| (text.IsSessionID).
+	SessionIDMalformed = Condition{"session id malformed"}
+)
+
+// The conditions of what the object a request's path names is, where the route serves another.
+var (
+	// DocumentOfIssue is an issue's document on a route of a project document's comments, asks or
+	// subscribers, which an issue's are its own.
+	DocumentOfIssue = Condition{"document of an issue"}
+	// DocumentOfConversation is a file of an agent's conversation on a route of a project
+	// document's comments, asks or subscribers, which a conversation has none of.
+	DocumentOfConversation = Condition{"file of an agent's conversation"}
+	// ProjectDocumentRemoved is a project's document on the removal of an untouched issue document.
+	ProjectDocumentRemoved = Condition{"removal of a project document"}
+	// SpecRenamed is the title correction of an issue's spec, whose name is fixed.
+	SpecRenamed = Condition{"title correction of the spec"}
+	// RenamedNotDocument is the title correction of an artifact that is a file or an image.
+	RenamedNotDocument = Condition{"title correction of an artifact that is no document"}
+	// NotTheSpec is an approval request that puts the Verification document beside a document
+	// that is not its issue's spec.
+	NotTheSpec = Condition{"verification beside a document that is not the spec"}
+	// NotThePlan is a plan review of a document that is not its issue's plan, or a plan an upload
+	// stored as a file or an image.
+	NotThePlan = Condition{"plan review of a document that is not the plan"}
+)
+
+// The conditions of the state the object a request's path names stands in.
+var (
+	// OwnerIssueClosed is a write a closed issue refuses, into the issue or a row it owns.
+	OwnerIssueClosed = Condition{"issue closed"}
+	// PostWithdrawn is a write that would put text on a post its author deleted, or under it.
+	PostWithdrawn = Condition{"post deleted"}
+	// ArtifactTouched is the removal of an issue document that holds writing, a later version, an
+	// unsettled edit or anything that names it.
+	ArtifactTouched = Condition{"document touched"}
+	// NoSettledVersion is a review or an approval request of a document that has no settled
+	// version yet.
+	NoSettledVersion = Condition{"no settled version"}
+	// VerificationDocumentMissing is an approval request with include_verification on an issue that
+	// has no Verification document.
+	VerificationDocumentMissing = Condition{"no verification document"}
+	// ApprovalOfPlan is an approval request of an issue's plan, which a plan review approves.
+	ApprovalOfPlan = Condition{"approval request of a plan"}
+	// ApprovalWaitsOnPerson is a renewed approval request that would rewrite the card of a request
+	// that waits on its person.
+	ApprovalWaitsOnPerson = Condition{"approval request rewritten while it waits on its person"}
+	// DocumentOpenInRoom is the rebuild of a document a room holds open.
+	DocumentOpenInRoom = Condition{"document open in a room"}
+	// DocumentHistoryLoads is the rebuild of a document whose history loads.
+	DocumentHistoryLoads = Condition{"document history loads"}
+	// ReviewedVersionMoved is a review naming the version its caller read, where the review would
+	// record another.
+	ReviewedVersionMoved = Condition{"reviewed version moved"}
+	// SessionNotSubscribed is the unsubscription of a session that holds no topic of the owner.
+	SessionNotSubscribed = Condition{"session not subscribed"}
+	// TopicNotRemovable is the unsubscription of a session that only a broader topic matches.
+	TopicNotRemovable = Condition{"topic not removable"}
+)
+
+// The conditions of a request body's members.
+var (
+	// ValuePastBound is a request value longer, or holding more items, than its bound.
+	ValuePastBound = Condition{"value past its bound"}
+	// BodyHoldsDecisionBlock is a post's body that holds a decision block.
+	BodyHoldsDecisionBlock = Condition{"decision block in a body"}
+	// CommentInvalid is a comment's body or thread members the write refuses: no body, a reply
+	// that carries an anchor or a suggestion, a reply_to or an ask_id naming nothing of the owner,
+	// a turn that is neither human nor agent.
+	CommentInvalid = Condition{"comment input invalid"}
+	// MentionInvalid is a comment's mentions or delivery the write refuses.
+	MentionInvalid = Condition{"mentions invalid"}
+	// AskIDShort is a comment's ask_id that is no full ask id.
+	AskIDShort = Condition{"ask id not a full id"}
+	// AnchorInvalid is an anchor that names no document or neither a quote nor a mark, or a
+	// document of another owner.
+	AnchorInvalid = Condition{"anchor invalid"}
+	// TurnWithoutAsk is a comment's turn on a comment that answers no ask.
+	TurnWithoutAsk = Condition{"turn without an ask"}
+	// AskKindRefused is an ask's kind that is not question.
+	AskKindRefused = Condition{"ask kind refused"}
+	// AskInvalid is an ask's question, options or urgency the write refuses.
+	AskInvalid = Condition{"ask input invalid"}
+	// UploadInvalid is an upload with no name, no file or a content type that does not parse, or
+	// a new name or key past its bound.
+	UploadInvalid = Condition{"upload invalid"}
+	// UploadInputRefused is an upload naming primary, giving content beside a file, giving no
+	// content under an existing document's name, or putting a document into a conversation.
+	UploadInputRefused = Condition{"upload input refused"}
+	// UploadKindMismatch is an upload under the name of an artifact of another kind.
+	UploadKindMismatch = Condition{"upload of another kind than its artifact"}
+	// RoleDocumentName is a file, or a document with no content, under the name of an issue's
+	// plan, Verification document or decisions document, or a title giving another document one.
+	RoleDocumentName = Condition{"name of a role document"}
+	// ArtifactNameInvalid is a title that is empty or past its bound.
+	ArtifactNameInvalid = Condition{"artifact name invalid"}
+	// ArtifactNameHeld is a title another artifact of the owner holds by name or slug.
+	ArtifactNameHeld = Condition{"artifact name taken"}
+	// SummaryBlank is an approval request's summary given blank.
+	SummaryBlank = Condition{"summary blank"}
+	// ReviewInvalid is a review's state or version the write refuses.
+	ReviewInvalid = Condition{"review input invalid"}
+	// ReasonMissing is a request for changes that gives no reason.
+	ReasonMissing = Condition{"reason missing"}
+	// VersionSummaryBlank is a named version's summary given blank.
+	VersionSummaryBlank = Condition{"version summary blank"}
+	// EditOpInvalid is an edit op the document service refuses.
+	EditOpInvalid = Condition{"edit op invalid"}
+	// ReplaceFieldsInvalid is a replace op that names no with or a member a replace does not take.
+	ReplaceFieldsInvalid = Condition{"replace op fields invalid"}
+	// PreconditionMalformed is a precondition no write of the route can hold to: one naming blocks
+	// on an upload, or one on an upload stored as a file.
+	PreconditionMalformed = Condition{"precondition malformed"}
+)
+
+// The conditions of a write another write changed the ground under.
+var (
+	// DocumentPreconditionUnmet is a write's precondition the live document no longer meets, or
+	// one on a first upload of a name, which replaces no version.
+	DocumentPreconditionUnmet = Condition{"document precondition unmet"}
+	// EditLost is an edit whose text a concurrent change removed before it could be versioned.
+	EditLost = Condition{"edit lost to a concurrent change"}
+	// QuoteAmbiguous is a quote an edit or an anchor names that the document holds in several
+	// places.
+	QuoteAmbiguous = Condition{"quote ambiguous"}
+	// RouteMoved is a comment whose issue's delivery route changed while it was being written.
+	RouteMoved = Condition{"delivery route changed"}
+)
+
+// The conditions of a service Dispatch relies on.
+var (
+	// EnvoyUnreachable is a route that needs the Envoy listener, on a Dispatch configured with
+	// none or whose listener did not answer.
+	EnvoyUnreachable = Condition{"envoy listener unavailable"}
+	// EnvoyListRefilling is a route that needs the listener's agent list while the listener
+	// refills it.
+	EnvoyListRefilling = Condition{"envoy listener refilling"}
+	// EnvoyUnsubscribeRefused is an unsubscription the listener did not take.
+	EnvoyUnsubscribeRefused = Condition{"envoy unsubscribe failed"}
+	// FileStoreDown is a file the file store did not take or did not return.
+	FileStoreDown = Condition{"file store unavailable"}
+	// FileBytesMissing is a file version whose bytes the file store does not hold.
+	FileBytesMissing = Condition{"file bytes missing"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of
