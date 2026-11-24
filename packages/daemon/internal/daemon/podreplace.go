@@ -11,8 +11,10 @@ package daemon
 // (recordLaunchTakes, runtime.LaunchTakes). The record holds the read of the
 // workspace made before the act. Once the act is made the record goes, in the transaction that
 // queues the issue's architect's workspace-taken notice where the read found work or failed
-// (finishReplacement), so the notice is queued exactly once whatever fails or stops between. A
-// record still standing at a sweep is one whose call failed or whose daemon stopped: the sweep has
+// (finishReplacement), so the notice is queued exactly once whatever fails or stops between, and
+// the finish takes every record of the act's target with it, so one act is told once. A record
+// still standing at a sweep is one whose call failed, whose daemon stopped, or whose notice the
+// store refused: the sweep has
 // the runtime read whether the act was made, under the pod's launch turn and from the cluster's API
 // (runtime.ActReader), and finishes a replacement whose suspension landed from the read made
 // before it, never from a new read, and never as a keep, or forgets one whose pod still runs
@@ -320,7 +322,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
-			s.log.Info("supervise: a recorded replacement of the issue's pod took it, although its call did not answer so; the round ends as that replacement, from the read made before it",
+			s.log.Info("supervise: a recorded replacement of the issue's pod took it, and its round is not over yet: its call did not answer so, its daemon stopped, or the store refused the architect's workspace-taken notice; the round ends as that replacement, from the read made before it",
 				attrs...)
 			if !s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r) {
 				held[r.Issue] = true

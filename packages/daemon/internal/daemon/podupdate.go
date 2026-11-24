@@ -62,13 +62,13 @@ import (
 // push, and its plugin contract is carried by the stale-plugin relaunch instead
 // (supervise's refreshPlugin).
 //
-// Everything a round decides comes from the durable claim columns — the round, its reasons, when
-// it opened, when each worker was asked, when each answered, and when the operator's side was
-// told. A daemon restart therefore resumes a round exactly where it stood, and the same record
-// gives the same decision. Two other durable records a round reads: the decline row an earlier
-// round's keep of the pod wrote (store's idle_release_declines, podKeptForWork), and the record of
-// each replacement that may take a disk, from before the act until its notice is queued (store's
-// pod_replacements, podreplace.go). This pass keeps three things of its own in memory, and none of
+// Everything a round decides comes from durable records: the claim columns — the round, its
+// reasons, when it opened, when each worker was asked, when each answered, and when the operator's
+// side was told — the decline row an earlier round's keep of the pod wrote (store's
+// idle_release_declines, podKeptForWork), and the record of each replacement that may take a disk,
+// from before the act until its notice is queued (store's pod_replacements, podreplace.go), whose
+// unfinished row holds the issue's round at a sweep (finishReplacements). A daemon restart
+// therefore resumes a round exactly where it stood, and the same records give the same decision. This pass keeps three things of its own in memory, and none of
 // them goes in the store:
 //
 //   - The pace at which it opens new rounds: when it last opened one, and the issues it has
@@ -395,10 +395,12 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // neither answered nor left having answered (lostClaims), which is a different question from
 // whom a replacement waits for (unansweredClaims).
 //
-// It reports the one step it leaves the sweep: the replacement of a complete round's pod, or of
+// It reports the replacement it leaves the sweep: the replacement of a complete round's pod, or of
 // the pod of a round that has no role process in it and that nothing holds (by issue), which the
 // sweep makes after its whole walk over the issues, or nil where there is nothing left to do for
-// the issue (reconcilePodUpdates, podReplacement).
+// the issue (reconcilePodUpdates, podReplacement). The walk leaves the sweep one more kind of step,
+// the read that may end an earlier round's keep of a pod, on the sweep's own list
+// (podUpdateSweep.keptReads, readKeptPod).
 //
 // clock is the sweep's now and what a project's pause did to the issue's pod (roundClock), built
 // once for the issue: each round bound and each pause hold read below comes from it, and an
@@ -974,8 +976,9 @@ func (r roundReplacer) String() string {
 	return ""
 }
 
-// podReplacement is the one step the sweep's walk over the issues leaves for after the walk: the
-// pod of a round that is over is to be replaced (completePodUpdate), or the pod of a round that
+// podReplacement is the replacement the sweep's walk over the issues leaves for after the walk,
+// beside the reads of kept pods (podUpdateSweep.keptReads): the pod of a round that is over is to
+// be replaced (completePodUpdate), or the pod of a round that
 // has no role process in it and that nothing holds (viaIssue: podlessRound,
 // roundWithNoProcessInItsPod). It carries what the step cannot read again — the issue, the round,
 // the pod the round was opened over, the reasons the round records, and which kind of replacement
@@ -1223,21 +1226,25 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if kept {
 		line = append(line, "keptVolume", true)
 	}
+	var reason string
+	if !read.clean() {
+		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
+	}
+	// The round is over only once its replacement's record is finished, in the transaction that
+	// queues the architect's notice: a store that refuses that notice leaves the round open, and
+	// each later sweep tries again, so the lines that say the round is over come once, after the
+	// finish commits.
+	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, reason, "round", round) {
+		s.log.Info("supervise: the pod of this update round is replaced, and the round stays open: the store refused to finish the replacement's record and to queue the architect's workspace-taken notice with it; a later sweep finishes it",
+			"issue", issue, "round", round, "pod", pod)
+		return false
+	}
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over", append(line, read.attrs()...)...)
 	if bounded {
 		s.log.Info("supervise pod update replaced at the bound",
 			append([]any{"issue", issue, "round", round, "pod", pod,
 				"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working},
 				ended.background.attributes()...)...)
-	}
-	var reason string
-	if !read.clean() {
-		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
-	}
-	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, reason, "round", round) {
-		s.log.Info("supervise: the round stays open until its replacement's record is finished; a later sweep finishes it",
-			"issue", issue, "round", round, "pod", pod)
-		return false
 	}
 	s.endPodUpdates(issue, members, round)
 	return true

@@ -3600,7 +3600,15 @@ package api
 // moves none either: the table's key becomes the act's own identity (`operation`), with what the
 // act takes and the uid of its target (`takes`, `target_uid`), in the same unreleased migration;
 // `runtime.ActReader` and `runtime.TakenPod`'s new fields are calls inside this daemon's process;
-// and the workspace-taken and update-stalled notices change only in their words.
+// and the workspace-taken and update-stalled notices change only in their words. The migration
+// was amended in place and keeps `create table if not exists`, so a database that applied its
+// first shape, of #5285 at fa9deb04, would keep that table, and every write of the record would
+// fail. No such database is known, so the entry gives no step for one: no daemon has run a build
+// of this branch. On 2026-11-24 the four project daemons of the deployment ran release images
+// (22.16.2 and 22.14.1 by their registry tags, and one digest the registry's newest 6,000 versions
+// do not list), and no release carries the migration. The fix of the Legion reviewer's Important 1
+// at 7da847c0 (a finish takes every record of its target) is a store query, and moves no contract
+// either.
 // (This entry took 238 at first, above main's 219 at 7cb1f229367c: a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 493 open pull requests of this
 // repository, made between 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237
