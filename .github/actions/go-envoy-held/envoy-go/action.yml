@@ -107,7 +107,7 @@ runs:
     # Postgres-backed tests and the room-memory measurements queue their per-test database cleanup
     # on the service's one checkpointer, and the API's live-feed and delivery-hub tests wait for
     # the event log's safe horizon, which any open transaction on the job's Postgres delays. The
-    # five -run lists name the race lane's own packages' tests under //go:build !race and those
+    # six -run lists name the race lane's own packages' tests under //go:build !race and those
     # that read raceEnabled. 10 minutes each is ample: the
     # documents package took 92 to 127 s on a two-vCPU pod, and the API's xid window tests 134 s.
     # It runs in the last leg, whose share leaves it room, not in the `rest` leg.
@@ -135,30 +135,18 @@ runs:
     # The corpus tests of internal/dispatch/pmdoc - the find-marks, re-anchor and Y.Text-range
     # equivalences (PMDOC_ANCHOR_CORPUS), the incremental and the validating render
     # (DISPATCH_RENDER_CORPUS) and the walk (PMDOC_WALK_CORPUS) - read a directory of markdown
-    # documents: every tracked *.md file of this commit (git ls-files), copied into one flat
-    # directory under its path with each / as __, which makes no two names equal; the step fails if
-    # two did. Each test reads it through internal/dispatch/corpustest, which says what a test may
-    # leave out and prints what it left out. The pmdoc differential reads the same files.
-    - name: Write the repository's markdown into the corpus directory
-      shell: bash
-      run: |
-        corpus=$RUNNER_TEMP/repository-markdown
-        mkdir -p "$corpus"
-        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
-          cp -- "$document" "$corpus/${document//\//__}"
-        done
-        tracked=$(git ls-files -z -- '*.md' | tr -cd '\0' | wc -c)
-        written=$(find "$corpus" -type f -name '*.md' | wc -l)
-        echo "$written documents in $corpus, of the $tracked tracked *.md files"
-        [ "$written" -eq "$tracked" ] || { echo "::error::two tracked *.md paths flatten to one name"; exit 1; }
+    # documents: every tracked *.md file of this commit, which the action writes as one flat
+    # directory, and fails if two paths flatten to one name. Each test reads it through
+    # internal/dispatch/corpustest, which says what a test may leave out and prints what it left
+    # out. The pmdoc differential reads the same files.
+    - uses: ./.github/actions/go-envoy-held/repository-markdown
     # The packages ci.yaml's unit step runs after this action, its leg's share of their tests, in
     # one go test through database-skips.sh (main's #5084): the module less what other jobs run.
     # Everything the three race lanes run is left out, since they run it under the detector, and so
     # is internal/integration, which the integration step below tests, and internal/textcheck,
     # whose tests are the text-check job's. So are internal/dispatch/architecture/notes,
     # internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
-    # which envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
-    # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES). The
+    # and listenerwire and internal/wirecheck, which envoy-go-build tests on every push. The
     # pattern is the unit step's --module-except, word for word, so the split go-test-split.sh
     # makes of these packages' tests is the split of exactly the packages the unit step runs: the
     # broker's packages, internal/cipher and everything under it but natscallout and cmd/cipherd,
@@ -226,53 +214,13 @@ runs:
       if: inputs.rest == 'true'
       shell: bash
       run: timeout 15m packages/envoy/scripts/database-skips.test.sh
-    # The pmdoc differential (packages/envoy/internal/dispatch/pmdoc/gen/differential.sh says what it holds): the base
-    # commit of the pull request or the merge group, which the shallow checkout lacks, fetched for
-    # the script's `git archive`, and every tracked *.md file of this commit, the corpus tests'
-    # documents, handed to it as one JSONL file of {"id", "md"} lines, beside the in-repo corpus it
-    # always reads; it leaves out none of them. A dispatched run has no base, so it compares the
-    # checked-out commit with its parent. The script runs its test binaries with -timeout 0, so the
-    # step keeps a bound of its own around its whole body: 6 minutes, the smallest whole minute at
-    # which its predicted time takes at most half of it. It took 22 s in run 45197837366 on the
-    # fifteen guides and the in-repo corpus (225 documents, about 2.4 MB, both builds included);
-    # on the whole corpus, about 6.9 times the bytes, and a jq run per file, about 160 s. It runs
-    # in the last leg, whose share leaves it room, not in the `rest` leg.
-    - name: Compare pmdoc's reading of the corpus at the head with the base commit's
-      if: inputs.part == inputs.legs
-      shell: bash
-      env:
-        DIFFERENTIAL_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-      run: |
-        timeout 6m bash -eo pipefail <<'BODY'
-        if [ -z "$DIFFERENTIAL_BASE" ]; then
-          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
-          DIFFERENTIAL_BASE=$(git rev-parse HEAD^)
-        else
-          git fetch --no-tags --depth=1 origin "$DIFFERENTIAL_BASE"
-        fi
-        mkdir -p "$RUNNER_TEMP/differential-corpus"
-        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
-          jq -Rsc --arg id "$document" '{id: $id, md: .}' "$document"
-        done > "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl"
-        packages/envoy/internal/dispatch/pmdoc/gen/differential.sh --base "$DIFFERENTIAL_BASE" \
-          --corpus "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl" --out "$RUNNER_TEMP/differential"
-        BODY
-    # A failed gate names each flagged document in report.jsonl alone, so a failure keeps it.
-    - if: failure() && inputs.part == inputs.legs
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with: {name: go-envoy-held-envoy-go-differential-report, path: '${{ runner.temp }}/differential/report.jsonl', if-no-files-found: ignore, overwrite: true}
-    # The tests the basebuild tag adds that need no older build: the 8,001-block path's allowance
-    # of the write cost (./cmd/dispatch, write_cost_test.go), and that no route or field the base
-    # served is gone (./internal/dispatch/api, no_reach_base_test.go), which reads the base's
-    # committed OpenAPI document at BASELINE_SHA (internal/testbaseline). The base is the pull
-    # request's or the merge group's, fetched as the differential above fetches it, and a
-    # dispatched run's is its commit's parent. The tag's three measurements, which build an older
-    # server, are Benchmarks, tools that no step runs (cmd/dispatch/store_census_test.go). Each
-    # package runs only the tests the tag adds, its -run from .github/scripts/go-tagged-tests.sh,
-    # for the reasons the natslive step's comment below gives.
-    # The base is a step of its own, written into $GITHUB_ENV, so the test step below holds no
+    # The base commit of the pull request or the merge group, which the shallow checkout lacks:
+    # the pmdoc differential below builds it with `git archive`, and the basebuild tests read its
+    # committed OpenAPI document (internal/testbaseline). A dispatched run has no base, so it
+    # compares the checked-out commit with its parent. The base is a step of its own, written into
+    # $GITHUB_ENV as BASELINE_SHA, so the steps below fetch nothing and the test step holds no
     # command substitution check-test-reach.sh's step reader does not read.
-    - name: Fetch the base the basebuild tests compare with
+    - name: Fetch the base the differential and the basebuild tests compare with
       if: inputs.part == inputs.legs
       shell: bash
       env:
@@ -285,6 +233,39 @@ runs:
           git fetch --no-tags --depth=1 origin "$BASE"
         fi
         echo "BASELINE_SHA=$BASE" >> "$GITHUB_ENV"
+    # The pmdoc differential (packages/envoy/internal/dispatch/pmdoc/gen/differential.sh says what
+    # it holds): the base the step above fetched, and every tracked *.md file of this commit, the
+    # corpus tests' documents, handed to it as one JSONL file of {"id", "md"} lines, beside the
+    # in-repo corpus it always reads; it leaves out none of them. The script runs its test binaries
+    # with -timeout 0, so the step keeps a bound of its own around its whole body: 6 minutes, the
+    # smallest whole minute at which its predicted time takes at most half of it. It took 22 s in
+    # run 45197837366 on the fifteen guides and the in-repo corpus (225 documents, about 2.4 MB,
+    # both builds included); on the whole corpus, about 6.9 times the bytes, and a jq run per
+    # file, about 160 s. It runs in the last leg, whose share leaves it room, not in the `rest` leg.
+    - name: Compare pmdoc's reading of the corpus at the head with the base commit's
+      if: inputs.part == inputs.legs
+      shell: bash
+      run: |
+        timeout 6m bash -eo pipefail <<'BODY'
+        mkdir -p "$RUNNER_TEMP/differential-corpus"
+        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
+          jq -Rsc --arg id "$document" '{id: $id, md: .}' "$document"
+        done > "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl"
+        packages/envoy/internal/dispatch/pmdoc/gen/differential.sh --base "$BASELINE_SHA" \
+          --corpus "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl" --out "$RUNNER_TEMP/differential"
+        BODY
+    # A failed gate names each flagged document in report.jsonl alone, so a failure keeps it.
+    - if: failure() && inputs.part == inputs.legs
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with: {name: go-envoy-held-envoy-go-differential-report, path: '${{ runner.temp }}/differential/report.jsonl', if-no-files-found: ignore, overwrite: true}
+    # The tests the basebuild tag adds that need no older build: the 8,001-block path's allowance
+    # of the write cost (./cmd/dispatch, write_cost_test.go), and that no route or field the base
+    # served is gone (./internal/dispatch/api, no_reach_base_test.go), which reads the base's
+    # committed OpenAPI document at BASELINE_SHA (internal/testbaseline), the base the fetch step
+    # above wrote. The tag's three measurements, which build an older server, are Benchmarks, tools
+    # that no step runs (cmd/dispatch/store_census_test.go). Each package runs only the tests the
+    # tag adds, its -run from .github/scripts/go-tagged-tests.sh, for the reasons the natslive
+    # step's comment below gives.
     - name: Test what the basebuild tag adds that needs no older build
       if: inputs.part == inputs.legs
       shell: bash

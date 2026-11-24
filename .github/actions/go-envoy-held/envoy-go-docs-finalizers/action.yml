@@ -9,8 +9,8 @@ description: >-
   `envoy-go-docs-finalizers / envoy-go-docs-finalizers` and passes only when every leg passed
   (.github/scripts/leg-verdict.sh). The legs run on ubuntu-24.04-arm. DISPATCH_TEST_DATABASE_URL,
   which the job gives every step, is load-bearing: this package's TestMain is storetest.Main
-  (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that opens
-  the store when it is unset; a skip is a pass.
+  (internal/dispatch/docs/persistence_test.go:26), and storetest.Open fails every test that opens
+  the store when it is unset on GitHub Actions (testprereq.Require; elsewhere it skips them).
 inputs:
   part:
     description: This leg's number, 1 to `legs`, and its shard of the corpus.
@@ -53,23 +53,12 @@ runs:
     # TestWriteCorpusReadsOnce counts each write's fork reads on each one (DISPATCH_TOKEN_CORPUS)
     # and skips without it, and TestAMarginWriteMatchesTheWholeDocumentWrite compares the margin
     # write with the whole-document write on each one as well as on its generated documents
-    # (DISPATCH_TEST_SPEC_CORPUS). The documents are every tracked *.md file of this commit (git
-    # ls-files), written as the envoy-go legs write them for pmdoc's corpus tests: one flat
-    # directory, each path's / as __, which makes no two names equal; the step fails if two did.
-    # Each test reads it through internal/dispatch/corpustest, which says what a test may leave out
-    # and prints what it left out.
-    - name: Write the repository's markdown into the corpus directory
-      shell: bash
-      run: |
-        corpus=$RUNNER_TEMP/repository-markdown
-        mkdir -p "$corpus"
-        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
-          cp -- "$document" "$corpus/${document//\//__}"
-        done
-        tracked=$(git ls-files -z -- '*.md' | tr -cd '\0' | wc -c)
-        written=$(find "$corpus" -type f -name '*.md' | wc -l)
-        echo "$written documents in $corpus, of the $tracked tracked *.md files"
-        [ "$written" -eq "$tracked" ] || { echo "::error::two tracked *.md paths flatten to one name"; exit 1; }
+    # (DISPATCH_TEST_SPEC_CORPUS). The documents are every tracked *.md file of this commit, which
+    # the action the envoy-go legs run for pmdoc's corpus tests writes as one flat directory, and
+    # fails if two paths flatten to one name. Each test reads it through
+    # internal/dispatch/corpustest, which says what a test may leave out and prints what it left
+    # out.
+    - uses: ./.github/actions/go-envoy-held/repository-markdown
     # GODEBUG=checkfinalizers=1 reaches the test binary alone, through -exec, so its reports at
     # each collection are test output and not lines on go test's own standard error, which
     # gotestsum's retry refuses; the compiler run with it would print them too. gotestsum's

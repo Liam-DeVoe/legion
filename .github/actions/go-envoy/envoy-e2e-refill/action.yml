@@ -1,16 +1,15 @@
 name: envoy-e2e-refill
 description: >-
   The envoy-e2e-refill leg of ci.yaml's envoy-held job: the bucket refill on a real listener and
-  NATS (scripts/e2e-refill.sh), a test this change brought into CI, which the merge queue runs, and
-  a pull request with full-ci or a lane label of the job. It ran in envoy-e2e-local's leg, which
-  passed the 10 minutes a pull request's job is held to with it. The leg runs on ubuntu-24.04-arm,
-  as that leg does. A failed run leaves its evidence as the artifact envoy-held-envoy-e2e-refill-evidence.
+  NATS (scripts/e2e-refill.sh), which the merge queue runs, and a pull request with full-ci or a
+  lane label of the job. It ran in envoy-e2e-local's leg, which passed the 10 minutes a pull
+  request's job is held to with it (10.8 minutes in CI run 45292147224). The leg runs on
+  ubuntu-24.04-arm, as that leg does, with Go alone: the script needs curl, flock, go, jq and
+  setsid, and builds the listener, natsd and its rig with `go build`. A failed run leaves its
+  evidence as the artifact envoy-held-envoy-e2e-refill-evidence.
 runs:
   using: composite
   steps:
-    - uses: ./.github/actions/setup-bun
-    - shell: bash
-      run: bun install --frozen-lockfile
     - id: setup-go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:

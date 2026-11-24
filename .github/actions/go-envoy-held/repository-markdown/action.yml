@@ -1,0 +1,23 @@
+name: Write the repository's markdown into the corpus directory
+description: >-
+  Writes every tracked *.md file of this commit (git ls-files) into $RUNNER_TEMP/repository-markdown,
+  the corpus the envoy-go legs' pmdoc corpus tests and the envoy-go-docs-finalizers legs' document
+  service corpus tests read: one flat directory, each file under its path with each / as __, which
+  makes no two names equal, and the step fails if two did. The list is read once, and one tar
+  pipeline copies every file, following a symbolic link as cp does, where a cp per file started
+  about two thousand processes in each of the six legs.
+runs:
+  using: composite
+  steps:
+    - name: Write the repository's markdown into the corpus directory
+      shell: bash
+      run: |
+        corpus=$RUNNER_TEMP/repository-markdown
+        list=$RUNNER_TEMP/repository-markdown.list
+        mkdir -p "$corpus"
+        git ls-files -z -- '*.md' > "$list"
+        tar --null --verbatim-files-from --files-from="$list" --dereference -cf - | tar -xf - -C "$corpus" --transform='s,/,__,g'
+        tracked=$(tr -cd '\0' < "$list" | wc -c)
+        written=$(find "$corpus" -type f -name '*.md' | wc -l)
+        echo "$written documents in $corpus, of the $tracked tracked *.md files"
+        [ "$written" -eq "$tracked" ] || { echo "::error::two tracked *.md paths flatten to one name"; exit 1; }
