@@ -187,12 +187,12 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     set. Either way the pod is coming back, so the release goes rather than the pod, whichever
 //     claim the wake was for and whatever that claim looks like by the time this reads it;
 //   - a claim of the issue started since the newest start the mark was taken at;
-//   - a claim of the issue started a turn since the newest turn the mark was taken at
-//     (releaseMark.turn): a whole turn that began after the workspace check's read and ended
-//     before that role's stop is a turn the next state check would not see, and it can have left
-//     work the read did not find;
-//   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
-//     rule refuses to release a pod in (workflow's idleStateReleasable);
+//   - a claim of the issue went on working since the newest turn the mark was taken at
+//     (releaseMark.turn, claimWorkedSince): it started a turn since, a whole turn that began after
+//     the workspace check's read and ended before that role's stop being a turn the next state
+//     check would not see, which can have left work the read did not find; or it is live in a
+//     turn, starting, or of a launch not yet known — the states the idle rule refuses to release a
+//     pod in;
 //   - a claim this release suspended that is no longer suspended as `released`: something
 //     resumed it or took its suspension over — an operator's resume, a close, a linger — which
 //     leaves no wake of its own to read.
@@ -206,13 +206,26 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 		project, issue, mark.wake).Scan(&overtaken); err != nil || overtaken {
 		return overtaken, err
 	}
-	err := tx.QueryRow(ctx, `select exists (
-		select 1 from claims where project = $1 and issue = $2
-		and (last_start_row > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')
-			or last_turn_start > coalesce($5::timestamptz, '-infinity')
-			or (role = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
-		project, issue, mark.started, mark.suspended, mark.turn).Scan(&overtaken)
+	err := tx.QueryRow(ctx, overtakenClaimsQuery, project, issue, mark.started, mark.suspended, mark.turn).Scan(&overtaken)
 	return overtaken, err
+}
+
+// overtakenClaimsQuery is releaseOvertaken's read of the issue's claims, built once: $3 is the
+// mark's newest start row, $4 the roles it suspended, and $5 its newest turn start, null where no
+// claim had had a turn.
+var overtakenClaimsQuery = `select exists (
+	select 1 from claims where project = $1 and issue = $2
+	and (last_start_row > $3 or ` + claimWorkedSince(`coalesce($5::timestamptz, '-infinity')`) + `
+		or (role = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`
+
+// claimWorkedSince is the one SQL condition, over a claims row, that its claim went on working
+// after the moment the SQL expression since names: it started a turn after that moment
+// (claims.last_turn_start), or it is live in a turn now, starting, or of a launch not yet known —
+// a state the idle rule releases no pod in (workflow's idleStateReleasable). A release's mark is
+// overtaken on it (releaseOvertaken), and a left pod's close records no decline from a read a claim
+// went on working beside (Store.LeftPodTurned).
+func claimWorkedSince(since string) string {
+	return `(last_turn_start > ` + since + ` or state not in ('ready', 'idle', 'suspended', 'failed', 'retired'))`
 }
 
 // IssueReleaseStop decides what one role stop of a release may do, and is the one place the
