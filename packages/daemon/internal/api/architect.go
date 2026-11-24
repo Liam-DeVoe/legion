@@ -1454,28 +1454,24 @@ func (s *server) workerFix(w http.ResponseWriter, r *http.Request, grant credent
 // running task in one read-only transaction: nil where the record holds no such issue, the issue
 // has no plan rows or no fix runs.
 func (s *server) issueFix(ctx context.Context, key string) (*record.TaskFix, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil || issue.RunningFix == 0 {
-		return nil, err
-	}
-	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
-	if err != nil || stored == nil {
-		return nil, err
-	}
-	running, err := stored.Task()
-	if err != nil {
-		return nil, err
-	}
-	fix, err := RunningFixOf(ctx, tx, s.records, issue, running.Task)
-	if err != nil {
-		return nil, err
-	}
-	return fix, tx.Commit(ctx)
+	var fix *record.TaskFix
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil || issue.RunningFix == 0 {
+			return err
+		}
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		running, err := stored.Task()
+		if err != nil {
+			return err
+		}
+		fix, err = RunningFixOf(ctx, tx, s.records, issue, running.Task)
+		return err
+	})
+	return fix, err
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
