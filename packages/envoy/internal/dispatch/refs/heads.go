@@ -2,11 +2,15 @@ package refs
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -51,32 +55,32 @@ type HeadRow struct {
 }
 
 // headRowsStatement is the rows of the issue $1 the head projection holds while a mark names the
-// issue whole, each with its document's slug and band read off the document a document block's row
-// names, and whether the reader whose credential $2 binds may see it (the block loader's predicate,
-// VisibleKindRow over the row's own graph_nodes columns), its stored state and visibility selected
-// as a loader selects a node's (StoredRowOf, null where the store holds no row of it): the rows
-// rows selects, held aside once, and the few documents they name by theirs. It is built at each
-// read, as the block loader's is (blockNodesStatement): the registry the predicate reads is filled
-// by the package's init, after its variables.
+// issue whole, each with whether the reader whose credential $2 binds may see it (the block
+// loader's predicate, VisibleKindRow over the row's own graph_nodes columns), its stored state and
+// visibility selected as a loader selects a node's (StoredRowOf, null where the store holds no row
+// of it): the rows rows selects, read once and sent as they are read. The documents a document
+// block's row names are read after them, by theirs (headDocumentsStatement), so no row is held
+// aside to find them: holding aside the 3,000 rows of an issue of the largest plan cost the read a
+// third of its time. It is built at each read, as the block loader's is (blockNodesStatement): the
+// registry the predicate reads is filled by the package's init, after its variables.
 func headRowsStatement(rows string) string {
 	return `
-	with heads as materialized (` + rows + `),
-	documents as materialized (
-		select a.id, a.slug, a.issue_key, ` + DocumentBandSQL("a") + ` as band
-		from artifacts a
-		where a.id in (select named.document_id from heads named where named.document_id is not null)
-	)
 	select heads.node_kind, heads.node_address, heads.parent_kind, heads.parent_address, heads.rank, heads.text,
 	       heads.made_at is not null, coalesce(heads.supertag, ''), ` + StoredRowOf("heads") + `,
 	       heads.made_at, heads.authors, heads.first_authors, heads.first_at,
 	       heads.document_id::text, heads.block_type, heads.text_sha256, heads.changed_version,
-	       documents.slug, documents.issue_key, documents.band,
 	       heads.made_at is null or ` + VisibleKindRow(BlockNodeKind, "heads", "$2") + `,
 	       heads.value_kinds, heads.value_texts, heads.relation_kinds, heads.relation_to_kinds, heads.relation_to_ids
-	from heads
-	left join documents on documents.id = heads.document_id
+	from (` + rows + `) heads
 	where exists (select 1 from issue_head_marks mark where mark.issue_key = $1)`
 }
+
+// headDocumentsStatement is the slug, the issue and the band of each document $1 names, the
+// documents the head rows of a read name, each read by its key once.
+var headDocumentsStatement = `
+	select a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `
+	from artifacts a
+	where a.id = any($1::uuid[])`
 
 // headRowsWhole is every row of the issue $1, one range of issue_head_nodes' primary key: what a
 // view reads.
@@ -86,7 +90,11 @@ const headRowsWhole = `select * from issue_head_nodes whole where whole.issue_ke
 // issue_head_nodes' primary key, which sorts byte by byte: every row of a kind other than a
 // block, a comment and a comment's block; the blocks whose address $3 and $4 bound, a pair for each
 // document of the skeleton and one for the addresses below the issue's own, and the blocks whose
-// address is $6 or above; and the comments $5 names, with their blocks.
+// address is $6 or above; and the comments $5 names, with their blocks. Each pair of bounds, and
+// each comment of the page, is a range of its own read through the key (a lateral subquery Postgres
+// keeps, `offset 0`): as a join, Postgres reckons each pair to keep a ninth of the issue's blocks,
+// and over an issue of 46,000 blocks it read every row of the table rather than the 1,460 the
+// pairs bound.
 var headRowsSkeleton = `
 		select * from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind < '` + BlockNodeKind + `'
 		union all
@@ -95,8 +103,10 @@ var headRowsSkeleton = `
 		select * from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind > '` + ItemComment.BlockKind() + `'
 		union all
 		select blocks.* from unnest($3::text[], $4::text[]) bounds(low, high)
-		join issue_head_nodes blocks on blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `'
-			and blocks.node_address >= bounds.low and blocks.node_address < bounds.high
+		cross join lateral (
+			select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `'
+			  and blocks.node_address >= bounds.low and blocks.node_address < bounds.high
+			offset 0) blocks
 		union all
 		select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $6
 		union all
@@ -104,8 +114,10 @@ var headRowsSkeleton = `
 		where comments.issue_key = $1 and comments.node_kind = '` + string(ItemComment) + `' and comments.node_address = any($5::text[])
 		union all
 		select blocks.* from unnest($5::text[]) page(id)
-		join issue_head_nodes blocks on blocks.issue_key = $1 and blocks.node_kind = '` + ItemComment.BlockKind() + `'
-			and blocks.node_address >= '` + string(ItemComment) + `/' || page.id || '#' and blocks.node_address < '` + string(ItemComment) + `/' || page.id || '$'`
+		cross join lateral (
+			select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + ItemComment.BlockKind() + `'
+			  and blocks.node_address >= '` + string(ItemComment) + `/' || page.id || '#' and blocks.node_address < '` + string(ItemComment) + `/' || page.id || '$'
+			offset 0) blocks`
 
 // HeadSkeleton is the part of an issue's rows the read with no view reads. Of the blocks whose
 // address begins with the issue's key and `/`, the blocks of the issue's own documents, it reads
@@ -153,23 +165,54 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 		}
 		statement, args = headRowsStatement(headRowsSkeleton), append(args, low, high, comments, above)
 	}
-	rows, err := q.Query(ctx, statement, args...)
+	rows, err := q.Query(ctx, statement, append([]any{headArraysAsText}, args...)...)
 	if err != nil {
 		return nil, false, fmt.Errorf("read the head rows of %s: %w", issueKey, err)
 	}
-	defer rows.Close()
-	var read []HeadRow
-	for rows.Next() {
+	fields, held, err := drainHeadRows(rows)
+	if err != nil {
+		return nil, false, fmt.Errorf("read the head rows of %s: %w", issueKey, err)
+	}
+	if len(held) == 0 {
+		return nil, false, nil
+	}
+	typeMap := pgtype.NewMap()
+	if conn := rows.Conn(); conn != nil {
+		typeMap = conn.TypeMap()
+	}
+	decode := headTextsText
+	if fields[headFirstArray].Format == pgx.BinaryFormatCode {
+		decode = headTexts
+	}
+	read := make([]HeadRow, 0, len(held))
+	var blocks []headBlock
+	var documents []string
+	named := map[string]bool{}
+	var plans []pgtype.ScanPlan
+	for _, raw := range held {
 		var head HeadRow
-		var parentKind, parentID, document, blockType, textSHA256, slug, band, state, visibility pgtype.Text
+		var parentKind, parentID, document, blockType, textSHA256, state, visibility pgtype.Text
 		var madeAt *time.Time
 		var changedVersion pgtype.Int4
 		var valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs []string
-		if err := rows.Scan(&head.Node.Kind, &head.Node.ID, &parentKind, &parentID, &head.Rank, &head.Text,
+		destinations := []any{&head.Node.Kind, &head.Node.ID, &parentKind, &parentID, &head.Rank, &head.Text,
 			&head.Stored, &head.Supertag, &state, &visibility, &madeAt, &head.Authors, &head.FirstAuthors, &head.FirstAt,
-			&document, &blockType, &textSHA256, &changedVersion, &slug, &head.IssueKey, &band, &head.Seen,
-			&valueKinds, &valueTexts, &relationKinds, &relationToKinds, &relationToIDs); err != nil {
-			return nil, false, fmt.Errorf("read a head row of %s: %w", issueKey, err)
+			&document, &blockType, &textSHA256, &changedVersion, &head.Seen}
+		if plans == nil {
+			plans = make([]pgtype.ScanPlan, len(destinations))
+			for index, destination := range destinations {
+				plans[index] = typeMap.PlanScan(fields[index].DataTypeOID, fields[index].Format, destination)
+			}
+		}
+		for index, destination := range destinations {
+			if err := plans[index].Scan(raw[index], destination); err != nil {
+				return nil, false, fmt.Errorf("read the column %s of a head row of %s: %w", fields[index].Name, issueKey, err)
+			}
+		}
+		for index, array := range []*[]string{&valueKinds, &valueTexts, &relationKinds, &relationToKinds, &relationToIDs} {
+			if *array, err = decode(raw[headFirstArray+index]); err != nil {
+				return nil, false, fmt.Errorf("read a head row of %s: %w", issueKey, err)
+			}
 		}
 		head.State, head.Visibility = state.String, visibility.String
 		if parentKind.Valid && parentID.Valid {
@@ -178,28 +221,239 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 		if madeAt != nil {
 			head.MadeAt = *madeAt
 		}
-		if document.Valid && slug.Valid {
+		if document.Valid {
 			_, blockID, _ := strings.Cut(head.Node.ID, "#")
-			head.Block = &BlockRow{BlockID: blockID, Document: document.String, Slug: slug.String, Type: blockType.String,
-				TextSHA256: textSHA256.String, ChangedVersion: int(changedVersion.Int32)}
-			if band.String != "" {
-				head.Block.Band = band.String[0]
+			blocks = append(blocks, headBlock{read: len(read), row: BlockRow{BlockID: blockID, Document: document.String,
+				Type: blockType.String, TextSHA256: textSHA256.String, ChangedVersion: int(changedVersion.Int32)}})
+			if !named[document.String] {
+				named[document.String] = true
+				documents = append(documents, document.String)
 			}
 		}
 		head.Facts = headFacts(head.Rank, head.Text, valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs)
 		read = append(read, head)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("read the head rows of %s: %w", issueKey, err)
-	}
-	if len(read) == 0 {
-		return nil, false, nil
+	if err := readHeadDocuments(ctx, q, issueKey, read, blocks, documents); err != nil {
+		return nil, false, err
 	}
 	heads := make(map[Target]*HeadRow, len(read))
 	for index := range read {
 		heads[read[index].Node] = &read[index]
 	}
 	return newHeadTree(heads, read), true, nil
+}
+
+// drainHeadRows reads every row of the head rows statement off the connection as it arrives, each
+// row's values copied into one allocation of its own, and closes the statement: its fields, and
+// its rows' values, nil for a null. It decodes nothing, so Postgres sends the rows as fast as it
+// writes them and the statement ends there; HeadRows decodes them after. Decoding each row as it
+// arrived held the statement open while the client scanned it: of the 26 ms Postgres counted for
+// the 3,013 rows of an issue of the largest plan, it spent 14 writing them and the rest waiting
+// on the client to read the next.
+func drainHeadRows(rows pgx.Rows) ([]pgconn.FieldDescription, [][][]byte, error) {
+	defer rows.Close()
+	var fields []pgconn.FieldDescription
+	var held [][][]byte
+	for rows.Next() {
+		values := rows.RawValues()
+		if fields == nil {
+			fields = slices.Clone(rows.FieldDescriptions())
+		}
+		size := 0
+		for _, value := range values {
+			size += len(value)
+		}
+		bytes := make([]byte, size)
+		row := make([][]byte, len(values))
+		at := 0
+		for index, value := range values {
+			if value == nil {
+				continue
+			}
+			row[index] = bytes[at : at+len(value) : at+len(value)]
+			copy(row[index], value)
+			at += len(value)
+		}
+		held = append(held, row)
+	}
+	rows.Close()
+	return fields, held, rows.Err()
+}
+
+// headFirstArray is the column of headRowsStatement's first text[], value_kinds, which the four
+// others follow: value_texts, relation_kinds, relation_to_kinds and relation_to_ids.
+const headFirstArray = 19
+
+// headArraysAsText asks Postgres for the head rows' text arrays in its text form, every other
+// column as pgx asks for it: a text[] in binary carries a 20-byte header and a 4-byte length for
+// each element, so the five arrays of the 3,013 rows of an issue of the largest plan are 1,114 kB
+// in binary and 655 kB as text, of the 2,472 kB the rows are sent in, at about the same cost to
+// Postgres to write.
+var headArraysAsText = pgx.QueryResultFormatsByOID{pgtype.TextArrayOID: pgx.TextFormatCode}
+
+// headTextsText is a text[] of a head row in Postgres's text form (array_out): `{a,b,…}`, an
+// element quoted, with `"` and `\` escaped by a backslash, where it is empty, is NULL in any case,
+// or holds a brace, a comma, a quote, a backslash or white space, and a lower bound other than one
+// written before it as `[lower:upper]=`. The unquoted elements are cut out of one string of the
+// whole value. An empty array is the empty slice; a null one, or an unquoted NULL element, which
+// no head row holds, is an error.
+func headTextsText(raw []byte) ([]string, error) {
+	if raw == nil {
+		return nil, errors.New("a text array of a head row is null")
+	}
+	whole := string(raw)
+	if strings.HasPrefix(whole, "[") {
+		_, after, cut := strings.Cut(whole, "=")
+		if !cut {
+			return nil, fmt.Errorf("a text array of a head row reads %q, with no = after its bounds", whole)
+		}
+		whole = after
+	}
+	if len(whole) < 2 || whole[0] != '{' || whole[len(whole)-1] != '}' {
+		return nil, fmt.Errorf("a text array of a head row reads %q, not one {…}", whole)
+	}
+	body := whole[1 : len(whole)-1]
+	texts := make([]string, 0, strings.Count(body, ",")+1)
+	if body == "" {
+		return texts, nil
+	}
+	for at := 0; ; {
+		var text string
+		if body[at] == '"' {
+			var element strings.Builder
+			at++
+			for ; at < len(body) && body[at] != '"'; at++ {
+				if body[at] == '\\' && at+1 < len(body) {
+					at++
+				}
+				element.WriteByte(body[at])
+			}
+			if at >= len(body) {
+				return nil, fmt.Errorf("a text array of a head row reads %q, with a quote it does not close", whole)
+			}
+			at++
+			text = element.String()
+		} else {
+			end := strings.IndexByte(body[at:], ',')
+			if end < 0 {
+				end = len(body) - at
+			}
+			text = body[at : at+end]
+			if strings.EqualFold(text, "NULL") {
+				return nil, errors.New("a text array of a head row holds a null element")
+			}
+			at += end
+		}
+		texts = append(texts, text)
+		if at == len(body) {
+			return texts, nil
+		}
+		if body[at] != ',' {
+			return nil, fmt.Errorf("a text array of a head row reads %q, with %q after an element", whole, body[at])
+		}
+		at++
+	}
+}
+
+// headTexts is a text[] of a head row as Postgres sends it in binary, where a caller's connection
+// asks for it so: its dimensions, whether it holds a null and its element type, the length and
+// lower bound of its one dimension, and each element's length and bytes. The elements are cut out
+// of one string of the whole value, so the array costs two allocations, where a scan through its
+// codec costs one an element and more: the five arrays of each of 3,000 rows are what a client
+// spends most on while Postgres waits to send the next rows. An empty array is the empty slice; a
+// null one, or a null element, which no head row holds, is an error.
+func headTexts(raw []byte) ([]string, error) {
+	if raw == nil {
+		return nil, errors.New("a text array of a head row is null")
+	}
+	if len(raw) < 12 {
+		return nil, fmt.Errorf("a text array of a head row is %d bytes, short of its header", len(raw))
+	}
+	dimensions := int32(binary.BigEndian.Uint32(raw))
+	if dimensions == 0 {
+		return []string{}, nil
+	}
+	if dimensions != 1 || len(raw) < 20 {
+		return nil, fmt.Errorf("a text array of a head row has %d dimensions in %d bytes, not one", dimensions, len(raw))
+	}
+	count := int32(binary.BigEndian.Uint32(raw[12:]))
+	if count < 0 {
+		return nil, fmt.Errorf("a text array of a head row holds %d elements", count)
+	}
+	whole := string(raw)
+	texts := make([]string, count)
+	at := 20
+	for index := range texts {
+		if at+4 > len(whole) {
+			return nil, errors.New("a text array of a head row ends inside an element's length")
+		}
+		length := int(int32(binary.BigEndian.Uint32(raw[at:])))
+		at += 4
+		if length < 0 {
+			return nil, errors.New("a text array of a head row holds a null element")
+		}
+		if at+length > len(whole) {
+			return nil, errors.New("a text array of a head row ends inside an element")
+		}
+		texts[index] = whole[at : at+length]
+		at += length
+	}
+	return texts, nil
+}
+
+// headBlock is the document_blocks row a head row of a document block holds, read, the row's index
+// among the rows read, until its document's slug and band are read (readHeadDocuments).
+type headBlock struct {
+	read int
+	row  BlockRow
+}
+
+// readHeadDocuments reads each of documents, the documents the head rows read name
+// (headDocumentsStatement), and gives each row of blocks its document's issue, and its
+// document_blocks row with the document's slug and band, where the document stands; a row whose
+// document no artifact stands for holds neither.
+func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []HeadRow, blocks []headBlock, documents []string) error {
+	if len(documents) == 0 {
+		return nil
+	}
+	rows, err := q.Query(ctx, headDocumentsStatement, documents)
+	if err != nil {
+		return fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
+	}
+	type headDocument struct {
+		slug     string
+		issueKey *string
+		band     string
+	}
+	found := make(map[string]headDocument, len(documents))
+	for rows.Next() {
+		var id string
+		var document headDocument
+		if err := rows.Scan(&id, &document.slug, &document.issueKey, &document.band); err != nil {
+			rows.Close()
+			return fmt.Errorf("read a document of the head rows of %s: %w", issueKey, err)
+		}
+		found[id] = document
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
+	}
+	for _, block := range blocks {
+		document, held := found[block.row.Document]
+		if !held {
+			continue
+		}
+		head := &read[block.read]
+		head.IssueKey = document.issueKey
+		row := block.row
+		row.Slug = document.slug
+		if document.band != "" {
+			row.Band = document.band[0]
+		}
+		head.Block = &row
+	}
+	return nil
 }
 
 // newHeadTree is rows, read, with the children of each parent among them, as the children read

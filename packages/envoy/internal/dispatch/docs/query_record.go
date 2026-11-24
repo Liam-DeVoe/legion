@@ -586,6 +586,10 @@ func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 // (nameAnchors).
 func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	w.hanging = map[refs.Target][]refs.Target{}
+	off, err := w.offPage(ctx, q)
+	if err != nil {
+		return err
+	}
 	var anchored []refs.Target
 	for _, item := range w.items {
 		loaded, held := w.loaded[item]
@@ -597,7 +601,7 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 			w.hang(item, parent)
 			continue
 		}
-		if w.offPage(parent) {
+		if comment := w.pagedComment(parent); comment != "" && off[comment] {
 			w.name(item, parent)
 		}
 		if item.Kind == graphstore.KindComment && loaded != nil && loaded.Kind == graphstore.KindArtifact {
@@ -642,20 +646,45 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	return w.nameAnchors(ctx, q, unentered)
 }
 
-// offPage is whether parent, a parent a loader names that the walk does not take, is a comment of
-// the conversation on another page than the skeleton's, or a block of one.
-func (w *treeWalk) offPage(parent refs.Target) bool {
+// pagedComment is, on a walk of the skeleton, the comment parent is, or whose block it is - a
+// parent a loader names that the walk does not take, which may be a comment of another page of
+// the conversation - and "" for any other parent and on any other walk.
+func (w *treeWalk) pagedComment(parent refs.Target) string {
 	if w.skeleton == nil {
-		return false
+		return ""
 	}
 	switch parent.Kind {
 	case graphstore.KindComment:
-		return w.skeleton.Comments.Off[parent.ID]
+		return parent.ID
 	case refs.ItemComment.BlockKind():
-		_, item, _, ok := refs.ParseItemBlockNode(parent.ID)
-		return ok && w.skeleton.Comments.Off[item]
+		if _, item, _, ok := refs.ParseItemBlockNode(parent.ID); ok {
+			return item
+		}
 	}
-	return false
+	return ""
+}
+
+// offPage is each comment of the conversation on another page than the skeleton's that a loader
+// names, itself or one of its blocks, as the parent of an item that does not hang under it
+// (pagedComment, refs.CommentsOffPage), read in one statement where a loader names any.
+func (w *treeWalk) offPage(ctx context.Context, q Queryer) (map[string]bool, error) {
+	var comments []string
+	named := map[string]bool{}
+	for _, item := range w.items {
+		loaded, held := w.loaded[item]
+		if !held {
+			continue
+		}
+		parent, conversation := w.conversationParent(loaded)
+		if comment := w.pagedComment(parent); !conversation && comment != "" && !named[comment] {
+			named[comment] = true
+			comments = append(comments, comment)
+		}
+	}
+	if len(comments) == 0 {
+		return nil, nil
+	}
+	return refs.CommentsOffPage(ctx, q, w.issue.ID, w.cut.At, w.skeleton.Comments, comments)
 }
 
 // name names parent as the parent of item, which the walk hangs under the issue.

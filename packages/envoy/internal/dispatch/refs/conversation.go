@@ -121,13 +121,13 @@ func ConversationPageNodes(ctx context.Context, q Queryer, who model.Actor, issu
 	return conversationNodes(ctx, q, who, issueKey, at, &page)
 }
 
-// conversationItemsStatement lists an issue's items, comments the expression comments selects.
+// conversationItemsStatement lists an issue's items, its comments those comments selects, as c.
 func conversationItemsStatement(comments string) string {
 	return `
 		select kind, id from (
 			select 'ask' as kind, id::text as id, created_at from asks where issue_key = $1 and created_at <= $2
 			union all
-			select 'comment', id::text, created_at from comments where ` + comments + ` and issue_key = $1 and created_at <= $2
+			select 'comment', c.id::text, c.created_at from ` + comments + `
 			union all
 			select 'message', id::text, created_at from messages where issue_key = $1 and created_at <= $2
 		) items
@@ -135,9 +135,16 @@ func conversationItemsStatement(comments string) string {
 	`
 }
 
+// conversationItems lists every item of the issue $1 written by $2, and conversationPageItems its
+// asks and messages and the comments of the page $3, each comment read by its key: read as a
+// filter over the issue's range of comments_issue_created, a page of 200 read all 9,252 comments
+// of its issue.
 var (
-	conversationItems     = conversationItemsStatement("true")
-	conversationPageItems = conversationItemsStatement("id = any($3::uuid[])")
+	conversationItems     = conversationItemsStatement(`comments c where c.issue_key = $1 and c.created_at <= $2`)
+	conversationPageItems = conversationItemsStatement(`unnest($3::uuid[]) page(id)
+			cross join lateral (
+				select c.id, c.created_at from comments c where c.id = page.id and c.issue_key = $1 and c.created_at <= $2
+				offset 0) c`)
 )
 
 // conversationNodes is ConversationNodes, its comments those of page where it is set.
@@ -298,19 +305,61 @@ func conversationItemIDs(ctx context.Context, q Queryer, kind ItemKind, ids []st
 // thread is the top of its reply_to chain - the ask its chain reaches, else its head - and a
 // person wrote in that thread by $2 when one of its comments written by then is a person's, or,
 // for an ask's thread, the ask is a person's or a person had answered it by then.
-var commentConversationStatement = commentConversationSQL(`c.id = any($1::uuid[])`, `t.subject::text`)
+var commentConversationStatement = commentConversationSQL(`c.id = any($1::uuid[])`)
 
-// commentPageStatement is R2's test over every comment of the issue $1, as
-// commentConversationStatement holds it: each comment that passes, with when it was written.
-var commentPageStatement = commentConversationSQL(`c.issue_key = $1`, `t.subject::text, c.created_at`)
+// commentsOffPageStatement is commentConversationStatement over the comments $1 names that are
+// comments of the issue $4.
+var commentsOffPageStatement = commentConversationSQL(`c.id = any($1::uuid[]) and c.issue_key = $4`)
 
-// commentConversationSQL is R2's test over the comments the condition subjects selects, which
-// answers columns of each comment that passes.
-func commentConversationSQL(subjects, columns string) string {
+// commentPageSubjects is the comments of the issue $1 a page reads: every one where $4 is null,
+// else those older than the position $4 and $5 name (CommentPosition), a uuid sorting as its text
+// does.
+const commentPageSubjects = `c.issue_key = $1 and ($4::timestamptz is null or (c.created_at, c.id) < ($4::timestamptz, $5::uuid))`
+
+// commentPageStatement is the $6 newest comments of the issue $1 that R2's test passes, as
+// commentConversationStatement holds it, of those commentPageSubjects reads: each with when it was
+// written, newest first and then by id. The comments a person wrote are read newest first through
+// comments_issue_created, as far as the page reaches.
+var commentPageStatement = commentConversationThreads(commentPageSubjects) + `
+	select passing.id::text, passing.created_at
+	from (
+		(select c.id, c.created_at
+		 from comments c
+		 where ` + commentPageSubjects + ` and c.created_at <= $2 and ` + personAuthor("c.author") + `
+		 order by c.created_at desc, c.id desc
+		 limit $6)
+		union all
+		select c.id, c.created_at
+		from top t join comments c on c.id = t.subject
+		where coalesce(t.ask_id, t.head) in (select thread from voiced)
+	) passing
+	order by passing.created_at desc, passing.id desc
+	limit $6`
+
+// commentConversationSQL is R2's test over the comments the condition subjects selects: the id of
+// each comment that passes. A comment a person wrote passes as it is read; only the others climb
+// to their threads (commentConversationThreads).
+func commentConversationSQL(subjects string) string {
+	return commentConversationThreads(subjects) + `
+	select c.id::text
+	from comments c
+	where ` + subjects + ` and c.created_at <= $2 and ` + personAuthor("c.author") + `
+	union all
+	select c.id::text
+	from top t join comments c on c.id = t.subject
+	where coalesce(t.ask_id, t.head) in (select thread from voiced)`
+}
+
+// commentConversationThreads is the threads of the comments the condition subjects selects that
+// no person wrote, written by $2 - top, each such comment with its thread - and voiced, each of
+// those threads a person wrote in by then. A comment a person wrote climbs to no thread, so an
+// issue whose comments are a person's walks none: the walk of every comment of an issue of 9,252
+// cost its read half its time.
+func commentConversationThreads(subjects string) string {
 	return `
 	with recursive up as (
 		select c.id as subject, c.id, c.reply_to, c.ask_id, 0 as depth
-		from comments c where ` + subjects + ` and c.created_at <= $2
+		from comments c where ` + subjects + ` and c.created_at <= $2 and ` + personAuthor("c.author") + ` is not true
 		union all
 		select up.subject, p.id, p.reply_to, p.ask_id, up.depth + 1
 		from up join comments p on p.id = up.reply_to
@@ -341,10 +390,7 @@ func commentConversationSQL(subjects, columns string) string {
 		from threads t join asks a on a.id = t.ask_id
 		where (` + personAuthor("a.author") + ` and a.created_at <= $2)
 		   or (a.answer->>'user' is not null and (a.answer->>'at')::timestamptz <= $2)
-	)
-	select ` + columns + `
-	from top t join comments c on c.id = t.subject
-	where ` + personAuthor("c.author") + ` or coalesce(t.ask_id, t.head) in (select thread from voiced)`
+	)`
 }
 
 // CommentPosition is a place in the order of an issue's comments, newest first: a comment's
@@ -385,18 +431,13 @@ func ParseCommentPosition(written string) (CommentPosition, bool) {
 	return CommentPosition{MadeAt: at, ID: id}, true
 }
 
-// older is whether the comment written at madeAt with id stands after position, newest first.
-func (position CommentPosition) older(madeAt time.Time, id string) bool {
-	return madeAt.Before(position.MadeAt) || madeAt.Equal(position.MadeAt) && id < position.ID
-}
-
 // CommentPage is one page of an issue's conversation comments, newest first: the ids of its
-// comments; Next, the position of its oldest comment where older ones remain, nil where none does;
-// and Off, every other comment of the conversation, newer or older, by id.
+// comments, and Next, the position of its oldest comment where older ones remain, nil where none
+// does. Every other comment of the conversation, newer or older, is off the page
+// (CommentsOffPage).
 type CommentPage struct {
 	IDs  []string
 	Next *CommentPosition
-	Off  map[string]bool
 }
 
 // ErrCommentPositionPastEnd is a page asked for past a position that no older comment follows.
@@ -405,25 +446,25 @@ var ErrCommentPositionPastEnd = errors.New("no comment of the issue is older tha
 // ReadCommentPage is the page of the issue issueKey's comments that R2's test passes at `at` (its
 // conversation), at most size of them, newest first by when each was written and then by id: the
 // newest where before is nil, else those older than before (CommentPosition), and
-// ErrCommentPositionPastEnd where none is.
+// ErrCommentPositionPastEnd where none is. It reads the page and the comment after it alone.
 func ReadCommentPage(ctx context.Context, q Queryer, issueKey string, at time.Time, before *CommentPosition, size int) (CommentPage, error) {
-	rows, err := q.Query(ctx, commentPageStatement, issueKey, at, IssueDepthCap)
+	var beforeAt *time.Time
+	var beforeID *string
+	if before != nil {
+		beforeAt, beforeID = &before.MadeAt, &before.ID
+	}
+	rows, err := q.Query(ctx, commentPageStatement, issueKey, at, IssueDepthCap, beforeAt, beforeID, size+1)
 	if err != nil {
 		return CommentPage{}, fmt.Errorf("read the comments of %s: %w", issueKey, err)
 	}
 	var comments []CommentPosition
-	page := CommentPage{Off: map[string]bool{}}
 	for rows.Next() {
 		var comment CommentPosition
 		if err := rows.Scan(&comment.ID, &comment.MadeAt); err != nil {
 			rows.Close()
 			return CommentPage{}, fmt.Errorf("scan a comment of %s: %w", issueKey, err)
 		}
-		if before == nil || before.older(comment.MadeAt, comment.ID) {
-			comments = append(comments, comment)
-		} else {
-			page.Off[comment.ID] = true
-		}
+		comments = append(comments, comment)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -435,20 +476,46 @@ func ReadCommentPage(ctx context.Context, q Queryer, issueKey string, at time.Ti
 	slices.SortFunc(comments, func(left, right CommentPosition) int {
 		return cmp.Or(right.MadeAt.Compare(left.MadeAt), strings.Compare(right.ID, left.ID))
 	})
-	page.IDs = make([]string, 0, min(size, len(comments)))
+	page := CommentPage{IDs: make([]string, 0, min(size, len(comments)))}
 	for index, comment := range comments {
-		switch {
-		case index < size:
-			page.IDs = append(page.IDs, comment.ID)
-		case index == size:
+		if index == size {
 			oldest := comments[index-1]
 			page.Next = &oldest
-			fallthrough
-		default:
-			page.Off[comment.ID] = true
+			break
 		}
+		page.IDs = append(page.IDs, comment.ID)
 	}
 	return page, nil
+}
+
+// CommentsOffPage is each of ids, a comment's uuid, that is a comment of the issue issueKey that
+// R2's test passes at `at`, as ReadCommentPage reads them, and is not on page: a comment of
+// another page of the conversation. An id that is no uuid, or that names no such comment, is not
+// in it.
+func CommentsOffPage(ctx context.Context, q Queryer, issueKey string, at time.Time, page CommentPage, ids []string) (map[string]bool, error) {
+	off := map[string]bool{}
+	subjects := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if canonical, held := canonicalUUID(id); held && canonical == id && !slices.Contains(page.IDs, id) {
+			subjects = append(subjects, id)
+		}
+	}
+	if len(subjects) == 0 {
+		return off, nil
+	}
+	rows, err := q.Query(ctx, commentsOffPageStatement, subjects, at, IssueDepthCap, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("read which comments of %s are of another page: %w", issueKey, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan a comment of %s of another page: %w", issueKey, err)
+		}
+		off[id] = true
+	}
+	return off, rows.Err()
 }
 
 // messageConversationStatement is R2's test over the messages $1 names, at $2, its walks bounded

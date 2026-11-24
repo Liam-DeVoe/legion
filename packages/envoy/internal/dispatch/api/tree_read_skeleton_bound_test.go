@@ -88,6 +88,11 @@ const skeletonWriters = 8
 // skeletonProject is the corpus's project.
 const skeletonProject = "SKEL"
 
+// skeletonCommentPage is how many comments the read with no view answers, the newest of the
+// conversation (R2's page): the check's count, held as the test's own, so a read whose page the
+// code made larger fails the count rather than moves it.
+const skeletonCommentPage = 200
+
 // skeletonBackfillDone is the line this build logs once its boot backfill is done.
 const skeletonBackfillDone = `msg="dispatch: boot backfill done"`
 
@@ -415,6 +420,77 @@ func waitSkeletonOwed(t *testing.T, conn *pgx.Conn, side string, done func() (bo
 	}
 }
 
+// skeletonOwed is how many documents and how many comments, messages and asks the block index's
+// window arm owes their windows, as the build that serves reads them: a seeded corpus leaves every
+// document and comment owed, and the arm writes 200 owners a tick, so until it is done its
+// statements run beside every reading at a rate of their own.
+type skeletonOwed struct{ documents, items int }
+
+func (owed skeletonOwed) String() string {
+	return fmt.Sprintf("%d documents and %d comments, messages and asks", owed.documents, owed.items)
+}
+
+// skeletonOwedLimit is the most owners one count of the window arm's backlog lists of each kind,
+// past every owner of the corpus.
+const skeletonOwedLimit = 1 << 20
+
+// skeletonBaseDocumentsOwedWindows is the release before's read of the documents its window arm
+// owes windows (refs' documentsOwedWindowsQuery at BASELINE_SHA): this head's reads a table that
+// release's schema does not hold yet (document_rooms), so the old side is counted by its own.
+const skeletonBaseDocumentsOwedWindows = `
+	select count(*) from document_block_versions v
+	left join lateral (
+		select 1 from document_blocks b where b.artifact_id = v.artifact_id limit 1
+	) held (block) on true
+	where v.windows_owed_at is not null and (v.version is not null or held.block is not null)`
+
+// windowsOwed counts the window arm's backlog over the test's own connection to the run's
+// database: this head's reads of it (refs.DocumentsOwedWindows, refs.ItemsOwedWindows) on this
+// head's side, and the release before's own read of the documents on its side. It is read only
+// between the intervals pg_stat_statements is read over.
+func (s *skeletonStatements) windowsOwed(t *testing.T) skeletonOwed {
+	t.Helper()
+	ctx := context.Background()
+	var owed skeletonOwed
+	if s.head {
+		documents, err := refs.DocumentsOwedWindows(ctx, s.run, "", skeletonOwedLimit)
+		if err != nil {
+			t.Fatalf("c-tree-read-bound: count the documents owed their windows: %v", err)
+		}
+		owed.documents = len(documents)
+	} else if err := s.run.QueryRow(ctx, skeletonBaseDocumentsOwedWindows).Scan(&owed.documents); err != nil {
+		t.Fatalf("c-tree-read-bound: count the documents owed their windows: %v", err)
+	}
+	for _, kind := range []refs.ItemKind{refs.ItemComment, refs.ItemMessage, refs.ItemAsk} {
+		items, err := refs.ItemsOwedWindows(ctx, s.run, kind, "", skeletonOwedLimit)
+		if err != nil {
+			t.Fatalf("c-tree-read-bound: count the %ss owed their windows: %v", kind, err)
+		}
+		owed.items += len(items)
+	}
+	return owed
+}
+
+// waitWindowsOwed waits until the window arm owes no document and no item its windows, polling
+// every skeletonOwedPoll for skeletonOwedWait, and says what it waited for and how long: the
+// backlog the seeding or this head's boot left is a loop that ends, which the readings wait out
+// rather than count or subtract.
+func (s *skeletonStatements) waitWindowsOwed(t *testing.T, side string) {
+	t.Helper()
+	started := time.Now()
+	first := s.windowsOwed(t)
+	owed := first
+	held := testwait.Holds(skeletonOwedWait, skeletonOwedPoll, func() bool {
+		owed = s.windowsOwed(t)
+		return owed == skeletonOwed{}
+	})
+	if !held {
+		t.Fatalf("c-tree-read-bound: the %s's window arm still owes the windows of %s after %s", side, owed, skeletonOwedWait)
+	}
+	t.Logf("c-tree-read-bound: the %s's window arm owed the windows of %s; none is owed after %s", side, first,
+		time.Since(started).Round(time.Second))
+}
+
 // ───── the corpus, written through the release before's own routes ─────────
 
 // skeletonTyped is a document of count typed blocks of directive, each holding one paragraph, with
@@ -537,8 +613,10 @@ type skeletonStatements struct {
 	conn     *pgx.Conn
 	database uint32
 	role     uint32
-	// run is the test's own connection to the run's database, which `show jit` is read over.
-	run *pgx.Conn
+	// run is the test's own connection to the run's database, which `show jit` and the window
+	// arm's backlog (windowsOwed) are read over; head says this head's build serves it.
+	run  *pgx.Conn
+	head bool
 }
 
 // jit is `show jit` as the run's database answers it, and it fails the run where it reads other
@@ -575,17 +653,20 @@ type skeletonStatementTotal struct {
 // skeletonDatabaseTime is the database time of one interval per reading of the batch it is read
 // against: ms and calls of the statements that ran at least once per reading, otherMS and others of
 // those that ran fewer times, the calls per reading of each statement by its normalized text, and
-// the time per reading of each statement that ran at least once per reading, by its text.
+// the time per reading of each statement that ran at least once per reading, by its text; and, for
+// a batch, the window arm's backlog before it and after the idle interval that follows it.
 type skeletonDatabaseTime struct {
-	readings int
-	length   time.Duration
-	ms       float64
-	calls    float64
-	otherMS  float64
-	others   int
-	evicted  int64
-	byText   map[string]float64
-	spentBy  map[string]float64
+	readings   int
+	length     time.Duration
+	ms         float64
+	calls      float64
+	otherMS    float64
+	others     int
+	evicted    int64
+	byText     map[string]float64
+	spentBy    map[string]float64
+	owedBefore skeletonOwed
+	owedAfter  skeletonOwed
 }
 
 // newSkeletonStatements opens what database time is read with, for the run's database at
@@ -671,11 +752,13 @@ func (s *skeletonStatements) snapshot(ctx context.Context) (skeletonSnapshot, er
 
 // measure runs batch, which takes readings readings, between two snapshots, then waits an idle
 // interval of the batch's length with nothing reading before a third: the database time of the
-// batch and of the idle interval, each per reading of the batch. A snapshot it cannot read fails
-// the run, printing that database time was not measured.
+// batch and of the idle interval, each per reading of the batch, the batch's with the window arm's
+// backlog read before the first snapshot and after the third. A snapshot it cannot read fails the
+// run, printing that database time was not measured.
 func (s *skeletonStatements) measure(t *testing.T, readings int, batch func()) (database, idle *skeletonDatabaseTime) {
 	t.Helper()
 	ctx := context.Background()
+	owed := s.windowsOwed(t)
 	before, err := s.snapshot(ctx)
 	if err != nil {
 		t.Fatalf("c-tree-read-bound: database time was not measured: %v", err)
@@ -691,6 +774,7 @@ func (s *skeletonStatements) measure(t *testing.T, readings int, batch func()) (
 	if err != nil {
 		t.Fatalf("c-tree-read-bound: database time was not measured over the idle interval: %v", err)
 	}
+	database.owedBefore, database.owedAfter = owed, s.windowsOwed(t)
 	return database, skeletonDatabaseTimeOf(after, rested, readings)
 }
 
@@ -745,6 +829,7 @@ func (spent *skeletonDatabaseTime) line(idle *skeletonDatabaseTime) string {
 	if evicted > 0 {
 		line += fmt.Sprintf("; pg_stat_statements evicted %d entries meanwhile, and the time they held is not counted", evicted)
 	}
+	line += fmt.Sprintf("; the window arm owed the windows of %s before the batch and of %s after its idle interval", spent.owedBefore, spent.owedAfter)
 	queries := slices.SortedFunc(maps.Keys(spent.spentBy), func(left, right string) int {
 		return cmp.Compare(spent.spentBy[right], spent.spentBy[left])
 	})
@@ -754,7 +839,7 @@ func (spent *skeletonDatabaseTime) line(idle *skeletonDatabaseTime) string {
 	return line
 }
 
-// ───── the loaders of R8 ───────────────────────────────────────────────────
+// ───── the loaders the read sends ──────────────────────────────────────────
 
 // sqlTaken is a refs.Queryer that records the SQL of each statement a read would send and runs
 // none: each statement answers errSQLTaken, so a loader's text is read off it without the run's
@@ -779,15 +864,12 @@ type takenRow struct{}
 
 func (takenRow) Scan(...any) error { return errSQLTaken }
 
-// skeletonLoaders is the normalized text of the statement of each of the four loaders of R8, the
-// four reads of issueTreeBuilder.readFacts, taken off one call of each that runs nothing
-// (sqlTaken): the facts read (refs.TreeFactsOf), the rows read (refs.TreeNodeRows), the registry's
-// loader of an issue (refs.ExcerptedNodes, which the tree read calls for every node that is no
-// document block, its issue's own among them) and the block loader (refs.BlockNodesAndRows).
+// skeletonLoaders is the normalized text of the statement of each loader of R8 that the read with
+// no view sends, taken off one call of each that runs nothing (sqlTaken): the facts read
+// (refs.TreeFactsOf) and the rows read (refs.TreeNodeRows).
 func skeletonLoaders(t *testing.T, key string) map[string]string {
 	t.Helper()
 	ctx := context.Background()
-	who := model.Actor{Kind: "user", ID: readCostReader}
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: key}
 	loaders := map[string]func(taken *sqlTaken) error{
 		"refs.TreeFactsOf": func(taken *sqlTaken) error {
@@ -796,14 +878,6 @@ func skeletonLoaders(t *testing.T, key string) map[string]string {
 		},
 		"refs.TreeNodeRows": func(taken *sqlTaken) error {
 			_, err := refs.TreeNodeRows(ctx, taken, []refs.Target{issue})
-			return err
-		},
-		"refs.ExcerptedNodes": func(taken *sqlTaken) error {
-			_, err := refs.ExcerptedNodes(ctx, taken, who, []refs.Target{issue})
-			return err
-		},
-		"refs.BlockNodesAndRows": func(taken *sqlTaken) error {
-			_, _, err := refs.BlockNodesAndRows(ctx, taken, who, []string{key + "/spec#r1"})
 			return err
 		},
 	}
@@ -978,7 +1052,7 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 		holdSkeletonCount(t, issue.key, "requirement", read.count("", "requirement"), issue.requirements)
 		holdSkeletonCount(t, issue.key, graphstore.BlockTypeCheck, read.count("", graphstore.BlockTypeCheck), issue.checks)
 		holdSkeletonCount(t, issue.key, "plan_task", read.count("", "plan_task"), issue.planTasks)
-		holdSkeletonCount(t, issue.key, "comments", read.count(graphstore.KindComment, ""), min(issue.comments, issueTreeCommentPageSize))
+		holdSkeletonCount(t, issue.key, "comments", read.count(graphstore.KindComment, ""), min(issue.comments, skeletonCommentPage))
 		holdSkeletonCount(t, issue.key, "asks", read.count(graphstore.KindAsk, ""), issue.asks)
 		if read.Cursor != nil {
 			t.Errorf("%s answers cursor %q, want null: its skeleton fits one page", issue.key, *read.Cursor)
@@ -998,9 +1072,9 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 			}
 		}
 		switch {
-		case issue.comments <= issueTreeCommentPageSize && position != nil:
+		case issue.comments <= skeletonCommentPage && position != nil:
 			t.Errorf("%s answers comments_before %q, want null: it holds %d comments", issue.key, *position, issue.comments)
-		case issue.comments > issueTreeCommentPageSize && (position == nil || *position != oldest):
+		case issue.comments > skeletonCommentPage && (position == nil || *position != oldest):
 			t.Errorf("%s answers comments_before %v, want %q, the oldest comment of its page", issue.key, position, oldest)
 		}
 		if index == 0 {
@@ -1058,17 +1132,20 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 
 // TestTheTreeReadAnswersTheSkeletonWithinItsBounds is c-tree-read-bound. It boots the build of
 // BASELINE_SHA over a database of its own, seeds the four issues of skeletonShapes through that
-// build's routes, and reads on each of the first three issues the old page's nine reads of its
-// first load and the reads of its three tabs. Then it stops that build, boots this checkout's over
-// the same database, waits until the boot's backfill is done, each issue holds its mark and no
-// document owes its block index, holds each corpus to its shape, and reads the read with no view
-// on the first three issues, the spec view of the fourth and the plan view of the first. Each read
-// is read skeletonReadings times after skeletonWarmUps warm-ups, after an analyze, and its line
-// prints its p50, p90 and p99, its bytes, and its database time and statements per reading. It
-// fails, printing each line, where a read with no view or a view has a p90 above skeletonBoundMS,
-// where the read with no view spends more than skeletonDatabaseRatio times the old page's database
-// time with its three tabs, and where a statement of one of R8's four loaders runs more than once
-// per reading of the read with no view or is not in pg_stat_statements.
+// build's routes, waits until no document owes its block index and the block index's window arm
+// owes no document and no item its windows, and reads on each of the first three issues the old
+// page's nine reads of its first load and the reads of its three tabs. Then it stops that build,
+// boots this checkout's over the same database, waits until the boot's backfill is done, each
+// issue holds its mark, no document owes its block index and the window arm owes nothing, holds
+// each corpus to its shape, and reads the read with no view on the first three issues, the spec
+// view of the fourth and the plan view of the first. Each read is read skeletonReadings times
+// after skeletonWarmUps warm-ups, after an analyze, and its line prints its p50, p90 and p99, its
+// bytes, its database time and statements per reading, the idle interval after it, and the window
+// arm's backlog before it and after that interval. It fails, printing each line, where a read with
+// no view or a view has a p90 above skeletonBoundMS, where the read with no view spends more than
+// skeletonDatabaseRatio times the old page's database time with its three tabs, and where a
+// statement of a loader the read with no view sends runs more than once per reading of it or is
+// not in pg_stat_statements.
 func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
@@ -1100,6 +1177,7 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	base := startSkeletonServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
 	issues := seedSkeleton(t, base)
 	waitSkeletonOwed(t, conn, "release before's corpus", nil)
+	statements.waitWindowsOwed(t, "release before")
 	skeletonAnalyze(t, conn, "old side")
 	old := measureSkeletonOld(t, statements, base, issues)
 	stopSkeletonServer(t, base)
@@ -1120,6 +1198,8 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 		}
 		return marked == len(keys), fmt.Sprintf("%d of the %d issues hold their mark", marked, len(keys))
 	})
+	statements.head = true
+	statements.waitWindowsOwed(t, "head")
 	skeletonAnalyze(t, conn, "new side")
 	requireSkeletonShape(t, head, issues)
 	loaders := skeletonLoaders(t, issues[0].key)

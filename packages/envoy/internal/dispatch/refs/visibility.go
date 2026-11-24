@@ -670,6 +670,20 @@ func VisibleNode(kindExpr, idExpr, param string) string {
 		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
 }
 
+// VisibleNodeOfRow is VisibleNode over the `graph_nodes` row a read has already left-joined for
+// the node, as alias, on kindExpr and idExpr as the store keys them, rather than a second probe of
+// the same row: the same test of the row, with the comparison of the row's own kind
+// (authorIsOfRow), true where the join found no row, as VisibleNode reads a node the store holds
+// no row for. kindExpr is a kind as the store keys it, never lens_block (storedKindSQL), so the
+// join's row is the one VisibleNode would probe. A walk that joins each node's row for its state
+// binds it (PlanOrder's readPlanTree), where the second probe of 3,000 nodes' rows cost the walk
+// a quarter of its time.
+func VisibleNodeOfRow(kindExpr, idExpr, alias, param string) string {
+	return VisibilityMarker + `the row's own kind */(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` +
+		registrySQL.kinds + `) and coalesce(` + visibleHeldRow(alias, authorIsOfRow(alias, param)) + `, true)` +
+		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
+}
+
 // VisibleRow is the predicate over a `graph_nodes` row a read already holds, whatever its kind:
 // the same test, with the comparison of the row's own kind (authorIsOfRow) and no second read of
 // the table to make it. A read that walks the store's own table binds it (loadStoreNodes), and so

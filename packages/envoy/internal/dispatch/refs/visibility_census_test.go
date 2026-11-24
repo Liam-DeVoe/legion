@@ -187,6 +187,7 @@ var readsWithoutAViewer = map[string]string{
 	"BlockTextAt":  nodeDetail,
 	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
 		"reads, under those comments' owner locks, which of their rows name no node",
+	"CommentsOffPage":      treeWalk + " - which comments a walk of the skeleton's loaders name as a parent are of another page of the issue's conversation (WalkIssueSkeleton); it answers ids of comments the walk was given, and no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits is answered the same",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,

@@ -1629,9 +1629,13 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
 // reference of the block it names, are written under.
 //
-// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader), and a comment written
+// on no document probes no document: Postgres reads a small artifacts table whole rather than
+// probe its key, for each comment, where the key is null and matches nothing. Its stored state and
+// visibility and its kind's predicate are read off one probe of its graph_nodes row
+// (visibleStoredKind), as the block loader's are: a page of 200 comments probed each row twice.
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	storedJoin, storedColumns := storedNode("comment", "c.id::text")
+	storedJoin, storedColumns, visible := visibleStoredKind("comment", "c.id::text", "$2")
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
 		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
@@ -1639,13 +1643,15 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		       `+storedColumns+`
 		from comments c
 		left join lateral (select i.project_key from issues i where i.key = c.issue_key limit 1) i on true
-		left join lateral (select a.project_key, a.slug from artifacts a where a.id = c.artifact_id limit 1) a on true
+		left join lateral (select a.project_key, a.slug from artifacts a where c.artifact_id is not null and a.id = c.artifact_id limit 1) a on true
 		left join lateral (
 			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
-			from artifacts doc where doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) limit 1
+			from artifacts doc
+			where coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) is not null and doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+			limit 1
 		) doc on true
 		`+storedJoin+`
-		where c.id::text = any($1) and `+VisibleKind("comment", "c.id::text", "$2"), ids, VisibilityArg(who))
+		where c.id::text = any($1) and `+visible, ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load comment nodes: %w", err)
 	}
