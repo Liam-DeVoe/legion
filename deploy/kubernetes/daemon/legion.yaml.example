@@ -26,7 +26,9 @@ bind: 0.0.0.0
 advertise_host: legion-daemon-widgets.legion.svc
 daemon_url: http://legion-daemon-widgets.legion.svc:13370
 admission_cap: 4                       # issues holding a slot at once, roots and children alike; an issue in
-                                       # accepting, retro or merging holds none
+                                       # accepting, retro or merging holds none. The boot cap and the ceiling:
+                                       # the controller's set_admission_cap and `legion project
+                                       # set-admission-cap` move the cap below it with no restart
 pod_update_max_open_rounds: 2          # issues holding an open pod-update round at once; a round asks every
                                        # worker of its issue to push its work, let its subagents and background
                                        # jobs finish or stop them, push what they made and wait. Leave the key

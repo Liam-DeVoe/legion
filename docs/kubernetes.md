@@ -8395,6 +8395,48 @@ Each statement acts on the rows of every project of a shared database ([Daemon-l
 Where one project's daemon goes back alone, add `and split_part(issue, '-', 1) = '<KEY>'` to each statement, which is how the outbox reads a row's project (`outboxPauseFree`, `internal/record/store.go`).
 A project that stays on this release needs its own rows as they are.
 
+### Moving the admission cap
+
+`admission_cap` in `legion.yaml` (else `LEGION_ADMISSION_CAP`) is the cap a daemon boots under, and the ceiling of the cap it admits under while it runs (dispatch://INFRA-5616).
+The cap moves below the ceiling with no pull request and no restart.
+Raising the ceiling stays the operator's change: edit `admission_cap` and restart the daemon.
+
+Two callers move the cap, and neither names a project, because each acts on the project of the daemon it calls:
+
+- the project's controller, with the `set_admission_cap` operation of its `legion` tool, which takes a `cap`, a `reason` and an optional `tick_id`, and `clear_admission_cap`, which takes a `reason` and an optional `tick_id`.
+  They post `POST /legion/v1/project/admission-cap` and `POST /legion/v1/project/admission-cap/clear` with a controller grant, and any other grant is refused 403 `CONTROLLER_REQUIRED`.
+  `tick_id` names the regulator tick that makes the change, the id the tick logs its readings under; a change a person asked for names none;
+
+- the operator, with `legion project set-admission-cap --cap <n> --reason <text> --operator-token-file <file>` and `legion project clear-admission-cap --reason <text> --operator-token-file <file>`.
+  They post `POST /legion/v1/operator/project/admission-cap` and `POST /legion/v1/operator/project/admission-cap/clear` with the operator's bearer.
+  Each also takes `--config` and `--port`, and `--json`, which prints the daemon's answer as it served it.
+
+A set names a whole number from 1 to the ceiling.
+The daemon refuses a cap below 1 (`INVALID_ADMISSION_CAP`), a cap above the ceiling (`ADMISSION_CAP_ABOVE_CEILING`, whose sentence names the ceiling), a change with no reason (`ADMISSION_CAP_REASON_REQUIRED`) and, on a daemon with no workflow, every change (`ADMISSION_CAP_UNAVAILABLE`).
+A refusal changes nothing.
+
+A set or a clear is one fact, and its admission pass runs in the fact's own transaction, so the cap is in force from that pass on.
+Every pass reads the cap again, and admits under the smaller of the cap set and the ceiling, or under the ceiling after a clear.
+A raise starts the issues that wait for the slots it adds.
+A lower cap stops nothing that runs: it starts no new issue until fewer issues hold a slot than it allows.
+
+The daemon's store keeps one row for each change (`project_admission_cap_changes`): the cap set, or none for a clear, the caps the daemon admitted under before and after it, the ceiling then, who made it, why, the tick and when.
+Who is the controller, with the session it acted from, or the operator.
+The record is in the store, so the cap holds across a restart; a restart under a lower ceiling admits under that ceiling, and the cap set comes back when the ceiling is raised again.
+A set of the cap that stands, and a clear where none stands, change nothing: the daemon writes no row and logs one Debug line.
+Every other change is one Info line of the daemon's log, `admission: the cap changed`, with the same fields.
+
+`GET /legion/v1/state` answers the cap under `admission`:
+`cap`, the cap in force;
+`ceiling`, `admission_cap`;
+`override`, the cap set that stands, `{cap, setBy, setAt, reason, tickId?}`;
+and `capChanges`, the newest 50 changes, newest first.
+Each change is `{id, cap?, capBefore, capAfter, ceiling, setBy, setAt, reason, tickId?}`, with `cap` absent for a clear and `tickId` absent for a change no tick made.
+Those names are the contract the admission signals read (dispatch://INFRA-979/spec#b-r39), so they stay as they are.
+`legion state` prints the cap on its `admission cap` line.
+
+An earlier release reads no row of `project_admission_cap_changes` and admits under its configured cap, so a rollback needs no statement; a roll forward reads the table again.
+
 ### Liveness rules
 
 The daemon probes a pod by reading it and consulting the worker stream's live registrations:
