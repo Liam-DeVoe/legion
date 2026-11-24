@@ -188,7 +188,9 @@ func (s *server) v2IssueRows() []routeRow {
 				"runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a " +
 				"/ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion " +
 				"daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, " +
-				"phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, read is the newest read of the daemon " +
+				"phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on being the Legion daemon's " +
+				"object as the daemon stores it, whose member names are the daemon's (answeredAt, answeredBy, artifactId, " +
+				"gateVersion), read is the newest read of the daemon " +
 				"{at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no " +
 				"run, and grows with each write of a run that stores something new. A project that names no daemon is not " +
 				"refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue " +
