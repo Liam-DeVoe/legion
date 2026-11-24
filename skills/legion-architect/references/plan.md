@@ -31,10 +31,11 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 Name the steps in `steps` in the order they run.
 A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
-A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A `planner` step may stand at any place, and the task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A later `implementer` step may stand after them, as step 3 of `implementer:a reviewer implementer:a` does.
 A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
 It reads no pull request, so it may stand at any place too.
-A role of the type implementation is the one exception: it stands before the `implementer` step, since Legion's retro is done by the implementer in this release.
+A role of the type implementation is the one exception: it stands before the task's first `implementer` step, since Legion's retro is done by the implementer in this release.
 The table lists Legion's steps in the order of the default steps:
 
 | Step | Type | Phase | What leaving it out means |

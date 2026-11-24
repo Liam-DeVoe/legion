@@ -213,7 +213,10 @@ and after each other step of the type implementation,
 since Legion's retro is done by the implementer,
 where `acceptance:owner` is the architect's own acceptance in `accepting`;
 any other step may carry a key after its role (`implementer:a tester:a`),
-the steps of one key running as one agent in one claim and one session. It writes
+the steps of one key running as one agent in one claim and one session.
+Where `implementer` stands at two steps, as in `implementer:a reviewer implementer:a`, the first of
+them is the one that stands before each `tester`, `reviewer` and `acceptance:owner` step and after
+each other step of the type implementation, and the later one may stand after them. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
@@ -240,11 +243,11 @@ of `design`, `planning`, `implementation`, `testing` and `review`, or a type `ro
 and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
 `review`, the review App by default.
 A step of such a role reads no pull request, so a plan may put it at any place, except that a role
-of the type implementation stands before the `implementer` step, since Legion's retro is done by
-the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a
-failed test does, and a fail of a step of the type review counts a review round. A role the
-deployment no longer defines stops each task that still has a step of it to run, and its owner is
-told (`docs/deployment.md`, "Roles the deployment defines").
+of the type implementation stands before the task's first `implementer` step, since Legion's retro
+is done by the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work
+back as a failed test does, and a fail of a step of the type review counts a review round. A role
+the deployment no longer defines stops each task that still has a step of it to run, and its owner
+is told (`docs/deployment.md`, "Roles the deployment defines").
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, beside whatever a step of a role of the deployment
