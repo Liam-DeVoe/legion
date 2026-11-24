@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -255,14 +256,50 @@ func (o *optionRow) wantKeys(reads int, attempts ...int) {
 	}
 }
 
+// commentedDispatch is refusedOnceDispatch over the named issue of a status change whose route
+// wrote one comment on it after the call's last step: the issue reads first as the route's answer
+// gave it, the write fenced there is refused ISSUE_CHANGED, and every read after the refusal shows
+// reread, the issue at the comment's sequence. Its event log past the answer's sequence holds the
+// comment's comment.created event, by Dispatch's system actor as the route's comments are, on no
+// ask, so no handler of the daemon's takes it. fenced is the sequence each status write was fenced
+// at, and seen the record's cursor (record.Issue.SeenSeq) as each write arrived.
+type commentedDispatch struct {
+	refusedOnceDispatch
+	t      *testing.T
+	pool   *store.Pool
+	fenced []int64
+	seen   []int64
+}
+
+func (d *commentedDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	d.fenced = append(d.fenced, issue.LastSeq)
+	d.seen = append(d.seen, recordOf(d.t, d.pool, record.NewStore(), issue.Key).SeenSeq)
+	return d.refusedOnceDispatch.SetStatusAt(ctx, issue, status)
+}
+
+func (d *commentedDispatch) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	if after >= d.reread.LastSeq {
+		return nil, nil
+	}
+	comment, err := json.Marshal(map[string]any{"id": 100 + d.reread.LastSeq, "issue_key": key, "project": "LEGION", "seq": d.reread.LastSeq,
+		"type": "comment.created", "actor": map[string]string{"kind": "system", "id": "parent-status-rule"}, "notify": false,
+		"created_at": "2026-11-21T11:47:17Z", "payload": map[string]string{"id": "status-change-comment",
+			"body": "Dispatch moved LEGION-42 from `in_progress` to `backlog` with LEGION-41."}})
+	return []json.RawMessage{comment}, err
+}
+
 // A write with an option of Dispatch's status-change route goes on that route under a request key
 // of its own attempt, and follows Dispatch's request-key rule (decision 6 of
 // dispatch://INFRA-4730): the same key and body go again, with no read first, only after an
 // answer the key layer stored nothing for or a run still in flight; every stored answer ends the
 // attempt, and the row reads Dispatch and starts a new one under a new key, or ends. A Dispatch
 // older than the route answers it with its router's 404, a wait the row is sent again after. The
-// key-rule fake fails the test should any attempt send a changed body under a key it used. Each
-// answer the fake gives is one captured from a real Dispatch (capturedAnswer).
+// key-rule fake fails the test should any attempt send a changed body under a key it used. A call
+// that moved another issue writes one comment on the named issue after its last step, so its
+// answer gives the named issue a sequence one event below Dispatch's: the issue's next write fenced
+// there is refused ISSUE_CHANGED, and reads Dispatch again, waits until the record has seen the
+// comment, and writes at the comment's sequence. Each answer the fake gives is one captured from a
+// real Dispatch (capturedAnswer).
 func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 	t.Parallel()
 	badGateway := &dispatch.Error{Status: http.StatusBadGateway, Message: "Bad Gateway"}
@@ -293,6 +330,67 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 		if row.queued() {
 			t.Fatal("the row is still queued after its new attempt was taken")
+		}
+	})
+	t.Run("the named issue's next write, fenced at the answer's sequence, is refused for the route's comment and written after it", func(t *testing.T) {
+		// Negative controls, run when this was written: with writeStatus answering ISSUE_CHANGED
+		// with the error, this case fails on the writes it fenced ([5], want [5 6]); with
+		// readStands making no awaitSeen, on the record's cursor at each write ([5 5], want [5 6]).
+		pool := isolatedOutboxPool(t)
+		const issue = "LEGION-41"
+		// The record counts the park before its echo and has seen Dispatch's events up to the row's
+		// read. The fake answers that read at 3, below the 4 the capture's named step moved from,
+		// LEGION-42's step having moved LEGION-41 once: a read past the record's cursor would move
+		// the cursor past every sequence this case waits on (awaitSeen's read of the log).
+		seedRecord(t, pool, record.Issue{Key: issue, Status: "backlog", DispatchStatus: "in_progress", LastDispatchSeq: 3, SeenSeq: 3})
+		row := queueOptionRow(t, pool, issue, nil, false, keyAnswer{file: "status_change_include_children.http"})
+		row.client.issue.LastSeq = 2
+		row.run()
+		row.wantKeys(1, 1)
+		if row.queued() {
+			t.Fatal("the option row is still queued after the route took it")
+		}
+		answer, err := capturedAnswer(t, "status_change_include_children.http", row.client.sent[0])
+		if err != nil || answer.Issue.Key != issue || len(answer.Changed) != 2 {
+			t.Fatalf("the captured answer = %+v, %v; want %s's call that moved a child", answer, err, issue)
+		}
+		// Dispatch holds the named issue at the comment's sequence, one past the answer's. The
+		// consumer has delivered the call's own events, up to the answer's sequence, and not yet
+		// the comment's; the record counts the issue's next write, a resume to todo, before its
+		// echo, and that write's first read is the answer's.
+		named := answer.Issue
+		commented := named
+		commented.LastSeq++
+		seedRecord(t, pool, record.Issue{Key: issue, Status: "todo", DispatchStatus: named.Status, LastDispatchSeq: named.LastSeq, SeenSeq: named.LastSeq})
+		client := &commentedDispatch{refusedOnceDispatch: refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: named, statusApplied: true}, reread: commented},
+			t: t, pool: pool}
+		row.runner.dispatch = client
+		enqueueOutbox(t, pool, row.runner.records, mustOutboxRow(t, issue, record.OrdinaryStatusWrite("todo", named.Status, ""), time.Now()))
+		if err := row.runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("run the issue's next write: %v", err)
+		}
+		if client.refusals != 1 {
+			t.Fatalf("ISSUE_CHANGED refusals = %d, want the one the route's comment makes", client.refusals)
+		}
+		if want := []int64{named.LastSeq, commented.LastSeq}; !slices.Equal(client.fenced, want) {
+			t.Fatalf("status writes fenced at %v, want %v: the answer's sequence, refused, then the comment's", client.fenced, want)
+		}
+		if want := []int64{named.LastSeq, commented.LastSeq}; !slices.Equal(client.seen, want) {
+			t.Fatalf("the record's cursor at each write = %v, want %v: each made once the record had seen its sequence", client.seen, want)
+		}
+		if !slices.Equal(client.statuses, []string{"todo"}) || client.issue.Status != "todo" {
+			t.Fatalf("status writes taken = %v, Dispatch at %s; want todo taken once", client.statuses, client.issue.Status)
+		}
+		if row.queued() {
+			t.Fatal("the issue's next write is still queued after its write at the comment's sequence was taken")
+		}
+		for _, line := range []string{"outbox row failed", "outbox status write refused by Dispatch and dropped; the issue's later writes go on"} {
+			if lines := loggedLines(t, row.logs.String(), line); len(lines) != 0 {
+				t.Fatalf("logged %q %d times, want none", line, len(lines))
+			}
+		}
+		if notices := noticesOf(t, pool, issue); notices != 0 {
+			t.Fatalf("architect notices of %s = %d, want none: nothing was refused", issue, notices)
 		}
 	})
 	t.Run("a refusal midway applies each committed step by its record, and a new attempt finishes the rest", func(t *testing.T) {
