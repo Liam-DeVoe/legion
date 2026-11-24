@@ -179,25 +179,26 @@ ALL = {"program": ("tsc programs", "compile"), "bundle": ("bundles", "load")}
 problems: list[engine.Annotation] = []
 
 
+def relative(line: str) -> str | None:
+    """The repository-relative path a listed line names - `.` for the repository root itself - or
+    None for a blank line, a path outside the repository (tsc's own lib files among them) or one
+    under node_modules. A relative path is read against the repository root, which is where both
+    commands run and what each prints a relative path against."""
+    if not line.strip():
+        return None
+    path = Path(line.strip())
+    if not path.is_absolute():
+        path = engine.REPO / path
+    try:
+        found = path.resolve().relative_to(engine.REPO)
+    except ValueError:
+        return None
+    return None if "node_modules" in found.parts else found.as_posix()
+
+
 def kept(paths) -> list:
-    """The paths inside the repository and outside node_modules, repository-relative and sorted.
-    A relative path is read against the repository root, which is where both commands run and
-    what each prints a relative path against."""
-    files = set()
-    for line in paths:
-        if not line.strip():
-            continue
-        path = Path(line.strip())
-        if not path.is_absolute():
-            path = engine.REPO / path
-        try:
-            relative = path.resolve().relative_to(engine.REPO)
-        except ValueError:  # tsc's own lib files and anything else outside this repository
-            continue
-        if "node_modules" in relative.parts:
-            continue
-        files.add(relative.as_posix())
-    return sorted(files)
+    """The paths inside the repository and outside node_modules, repository-relative and sorted."""
+    return sorted({found for found in map(relative, paths) if found is not None})
 
 
 def failed(path: str, command: str, result, holds: str, scratch: str = "") -> None:
@@ -222,13 +223,29 @@ def scrubbed(text: str, scratch: str) -> str:
 
 def program_files(project: str) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
-    node_modules, repository-relative. None when the command fails."""
+    node_modules, repository-relative. None when the command fails, or when a line it listed
+    resolves to the repository root, which is no file a program compiles: the files it holds are
+    then unknown. A filter refused for a `.` its program compiled said nothing of where the `.`
+    came from, so this refusal names each such line as tsc printed it, with its number, and the
+    command's whole output goes to stderr, for the run that met it to name its cause."""
     command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
     result = subprocess.run(command, cwd=engine.REPO, capture_output=True, text=True)
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds")
         return None
-    return kept(result.stdout.splitlines())
+    lines = result.stdout.splitlines()
+    roots = [(number, line) for number, line in enumerate(lines, 1) if relative(line) == "."]
+    if roots:
+        shown = " ".join(command)
+        print(f"`{shown}` printed {len(lines)} line(s) on stdout:", file=sys.stderr)
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", file=sys.stderr)
+        print(f"and on stderr:\n{result.stderr}", end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
+        named = "; ".join(f"line {number}, {line!r}" for number, line in roots[:5])
+        problems.append(engine.error(project, f"`{shown}` exited 0 and listed {len(roots)} line(s) that resolve to the "
+                                              f"repository root, which is no file a program compiles ({named}), so "
+                                              f"the files its program holds are unknown; its whole output is above"))
+        return None
+    return kept(lines)
 
 
 def bundle_files(entry: str) -> list | None:

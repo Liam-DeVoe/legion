@@ -223,6 +223,19 @@ check "fails" "$(is "$status" 1)"
 check "names the command and what it printed" \
   "$(contains "$out" '::error file=pkg/app::`bunx tsc -p pkg/app --noEmit --listFilesOnly` failed (exit 2), so the files its program holds are unknown: error / TS5083')"
 
+echo "case: a program listing that holds a line resolving to the repository root"
+# What one run of CI's lint step met on proof-editor's program: a listed line that was the root
+# itself, which the filter was then refused for as a file named '.'. The stand-in prints './' as it
+# is, and a line naming the root's own parent directory entry, both the root once resolved.
+root=$(fixture root-line)
+printf './\npkg/..\n' >> "$root/pkg/app/listed"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the command, each root line as tsc printed it and its number" \
+  "$(contains "$out" "::error file=pkg/app::\`bunx tsc -p pkg/app --noEmit --listFilesOnly\` exited 0 and listed 2 line(s) that resolve to the repository root, which is no file a program compiles (line 6, './'; line 7, '$root/pkg/..'), so the files its program holds are unknown")"
+check "prints the command's whole output" "$(contains "$out" "^$root/pkg/lib/lib.ts\$")"
+check "and refuses no filter for a file named ." "$(is "$(contains "$out" 'does not select \.,')" false)"
+
 echo "case: a pair naming a filter the changes job does not define"
 root=$(fixture unknown-filter)
 replace "$root/.github/scripts/ci_ts_programs.py" '("app", "pkg/app"' '("application", "pkg/app"'
