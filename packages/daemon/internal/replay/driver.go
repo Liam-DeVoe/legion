@@ -342,7 +342,7 @@ func (d *driver) newChain(at time.Time) {
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,
 		Linger: time.Duration(w.Linger), Clock: d.clock.Now, Repositories: replayRepositories{branches: d.trace.Branches},
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
-	limit := capAt(w, at)
+	limit := d.processCap(at)
 	if d.cfg.Cap > 0 {
 		limit = d.cfg.Cap
 	}
