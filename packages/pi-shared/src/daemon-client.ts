@@ -334,10 +334,14 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
 }
 
 /** Runs a ready request, retrying only one that can pass on its own: an outage (`outage`: a 5xx, a
- * 408 or a 429) or a network failure. The daemon answers no 408 and no 429 itself, so either is a
- * proxy between the session and the daemon. Each Legion host's claim (pi-legion's claim session,
- * claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each role
- * regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
+ * 408 or a 429) or a network failure. It asks an outage again whatever its body, a body in the
+ * daemon's refusal shape included, where `daemonUnreachable` asks none such again: the ready
+ * route's own 503 is the daemon's refusal and means "try the ready again" (the daemon could not
+ * queue the publication of the issue's role sessions: `ready` in
+ * packages/daemon/internal/api/claims.go). The daemon answers no 408 and no 429 itself, so either
+ * is a proxy between the session and the daemon. Each Legion host's claim (pi-legion's claim
+ * session, claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each
+ * role regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
  * answer's `Retry-After` asks for where that is longer, but never longer than
  * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. `sleep` is
  * the wait, a test's own. */
