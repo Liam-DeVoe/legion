@@ -41,7 +41,7 @@ kind: # kind-image and kind. build: kind-image builds worker.Dockerfile as worke
   # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml,
   # the leak guard step; own, and the test process's fence
   [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di,
-   *lg, &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**, &tu .github/scripts/test-fence.sh]
+   *lg, &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**, &tfe .github/scripts/test-fence.sh]
 go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun
@@ -66,10 +66,10 @@ agent-harness:
   - &o5 .github/actions/agent-harness/** # own
 airlock-arm:
   - [*pe, *gw, *ni, &dgo packages/daemon/go.*] # mod dev-broker.sh builds packages/envoy in the go.work workspace
-  - &o6 [.github/actions/airlock-arm/**, *tu] # own, and the test process's fence
+  - &o6 [.github/actions/airlock-arm/**, *tfe] # own, and the test process's fence
 go-envoy-held:
   - &ew [*pe, *gw, *dgo] # pkg+mod go test ./... in packages/envoy, infra/host
-  - [*dsp, *tsp, *cc, *bun, scripts/e2e/lib/held-port.py] # pkg+ws dispatch-two-builds in packages/dispatch
+  - [*dsp, *tsp, *cc, *bun, &hp scripts/e2e/lib/held-port.py] # pkg+ws dispatch-two-builds in packages/dispatch
   - [*di, packages/daemon/docker/legion-testpg, &its packages/daemon/internal/intake/testdata/**, *tpn] # test envoy-smoke
   - '**/*.md' # test the corpus tests read every tracked markdown file (git ls-files)
   - &o7 .github/actions/go-envoy-held/** # own
@@ -78,7 +78,7 @@ ts: &tsa # ts and web-cold
   - *bun # test bun install
   - ['**/AGENTS.md', &dss docs/site/src/**, *sk, *tpn, *its] # test the guide tests, dispatch-ui
   - [packages/envoy/internal/dispatch/**, packages/envoy/**/testdata/**, packages/envoy/internal/contracts/generated.go, packages/envoy/listenerwire/envelope_generated.go, packages/envoy/scripts/fixtures/**, packages/envoy/cmd/dispatch/*.md] # test dispatch-ui, contracts
-  - [packages/envoy/scripts/lib/pg-url.sh, scripts/e2e/lib/held-port.py, &dur .github/workflows/dispatch-unit-repeat.yaml] # test the harness's psql, unit-repeat
+  - [packages/envoy/scripts/lib/pg-url.sh, *hp, &dur .github/workflows/dispatch-unit-repeat.yaml] # test the harness's psql, unit-repeat
   - &o8 .github/actions/ts/** # own
 pi: &pa # pi, pi-held and claude-envoy-names
   - [*tsp, *plug, *cl, *cc, *tf] # pkg+ws bun run test in each plugin
@@ -88,7 +88,7 @@ pi: &pa # pi, pi-held and claude-envoy-names
   - &o9 [.github/scripts/release-claude-envoy-*.sh, .github/actions/private-names-packed-plugin/**, .github/actions/pi/**] # own verify-build, names check
 dispatch-browser: &dba # dispatch-browser and dispatch-browser-pr
   - [*dsp, *tsp, *cc] # pkg+ws playwright in packages/dispatch
-  - [*bun, *dm, &hp scripts/e2e/lib/held-port.py, *tpn] # test the suite builds cmd/dispatch
+  - [*bun, *dm, *hp, *tpn] # test the suite builds cmd/dispatch
   - &bd [&dk .github/docker/**, .github/ci-images.yaml, &biw .github/workflows/browser-image.yaml] # test the browser image it runs
   - &dbo [.github/workflows/dispatch-browser.yaml, .github/scripts/dispatch-browser-*.sh] # own
 docs:
@@ -106,7 +106,7 @@ ci-images:
 tool-fallback:
   - [*b3, packages/daemon/docker/worker.Dockerfile] # test the pins it reads
   - *ctl # own
-  - &tfo [.github/scripts/tool-fallback-*.sh, .github/scripts/ci-tools-proof.sh, .github/scripts/check-ci-tools.sh, .github/actions/tool-fallback/**, &ihl .github/actions/install-helm/**] # own
+  - &tfo [.github/scripts/tool-fallback-*.sh, .github/scripts/ci-tools-proof.sh, .github/scripts/check-ci-tools.sh, .github/actions/tool-fallback/**, .github/actions/install-helm/**] # own
 notices:
   - [*pd, *pe, *gw] # mod go-third-party-notices.sh over the release targets
   - [scripts/go-third-party-notices.sh, &tgt .github/*targets*.json] # test its script, target lists
@@ -126,7 +126,7 @@ go-envoy: &gea # go-envoy and envoy-held
   - [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts] # test session-stall's rig
   - *dsp # test read-token-live.ts, the dispatch:local stack it reads
   - [*scr, &dsa .dispatch/**, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
-  - [*gh, *ihl, *dur] # test spec-check guard, cluster.test.sh's helm; own go-envoy/**
+  - [*gh, *dur] # test spec-check guard, cluster.test.sh's helm (tool-fallback's, in *gh); own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
   - [*cc, *cl, *tsp, *plug, *dsp, *pd, *pe] # pkg+test internal/textcheck
   - [*scr, *sk, docs/**, deploy/**, *b4, *dsa, *ag, .claude-plugin/**, .superpowers/**, .github/ci-notes/**] # test

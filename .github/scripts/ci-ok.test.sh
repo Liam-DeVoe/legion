@@ -15,11 +15,12 @@
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
 # triggers. docs also stands for one of the slow suites, whose output a pull request
-# without the label `full-ci` or the job's own `lane:<output>` holds false whatever the paths
-# filter answered: six cases hand the run the filter's own verdicts beside the outputs
+# without the label `full-ci` or one of the job's own lane labels holds false whatever the paths
+# filter answered: eight cases hand the run the filter's own verdicts beside the outputs
 # (with_verdicts below) and hold the report to telling that skip from a filter miss, and to
-# naming such a job as not run at this head, with its own lane label, in its log and its job
-# summary, only where the pull request held it back. Four cases run a merge group whose verdicts
+# naming such a job as not run at this head, with its own lane labels, or as held back on every
+# pull request where no label lifts it, in its log and its job summary, only where the pull
+# request held it back. Four cases run a merge group whose verdicts
 # and unnamed-file verdict say which failed job no pull request of the group's files ran, and hold
 # the line that names it, its step summary, and its absence where a changed file matched no filter.
 # The check-run names of legs named by an expression are read off a ci.yaml of the case's own
@@ -306,6 +307,28 @@ workflow=$saved
 check "passes" "$(is "$status" 0)"
 check "names full-ci and both lane labels" \
   "$(contains "$out" '^not run at this head: docs (selected by paths, held back on a pull request without full-ci, lane:docs or lane:docs_more; runs in the merge queue)$')"
+
+echo "case: the not-run line of an output no label lifts says every pull request holds it back"
+# kind's output is true on a merge group, and on a dispatched run that asks for it, and false on
+# every pull request whatever its filter said; no label term lifts it. Its line names no label,
+# which would send its reader after one that turns on nothing. docs stands for it here.
+cat >"$work/ci-no-label.yaml" <<'YAML'
+jobs:
+  changes:
+    outputs:
+      docs: ${{ github.event_name == 'merge_group' && 'true' || github.event_name == 'workflow_dispatch' && inputs.kind-and-agent-harness && 'true' || 'false' }}
+  typecheck: {runs-on: ubuntu-24.04-arm}
+YAML
+saved=$workflow
+workflow=$work/ci-no-label.yaml
+run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+workflow=$saved
+check "passes" "$(is "$status" 0)"
+check "says every pull request held docs back" \
+  "$(contains "$out" '^docs: skipped (not selected: selected by paths, held back on every pull request: runs in the merge queue)$')"
+check "and names it so after the pass line" \
+  "$(contains "$out" '^not run at this head: docs (selected by paths, held back on every pull request; runs in the merge queue)$')"
+check "naming no label" "$(is "$(contains "$out" 'without')" false)"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
