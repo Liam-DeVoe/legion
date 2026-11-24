@@ -1,0 +1,5 @@
+kind: Added
+body: "`legionIssue` declares `checks`, each open production check of an issue, oldest first, which the daemon serves from API contract 237; `check` stays the newest open check, and a daemon below 237 serves no `checks`."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168
