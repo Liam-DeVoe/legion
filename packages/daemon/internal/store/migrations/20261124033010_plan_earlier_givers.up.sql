@@ -22,13 +22,15 @@
 -- earlier giver after a roll forward.
 --
 -- A rollback past 20261117034837_issue_plans, whose way back drops issue_plans, runs the way back
--- below first, with every project's daemon on that database stopped: it drops the column and
--- deletes this migration's row, so that store.apply runs this file again after that one, on the
--- table the roll forward creates. Left out, the row stands, the table comes back without the
+-- below too, before or after that one, with every project's daemon on that database stopped: it
+-- drops the column where issue_plans still stands and deletes this migration's row, so that
+-- store.apply runs this file again after that one, on the table the roll forward creates. Each of
+-- its statements runs again with no error, so it runs in the session of each project that rolls
+-- back, as the plan tables' block does. Left out, the row stands, the table comes back without the
 -- column, and the daemon's first read of a plan fails.
 --
 -- begin;
--- alter table issue_plans drop column if exists earlier_givers;
+-- alter table if exists issue_plans drop column if exists earlier_givers;
 -- delete from schema_version where version = 20261124033010;
 -- commit;
 alter table issue_plans add column earlier_givers text[] not null default '{}';

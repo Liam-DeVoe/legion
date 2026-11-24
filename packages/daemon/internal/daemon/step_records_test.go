@@ -389,8 +389,8 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. The way back of the
 // givers of a plan version, in the header of the migration whose name ends
-// _plan_earlier_givers.up.sql, runs first, as the guide orders the two, so the roll forward adds its
-// column again to the table it creates.
+// _plan_earlier_givers.up.sql, runs too, here before it (the guide allows either order), so the
+// roll forward adds its column again to the table it creates.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
