@@ -1241,8 +1241,8 @@ const (
 // report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
 // summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
 //
-// A merger started in merging at the head a merge forward landed on where the task's reviewer step
-// already ran (mergeForwardLanded), while the
+// A merger started in merging at the head a merge forward landed on where a reviewer step of the
+// task already ran (mergeForwardLanded), while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
 // to merge that head only once the reviewer's approval of it is on the pull request: the daemon
 // records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
