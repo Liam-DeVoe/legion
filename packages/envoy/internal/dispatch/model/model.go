@@ -1580,7 +1580,9 @@ type CheckResultRetraction struct {
 // one result is the one derived from that run. Text is the block's words with every link and
 // dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
 // content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`.
+// caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
+// code, production or graph, and "" where the block names none, which reads as code. Program is
+// the deployed program it reads, its `program` as stored, "" where it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1593,6 +1595,8 @@ type CheckBlock struct {
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
 	CICheck         string        `json:"ci_check,omitempty"`
+	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
+	Program         string        `json:"program,omitempty"`
 	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
