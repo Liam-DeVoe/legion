@@ -1634,7 +1634,7 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	if !ok || got.ID != "adopt" || got.OK {
 		t.Fatalf("the shim answered %#v, want the failed adoption", got)
 	}
-	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shimwire.CutAnswerError).
 	if len(got.Error) > 8<<10 {
 		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
 	}

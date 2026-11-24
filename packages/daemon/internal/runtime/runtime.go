@@ -346,6 +346,23 @@ type WorkspaceWork struct {
 // not hold.
 func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 
+// WorkspaceWorkOf is the read that a reader's answer to a `workspace-work` request carries, for
+// each caller that asks one: internal/stream's Conn.WorkspaceWork, through a role's shim, and
+// internal/runtime/sandbox's read through a pod's launcher (R6 of dispatch://INFRA-3271). An answer
+// the wire refuses (shimwire.WorkspaceWorkResult.Validate) is err; a reader's refusal is refused,
+// its reason, which the wire requires to be set; otherwise the answer is the work read. A refusal
+// is a read that could not be made, and never the empty read: the caller names it as an error. The
+// caller names the pod where it knows it (WorkspaceWork.PodUID).
+func WorkspaceWorkOf(answer shimwire.WorkspaceWorkResult) (work WorkspaceWork, refused string, err error) {
+	if err := answer.Validate(); err != nil {
+		return WorkspaceWork{}, "", err
+	}
+	if !answer.OK {
+		return WorkspaceWork{}, answer.Error, nil
+	}
+	return WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, "", nil
+}
+
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
 // kernel stopped because the pod ran out of memory (the report's Cause,

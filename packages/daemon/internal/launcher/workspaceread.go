@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -66,27 +65,19 @@ const readUserConfig = "jj-config.toml"
 // first command imports git refs, which with jj's default would abandon those commits.
 var launcherReadConfig = []string{"--config=git.abandon-unreachable-commits=false"}
 
-// maxReadErrorRunes bounds the reason a refused read carries: jj's standard error has no bound of
-// its own, and the answer goes out as one line under shimwire.MaxFrameBytes.
-const maxReadErrorRunes = 2048
-
-// readWorkspace answers one shimwire.WorkspaceWork on this role's connection, writer. It runs on a
-// goroutine of its own (serve), so the role's start and stop commands do not wait behind jj; the
-// writer has a mutex of its own, so its answer and the command loop's never interleave. A request
-// with no id names nothing to answer, and is logged and dropped.
+// readWorkspace answers one shimwire.WorkspaceWork on this role's connection, writer, as a role's
+// shim answers the same read (shimwire.AnswerWorkspaceWork: a refusal's reason cut to one line,
+// its end, which names a stale git lock, kept). It runs on a goroutine of its own (serve), so the
+// role's start and stop commands do not wait behind jj; the writer has a mutex of its own, so its
+// answer and the command loop's never interleave. A request with no id names nothing to answer,
+// and is logged and dropped.
 func (m *manager) readWorkspace(ctx context.Context, writer *shimwire.Writer, request shimwire.WorkspaceWork) {
-	result := shimwire.WorkspaceWorkResult{ID: request.ID, OK: true}
-	if err := request.Validate(); err != nil {
-		if request.ID == "" {
-			m.logf("launcher: refusing a workspace-work frame: %v", err)
-			return
-		}
-		result.OK, result.Error = false, err.Error()
-	} else if head, changed, work, err := m.workspaceWork(ctx, request); err != nil {
-		result.OK, result.Error = false, redact.Runes(err.Error(), maxReadErrorRunes)
-	} else {
-		result.Head, result.Changed, result.Count = head, changed, len(work)
-		result.Commits = work[:min(len(work), shimwire.MaxWorkspaceWorkCommits)]
+	result, refused := shimwire.AnswerWorkspaceWork(request, func() (string, bool, []string, error) {
+		return m.workspaceWork(ctx, request)
+	})
+	if refused != nil {
+		m.logf("launcher: refusing a workspace-work frame: %v", refused)
+		return
 	}
 	if err := writer.WriteFrame(result); err != nil {
 		m.logf("launcher: answer the workspace read %s: %v", request.ID, err)

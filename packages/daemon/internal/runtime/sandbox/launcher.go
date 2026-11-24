@@ -332,13 +332,15 @@ func (r *Runtime) launcherWorkspaceWork(ctx context.Context, issue, pod string) 
 	if !ok {
 		return none, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
 	}
-	if err := result.Validate(); err != nil {
+	work, refused, err := runtime.WorkspaceWorkOf(result)
+	switch {
+	case err != nil:
 		return none, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
+	case refused != "":
+		return none, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, refused)
 	}
-	if !result.OK {
-		return none, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, result.Error)
-	}
-	return runtime.WorkspaceWork{Head: result.Head, Changed: result.Changed, Commits: result.Commits, Count: result.Count, PodUID: pod}, nil
+	work.PodUID = pod
+	return work, nil
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
