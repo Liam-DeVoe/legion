@@ -215,12 +215,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: wait until a live write parks at the armed pause. */
+    /** @description Test hook: wait until a live write pauses at the armed pause. */
     get: operations["getApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
-    /** @description Test hook: park the document's next live write at a point (after-first-append, after-commit). */
+    /** @description Test hook: pause the document's next live write at a point (after-first-append, after-commit). */
     put: operations["putApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
     post?: never;
-    /** @description Test hook: release the live write parked at the pause and disarm it. */
+    /** @description Test hook: release the live write paused at the pause and disarm it. */
     delete: operations["deleteApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
     options?: never;
     head?: never;
@@ -5731,7 +5731,7 @@ export interface components {
       users: components["schemas"]["DispatchUser"][] | null;
     };
     LiveWritePauseState: {
-      parked: boolean;
+      paused: boolean;
     };
     MachineLookupRequest: {
       code: string;

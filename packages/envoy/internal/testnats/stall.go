@@ -44,9 +44,9 @@ type stallConn struct {
 	// server's bytes are dropped from then on, where a frozen connection holds them until Move.
 	stalled    bool
 	dropServer bool
-	// parked is closed once the reader has stopped at the gate Stall set, so it reads nothing more.
-	parked    chan struct{}
-	parkOnce  *sync.Once
+	// stopped is closed once the reader has stopped at the gate Stall set, so it reads nothing more.
+	stopped   chan struct{}
+	stopOnce  *sync.Once
 	readSince bytes.Buffer
 	// ended is closed once the client's side has ended and the server has closed its side after it,
 	// so the server has read and handled every byte the relay forwarded.
@@ -107,24 +107,24 @@ func (r *StallRelay) stall(dropServer bool) {
 	defer r.mu.Unlock()
 	for _, c := range r.conns {
 		if c.gate == nil {
-			c.gate, c.parked, c.parkOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
+			c.gate, c.stopped, c.stopOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
 		}
 		c.stalled = true
 		c.dropServer = dropServer
 	}
 }
 
-// AwaitParked waits until the reader of every stalled connection has stopped at its stall, failing
+// AwaitStopped waits until the reader of every stalled connection has stopped at its stall, failing
 // the test after 30 s. A reader waiting inside a read as the stall began reads what its client sends
 // next, at most stallReadBuffer bytes, and stops after it; a client that sends nothing keeps it there.
-func (r *StallRelay) AwaitParked(t testing.TB) {
+func (r *StallRelay) AwaitStopped(t testing.TB) {
 	t.Helper()
 	for _, c := range r.stalledConns() {
 		r.mu.Lock()
-		parked := c.parked
+		stopped := c.stopped
 		r.mu.Unlock()
 		select {
-		case <-parked:
+		case <-stopped:
 		case <-time.After(30 * time.Second):
 			t.Fatal("a stalled connection's reader did not stop at its stall within 30 s: its client sent nothing")
 		}
@@ -240,10 +240,10 @@ func (r *StallRelay) toServer(c *stallConn) {
 	buffer := make([]byte, stallReadBuffer)
 	for {
 		r.mu.Lock()
-		gate, parkOnce, parked := c.gate, c.parkOnce, c.parked
+		gate, stopOnce, stopped := c.gate, c.stopOnce, c.stopped
 		r.mu.Unlock()
 		if gate != nil {
-			parkOnce.Do(func() { close(parked) })
+			stopOnce.Do(func() { close(stopped) })
 			<-gate
 		}
 		n, err := c.client.Read(buffer)

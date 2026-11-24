@@ -28,7 +28,7 @@ import (
 // them and its age up to a lease and a slot, then the model's rows, the sender's goroutines in the
 // order they started - with what each holds in its own variables, the lane it serves, the send it
 // carries and an answer it has not acted on yet - their tries, the refresh, the sweep's hand-offs
-// and the park timer, and the sender's maps.
+// and the retry timer, and the sender's maps.
 func (r *cmRun) key() string {
 	r.lock.Mutex.Lock()
 	defer r.lock.Mutex.Unlock()
@@ -122,7 +122,7 @@ func (r *cmRun) key() string {
 		fmt.Fprintf(&b, "row %t %t %s %s|", row.committed, row.pending, canon(row.created), canon(row.claim))
 	}
 	// A goroutine as it can still act: the refresh by the slot it started in, which holds time
-	// back; a lane goroutine by its lane and its park's pending timer, and at next by the send it
+	// back; a lane goroutine by its lane and its retry's pending timer, and at next by the send it
 	// last finished, if any (claimedDuring released it), and elsewhere by the send it carries,
 	// which a lane goroutine at next no longer reads.
 	for i, g := range r.gs {
@@ -325,7 +325,7 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // nothing.
 //
 // CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
-// and write a row between a try's answer and its park and for a send to park after a failed read;
+// and write a row between a try's answer and its retry schedule and for a send to wait for a retry after a failed read;
 // the full run (ENVOY_MENTION_ORDER_MODEL=full) adds the outage pair at four periods, enough for a
 // claim to lapse and the sweep to hand its send back, and CI guards what only they reach with
 // TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim

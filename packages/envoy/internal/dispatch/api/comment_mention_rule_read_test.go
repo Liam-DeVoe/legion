@@ -43,11 +43,11 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	sender.mu.Unlock()
 	served.mentions = sender
 
-	// No outbox runs, so the issue's earlier events stay unsent: the first comment's send parks
+	// No outbox runs, so the issue's earlier events stay unsent: the first comment's send waits for its retry
 	// behind them, its timer left to the test, and the second queues behind it on the held lane.
 	issue := createInteractionIssue(t, handler, "TEST", "A failed read of the copy rule", "before")
 	first := postMentionOfS1(t, handler, issue.Key, "the first")
-	unpark := <-timers
+	runRetry := <-timers
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
 	waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
@@ -58,11 +58,11 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 
 	publishIssueEvents(t, database, issue.Key)
 	failer.stage.Store(ruleReadArmed)
-	unpark()
-	var parked func()
-	waitUntil(t, 10*time.Second, "the first send parked again, or a send reaching s1", func() bool {
+	runRetry()
+	var retryAgain func()
+	waitUntil(t, 10*time.Second, "the first send waiting for its retry again, or a send reaching s1", func() bool {
 		select {
-		case parked = <-timers:
+		case retryAgain = <-timers:
 			return true
 		default:
 			return len(state.bodiesTo("s1")) > 0
@@ -90,7 +90,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 			again, row, refreshed)
 	}
 
-	parked()
+	retryAgain()
 	settledCommentDeliveries(t, database, second)
 	states := attemptStates(t, database, "comment_deliveries", "comment_id", first)
 	bodies := state.bodiesTo("s1")
@@ -105,7 +105,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 // rule at most N times each mentionOrderRetryMax, as N lanes held behind an event do. That holds
 // whether the send waited behind an earlier event before its reads began to fail, or its very
 // first read failed, so that it never waited behind one. Each row lets the first comment's send to
-// s1 park, with the second comment's queued behind it on the issue's held lane, makes the next four
+// s1 wait for its retry, with the second comment's queued behind it on the issue's held lane, makes the next four
 // tries with every read of the rule failing (ruleReadsFail), then lets the reads answer. Through
 // the four, each try reads the rule once and makes no statement on comment_deliveries, s1 takes
 // nothing, and the sender records the first's claim as its row carries it. Once a read answers,
@@ -117,8 +117,8 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 // threshold shortened to a millisecond, the held gauges count neither send at any point and no
 // WARN names an earlier event, as it waits or as it goes. The row whose send waited behind the
 // issue's events first is the control in the same run: the gauges count its two sends, and the
-// WARN of each is logged as it goes. Parking the failed first read as a wait behind an event (in
-// serve, park's waited without `&& !again.unread`) makes the second row fail on the gauges.
+// WARN of each is logged as it goes. Retrying the failed first read as a wait behind an event (in
+// serve, scheduleRetry's waited without `&& !again.unread`) makes the second row fail on the gauges.
 func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testing.T) {
 	const warning = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 	for _, row := range []struct {
@@ -165,7 +165,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			issue := createInteractionIssue(t, handler, "TEST", "Reads of the copy rule that keep failing", "before")
 			failer.failing.Store(row.firstReadFails)
 			first := postMentionOfS1(t, handler, issue.Key, "the first")
-			unpark := <-timers
+			runRetry := <-timers
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
 			waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
@@ -173,7 +173,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 				defer sender.mu.Unlock()
 				return len(sender.lanes[held]) == 2
 			})
-			gauged("once the first send parked,")
+			gauged("once the first send waited for its retry,")
 			publishIssueEvents(t, database, issue.Key)
 			failer.failing.Store(true)
 			key := mentionKey{comment: first, target: "session:s1", attempt: 1}
@@ -181,11 +181,11 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 
 			for try := 1; try <= 4; try++ {
 				failer.take()
-				unpark()
+				runRetry()
 				select {
-				case unpark = <-timers:
+				case runRetry = <-timers:
 				case <-time.After(20 * time.Second):
-					t.Fatalf("try %d: the first send neither parked again nor went", try)
+					t.Fatalf("try %d: the first send neither waited for its retry again nor went", try)
 				}
 				reads, statements, writes := failer.take()
 				t.Logf("try %d with the rule's reads failing: %d reads of the rule, %d statements on comment_deliveries (%d writes); s1 took %q",
@@ -206,7 +206,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			gauged("after four failed reads")
 
 			failer.failing.Store(false)
-			unpark()
+			runRetry()
 			settledCommentDeliveries(t, database, second)
 			// A send's WARN as it goes (reportLate) comes after its attempt settles: the lanes are
 			// done with once no goroutine serves one.

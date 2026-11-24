@@ -186,7 +186,7 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
 // max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
-// blocked writer is all it takes to starve everything else: with four writers parked on one
+// blocked writer is all it takes to starve everything else: with four writers blocked on one
 // issue's row lock, a read of an unrelated issue waited the whole seventeen seconds the lock
 // was held, where sixteen connections served 3,853 such reads at a four-millisecond median.
 // The ceiling is picked here rather than derived from the task's CPU allotment or read out of

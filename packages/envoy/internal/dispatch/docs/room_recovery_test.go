@@ -218,7 +218,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room: %v", err)
 	}
-	// The browser's load is held inside its read until the publish is parked on that load's
+	// The browser's load is held inside its read until the publish waits on that load's
 	// ready barrier, and the failure lands only then: that is the window a publish meets a
 	// failing room in. A load that fails before the publish has reached it takes the room out
 	// of ygo's rooms with it, and the publish, finding no room of that name, loads a
@@ -283,7 +283,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	requireText(t, service, artifactID, "later\n")
 }
 
-// publishWaitsForALoadingRoom reports whether a committed write's publish is parked on the ready
+// publishWaitsForALoadingRoom reports whether a committed write's publish waits on the ready
 // barrier of a room that is still loading: past the room's inject check, which ygo runs before it
 // looks the room up, and inside that lookup's wait, where the publish meets whatever the load
 // answers (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:319-331 and

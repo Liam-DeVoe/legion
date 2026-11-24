@@ -109,7 +109,7 @@ var elapsedField = regexp.MustCompile(`\belapsed_ms=(\d+)\b`)
 // requireTimedAsLogged fails unless the answers read the access log logged n-th (from 0) took
 // timed, as the line times it: the Latency times the read inside the line's own timing, so it is
 // at most the line's, and short of it only by the layers between the two, which take
-// microseconds; timedAsLoggedSlack allows for a scheduler that parks the goroutine between them
+// microseconds; timedAsLoggedSlack allows for a scheduler that leaves the goroutine waiting between them
 // on a loaded runner, and is still far below the 900 ms read the test holds.
 func requireTimedAsLogged(t *testing.T, logged *logBuffer, n int, timed time.Duration) {
 	t.Helper()

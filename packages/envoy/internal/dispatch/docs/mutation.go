@@ -201,7 +201,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 		return fmt.Errorf("append transactional live document update: %w", err)
 	}
 	if len(op.write.versions) == 0 {
-		s.hooks.parkLiveWrite(op.write.artifactID, PauseAfterFirstAppend)
+		s.hooks.pauseLiveWrite(op.write.artifactID, PauseAfterFirstAppend)
 	}
 	// The transaction holds the document's advisory lock from its read to its end, so no eviction
 	// of the room can finish before then, and a later reload holds the write. A room that failed

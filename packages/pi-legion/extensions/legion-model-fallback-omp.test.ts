@@ -167,11 +167,11 @@ interface FallbackPane extends LegionPane {
   readonly modelTimeline: () => Promise<Recorded<string>[]>;
   /**
    * Each change of the session's model and each run's end that omp printed, in order: a change as
-   * `model`, an end as `end <n>`, or `parked <n>` when the host marked the run as waiting on a
-   * background job's result (`awaitingAsyncWork`). `n` is how many turns the gateway had served
-   * when the end arrived, which is exact: the gateway answers a run's last turn before omp can end
-   * the run. A change carries no count, since omp's frames and the gateway's requests reach the
-   * case on two streams, and a change printed before a request can be read after it.
+   * `model`, an end as `end <n>`, or `awaitingAsyncWork <n>` when the host marked the run as
+   * waiting on a background job's result (`awaitingAsyncWork`). `n` is how many turns the gateway
+   * had served when the end arrived, which is exact: the gateway answers a run's last turn before
+   * omp can end the run. A change carries no count, since omp's frames and the gateway's requests
+   * reach the case on two streams, and a change printed before a request can be read after it.
    */
   readonly frames: readonly string[];
 }
@@ -358,8 +358,8 @@ async function fallbackPane(options: {
         }
         if ("type" in frame && frame.type === "agent_end") {
           runsEnded += 1;
-          const parked = "awaitingAsyncWork" in frame && frame.awaitingAsyncWork === true;
-          frames.push(`${parked ? "parked" : "end"} ${served.length}`);
+          const awaiting = "awaitingAsyncWork" in frame && frame.awaitingAsyncWork === true;
+          frames.push(`${awaiting ? "awaitingAsyncWork" : "end"} ${served.length}`);
         }
         for (const check of [...waits]) check();
       },
@@ -934,11 +934,12 @@ test.skipIf(skip)(
       "weak-model",
       "strong-model",
     ]);
-    // The order omp printed: the walk at the refusal, the job's run parked on the job once the
-    // replay (the fourth turn) has answered, and the return after that with no turn served in
-    // between, before the job's result started a run. No hook ran while the pane waited, so the
-    // return is the timer's; a return made inside the job's run would come before `parked 4`.
-    expect(pane.frames).toEqual(["end 1", "model", "parked 4", "model", "end 5"]);
+    // The order omp printed: the walk at the refusal, the job's run awaiting its background job
+    // once the replay (the fourth turn) has answered, and the return after that with no turn
+    // served in between, before the job's result started a run. No hook ran while the pane waited,
+    // so the return is the timer's; a return made inside the job's run would come before
+    // `awaitingAsyncWork 4`.
+    expect(pane.frames).toEqual(["end 1", "model", "awaitingAsyncWork 4", "model", "end 5"]);
     // And the return came no earlier than the wait the refusal armed, which the transcript records.
     const armed = (await pane.cooldowns())[0];
     expect(armed).toMatchObject({

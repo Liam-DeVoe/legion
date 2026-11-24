@@ -84,7 +84,7 @@ const apiError = (status: number): EnvoyApiError =>
     responseBody: JSON.stringify({ error: "no live holder" }),
   });
 
-/** What a test moves while a task is parked: the open session, the deadline, each listener call. */
+/** What a test moves while a task waits: the open session, the deadline, each listener call. */
 interface HarnessControl {
   /** The one session open here, which the module's `sessionOpen` answers for. */
   open: string;

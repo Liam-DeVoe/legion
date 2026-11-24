@@ -256,41 +256,41 @@ func liveWritePausePath(artifactID string, point docs.LiveWritePausePoint) strin
 	return "/api/v1/artifacts/" + artifactID + "/_test/live-write-pauses/" + string(point)
 }
 
-// armLiveWritePause makes the next live write of the document on this process park at point
-// until releaseLiveWritePause. Arm it before the write is sent, then awaitLiveWriteParked.
+// armLiveWritePause makes the next live write of the document on this process pause at point
+// until releaseLiveWritePause. Arm it before the write is sent, then awaitLiveWritePaused.
 func (p *dispatchProcess) armLiveWritePause(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
 	t.Helper()
 	p.call(t, http.MethodPut, liveWritePausePath(artifactID, point), "", http.StatusNoContent)
 }
 
-// awaitLiveWriteParked waits up to ten seconds for a write of the document to park at the pause
+// awaitLiveWritePaused waits up to ten seconds for a write of the document to pause at the pause
 // armed at point, and fails the test when none does.
-func (p *dispatchProcess) awaitLiveWriteParked(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
+func (p *dispatchProcess) awaitLiveWritePaused(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
 	t.Helper()
 	answer := p.call(t, http.MethodGet, liveWritePausePath(artifactID, point)+"?wait=10s", "", http.StatusOK)
-	var parked struct {
-		Parked bool `json:"parked"`
+	var paused struct {
+		Paused bool `json:"paused"`
 	}
-	if err := json.Unmarshal(answer, &parked); err != nil {
+	if err := json.Unmarshal(answer, &paused); err != nil {
 		t.Fatalf("decode the live write pause: %v: %s", err, answer)
 	}
-	if !parked.Parked {
-		t.Fatalf("no live write of %s parked at %s within ten seconds:\n%s", artifactID, point, p.Output.String())
+	if !paused.Paused {
+		t.Fatalf("no live write of %s paused at %s within ten seconds:\n%s", artifactID, point, p.Output.String())
 	}
 }
 
-// releaseLiveWritePause lets the write parked at point go on and disarms the pause, answering
-// whether a write had parked there.
+// releaseLiveWritePause lets the write paused at point go on and disarms the pause, answering
+// whether a write had paused there.
 func (p *dispatchProcess) releaseLiveWritePause(t *testing.T, artifactID string, point docs.LiveWritePausePoint) bool {
 	t.Helper()
 	answer := p.call(t, http.MethodDelete, liveWritePausePath(artifactID, point), "", http.StatusOK)
 	var released struct {
-		Parked bool `json:"parked"`
+		Paused bool `json:"paused"`
 	}
 	if err := json.Unmarshal(answer, &released); err != nil {
 		t.Fatalf("decode the live write release: %v: %s", err, answer)
 	}
-	return released.Parked
+	return released.Paused
 }
 
 // pollBehindHorizon asks condition every horizontest.Poll until it holds, for as long as the
@@ -5016,7 +5016,7 @@ func waitForFleetCommit(t *testing.T, want string, processes ...*dispatchProcess
 // document whose readers are on different processes. Each drives real editors (docstest.Peer
 // speaks the dashboard's Hocuspocus framing) and the processes' own API, hooks and logs, and
 // arranges each race it is about with a test hook (DISPATCH_TEST_HOOKS) - a held persistence, a
-// parked live write - or a lock of its own, never with a sleep that hopes.
+// paused live write - or a lock of its own, never with a sleep that hopes.
 
 // liveWithin is how soon a change on one process must reach a reader on the other: the spec's
 // "at once", which the plan pins at one second.
@@ -6225,7 +6225,7 @@ func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	}
 }
 
-// backgroundRequest is a request sent from a goroutine of its own, for a request a row parks
+// backgroundRequest is a request sent from a goroutine of its own, for a request a row blocks
 // with a hook while it does something else.
 type backgroundRequest struct {
 	answered chan httpAnswer
@@ -6338,15 +6338,15 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 		head := storedHead(t, pair, artifactID)
 		pair.a.armLiveWritePause(t, artifactID, docs.PauseAfterFirstAppend)
 		write := pair.a.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "pear", "pear tart", "", true), asAgent())
-		// Parked after its first append, the write holds the document's advisory lock, so B's
+		// Paused after its first append, the write holds the document's advisory lock, so B's
 		// append of bob's delete waits on it: the delete is in B's room and not stored.
-		pair.a.awaitLiveWriteParked(t, artifactID, docs.PauseAfterFirstAppend)
+		pair.a.awaitLiveWritePaused(t, artifactID, docs.PauseAfterFirstAppend)
 		deleteP(t, artifactID, bob, bobsOtherTab, agentRowWithoutP)
 		if moved := storedHead(t, pair, artifactID); moved != head {
 			t.Fatalf("the document moved from update %d to %d while the agent's write held its lock, so bob's delete is not the update in flight this case is about", head, moved)
 		}
 		if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterFirstAppend) {
-			t.Fatalf("the release found no write parked")
+			t.Fatalf("the release found no write paused")
 		}
 		answer := write.await(t, 30*time.Second, "the agent's edit through A, after its release", pair.a)
 		decoded := decodeLostEdit(t, answer)
@@ -6398,7 +6398,7 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 		}
 		pair.a.armLiveWritePause(t, artifactID, docs.PauseAfterCommit)
 		write := pair.a.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "pear", "pear tart", "", true), asAgent())
-		pair.a.awaitLiveWriteParked(t, artifactID, docs.PauseAfterCommit)
+		pair.a.awaitLiveWritePaused(t, artifactID, docs.PauseAfterCommit)
 		// The write is committed; bob's delete reaches B's room now, and B stores it 300 ms on.
 		pair.b.holdPersistence(t, artifactID, 300*time.Millisecond)
 		deleteP(t, artifactID, bob, bobsOtherTab, "Intro, first.\n\nOutro.\n")
@@ -6408,7 +6408,7 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 			}
 		}
 		if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterCommit) {
-			t.Fatalf("the release found no write parked")
+			t.Fatalf("the release found no write paused")
 		}
 		answer := write.await(t, 30*time.Second, "the agent's edit through A, after its release", pair.a)
 		if answer.status != http.StatusOK {
@@ -6478,7 +6478,7 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 	// which waits up to a second (MarkWait) for the mark to arrive. Alice places the mark on A;
 	// the comment goes through B, where bob's tab keeps a room of the document.
 	//
-	// While alice connects and marks, a write through B is parked after its commit, in its
+	// While alice connects and marks, a write through B is paused after its commit, in its
 	// publish (the live-write pause hook), and released once the mark is stored: a process that
 	// keeps its rooms current shows the mark whatever that write does.
 	t.Run("a mark placed by an editor on A is verified by a comment anchored through B", func(t *testing.T) {
@@ -6486,14 +6486,14 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 		bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, "The quick brown fox\n")
 		pair.b.armLiveWritePause(t, artifactID, docs.PauseAfterCommit)
 		write := pair.b.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "brown", "red", "", false), asUser("carol"))
-		pair.b.awaitLiveWriteParked(t, artifactID, docs.PauseAfterCommit)
+		pair.b.awaitLiveWritePaused(t, artifactID, docs.PauseAfterCommit)
 		alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "The quick red fox\n")
 		markID := "mark-" + uniqueProjectKey(t, "M")
 		head := storedHead(t, pair, artifactID)
 		placeMark(t, alice, "alice", "quick", markID)
 		pair.waitStoredPast(t, artifactID, head, 5*time.Second, "alice's mark")
 		if !pair.b.releaseLiveWritePause(t, artifactID, docs.PauseAfterCommit) {
-			t.Fatalf("the release found no write parked")
+			t.Fatalf("the release found no write paused")
 		}
 		if answer := write.await(t, 30*time.Second, "carol's write through B, after its release", pair.b); answer.status != http.StatusOK {
 			t.Fatalf("carol's write through B: %v", answer)
@@ -6639,11 +6639,11 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 	t.Run("33 conditional edits across A and B: 32 queue and one answers 429 EDIT_QUEUE_FULL", func(t *testing.T) {
 		_, artifactID := pair.a.createIssueIn(t, project, "Queued on both", "alpha")
 		_, token := pair.a.textAndToken(t, artifactID)
-		// The first edit parks after its first append, holding the document; every later
+		// The first edit pauses after its first append, holding the document; every later
 		// conditional edit of it waits behind it, on A in A's queue and on B in B's.
 		pair.a.armLiveWritePause(t, artifactID, docs.PauseAfterFirstAppend)
 		first := pair.a.requestInBackground(http.MethodPost, editPath(artifactID), editBody(t, "alpha", "beta", token, false), asUser("alice"))
-		pair.a.awaitLiveWriteParked(t, artifactID, docs.PauseAfterFirstAppend)
+		pair.a.awaitLiveWritePaused(t, artifactID, docs.PauseAfterFirstAppend)
 		const queued = 32
 		later := make([]backgroundRequest, queued)
 		for index := range later {
@@ -6675,10 +6675,10 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		if refused == 0 {
-			t.Errorf("33 conditional edits of one document were in flight at once - the first parked holding it, 16 queued behind it on A and 16 on B - and none answered 429 EDIT_QUEUE_FULL within 15 s: each process held its own queue to 32, so the two together queued 33")
+			t.Errorf("33 conditional edits of one document were in flight at once - the first paused holding it, 16 queued behind it on A and 16 on B - and none answered 429 EDIT_QUEUE_FULL within 15 s: each process held its own queue to 32, so the two together queued 33")
 		}
 		if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterFirstAppend) {
-			t.Fatalf("the release found no edit parked")
+			t.Fatalf("the release found no edit paused")
 		}
 		first.await(t, 60*time.Second, "the first conditional edit", pair.a)
 		refused = 0

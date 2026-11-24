@@ -152,7 +152,7 @@ func (p *PgVersioned) AppendUpdatesWithCredit(ctx context.Context, room string, 
 }
 
 // appendUpdates is AppendUpdatesWithCredit's append, with owes, whether the transaction marks the
-// document owing a settlement: a parked append writes no owed row (AppendParkedUpdate).
+// document owing a settlement: an append of pending bytes writes no owed row (AppendPendingBytes).
 func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []BrowserUpdate, owes bool) (persistence.Version, error) {
 	if len(updates) == 0 {
 		return 0, fmt.Errorf("append document updates: no update to append")

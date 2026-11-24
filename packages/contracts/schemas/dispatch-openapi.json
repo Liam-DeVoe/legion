@@ -830,7 +830,7 @@
     },
     "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {
       "get": {
-        "description": "Test hook: wait until a live write parks at the armed pause.",
+        "description": "Test hook: wait until a live write pauses at the armed pause.",
         "operationId": "getApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -891,7 +891,7 @@
         "x-test-hook": true
       },
       "put": {
-        "description": "Test hook: park the document's next live write at a point (after-first-append, after-commit).",
+        "description": "Test hook: pause the document's next live write at a point (after-first-append, after-commit).",
         "operationId": "putApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -939,7 +939,7 @@
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Test hook: release the live write parked at the pause and disarm it.",
+        "description": "Test hook: release the live write paused at the pause and disarm it.",
         "operationId": "deleteApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -24149,12 +24149,12 @@
       },
       "LiveWritePauseState": {
         "properties": {
-          "parked": {
+          "paused": {
             "type": "boolean"
           }
         },
         "required": [
-          "parked"
+          "paused"
         ],
         "type": "object"
       },

@@ -210,14 +210,14 @@ func (p *PgVersioned) AppendUpdate(ctx context.Context, room string, update []by
 	return p.AppendUpdatesWithCredit(ctx, room, []BrowserUpdate{{Update: update, ContentChanged: true}})
 }
 
-// AppendParkedUpdate stores a room's parked bytes - what a peer's update kept but could not
-// integrate, since it waits for an edit the room has not received (storeParked) - as one update
+// AppendPendingBytes stores a room's pending bytes - what a peer's update kept but could not
+// integrate, since it waits for an edit the room has not received (storePendingBytes) - as one update
 // with no class, no credit and no pending authors, and without marking the document owing a
 // settlement: they change nothing a settlement reads, and the commit that later integrates them
 // marks the document owed itself. It runs the transaction a room's batch of one does
 // (appendUpdates), so it is gated on the room cursor ctx is marked with and announces the change
 // as any append does.
-func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, update []byte) (persistence.Version, error) {
+func (p *PgVersioned) AppendPendingBytes(ctx context.Context, room string, update []byte) (persistence.Version, error) {
 	return p.appendUpdates(ctx, room, []BrowserUpdate{{Update: update}}, false)
 }
 
@@ -1041,11 +1041,11 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // seed check take, and Service.maxPendingItems, which the rooms and the check they are compared
 // with take - and their constructors set both to this (NewPgVersioned, New), so every production
 // decode takes this queue; only a test lowers the two (shrinkPendingItems), to make a log that
-// does not fold out of a few dozen items. ygo's decoder parks each item whose parent it cannot
+// does not fold out of a few dozen items. ygo's decoder keeps pending each item whose parent it cannot
 // place yet, and each later item of that client behind it, and refuses the update once its queue
-// is full, 100,000 items at ygo's default. An update decoded alone parks every item that leans on
+// is full, 100,000 items at ygo's default. An update decoded alone leaves pending every item that leans on
 // the document it was written against, and no update carries more items than this, so no decode
-// parks past it. ygo's own check of each update the service broadcasts (Server.BroadcastUpdate)
+// leaves pending more than that. ygo's own check of each update the service broadcasts (Server.BroadcastUpdate)
 // takes no pending queue at all: it is the check ygo's bundled stores run, since the room has
 // already applied the update (reearth/ygo#268, in the pinned fork).
 // TestTheStoreTakesOneBrowserUpdateItsRoomTook is an update the store decodes itself under this

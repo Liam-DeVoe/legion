@@ -363,7 +363,7 @@ const natsState = {
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
   realConnect: false,
-  /** A connect a test parks on, so a pass can be abandoned at its deadline while its connection
+  /** A connect a test holds, so a pass can be abandoned at its deadline while its connection
    *  is still being made and what its late continuation writes can be watched. */
   heldConnect: undefined as Promise<void> | undefined,
   drainHangs: false,
@@ -374,7 +374,7 @@ const natsState = {
   /** Every subject the connection had been asked to subscribe to when a `flush()` was called:
    *  the round trip the server answers, which is what makes a subscription live. */
   flushes: [] as string[][],
-  /** A `flush()` a test parks on, so what the extension does before the server confirms a
+  /** A `flush()` a test holds, so what the extension does before the server confirms a
    *  subscription can be watched. */
   heldFlush: undefined as Promise<void> | undefined,
   /** The subject whose round trip rejects: the next `flush()` taken once that subject's SUB has
@@ -428,7 +428,7 @@ const natsStandInConnect = async (options: {
     }
   };
   connectWith("stand-in-nonce");
-  // Parked only where a test asks for it: every other connect answers at once, as before.
+  // Held only where a test asks for it: every other connect answers at once, as before.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
@@ -557,7 +557,7 @@ const natsStandInConnect = async (options: {
           // nats.js ends the async iterator on unsubscribe(), which is what
           // makes a deliberate close indistinguishable from a dropped
           // connection inside the pump. A mock that leaves the iterator
-          // parked cannot observe that, and lets resubscribe bugs ship green.
+          // waiting cannot observe that, and lets resubscribe bugs ship green.
           notify();
         },
         [Symbol.asyncIterator]: () => ({
@@ -860,8 +860,8 @@ afterEach(async () => {
   natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
   natsState.connections.length = 0;
-  // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
-  // would park every later test's connect for the rest of the process.
+  // A test aborted at Bun's own timeout never runs its `finally`: a connect left held here
+  // would hold every later test's connect for the rest of the process.
   natsState.heldConnect = undefined;
   natsState.published.length = 0;
   natsState.onPublish = undefined;
@@ -880,7 +880,7 @@ afterEach(async () => {
   natsState.drainHangs = false;
   natsState.drainStarted = false;
   natsState.statusReaders.length = 0;
-  // As for `heldConnect`: a parked flush left behind would park every later test's subscribe.
+  // As for `heldConnect`: a held flush left behind would hold every later test's subscribe.
   natsState.heldFlush = undefined;
   natsState.flushes.length = 0;
   natsState.failFlushOnSubject = undefined;
@@ -2207,7 +2207,7 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// A row whose wait can still be unsettled when the row ends (bun fails a row at its timeout and
 // goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
 // its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
 // neither polls on after the row nor throws into a later one.
@@ -10035,7 +10035,7 @@ console.log(JSON.stringify(args));
       // moved: from here the hold is a newer holder, and the refusal it carries would stand.
       lastSeen.set("ses_nr", (lastSeen.get("ses_nr") ?? 1) + 1);
 
-      // The next move's claim is refused too, and the read of the hold inside it parks at the
+      // The next move's claim is refused too, and the read of the hold inside it waits at the
       // listener: the move is abandoned at its deadline with that read still in flight.
       const reading = gateRoleRead(role);
       tick();
@@ -13219,7 +13219,7 @@ console.log(JSON.stringify(args));
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
       expect(registrations).toBe(1);
 
-      // This tick registers, then parks in the role move its pass awaits.
+      // This tick registers, then waits in the role move its pass awaits.
       wedgeRoleRead = true;
       intervals[0]?.();
       await new Promise((resolve) => setTimeout(resolve, 60));
@@ -13347,7 +13347,7 @@ console.log(JSON.stringify(args));
         await fixture.handlers.get("session_start")?.({}, context);
         expect(registered).toEqual(["ses_stall_moved"]);
 
-        // A tick's pass parks at its registration: the `healing` latch stays set, so the backstop
+        // A tick's pass waits at its registration: the `healing` latch stays set, so the backstop
         // is what registers from here.
         wedgePass = true;
         intervals[0]?.();
@@ -13432,7 +13432,7 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
-      // This tick's pass parks in its registration and is abandoned at its deadline.
+      // This tick's pass waits in its registration and is abandoned at its deadline.
       wedgeRegistration = true;
       intervals[0]?.();
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -13502,7 +13502,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
-        // The first session's pass parks here, with its connection half made.
+        // The first session's pass waits here, with its connection half made.
         natsState.heldConnect = connected.promise;
         envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_fenced_a"));
@@ -13612,7 +13612,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
-        // The first session's pass parks in its dial and is abandoned at its deadline.
+        // The first session's pass waits in its dial and is abandoned at its deadline.
         natsState.heldConnect = connected.promise;
         envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dial_a"));
@@ -15238,7 +15238,7 @@ console.log(JSON.stringify(args));
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
       /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
-       *  the row returned or bun failed it at its timeout with a wait still parked. */
+       *  the row returned or bun failed it at its timeout with a wait still unsettled. */
       const rowEnds: AbortController[] = [];
       afterEach(() => {
         for (const ended of rowEnds.splice(0)) ended.abort();
@@ -15256,7 +15256,7 @@ console.log(JSON.stringify(args));
        * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
        * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
        * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
-       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * the event loop that came back late) is still unsettled when bun fails the row and runs the
        * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
        * and answers false, and the row returns, so nothing of it polls or throws after it ended.
        */
@@ -21515,11 +21515,11 @@ console.log(JSON.stringify(args));
     const id = "ses_relay_closed";
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "relay-closed-reason");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
         expect(natsState.controls.get(deliverSubject(id))?.active()).toBe(true);
         // Every dial from now on waits, so the relay's own redial never ends during the row.
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
         await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
@@ -21531,7 +21531,7 @@ console.log(JSON.stringify(args));
         }
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });
@@ -21563,9 +21563,9 @@ console.log(JSON.stringify(args));
     const closeError = NatsError.errorForCode(ErrorCode.AuthenticationExpired);
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "relay-closed-error");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         natsState.closeError = closeError;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
@@ -21575,7 +21575,7 @@ console.log(JSON.stringify(args));
         expect(await session.follow("team.relay-closed-error")).toContain(reason);
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });
@@ -21623,16 +21623,16 @@ console.log(JSON.stringify(args));
     const control = `agentstream.${id}.control`;
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "control-open-race");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(control)?.end();
         await until(() => natsState.connectedNames.length === 2, "the control subject's own dial");
         session.heartbeat();
         await until(() => natsState.connectedNames.length === 3, "the heartbeat's dial");
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await until(
           () => (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active()),
           "the control subject opened again"
@@ -21644,7 +21644,7 @@ console.log(JSON.stringify(args));
         expect(live).toHaveLength(1);
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });

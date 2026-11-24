@@ -255,7 +255,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		listening = true
 		// One wake more, so the holder is certain to enter a wait after the flag is set.
 		// OnConnected signals before it reports, so the holder may have taken that connection's
-		// own wake, scanned and parked again while the flag was still false.
+		// own wake, scanned and waited again while the flag was still false.
 		outbox.signal()
 	}
 	outbox.afterServeWait = func() {
