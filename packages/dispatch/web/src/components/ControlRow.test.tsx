@@ -540,7 +540,7 @@ test("an action given a refusal is drawn refused with its refusal shown, and a p
   const onPress = mock(() => {});
   const refused = pressAction("New document", {
     onPress,
-    refusal: { id: "closed-refusal", text: "This issue is closed." },
+    refusal: { id: "closed-refusal", words: "This issue is closed." },
   });
   for (const width of [1280, 390]) {
     const restore = layOutBar({ width });

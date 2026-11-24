@@ -32,7 +32,7 @@ test("an action given a refusal is held with its refusal as its description, and
         icon={ICON}
         label="Upload"
         onPress={onPress}
-        refusal={{ id: "closed", text: "This issue is closed." }}
+        refusal={{ id: "closed", words: "This issue is closed." }}
       />
       <p id="closed">This issue is closed.</p>
     </>

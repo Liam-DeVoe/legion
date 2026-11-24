@@ -12,10 +12,12 @@ export type ViewPanelProps = Omit<PanelTriggerProps, "control">;
 
 /** Why an action cannot be pressed now, as **New document** and **Upload** carry on a closed
  *  issue: the words, and the id of the line under the bar that shows them, which the action names
- *  as its description. */
+ *  as its description. The words are the page's own, never a stored text, so they are `words`
+ *  and not `text`, the name of a stored text that the reference census holds to its tree
+ *  (`features/refs/surface-lists.test.ts`). */
 export interface BarActionRefusal {
   readonly id: string;
-  readonly text: string;
+  readonly words: string;
 }
 
 /** An action of the control bar: a label and what it does. */
@@ -124,7 +126,7 @@ export function BarAction({
       aria-label={iconOnly ? label : undefined}
       className={barButton(size, filled ? "filled" : "quiet", iconOnly)}
       data-control={CONTROL.barAction}
-      title={refusal?.text ?? (iconOnly ? label : undefined)}
+      title={refusal?.words ?? (iconOnly ? label : undefined)}
       type="button"
       {...heldPress(refusal !== undefined, onPress)}
     >

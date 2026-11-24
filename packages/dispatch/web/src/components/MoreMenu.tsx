@@ -38,7 +38,7 @@ function words({ label, refusal }: BarActionProps): ReactNode {
   return (
     <span className="flex flex-col">
       {label}
-      {refusal === undefined ? null : <span className="text-xs font-normal">{refusal.text}</span>}
+      {refusal === undefined ? null : <span className="text-xs font-normal">{refusal.words}</span>}
     </span>
   );
 }
