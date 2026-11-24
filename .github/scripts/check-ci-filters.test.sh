@@ -1065,6 +1065,59 @@ check "fails" "$(is "$status" 1)"
 check "names the job, its step and the read" \
   "$(contains "$out" "job lint step \"Lint everything\"'s run reads \${{ needs.changes.outputs.matched_filters }}")"
 
+# The same reads under the other spellings GitHub reads, each of which a check that knew one
+# spelling passed: rule 22's spelling half runs over every scanned expression, not only conditions.
+# spelled_read <fixture> <file> <text> <replacement> <refusal pattern>: the list gate with <text>
+# in <file> (ci.yaml or called.yaml) replaced, refused with a line matching the pattern.
+spelled_read() {
+  root=$(fixture "$1")
+  list_gate "$root"
+  if [ "$2" = called.yaml ]; then
+    add_called_step "$root" $'      - name: Note apx\n        run: echo \'apx\''
+  fi
+  replace "$root/.github/workflows/$2" "$3" "$4"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the read" "$(contains "$out" "$5")"
+}
+
+echo "case: a ci.yaml step's run: reading the list as outputs['matched_filters']"
+spelled_read spelt-outputs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs.changes.outputs['matched_filters'] }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\.changes\.outputs\['matched_filters'\]"
+
+echo "case: a ci.yaml step's run: reading the list through needs['changes']"
+spelled_read spelt-needs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs['changes'].outputs.matched_filters }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\['changes'\]\.outputs\.matched_filters"
+
+echo "case: a ci.yaml step's run: reading every job's list through needs.*"
+spelled_read spelt-needs-star ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ join(needs.*.outputs.matched_filters, ',') }}'" \
+  "job lint step \"Lint everything\"'s run reads [$]{{ join(needs\.\*\.outputs\.matched_filters, ',') }}, which carries every filter's verdict"
+
+echo "case: a called step's run: reading the list as INPUTS."
+spelled_read spelt-inputs-case called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ INPUTS.matched-filters }}'" \
+  "job called step \"Note apx\"'s run reads an input as INPUTS\.matched-filters"
+
+echo "case: a called step's run: reading the list as inputs['...']"
+spelled_read spelt-inputs-index called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ inputs['matched-filters'] }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs\['matched-filters'\]"
+
+echo "case: a called step's run: reading every input at once"
+spelled_read spelt-inputs-whole called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ toJSON(inputs) }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs: this check resolves an input spelt inputs\.<name> alone"
+
+echo "case: a ci.yaml step's run: reading every job's result through needs.* passes"
+root=$(fixture spelt-needs-star-result)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ join(needs.*.result, ',') }}'"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
 echo "case: two filters whose names differ only in case, beside the list"
 root=$(fixture list-gate-name-cases)
 list_gate "$root"

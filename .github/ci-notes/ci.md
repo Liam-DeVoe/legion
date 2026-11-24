@@ -1421,15 +1421,17 @@ of the list, and refuses a filter name JSON would escape or two names that diffe
 which the quoted `contains` (GitHub's ignores case) could not tell apart; rule 22 refuses a
 condition naming the list that is not that whole shape (`!= ''`, a `!` before the `contains` or
 a term after it, a `contains` without the quotes, a missing `all` or result term), a job-level
-read of it, and a spelling of the changes job or an input it does not read
-(`needs['changes']`, `INPUTS.x`). It also refuses every other read of a value that carries every
-filter's verdict - the list, `filter_verdicts`, the ci-ok payload (`toJSON(needs.changes)`,
-which holds both) and `toJSON(needs)`: in a condition but the payload's `!= ''`, which asks only
-whether ci.yaml is the caller, and in a `run:`, `env:` or `with:` but ci.yaml's own `with:` to a
-called workflow, the ci-ok report action's `changes:` and the ci-ok job itself. A step that read
-one of them for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) would be gated on a
-filter no rule reads. No job is gated on the list: ci-ok's CI_OK_SELECTED_BY maps a job to the
-output that is `'true'` when changes selects it, and the list is never `'true'`, so each job
+read of it, and, in a condition or in any other `${{ }}` of a job, a spelling of the changes job
+or an input it does not read (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`,
+`toJSON(inputs)`). It also refuses every other read of a value that carries every filter's
+verdict - the list, `filter_verdicts`, the ci-ok payload (`toJSON(needs.changes)`, which holds
+both), `toJSON(needs)` and every job's outputs through `needs.*` (but `needs.*.result`): in a
+condition but the payload's `!= ''`, which asks only whether ci.yaml is the caller, and in a
+`run:`, `env:` or `with:` but ci.yaml's own `with:` to a called workflow, the ci-ok report
+action's `changes:` and the ci-ok job itself. A step that read one of them for a filter
+(`case '${{ inputs.matched-filters }}' in *apx*)`) would be gated on a filter no rule reads. No
+job is gated on the list: ci-ok's CI_OK_SELECTED_BY maps a job to the output that is `'true'`
+when changes selects it, and the list is never `'true'`, so each job
 keeps an output of its own and that map needs no change.
 .github/scripts/ci-router-outputs.test.sh evaluates each gated step's `if:` through ci.yaml's
 `with:` as GitHub would (`ci_router_outputs.py --steps`): with each filter matched alone, the

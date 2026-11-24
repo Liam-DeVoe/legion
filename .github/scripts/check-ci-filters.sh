@@ -380,15 +380,17 @@
 #      filter's (`ci_tools_test` inside `mirror_ci_tools_test`); a condition without the `all`
 #      term is skipped on every dispatched run, and one without the result term on every run whose
 #      changes failed; and a job-level read selects a job by an output that is never 'true', which
-#      ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, or a `with:` value of ci.yaml, that
+#      ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a `with:` value of ci.yaml, or any
+#      other `${{ }}` of a job of ci.yaml or of a workflow it calls (but ci.yaml's ci-ok job), that
 #      names the changes job other than as needs.changes.result, needs.changes.outputs.<name> or
-#      needs.changes, or an input other than as inputs.<name> (`needs['changes']`, `INPUTS.x`,
-#      `inputs. x`): GitHub reads those spellings as the same values, and no rule here reads them,
-#      so a gate so spelt would be held to nothing. An input's name is read in any case, as GitHub
-#      reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which holds
-#      the list and filter_verdicts), filter_verdicts or `toJSON(needs)` other than as the
-#      payload's `!= ''`, which asks only whether ci.yaml is the caller; and a `run:`, `env:`,
-#      `with:` or other text of a job that reads the list, filter_verdicts or the payload, but
+#      needs.changes, or an input other than as inputs.<name> (`needs['changes']`,
+#      `outputs['x']`, `INPUTS.x`, `inputs['x']`, `inputs. x`, `toJSON(inputs)`): GitHub reads those
+#      spellings as the same values, and no rule here reads them, so a read so spelt would be held
+#      to nothing. An input's name is read in any case, as GitHub reads it. Also a condition
+#      reading the ci-ok payload (`toJSON(needs.changes)`, which holds the list and
+#      filter_verdicts), filter_verdicts, `toJSON(needs)` or every job's outputs (`needs.*` but
+#      `needs.*.result`) other than as the payload's `!= ''`, which asks only whether ci.yaml is
+#      the caller; and a `run:`, `env:`, `with:` or other text of a job that reads any of them, but
 #      ci.yaml's own `with:` to a workflow it calls, the ci-ok report action's `changes:` and
 #      ci.yaml's ci-ok job: each of these names every filter on every run, so a step reading one
 #      for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is gated on a filter no

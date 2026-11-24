@@ -1080,39 +1080,47 @@ CHANGES_READ = re.compile(r"needs\.changes(?:\.result|\.outputs\.[A-Za-z0-9_-]+)
 
 
 def spelling_refusals(text: str, path: str, where: str) -> list:
-    """Rule 22, its second half: a condition or a `with:` value names the changes job only as
-    `needs.changes.result`, `needs.changes.outputs.<name>` or `needs.changes` whole, and an input
-    only as `inputs.<name>`. GitHub reads `needs['changes'].outputs['x']`, `NEEDS.Changes` and
-    `INPUTS.x` as the same values, and no rule here reads any of them: a gate so spelt would be
-    held to nothing, and a list read so spelt would escape the shape above."""
+    """Rule 22, its second half: a condition, a `with:` value or any other `${{ }}` of a job names
+    the changes job only as `needs.changes.result`, `needs.changes.outputs.<name>` or
+    `needs.changes` whole, and an input only as `inputs.<name>`. GitHub reads
+    `needs['changes'].outputs['x']`, `NEEDS.Changes`, `INPUTS.x` and `inputs['x']` as the same
+    values, and `toJSON(inputs)` as every input at once, and no rule here reads any of them: a gate
+    so spelt would be held to nothing, and a list read so spelt would escape the rest of rule 22."""
     refusals = []
+
+    def spelt(term) -> str:
+        # The term and the chain of indexes and properties after it, so the refusal quotes the
+        # read as written (`needs.changes.outputs['x']`, not `needs.changes`).
+        return term.group(0) + re.match(r"[^\s,)}|&!=]*", text[term.end():]).group(0)
+
     for term in NEEDS_TERM.finditer(text):
         job = (term.group(1) or term.group(2) or "").lower()
         if job != "changes":
             continue
         if not CHANGES_READ.match(text, term.start()):
-            spelt = term.group(0)
-            refusals.append(error(path, f"{where} names the changes job as {spelt}: this check reads it spelt "
+            refusals.append(error(path, f"{where} names the changes job as {spelt(term)}: this check reads it spelt "
                                         f"needs.changes.result, needs.changes.outputs.<name> or needs.changes, so a "
-                                        f"gate spelt otherwise is held to no filter"))
+                                        f"read spelt otherwise is held to nothing"))
     for term in INPUTS_TERM.finditer(text):
         # Exactly `inputs.<name>`: no space about the dot, which GitHub reads past and INPUT_REF,
         # the reference resolve_condition rewrites, does not.
         if not re.fullmatch(r"inputs\.[A-Za-z0-9_-]+", term.group(0)):
-            spelt = term.group(0)
-            refusals.append(error(path, f"{where} reads an input as {spelt}: this check resolves an input spelt "
-                                        f"inputs.<name> alone, so a gate spelt otherwise is held to no filter"))
+            refusals.append(error(path, f"{where} reads an input as {spelt(term)}: this check resolves an input "
+                                        f"spelt inputs.<name> alone, so a read spelt otherwise is held to nothing"))
     return refusals
 
 
 # A read of a value carrying more than one filter's verdict, once its caller's values are put
 # in: the list of matched filters, the paths filter's verdict object (filter_verdicts), the
-# changes job whole (ci.yaml's ci-ok payload, `toJSON(needs.changes)`, which holds both) and every
-# job's outputs at once (`toJSON(needs)`).
+# changes job whole (ci.yaml's ci-ok payload, `toJSON(needs.changes)`, which holds both), every
+# job's outputs at once (`toJSON(needs)`) and every job's outputs by the `*` filter
+# (`join(needs.*.outputs.matched_filters, ',')`), which a job's result alone (`needs.*.result`)
+# is not.
 CARRIER = re.compile(
     rf"needs\.changes\.outputs\.(?:{LIST_OUTPUT}|filter_verdicts)(?![A-Za-z0-9_-])"
     r"|needs\.changes(?![A-Za-z0-9_.\[-])"
-    r"|(?<![A-Za-z0-9_.-])needs(?![A-Za-z0-9_.\[-])", re.I)
+    r"|(?<![A-Za-z0-9_.-])needs(?![A-Za-z0-9_.\[-])"
+    r"|(?<![A-Za-z0-9_.-])needs\s*\.\s*\*(?!\s*\.\s*result(?![A-Za-z0-9_-]))", re.I)
 # The one test of the payload a condition may make: whether ci.yaml handed it on at all, which
 # docs-site.yaml's and dispatch-browser.yaml's report steps ask, `inputs.ci-ok-changes != ''`.
 PAYLOAD_PRESENCE = re.compile(r"(?i:tojson)\s*\(\s*needs\.changes\s*\)\s*(?:!=|==)\s*''")
@@ -1181,24 +1189,28 @@ def carrier_text_refusals(documents: dict, units: list) -> list:
         for at, text in texts(body):
             if at and at[-1] == "if":
                 continue  # a condition: list_refusals and carrier_condition_refusals read it
+            step = steps[at[1]] if len(at) > 2 and at[0] == "steps" and isinstance(at[1], int) else None
+            where = (f"{where_if(job_id, step)}'s {'.'.join(str(k) for k in at[2:] if not isinstance(k, int))}"
+                     if step is not None else
+                     f"{f'job {job_id}' if job_id else 'the file'}'s {'.'.join(str(k) for k in at if not isinstance(k, int))}")
             for expression in EXPRESSION.findall(text):
+                # Rule 22's second half over every scanned expression: a carrier read under a spelling
+                # this check does not read (`inputs['x']`, `needs['changes']`) would escape the
+                # carrier test below as it would escape a condition's.
+                messages = [refusal.message for refusal in spelling_refusals(expression, path, where)]
                 resolved = INPUT_REF.sub(put_in, expression) if path != WORKFLOW else expression
-                if not CARRIER.search(resolved):
-                    continue
-                step = steps[at[1]] if len(at) > 2 and at[0] == "steps" and isinstance(at[1], int) else None
-                if (step is not None and at[2:] == ("with", "changes")
-                        and str(step.get("uses", "")).split("@")[0] == CI_OK_REPORT_ACTION):
-                    continue
-                where = (f"{where_if(job_id, step)}'s {'.'.join(str(k) for k in at[2:] if not isinstance(k, int))}"
-                         if step is not None else
-                         f"{f'job {job_id}' if job_id else 'the file'}'s {'.'.join(str(k) for k in at if not isinstance(k, int))}")
-                message = (f"{where} reads ${{{{ {expression.strip()} }}}}, which carries every filter's verdict: a "
-                           f"script or value that reads the list of matched filters, filter_verdicts or the ci-ok "
-                           f"payload can test it for any filter, so its work is gated on filters no rule reads; "
-                           f"gate the step in its if: (rule 22's one shape) instead")
-                if (path, message) not in said:
-                    said.add((path, message))
-                    refusals.append(error(path, message))
+                exempt = (step is not None and at[2:] == ("with", "changes")
+                          and str(step.get("uses", "")).split("@")[0] == CI_OK_REPORT_ACTION)
+                if CARRIER.search(resolved) and not exempt:
+                    messages.append(f"{where} reads ${{{{ {expression.strip()} }}}}, which carries every filter's "
+                                    f"verdict: a script or value that reads the list of matched filters, "
+                                    f"filter_verdicts or the ci-ok payload can test it for any filter, so its work is "
+                                    f"gated on filters no rule reads; gate the step in its if: (rule 22's one shape) "
+                                    f"instead")
+                for message in messages:
+                    if (path, message) not in said:
+                        said.add((path, message))
+                        refusals.append(error(path, message))
     return refusals
 
 
