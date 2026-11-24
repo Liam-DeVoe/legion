@@ -58,8 +58,16 @@ func newFixLineRig(t *testing.T) *fixLineRig {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: fixLineIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: fixLineIssue, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	// An admitted tree, as admission leaves a root it promoted: its slot and its lifecycle. Without
+	// them the admission among the fact's handlers reads the tree as not running.
+	seedWorkflowTreeIn(t, st, "legion", record.Issue{Key: fixLineIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: fixLineIssue, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "in_progress", Rank: "U",
+		HandedOver: true})
 	tokens := map[claim.Role]claim.Token{}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		token, err := claim.NewToken("legion", fixLineIssue, role)
