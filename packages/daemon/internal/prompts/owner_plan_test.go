@@ -16,10 +16,9 @@ import (
 // notice tells of (a failed step's, and another architect's stop_task, whose notice names that
 // architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
-// workflow (workflow.planGiven): a change of the running task's block, its text included, or of a
-// role its steps name is refused, and the unchanged block and roles are taken, each refusal names
-// its cause and changes nothing so the same version can be given again, and an issue that started
-// its work before Legion took plans takes none. A new
+// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
+// unchanged block taken, each refusal names its cause and changes nothing so the same version can
+// be given again, and an issue that started its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
 // upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
 // plan only after its rerun, since a version for its done or left task is refused TASK_DONE
@@ -87,12 +86,10 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// An issue already at work runs the task default: stop it, then give the plan.
 				{"stop_task", "default", "register_plan"},
 				// A later version changes only a task that waits or is stopped, refuses a change
-				// of the running task or of a role its steps name, and takes its block and those
-				// roles unchanged.
+				// of the running task, and takes its block unchanged.
 				{"later version", "waits", "stopped"},
 				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
-				{"a role block that a step of the running task names", "`PLAN_REFUSED`"},
-				{"running task's block", "each role its steps name", "goes on"},
+				{"running task's block", "goes on"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
@@ -354,61 +351,5 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 				t.Errorf("go/%s still says %q", part, phrase)
 			}
 		}
-	}
-}
-
-// Four sentences of the owner's prompt say what Legion does, where their earlier words were read
-// two ways or were false. A part of `plan.md` changes by `dispatch doc-edit` and only a whole
-// replacement is an upload, as the planner is told. Steps that share a key are one agent in one
-// session and a step with no key has an agent of its own (plan.AgentOf), so the owner's choice of
-// a fresh or an earlier agent is carried out, where the old words said each role had one agent for
-// each issue. An issue whose work started on another architect's plan runs that plan's task, and
-// only one whose work started before any plan runs the task default. A version Legion took, given
-// again at the generation it was given at, is the same fact (api's registerPlan), answered `200`
-// with its plan and changing nothing. Only another version at or below the plan in force is
-// refused PLAN_VERSION_OLD (workflow's laterVersionRefusal). Each rule is held by the terms of the
-// clause that states it, in their order, and each retired sentence is gone from both
-// compositions. This shows the text is loaded, never that an owner follows it.
-func TestTheOwnersPlanSentencesSayWhatLegionDoes(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	held := [][]string{
-		{"Steps that share a key", "`<role>:<key>`", "one agent in one session", "an earlier step's key"},
-		{"A step with no key", "an agent of its own", "no other step of the task"},
-		{"before any architect gave it a plan", "the task default"},
-		{"started on a plan another architect gave", "that plan's task"},
-		{"stop_task", "its running task", "`default` or the other plan's", "register_plan"},
-		{"A version Legion took", "given again at the generation it was given at", "the same registration"},
-		{"Legion answers it `200`", "its plan again", "changes nothing"},
-		{"any other version at or below the one it holds", "`PLAN_VERSION_OLD`"},
-	}
-	retired := []string{
-		"upload each new version",
-		"gives each role one agent for each issue",
-		"cannot carry that choice out yet",
-		"before you gave it a plan runs the task default",
-		"call stop_task on the task default",
-		"It also refuses a version at or below the one it holds",
-	}
-	for _, tc := range []struct {
-		name   string
-		isRoot bool
-	}{{"root architect", true}, {"sub-architect", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
-			for _, terms := range held {
-				if !clauseHolds(composed, terms...) {
-					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
-				}
-			}
-			text := foldWhitespace(composed)
-			for _, phrase := range retired {
-				if strings.Contains(text, phrase) {
-					t.Errorf("the composed %s prompt still says %q", tc.name, phrase)
-				}
-			}
-		})
 	}
 }

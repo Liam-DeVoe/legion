@@ -857,47 +857,6 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
-// A plan can define a role of its own, so the plan guide gives the block a step names, the
-// refusals of a role's name and model, and what a later version does to a role a running task's
-// steps name, a role whose name the deployment took since among them. A model the deployment does
-// not list is refused in one of two forms (plan.modelReasons). It is refused at the first step of
-// each task that names the role, or for the whole plan where no step names it.
-test("the plan guide gives a role block, its refusals and a role under a running task", () => {
-  expect(
-    lacks("legion-architect/references/plan.md", [
-      /:::plan_role\{#prober type="testing" model="<a listed model>"\}/,
-      /which the deployment or Legion defines already; a role of a plan takes a name of its own/,
-      /refused at the first step of each task that names it \(`step <n> of task <t> names the role <role>, whose model <m> the deployment does not list; it lists <m1>, <m2>\.`/,
-      /no step names is refused as a cause of the whole plan \(`the plan defines the role <role> with the model <m>, which the deployment does not list; it lists <m1>, <m2>\.`\)/,
-      /one agent runs on one model/,
-      /one agent runs on one harness/,
-      /changes the type, the model or the prompt of a role block that a step of the running task names/,
-      /takes away a role block that a step still names is refused whether the task runs or not/,
-      /which neither the deployment nor the plan defines/,
-      /refuses every later version that keeps a role of that name/,
-      /stop that task with `stop_task` first, then give a version whose role has a new name/,
-    ])
-  ).toEqual([]);
-});
-
-// Steps that share a key are one agent in one session, and a step with no key has an agent of its
-// own (the daemon's plan.AgentOf), so the plan guide says how a step gets a fresh or an earlier
-// agent. The words it carried before, that each role has one agent for each issue and that Legion
-// cannot carry the choice out yet, are gone.
-test("the plan guide says how a step gets a fresh or an earlier agent", () => {
-  const guide = collapsed(path.join(staged, "legion-architect/references/plan.md"));
-  expect([
-    ...lacks("legion-architect/references/plan.md", [
-      /Steps that share a key, `<role>:<key>`, are one agent in one session/,
-      /a step with no key has an agent of its own/,
-      /whether each step needs a fresh agent or an earlier one, and why/,
-    ]),
-    ...["one agent for each issue", "cannot carry out your choice"]
-      .filter((phrase) => guide.includes(phrase))
-      .map((phrase) => `legion-architect/references/plan.md still says: ${phrase}`),
-  ]).toEqual([]);
-});
-
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.

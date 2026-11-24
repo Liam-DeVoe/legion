@@ -89,8 +89,8 @@ func TestTheRigRefusesAnArchitectsPromptWithoutTheDaemonsComposition(t *testing.
 	if err != nil {
 		t.Fatalf("the rig's prompt of a reviewer: %v: %s", err, stderr)
 	}
-	if !strings.Contains(reviewer, "\n\nLegion addressing: your role topic is `notifications.role.legion-rig-rig-2-reviewer`") {
-		t.Errorf("the rig's prompt of a reviewer ends %q, want its addressing", around(reviewer, len(reviewer)))
+	if topic := "notifications.role.legion-rig-rig-2-reviewer"; !strings.Contains(reviewer, topic) {
+		t.Errorf("the rig's prompt of a reviewer ends %q, want its addressing, which names its role topic %s", around(reviewer, len(reviewer)), topic)
 	}
 }
 

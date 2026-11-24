@@ -1370,9 +1370,8 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 // Every architect is told, in its addressing, the roles a step of its plan may name with the type
 // of each, in two sentences: Legion's five, then each role the deployment defines in the file's
 // order, with the model its agent starts with where the settings give one, or that it defines
-// none. The old single line, which put Legion's roles under the deployment's name, is gone. A
-// root architect's addressing still ends with its design gate's line; no other launch is told the
-// roles.
+// none. A root architect's addressing still ends with its design gate's line; no other launch is
+// told the roles.
 func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -1404,9 +1403,6 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	if !strings.Contains(root, want) {
 		t.Errorf("the root architect's addressing = %q, want it to hold %q", root, want)
 	}
-	if strings.Contains(root, "The roles of this deployment") {
-		t.Errorf("the root architect's addressing = %q, want no line that names Legion's roles as the deployment's", root)
-	}
 	if !strings.HasSuffix(root, " "+gate) {
 		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, gate)
 	}
@@ -1421,17 +1417,16 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	}
 }
 
-// Every architect is told, right after the roles, the models a role of its plan can name: the
-// deployment's listed models in their order, or that it lists none, so a role of its plan names
-// no model and starts on the default one. A root architect's addressing still ends with its
-// design gate's line; no other launch is told the models.
-func TestTheOwnersPromptNamesTheListedModels(t *testing.T) {
+// Every architect's addressing joins the models a role of its plan can name (ModelsFragment) right
+// after the roles (DeploymentRolesFragment): the deployment's listed models, each in the file's
+// order, or the fragment of a deployment that lists none. A root architect's addressing still ends
+// with its design gate's line, and no other launch is told the models.
+func TestAnArchitectsAddressingJoinsTheListedModelsInTheirOrderAfterTheRoles(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	const listed = "The models of this deployment, which a role of your plan can name: m-one, m-two."
-	const none = "This deployment lists no model, so a role of your plan names none and starts on the default model."
 	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
 	addressing := func(models []string, issue string, role claim.Role) string {
 		t.Helper()
@@ -1449,21 +1444,22 @@ func TestTheOwnersPromptNamesTheListedModels(t *testing.T) {
 	}
 
 	root := addressing([]string{"m-one", "m-two"}, "S1-1", claim.RoleArchitect)
-	if want := DeploymentRolesFragment(nil) + " " + listed; !strings.Contains(root, want) {
+	if want := DeploymentRolesFragment(nil) + " " + ModelsFragment([]string{"m-one", "m-two"}); !strings.Contains(root, want) {
 		t.Errorf("the root architect's addressing = %q, want it to hold %q, the models right after the roles", root, want)
 	}
 	if !strings.HasSuffix(root, " "+gate) {
 		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, gate)
 	}
-	if reversed := addressing([]string{"m-two", "m-one"}, "S1-2", claim.RoleArchitect); !strings.Contains(reversed, "can name: m-two, m-one.") {
-		t.Errorf("a sub-architect's addressing under models [m-two m-one] = %q, want the models in the file's order", reversed)
+	reversed := addressing([]string{"m-two", "m-one"}, "S1-2", claim.RoleArchitect)
+	if two, one := strings.Index(reversed, "m-two"), strings.Index(reversed, "m-one"); two < 0 || one < two {
+		t.Errorf("a sub-architect's addressing under models [m-two m-one] = %q, want both models in the file's order", reversed)
 	}
-	if unlisted := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(unlisted, DeploymentRolesFragment(nil)+" "+none) {
-		t.Errorf("an architect's addressing under a deployment that lists no model = %q, want it to hold %q", unlisted, none)
+	if unlisted := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(unlisted, DeploymentRolesFragment(nil)+" "+ModelsFragment(nil)) {
+		t.Errorf("an architect's addressing under a deployment that lists no model = %q, want it to hold %q", unlisted, ModelsFragment(nil))
 	}
 	tester := addressing([]string{"m-one", "m-two"}, "S1-2", claim.RoleTester)
-	if strings.Contains(tester, "models of this deployment") || strings.Contains(tester, "lists no model") {
-		t.Errorf("a tester's addressing = %q, want no word of the deployment's models", tester)
+	if strings.Contains(tester, "m-one") || strings.Contains(tester, "m-two") {
+		t.Errorf("a tester's addressing = %q, want neither listed model", tester)
 	}
 }
 

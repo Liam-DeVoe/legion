@@ -281,10 +281,11 @@ func (r *deploymentRolesRig) walkImplementerProber() error {
 	if err != nil {
 		return fmt.Errorf("compose the prober's launch prompt: %w", err)
 	}
-	for _, want := range []string{planProberPrompt, "SEPARATE-POD"} {
-		if !strings.Contains(prompt, want) {
-			return fmt.Errorf("the prober's launch prompt lacks %q:\n%s", want, prompt)
-		}
+	if !strings.Contains(prompt, planProberPrompt) {
+		return fmt.Errorf("the prober's launch prompt lacks %q:\n%s", planProberPrompt, prompt)
+	}
+	if paths := spec.Prompt.RolePromptPaths; len(paths) == 0 || filepath.Base(paths[len(paths)-1]) != "worker-common.md" {
+		return fmt.Errorf("the prober's role prompt paths = %q, want Legion's worker part, worker-common.md, last", paths)
 	}
 	task := takeTask(prober)
 	for _, want := range []string{r.key, deploymentTaskText, " Step 1 (implementer) reported:"} {
