@@ -237,13 +237,14 @@ refused "a fixture with no entry"
 check "names the fixture and the entry it lacks" \
   "$(contains "$out" "^::error file=$fixtures/contracts/20261126000000_orphan.json::.*names no entry: HEAD holds no $api/contract_20261126000000_orphan.go")"
 
-root=$(repository fixture-directory-stray)
-put "$root" "$fixtures/contracts/README.md" 'An example fixture.'
+# What is not a fixture by its name, or is not a file of the directory itself, no reader counts,
+# so it pairs with no entry; TestEveryEntryHasOneFixture refuses it, and this check does not.
+root=$(repository fixture-directory-other)
+put "$root" "$fixtures/contracts/README.md" 'Not a fixture.'
+put "$root" "$fixtures/contracts/more/20261126000000_nested.json" '{}'
 commit "$root"
-run_check "$root"
-refused "a file in the fixtures' directory that is no fixture"
-check "names it and where examples live" \
-  "$(contains "$out" "^::error file=$fixtures/contracts/README.md::.*holds entry fixtures and nothing else.*entry-fixture-examples/")"
+passes "$root" "a file and a subdirectory in the fixtures' directory that no reader counts"
+check "counts the one entry" "$(contains "$out" '1 entries with their fixtures')"
 
 echo "rule 4: no committed number"
 root=$(repository number-manifest)
@@ -443,6 +444,16 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the read that failed" \
   "$(contains "$out" "^::error file=$fixtures/released-contracts.json::could not read L at HEAD: $fixtures/released-contracts.json is missing")"
+
+for released in '[]' '[1, "2"]' '[1, true]' '{"contracts": [1, 2]}'; do
+  root=$(repository "released-form-$(printf %s "$released" | tr -c 'a-z0-9' -)")
+  put "$root" "$fixtures/released-contracts.json" "$released"
+  commit "$root"
+  run_check "$root"
+  check "released-contracts.json of $released: exits 1" "$(is "$status" 1)"
+  check "released-contracts.json of $released: names the read that failed" \
+    "$(contains "$out" "^::error file=$fixtures/released-contracts.json::could not read L at HEAD: $fixtures/released-contracts.json is not a non-empty JSON array of integers")"
+done
 
 echo "case: a base the check cannot resolve"
 root=$(repository no-such-base)

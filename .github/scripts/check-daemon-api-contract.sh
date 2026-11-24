@@ -23,9 +23,10 @@
 # 2. deletes or renames an entry file or an entry fixture its base holds: a number is a rank in
 #    main's merge order, so an entry that main holds stays, and a revert adds a new entry that
 #    undoes the change.
-# 3. holds, at its head, an entry with no fixture, or a file in the fixtures' directory that is not
-#    the fixture of an entry: the count of fixtures is the count of entries, which is how every
-#    reader outside the daemon counts them.
+# 3. holds, at its head, an entry with no fixture, or a fixture with no entry: the count of
+#    fixtures is the count of entries, which is how every reader outside the daemon counts them.
+#    A fixture is what those readers count, a file of the fixtures' directory named
+#    <14 digits>_<name>.json; anything else there is TestEveryEntryHasOneFixture's to refuse.
 # 4. commits the number: `legion.daemonApiVersion` in a package.json (each pack step writes it),
 #    packages/contracts/fixtures/daemon-api/version.json, a `contract` mark in state.json or a
 #    `contract.daemon` mark in another state golden of that directory
@@ -58,7 +59,8 @@
 # needs no blob, and a base file's blob is fetched only where its rule reads it (version.go when
 # the change edits it, a frozen file or an entry file when the change edits a fixture or a
 # record). A read that fails refuses the change and names itself: a check that passes when it
-# cannot read proves nothing.
+# cannot read proves nothing. So L is read from released-contracts.json at the head, and a head
+# without it, or whose file is not a non-empty JSON array of integers, is refused by name.
 #
 # What it does not check: whether a change owes an entry (the shape gate and the review say so),
 # and whether a row of a frozen table names an entry (`TestNoFrozenRowNamesAnEntry` refuses that).
@@ -104,7 +106,9 @@ SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 ENTRY_DIR = "packages/daemon/internal/api/"
 ENTRY = re.compile(rf"^packages/daemon/internal/api/contract_(\d{{14}})_({SLUG})\.go$")
 FIXTURE_DIR = DAEMON_API + "contracts/"
-FIXTURE = re.compile(rf"^packages/contracts/fixtures/daemon-api/contracts/(\d{{14}})_({SLUG})\.json$")
+# An entry fixture, as every reader counts one: a file of FIXTURE_DIR itself named
+# <14 digits>_<name>.json. Its entry is contract_<id>_<name>.go.
+FIXTURE = re.compile(r"^packages/contracts/fixtures/daemon-api/contracts/(\d{14})_([^/]+)\.json$")
 FRAGMENT = re.compile(r"(^|/)\.changes/")
 # version.go's numbered entries: each line that starts `// <number>: `. The blank after the colon
 # keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
@@ -418,21 +422,11 @@ for path, status in sorted(changed.items()):
             f"(`scripts/daemon-contract-entry.sh <slug>`).",
         )
 
-# 3. At the head, each entry has its fixture, and the fixtures' directory holds nothing else.
+# 3. At the head, each entry has its fixture, and each fixture its entry. A fixture is what every
+# reader counts: a file of FIXTURE_DIR named <14 digits>_<name>.json. Anything else in that
+# directory is TestEveryEntryHasOneFixture's to refuse, and counts nowhere.
 entries = {(m.group(1), m.group(2)): path for path in held if (m := ENTRY.match(path))}
-fixtures: dict[tuple[str, str], str] = {}
-for path in sorted(p for p in held if p.startswith(FIXTURE_DIR)):
-    fixture = FIXTURE.match(path)
-    if fixture is None:
-        refuse(
-            path,
-            f"{path}: {FIXTURE_DIR} holds entry fixtures and nothing else, each named "
-            f"<id>_<slug>.json for its entry contract_<id>_<slug>.go, since a build's number counts "
-            f"that directory's files. Move this file out of it (examples for tests live in "
-            f"{DAEMON_API}entry-fixture-examples/).",
-        )
-        continue
-    fixtures[(fixture.group(1), fixture.group(2))] = path
+fixtures = {(m.group(1), m.group(2)): path for path in held if (m := FIXTURE.match(path))}
 for key, path in sorted(entries.items()):
     if key not in fixtures:
         refuse(
