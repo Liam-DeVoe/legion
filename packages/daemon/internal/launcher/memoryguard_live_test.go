@@ -1,5 +1,7 @@
 //go:build linux
 
+// legion: tool - runs the controller pod's memory guard on this machine's own memory against one scenario and prints its readings, kills and verdict, for the person who sets the controller pod's guard settings from runs in gVisor pods of each size; build it with go test -c -o launcher.test ./internal/launcher/ and run it as a container's first process with LEGION_MEMORY_GUARD_LIVE=1 and LEGION_CONTROLLER_LIVE_SCENARIO set: launcher.test -test.v -test.run '^TestControllerPodMemoryGuardLiveSandbox$' (docs/kubernetes.md says how it was measured)
+
 package launcher
 
 import (
@@ -29,8 +31,8 @@ import (
 )
 
 // The live test's environment. TestControllerPodMemoryGuardLiveSandbox runs only where
-// memoryGuardLiveEnv is 1, the switch of the issue pod's live test (internal/memoryguard's
-// TestMemoryGuardLiveSandbox), which the measurement Jobs of INFRA-3531 set and CI does not, and
+// memoryGuardLiveEnv is 1, the switch of the issue pod's live run (internal/memoryguard's
+// BenchmarkMemoryGuardLiveSandbox), which the measurement Jobs of INFRA-3531 set and CI does not, and
 // controllerLiveScenarioEnv names its scenario. TestMain's guard would take both out of the test
 // process, as it takes every LEGION_ variable, so this file has it keep them (guardKeep).
 //

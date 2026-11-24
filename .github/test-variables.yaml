@@ -74,6 +74,10 @@ variables:
     class: selector
     jobs: [go-envoy-held]
     why: Selects TestTheOutboxLoadSteps, which go-envoy-held's dispatch-multiprocess leg runs in a step of its own with it set.
+  DISPATCH_FIRST_ROLLOUT_BUILD:
+    class: set
+    jobs: [go-envoy-held]
+    why: The first-rollout build, the newest release before the fleet's schema numbers, that the twobuild suite's transition row runs beside this tree's, which go-envoy-held's two-build legs build.
   DISPATCH_PREVIOUS_BUILD:
     class: set
     jobs: [go-envoy-held]
@@ -120,6 +124,9 @@ variables:
     class: selector
     jobs: [go-envoy]
     why: Selects the envoy-client tests that build and start natsd and the listener, which go-envoy's envoy-session-stall leg runs.
+  LEGION_MEMORY_GUARD_LIVE:
+    class: tool
+    why: The switch of the memory guard's live runs on a pod's own memory, BenchmarkMemoryGuardLiveSandbox and the launcher's TestControllerPodMemoryGuardLiveSandbox, which INFRA-3531's measurement Jobs set in gVisor pods.
   LEGION_SCALE_TEST:
     class: tool
     why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.

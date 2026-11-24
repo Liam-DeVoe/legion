@@ -419,6 +419,46 @@ GO
 run_check "$root"
 check "once its package's TestMain sets it, the read is no gate" "$(is "$status" 0)"
 
+echo "case: 3 - a message that names the variable and its value hides no gate, and a child's entry does"
+root=$(fixture child-entry)
+cat > "$root/packages/envoy/unit/switch_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+const switchEnv = "FIXTURE_SWITCH"
+
+func TestRunsOnlyWhereSwitched(t *testing.T) {
+	if os.Getenv(switchEnv) != "1" {
+		t.Skip("runs only where " + switchEnv + "=1: it reads this machine's own memory")
+	}
+}
+GO
+run_check "$root"
+check "a skip message that spells NAME=1 leaves the read a gate" "$(is "$status" 1)"
+check "names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/switch_test.go:11: FIXTURE_SWITCH: TestRunsOnlyWhereSwitched gates on it and no row')"
+cat > "$root/packages/envoy/unit/child_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
+
+func TestStartsItsChild(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestRunsOnlyWhereSwitched$")
+	command.Env = append(os.Environ(), switchEnv+"=1")
+	_ = command
+}
+GO
+run_check "$root"
+check "once a test of the package hands a child NAME=1, the read is the child's, no gate" "$(is "$status" 0)"
+
 echo "case: 3 - the other classes, each held to its gate"
 root=$(fixture prerequisite)
 cat > "$root/packages/envoy/unit/prerequisite_test.go" <<'GO'

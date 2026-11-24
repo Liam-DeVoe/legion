@@ -1232,10 +1232,12 @@ CONST_BLOCK = re.compile(r"^\s*(?:const|var)\s*\((.*?)^\s*\)", re.S | re.M)
 CONST_ENTRY = re.compile(rf"^\s*([A-Za-z_]\w*)\s*(?:[A-Za-z_][\w.]*\s*)?=\s*({GO_STRING})\s*(?://.*)?$", re.M)
 IMPORT_LINE = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"]+)"\s*$')
 # What a package's own code hands a child process's environment: a whole `"NAME=value"` string,
-# `NAME + "=…"`, and a `"%s=…"` format given NAME.
+# `NAME + "=…"`, and a `"%s=…"` format given NAME. An entry holds no space, so a message that
+# names a variable and the value that turns it on (`t.Skip("runs only where " + NAME + "=1: …")`,
+# launcher's TestControllerPodMemoryGuardLiveSandbox) hands no child anything and hides no gate.
 CHILD_LITERAL = re.compile(r'"([A-Z_][A-Z0-9_]*)=[^"\s%]*"')
-CHILD_CONCAT = re.compile(r'\b((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s*\+\s*"=')
-CHILD_FORMAT = re.compile(r'"%s=[^"]*"\s*,\s*((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)')
+CHILD_CONCAT = re.compile(r'\b((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s*\+\s*"=[^"\s]*"')
+CHILD_FORMAT = re.compile(r'"%s=[^"\s]*"\s*,\s*((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)')
 ENV_READ_TEXT = re.compile(r"\bos\.(?:Getenv|LookupEnv)\(|\btestprereq\.Require\(")
 PACKAGE_VAR = re.compile(r"^var\s+([A-Za-z_]\w*)", re.M)
 PACKAGE_VAR_BLOCK = re.compile(r"^var\s*\((.*?)^\)", re.S | re.M)
