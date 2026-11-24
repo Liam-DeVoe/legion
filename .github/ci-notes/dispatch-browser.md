@@ -1825,8 +1825,9 @@ the 10 merge jobs of main's 65 merge-queue runs listed since main's #5175 merged
 (2026-11-23T21:37:21Z), 48 jobs read from the jobs API on 2026-11-24 up to 01:06Z, the steps
 without a budget sum to 48 s at their maxima: checkout 14 s, `bun install` 8 s, the merge of the
 blob reports 4 s, setup-bun, the upload of the merged report and "Reading three" 3 s each, Set
-up job and the blob download 2 s each, the refused-download step 0 s, and every other step 1 s.
-180 + 48 = 228 s is 3 min 48 s, so the rule gives the same 4 minutes as the older sample below.
+up job and the blob download 2 s each, and every other step 1 s, but for the refused-download
+step, which every one of the 48 skipped. Given the 1 s below, the sum is 49 s, and
+180 + 49 = 229 s is 3 min 49 s, so the rule gives the same 4 minutes as the older sample below.
 What made job 138031009105 the longest is its checkout, 14 s, and "Reading one, the rows",
 11 s, the most that step took over the 48, and its log holds no rate-limit wait.
 
@@ -1861,8 +1862,9 @@ wait past them fails by name instead, and a re-run after the reset reads the job
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: the 48 s of the 48 merge
-jobs above, in which "Report a refused blob download as a refused read", which runs one `echo`,
-read 0 s. 180 + 48 = 228 s, which is 3 min 48 s, so 4 min,
+jobs above, and the 1 s of "Report a refused blob download as a refused read", which runs one
+`echo` and which none of them ran, is what this job's other one-command steps measure.
+180 + 49 = 229 s, which is 3 min 49 s, so 4 min,
 the figure `dispatch-browser.yaml` gives beside the job's `timeout-minutes`. The older sample
 gives the same 4 min: its 40 s less reading one's 4 s is 36 s, and 1 s each for the three steps
 it does not hold - that one, "Reading four, the row durations", which runs one jq over the
