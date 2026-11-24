@@ -450,6 +450,19 @@ type Options struct {
 	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
 	// the hook existed.
 	RoundPodEnds runtime.RoundPodEnds
+	// LaunchTook is the daemon's word of a launch's own replacement of a live issue pod, or of one
+	// that is not live with a pod of its own in a Sandbox that is not suspended
+	// (runtime.LaunchTook, R7 of dispatch://INFRA-3271): relaunch hands it the pod, why the launch
+	// replaced it rather than keep it — the pod is not live, a facet fixed for its life moved
+	// (movedInPod), its Sandbox has another disk shape (supersededDisk), its launchers are not
+	// bound to it (launcherBound), or its stored template cannot be read (keptBy) — and what the
+	// read of its workspace through the pod's launcher found before the replacement, or why no
+	// read could be made (runtime.TakenPod), once the suspension that takes the pod is written. A
+	// round's own replacement (RoundPodEnds) is the daemon's own and is not handed here, nor is a
+	// replacement that keeps the issue's kept volume, which takes no disk. The daemon builds the
+	// runtime before its supervision opens, so it binds this through the holder RoundPodEnds goes
+	// through (internal/daemon's launchRounds). nil tells nobody.
+	LaunchTook runtime.LaunchTook
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

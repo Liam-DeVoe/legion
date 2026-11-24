@@ -539,8 +539,27 @@ func (s *Store) DeclineIssueRelease(ctx context.Context, project, issue string, 
 // and the pod stays with its roles as they are. It answers whether the decline's message was
 // queued (recordDecline).
 func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	return s.declinePodDelete(ctx, project, issue, decline, "decline the close of")
+}
+
+// DeclinePodReplacement records an update round's keep of issue's pod, whose read of the workspace
+// before the round's replacement found work that origin does not hold or could not be made, over a
+// drift the pod's roles can keep working under (R7 of dispatch://INFRA-3271, internal/daemon's
+// keepPodForRound), and each later read of that pod that finds the same or other work. The round
+// records this as a release's decline is recorded (recordDecline), under the shared serializer:
+// the pod (PodUID), the work, the moment, and the role told. The idle rule reads the same row
+// (pods.IdleDecline), and the round opens no new round over that pod while it stands
+// (PodKeepOf). It answers whether the decline's message was queued.
+func (s *Store) DeclinePodReplacement(ctx context.Context, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	return s.declinePodDelete(ctx, project, issue, decline, "record the update round's keep of")
+}
+
+// declinePodDelete records decline (recordDecline) under the lifecycle serializer for a delete of
+// issue's pod that marked no release: a left pod's close or an update round's replacement. what
+// begins the error's words, which go on with the issue's pod.
+func (s *Store) declinePodDelete(ctx context.Context, project, issue string, decline IdleReleaseDecline, what string) (bool, error) {
 	if project == "" || issue == "" {
-		return false, errors.New("the decline of a left pod's close needs its project and its issue")
+		return false, errors.New("the decline of a pod's delete needs its project and its issue")
 	}
 	if err := decline.check(issue); err != nil {
 		return false, err
@@ -554,9 +573,43 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 		return err
 	})
 	if err != nil {
-		return false, fmt.Errorf("decline the close of %s's pod: %w", issue, err)
+		return false, fmt.Errorf("%s %s's pod: %w", what, issue, err)
 	}
 	return told, nil
+}
+
+// PodKeep is what an update round reads of an issue's pod before it opens a round over it (R7 of
+// dispatch://INFRA-3271, internal/daemon's podKeptForWork): the decline on record, read as the
+// idle view reads it (the zero decline where none stands), and the issue's phase, whose open
+// phase's worker is the role an update round's keep tells where it runs in the pod ("" where the
+// store holds no such issue).
+type PodKeep struct {
+	Decline pods.IdleDecline
+	Phase   phase.Phase
+}
+
+// PodKeepOf reads issue's PodKeep.
+func (s *Store) PodKeepOf(ctx context.Context, project, issue string) (PodKeep, error) {
+	var keep PodKeep
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
+			from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&keep.Decline.At,
+			&keep.Decline.CheckedAt, &keep.Decline.Reason, &keep.Decline.StartedRow, &keep.Decline.PodUID, &keep.Decline.Work)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		var issuePhase string
+		err = tx.QueryRow(ctx, `select phase from issues where key = $1 and lower(project) = $2`, issue, project).Scan(&issuePhase)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		keep.Phase = phase.Phase(issuePhase)
+		return nil
+	})
+	if err != nil {
+		return PodKeep{}, fmt.Errorf("read the kept pod of %s: %w", issue, err)
+	}
+	return keep, nil
 }
 
 // LeftPodTurned is whether a claim of issue is in a turn now, starting, or of a launch not yet

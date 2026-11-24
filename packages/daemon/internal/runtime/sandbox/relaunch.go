@@ -228,6 +228,15 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Sandbox and the pod, having stopped, recorded and sent nothing in the pod; the supervisor's next
 // Resume, which has the agent's own command resolve the id, ensures the Sandbox, reads the launcher
 // bindings and waits for the launcher again.
+//
+// A launch that replaces a pod a round covers on its own account — a pod that is not live with a
+// pod of its own in a Sandbox not suspended, a moved facet (movedInPod), another disk shape
+// (supersededDisk), unbound launchers (launcherBound), or a stored template it cannot read
+// (keptBy) — takes a disk that may hold work no role pushed (R7 of dispatch://INFRA-3271). Before
+// the suspension it has the pod's launcher read the issue's workspace where the pod is live and
+// its launchers are bound, and once the suspension is written it hands the daemon what it took
+// (launchTaken, Options.LaunchTook), which tells the issue's architect. A replacement that keeps
+// the issue's kept volume and its Sandbox takes no disk and is handed nothing.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -299,12 +308,30 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// such a Sandbox with it below. A reset comes with a pod that is not live: a pod whose init
 	// container failed, or no pod after ReplacePod or the release.
 	drifted := len(r.shapeDrift(s, l.shapeKey())) > 0
+	// moved is read of a live pod alone, as the expression below read it before: a pod that is not
+	// live may be no pod at all, and is replaced for that.
+	moved := live && slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 })
 	replace := !live || (accountDrifted && !covered) ||
 		(replacement != "" && !drifted) ||
-		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
+		moved ||
 		(!installing && !covered && (drifted ||
 			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
 		(installing && !covered && podImageDrift(s, r.podShapes[l.shapeKey()]))
+	// took is why this launch replaces a pod a round covers on its own account, rather than as a
+	// round's own replacement, and unread is why no read of its workspace can be made first, ""
+	// where the pod's launcher can make one (R7 of dispatch://INFRA-3271). The daemon is told what
+	// such a replacement took (Options.LaunchTook, launchTaken).
+	var took, unread string
+	if covered && replace {
+		switch {
+		case !live:
+			took, unread = "the pod was not live", "the pod is not live, so no process in it can read the workspace"
+		case replacement != "" && !drifted:
+			took = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
+		case moved:
+			took = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
+		}
+	}
 	// A live pod a round covers that this launch would keep may be the pod of an update round
 	// that is over: no role process runs in it, and nothing holds it, so the round is about to
 	// replace it. A role started in it now would have its first turn ended by that replacement
@@ -335,6 +362,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("read its pod's launcher bindings", err)
 		}
 		replace = !bound
+		if covered && replace {
+			took, unread = "the pod's launchers are not bound to it", "the pod's launchers are not bound to it, so no launcher of the pod can read the workspace"
+		}
 	}
 	if !replace {
 		// The pod is kept, so this role is started as that pod was built rather than as the
@@ -348,6 +378,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		kept, readable := r.keptBy(s, string(pod.UID), l)
 		if !readable {
 			replace = true
+			if covered {
+				took = "the pod's stored template cannot be read, so the launch cannot tell what the pod carries"
+			}
 		} else {
 			l.kept = &kept
 		}
@@ -357,6 +390,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// the configured image, whose plugins are already current, so nothing is installed into it.
 		l.spec.Plugins = nil
 	}
+	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, unread)
 	if replace {
 		switch {
 		case live:
@@ -381,6 +415,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if s, err = r.suspendOver(bounded, s, pod, nil); err != nil {
 				return fail("mark its kept volume for the reset", err)
 			}
+		}
+		if taken != nil && r.launchTook != nil {
+			r.launchTook(ctx, *taken)
 		}
 		old, err := r.awaitPodGone(bounded, s)
 		if err != nil {
@@ -498,6 +535,31 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	r.nameSession(loc, l)
 	r.join(loc)
 	return loc, nil
+}
+
+// launchTaken is what a launch's own replacement of a pod a round covers takes (R7 of
+// dispatch://INFRA-3271), for the daemon's word of it (Options.LaunchTook), or nil where the launch
+// takes no disk the daemon is to be told of: took is "" (the launch keeps the pod), kind is a
+// round's own replacement (roundReplacement, which the daemon makes and tells of itself), the
+// Sandbox is suspended or holds no pod of its own (a pod already gone took its disk with it), or
+// the launch keeps the issue's volume and keeps its Sandbox (replacement ""), so the replacement
+// deletes no disk. Otherwise the pod's launcher reads the issue's workspace first where it can
+// (launcherWorkspaceWork), under the pod's launch turn, which that read does not take: no turn
+// voids the read, and the launch waits for nothing else. unread is why no read can be made: a pod
+// that is not live, or whose launchers are not bound to it.
+func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *corev1.Pod, kind replacementKind,
+	replacement sandboxReplacement, took, unread string) *runtime.TakenPod {
+	if took == "" || kind == roundReplacement || s.mode() == modeSuspended || !ownedBy(pod, s.UID) ||
+		(l.keepsVolume() && replacement == "") {
+		return nil
+	}
+	taken := &runtime.TakenPod{Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took}
+	if unread != "" {
+		taken.Err = errors.New(unread)
+		return taken
+	}
+	taken.Work, taken.Err = r.launcherWorkspaceWork(ctx, l.spec.Issue, string(pod.UID))
+	return taken
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts

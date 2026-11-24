@@ -185,6 +185,46 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // claim, the Sandbox and the pod uid.
 var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
+// BreakingDrift is the mark a reason of PodDrift starts with where the drift breaks the pod: no
+// role can keep working in it (R7 of dispatch://INFRA-3271). dispatch://INFRA-4754 declares which
+// kinds of drift break a pod, and a pod below a declared contract floor breaks too, and it opens
+// an update round over such a pod at once, whatever its spec names as the cause. A round records
+// its reasons as one string at its open (supervise.Claim.UpdateReasons), and the daemon reads a
+// round as one over a drift that breaks the pod where that string holds this mark
+// (internal/daemon's roundBreaksPod): such a round replaces its pod whatever the read of its
+// workspace finds, and tells the issue's architect what it took. Every other round is one the
+// pod's roles can keep working under, and a read that finds work, or that cannot be made, keeps
+// that pod. No reason PodDrift gives today carries the mark, so until INFRA-4754 lands every round
+// is one the roles can keep working under.
+const BreakingDrift = "[breaks the pod] "
+
+// TakenPod is what a launch's own replacement of a live issue pod took (R7 of
+// dispatch://INFRA-3271): the claim whose launch made it, the issue, the pod, why the launch
+// replaced the pod rather than keep it — the pod is not live, a facet of it fixed for its life
+// moved, its Sandbox has another disk shape, its launchers are not bound to it, or its stored
+// template cannot be read — and what a read of the workspace through the pod's launcher found
+// before the replacement (Work), or why no read could be made (Err). The daemon tells the issue's
+// architect what such a replacement took (LaunchTook).
+type TakenPod struct {
+	Claim  claim.Token
+	Issue  string
+	PodUID string
+	Why    string
+	Work   WorkspaceWork
+	Err    error
+}
+
+// Tells is whether the replacement may have taken work that origin does not hold: the read found
+// such work, or no read could be made.
+func (t TakenPod) Tells() bool { return t.Err != nil || t.Work.HoldsWork() }
+
+// LaunchTook is the daemon's word of a launch's own replacement of an issue pod, which the runtime
+// hands it once the suspension that takes the pod is written (internal/daemon's tellLaunchTook):
+// the daemon tells the issue's architect once what the replacement took, each commit and the
+// working-copy change by name, or that no read could be made. It returns nothing: the replacement
+// is made, and a telling that fails is the daemon's own line.
+type LaunchTook func(ctx context.Context, taken TakenPod)
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the

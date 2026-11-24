@@ -1059,14 +1059,21 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 	if notDue := rig.notDue(); len(notDue) != 0 {
 		t.Errorf("the replacement was refused inside ReplacePod %d times, want none", len(notDue))
 	}
+	// The replacement reads the workspace once before it is made (R7 of dispatch://INFRA-3271).
 	var asked []string
+	reads := 0
 	for _, call := range rig.rt.Calls()[before:] {
 		asked = append(asked, call.Method)
 		switch call.Method {
+		case "WorkspaceWork":
+			reads++
 		case "ReplacePod", "PodDrift", "Probe", "Observe", "ReconcileOrphans":
 		default:
-			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads and one ReplacePod: %v", call.Method, asked)
+			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads, one read of the workspace and one ReplacePod: %v", call.Method, asked)
 		}
+	}
+	if reads != 1 {
+		t.Errorf("the workspace was read %d times for the round, want once before the replacement: %v", reads, asked)
 	}
 	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
 		t.Errorf("the sweep logged a bounded end %+v for a round its answers ended", lines)

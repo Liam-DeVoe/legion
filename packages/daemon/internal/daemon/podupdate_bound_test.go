@@ -671,8 +671,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if notices := rig.notices(); len(notices) != 0 {
 			t.Fatalf("at the bound %s the controller was told %+v of a round that is over", rig.clock.Now(), notices)
 		}
-		if messages := rig.messages(); len(messages) != 1 {
-			t.Fatalf("the issue was written %d messages after two more sweeps, want the one of the round's end: %q", len(messages), messages)
+		if messages := rig.messages(); len(messages) != 0 {
+			t.Fatalf("the issue was written %q after two more sweeps, want nothing: the pod's launcher read the workspace before the replacement and found nothing", messages)
 		}
 	})
 

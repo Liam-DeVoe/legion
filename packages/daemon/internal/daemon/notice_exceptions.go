@@ -247,7 +247,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
-		if payload.Kind == record.WorkspaceKeptNotice {
+		if diskNotice(payload.Kind) {
 			return r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended)
 		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
@@ -328,7 +328,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
 				return err
 			}
-			if notice.Kind == record.WorkspaceKeptNotice {
+			if diskNotice(notice.Kind) {
 				return r.tellControllerOfKeptPod(ctx, issue, reported.row, notice, key, reported.architect, "it stopped with its finished tree")
 			}
 			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",

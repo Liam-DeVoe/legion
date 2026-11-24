@@ -304,7 +304,12 @@ type PodUpdateOpen struct {
 // its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
-// goes, so the text says that work not pushed before the pod goes is lost.
+// goes, so the text says that work not pushed before the pod goes is lost. The daemon reads the
+// workspace before it replaces the pod, and a read that finds work that no branch or tag on
+// origin holds, or that fails, ends the round with no replacement and keeps the pod (R7 of
+// dispatch://INFRA-3271, internal/daemon's roundKeeps), so the text says that a round can end with
+// no replacement and the pod then stays, and says that the pod goes whatever runs in it only of a
+// replacement the daemon makes.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
@@ -321,9 +326,9 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
 
-The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
+The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. Otherwise the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
+If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
@@ -339,7 +344,7 @@ A service that you started with a name is not in the report. It does not delay t
 
 If your `+"`legion`"+` tool has no "ready_for_update" operation, do steps 1, 2 and 3 now. Then end your turn. The round ends at %[2]s whatever you do.
 
-These things go with the pod when the round ends:
+These things go with the pod when the daemon replaces it:
 
 - The turn that is in progress.
 - Each subagent, each background job and each named service that still runs.
@@ -347,13 +352,16 @@ These things go with the pod when the round ends:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again, or until the round ends with no replacement. Do not start new work now.`, round, ends)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
 // round held back is released, and nothing is relaunched for it. A pod's round: the pod it was
 // opened over is gone — replaced by the round itself, replaced under it, or gone for a failure of
-// its own — and each role comes back on its own session through the displaced path. A plugin
+// its own — and each role comes back on its own session through the displaced path; or the round
+// kept the pod, because the read of its workspace found work that no branch or tag on origin
+// holds or could not be made (R7 of dispatch://INFRA-3271, internal/daemon's keepPodForRound),
+// and each role works on in that pod. A plugin
 // round an earlier daemon left on the claim: no daemon on this release opens one, since the
 // stale-plugin lane relaunches a stale process rather than asking its worker anything
 // (refreshPlugin), and a claim found in one is taken out of it and left to that lane. A claim in

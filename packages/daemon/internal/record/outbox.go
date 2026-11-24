@@ -2730,14 +2730,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // of migration 20261120042902 deletes its unsent rows.
 //
 // `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
-// disk.
+// disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
+// replacement that still took a disk that may hold work.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-forgotten", "session-store-fault", WorkspaceKeptNotice,
+	"session-lost", "session-forgotten", "session-store-fault", WorkspaceKeptNotice, WorkspaceTakenNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2760,7 +2761,25 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // (internal/daemon's tellControllerOfKeptPod), since the pod counts as told once its notice is
 // queued. No earlier release decodes it, so a rollback deletes its unsent rows, the controller's
 // among them, first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// An update round over a drift the pod's roles can keep working under that reads work in the pod's
+// workspace, or cannot read it, keeps the pod too (R7 of dispatch://INFRA-3271, internal/daemon's
+// keepPodForRound): where the open phase's worker has no live process in the pod, its architect is
+// told by this notice, once for the pod, with each claim's state and what the read found.
 const WorkspaceKeptNotice NoticeKind = "workspace-kept"
+
+// WorkspaceTakenNotice is the architect's notice that a replacement of its issue's pod took a disk
+// that may hold work no branch or tag on origin holds (R7 of dispatch://INFRA-3271): an update
+// round over a drift that breaks the pod (internal/daemon's roundBreaksPod), or a launch's own
+// replacement of an issue pod (runtime.TakenPod), whose read of the workspace before the
+// replacement found such work or could not be made. It names each commit and the working-copy
+// change, or that no read could be made and why, and it is sent once for each replacement. It is
+// the architect's because the work is gone with the pod and the architect is who can have it made
+// again. Where the owning architect will not hold its role again, it reaches the project's
+// controller instead, as WorkspaceKeptNotice does. No earlier release decodes it, so a rollback
+// deletes its unsent rows with the workspace-kept ones (docs/kubernetes.md, "Rolling back the
+// release that keeps no saved workspace").
+const WorkspaceTakenNotice NoticeKind = "workspace-taken"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
