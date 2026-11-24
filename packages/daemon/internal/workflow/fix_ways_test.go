@@ -60,7 +60,113 @@ func fixAfterReview(t *testing.T, engine *Engine, trigger TriggerKind, afterEnd 
 var (
 	reviewingTesting      = phase.Pair(phase.Reviewing, phase.Testing)
 	reviewingImplementing = phase.Pair(phase.Reviewing, phase.Implementing)
+	retroTesting          = phase.Pair(phase.Retro, phase.Testing)
 )
+
+// fixAtTheEnd is LEGION-208 reviewing on `implementer tester reviewer` with fix 1 for k-ci at
+// fixHead running, whose review approved: the task held for its fix at its end.
+func fixAtTheEnd(t *testing.T, engine *Engine) *fixRig {
+	t.Helper()
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.move(TriggerReviewApproved, "", reviewReport("approved"))
+	r.assertEndHold(record.HoldForFix)
+	return r
+}
+
+// fixEnds is the fix's own completion at end, the head the pull request stands at then.
+func (r *fixRig) fixEnds(end string) {
+	r.t.Helper()
+	r.pushed(end)
+	if result := r.apply("fix-done", fixCompletion(end)); result.Refusal != nil {
+		r.t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+}
+
+// Row 1: an approval while the fix runs, and the fix made new commits: the approval held the task
+// for its fix at its end, and the fix's end returns it from there to the step after the fix, the
+// tester, at the new head. One return, under retro-testing.
+func TestRow1ApprovalWhileTheFixRunsWithNewCommits(t *testing.T) {
+	r := fixAtTheEnd(t, returnEngine())
+	r.fixEnds(headTwo)
+	r.assertWay(2, phase.Testing, claim.RoleTester, headTwo, 1, retroTesting)
+}
+
+// Row 2: an approval while the fix runs, and the fix made no commit: each step keeps its result,
+// so the fix's end reads the end again: the task waits for CI at X, where its check still fails
+// and its one fix ended, so its owner is told once; with each check passed there the retro
+// starts. No return. The control, kept: the same fix ending at another commit returns the task
+// once, which the subtest asserts.
+func TestRow2ApprovalWhileTheFixRunsWithNoCommit(t *testing.T) {
+	r := fixAtTheEnd(t, returnEngine())
+	r.fixEnds(fixHead)
+
+	if fix := r.latestFix(); fix.Way != 3 {
+		t.Fatalf("the fix took way %d, want 3: %+v", fix.Way, fix)
+	}
+	r.assertEndHold(record.HoldForCI)
+	r.assertTaskAtItsRetro()
+	if counts := r.counts(); counts.Pass != 0 {
+		t.Fatalf("the task counts %+v, want no return", counts)
+	}
+	r.assertToldOwnerOnce("k-ci")
+
+	t.Run("with each check passed at the head the retro starts", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+		r.fixEnds(fixHead)
+		r.assertRetroStarted()
+		if counts := r.counts(); counts.Pass != 0 {
+			t.Fatalf("the task counts %+v, want no return", counts)
+		}
+	})
+
+	t.Run("the control: the fix ending at another commit returns the task once", func(t *testing.T) {
+		r := fixAtTheEnd(t, returnEngine())
+		r.fixEnds(headTwo)
+		if fix := r.latestFix(); fix.Way != 2 {
+			t.Fatalf("the fix took way %d, want 2: %+v", fix.Way, fix)
+		}
+		if counts := r.counts(); counts.Pass != 1 {
+			t.Fatalf("the task counts %+v, want one return", counts)
+		}
+	})
+}
+
+// Row 1 run past its return: the tester passes and the reviewer approves at the new head. One
+// return in all, the tester started twice in all, the fix's way 2, and the task at its end, held
+// for CI at the new head, where Dispatch has published nothing yet. The control, kept: with the
+// way's write taken out (the seam noWayKept) the tester's pass returns the task a second time.
+func TestRow1RunPastItsReturn(t *testing.T) {
+	r := fixAtTheEnd(t, returnEngine())
+	r.fixEnds(headTwo)
+	r.move(TriggerTesterPassed, "", record.PhaseRow{})
+	r.move(TriggerReviewApproved, "", reviewReport("approved"))
+
+	if counts := r.counts(); counts.Pass != 1 {
+		t.Fatalf("the task counts %+v, want one return", counts)
+	}
+	if got := stepStartCounts(t, r.pool, "LEGION-208"); !slices.Contains(got, "a/step/2=2") {
+		t.Fatalf("the starts of LEGION-208 = %v, want a/step/2=2: the tester ran twice", got)
+	}
+	if fix := r.latestFix(); fix.Way != 2 {
+		t.Fatalf("the fix took way %d, want 2: %+v", fix.Way, fix)
+	}
+	r.assertEndHold(record.HoldForCI)
+	r.assertTaskAtItsRetro()
+
+	t.Run("with the way's write taken out the tester's pass returns the task a second time", func(t *testing.T) {
+		engine := returnEngine()
+		engine.noWayKept = true
+		r := fixAtTheEnd(t, engine)
+		r.fixEnds(headTwo)
+		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+		if counts := r.counts(); counts.Pass != 2 {
+			t.Fatalf("the task counts %+v with the way unwritten, want a second return", counts)
+		}
+	})
+}
 
 // Row 3: changes while the fix runs, and the fix made new commits: the fix got the report, so the
 // steps after it run again at the new head. One return.
@@ -181,11 +287,18 @@ func (r *fixRig) firings(hook string) []string {
 }
 
 // A fix's return fires the deployment's hooks as every return does: a hook with no moves and an
-// every of 1 fires on the way-2 return from a hold for the fix, the return to the step after the
-// fix. The control, kept: the same hook on a way-3 end, which is no return, does not fire.
+// every of 1 fires on the way-2 return from a hold for the fix beside a review, and on the way-2
+// return from a hold for the fix at the task's end, the return to the step after the fix. The
+// control, kept: the same hook on a way-3 end, which is no return, does not fire.
 func TestAHookFiresOnAFixsReturn(t *testing.T) {
 	r := fixAfterReview(t, hookEngine(), TriggerReviewRejected, false, headTwo)
 	assertStrings(t, "the hook's firings", r.firings(everyReturn.Name), []string{reviewingTesting})
+
+	t.Run("a way-2 return from the end fires once", func(t *testing.T) {
+		r := fixAtTheEnd(t, hookEngine())
+		r.fixEnds(headTwo)
+		assertStrings(t, "the hook's firings", r.firings(everyReturn.Name), []string{retroTesting})
+	})
 
 	t.Run("a way-3 end fires nothing", func(t *testing.T) {
 		r := fixAfterReview(t, hookEngine(), TriggerReviewApproved, true, fixHead)

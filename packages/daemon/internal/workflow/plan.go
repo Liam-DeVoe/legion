@@ -247,17 +247,24 @@ func fixOrCIHold(issue record.Issue) bool {
 
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
 // escalation (retryOrEscalate), the operator's restart (restartPhase) — where its plan holds it
-// (planHold), and nil for any other hold. A retry would start the role of the phase the hold is
-// from and an escalation would overwrite the reason, so each is refused with what starts the work
-// again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
-// for its children why it still waits (heldParentWait's refusal).
+// (planHold), or its fix or its CI does (fixOrCIHold), and nil for any other hold. A retry would
+// start the role of the phase the hold is from and an escalation would overwrite the reason, so
+// each is refused with what starts the work again: for a stopped task a later version of its plan
+// (RetryOfStoppedTask), for a parent held for its children why it still waits (heldParentWait's
+// refusal), and for a task held for its fix or its CI what it waits for (endHoldRefusal).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
 	if issue.Phase != phase.Held || issue.Hold == nil {
 		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !planHold(issue, w.Stored) {
+	if err != nil {
 		return nil, err
+	}
+	if fixOrCIHold(issue) {
+		return e.endHoldRefusal(ctx, tx, issue, w)
+	}
+	if !planHold(issue, w.Stored) {
+		return nil, nil
 	}
 	if record.HeldForChildren(issue) {
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
@@ -267,6 +274,39 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 		return wait.refusal(), nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
+}
+
+// endHoldRefusal is the refusal of a release of issue's hold for its fix or for its CI
+// (fixOrCIHold), on w, the walk of its run, which names what ends the hold: FIX_RUNNING, the
+// fix's end, which moves the task on; CI_PENDING, the CI at its task's head (ciWaits), each check
+// of which starts the retro by passing, or a fix or the owner's notice by failing, and the
+// owner's acts before then: the move back, and the stop of its task where the issue runs a plan.
+func (e *Engine) endHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (*intake.Refusal, error) {
+	if record.HeldFor(issue, record.HoldForFix) {
+		fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+		if err != nil {
+			return nil, err
+		}
+		check, head := "", ""
+		if fix != nil {
+			check, head = fix.Check, fix.Head
+		}
+		return &intake.Refusal{Status: 409, Code: "FIX_RUNNING", Message: fmt.Sprintf(
+			"%s is held while a fix of task %s runs (check %s at %s); it goes on when the fix ends. This retry changed nothing.",
+			issue.Key, w.Task, check, head)}, nil
+	}
+	head, waits, err := e.ciWaits(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	stop := ""
+	if w.Stored {
+		stop = ", or stop its task with stop_task"
+	}
+	return &intake.Refusal{Status: 409, Code: "CI_PENDING", Message: fmt.Sprintf(
+		"%s passed its last step and waits for CI at %s: %s. Legion starts its retro when each passes; a failure starts a fix where the task has one, else Legion tells you once. "+
+			"To act before then, send it back with request_backward_move%s. This retry changed nothing.",
+		issue.Key, head, strings.Join(waits, ", "), stop)}, nil
 }
 
 // pastReport is the run that a completion of a phase its issue no longer stands in reports, which

@@ -44,6 +44,11 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 			return nil, err
 		}
 	}
+	// A fix of the task ends with the stop and takes no way (dropFixWay), before the hold is
+	// written, so nothing moves the task inside the stop.
+	if err := e.dropFixWay(ctx, tx, issue, w, said); err != nil {
+		return nil, err
+	}
 	from := record.StandsAt(issue)
 	if step, ok := standingStep(w, issue); ok {
 		if err := e.nameEnd(ctx, issue, step, end); err != nil {
