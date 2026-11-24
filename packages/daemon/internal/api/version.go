@@ -3797,6 +3797,9 @@ package api
 // from 234 to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596),
 // 243 (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
 // requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,
-// 2026-11-24T15:47:51Z to 15:50:22Z). Read the base's own number and every open head again at the
-// next merge rather than from this line.)
+// 2026-11-24T15:47:51Z to 15:50:22Z). The merge of main `69fcd649`, which still declares 246, keeps
+// 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
+// branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
+// new one by a census. Once #5399 has merged, the next merge of main takes the number the way it
+// sets, rather than from this line.)
 const DaemonAPIVersion = 248
