@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -166,6 +167,9 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 			case !inTree:
 				report.written = append(report.written, name)
 			case bytes.Equal(current, branchContent):
+				// Written already: main added the same route, or an earlier run wrote it and stopped
+				// before staging. Either way it is staged, so the merge commit holds it.
+				stage = append(stage, name)
 				continue
 			default:
 				merged, conflict, err := repo.mergeFile(current, nil, branchContent, labels)
@@ -352,14 +356,18 @@ func (g gitRepo) diffText(from, to string) (string, error) {
 	if err := os.WriteFile(toPath, []byte(to), 0o644); err != nil {
 		return "", err
 	}
-	output, err := g.run("diff", "--no-index", "--no-color", "--exit-code", "-U3", fromPath, toPath)
-	if err == nil {
+	command := g.command("diff", "--no-index", "--no-color", "--exit-code", "-U3", fromPath, toPath)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err = command.Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
 		return "", nil
+	case !errors.As(err, &exit) || exit.ExitCode() != 1:
+		return "", fmt.Errorf("git diff --no-index: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	if len(output) == 0 {
-		return "", err
-	}
-	text := string(output)
+	text := stdout.String()
 	if at := strings.Index(text, "\n@@"); at >= 0 {
 		text = text[at+1:]
 	}

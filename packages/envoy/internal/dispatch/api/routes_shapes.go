@@ -324,6 +324,15 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
+}
+
 // inboxQuery is GET /api/v1/inbox's query.
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
