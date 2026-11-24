@@ -1876,7 +1876,7 @@ export function renderInbound(
     ...(dispatchRendered
       ? { dispatch: dispatchEvent }
       : {
-          ...(summaryIsHead ? {} : { summary: payloadSummary }),
+          ...(summaryIsHead ? {} : { summary: oneLine(payloadSummary) }),
           ...(message === undefined ? {} : { message }),
         }),
     ...(bodyNote === undefined ? {} : { body_note: bodyNote }),

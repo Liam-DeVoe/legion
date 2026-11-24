@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto"
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { TextInFront } from "@legion/envoy-client/words-block"
-import { quoteFence } from "../../hooks/mod-protocol"
+import { quotedCard, quoteFence } from "../../hooks/mod-protocol"
 
 /**
  * The Codex plugin's inbox: messages waiting for the running turn of one session.
@@ -194,7 +194,7 @@ export async function takeInbox(
  *  typed, and a card says it is a message nobody at this session typed, as the Claude Code prompt
  *  at unread rows labels each (`unreadRowPrompt`, `../../hooks/mod-protocol.ts`). Every message
  *  has its label, so the last label above a line names the message the line is part of: a card
- *  after a person's message no longer sits under the person's label. A message from any session
+ *  after a person's message does not sit under the person's label. A message from any session
  *  can hold any line, the labels included, so the plugin's own lines (the first line and each
  *  label) start with a fence minted for this text alone from `node:crypto` (`quoteFence`), and the
  *  first line says that only a line with that mark is the plugin's. The messages before a card
@@ -213,9 +213,7 @@ export function inboxContext(items: readonly CodexInboxItem[]): string {
   )
   for (const item of items) {
     if (item.dispatchMessageId === undefined) {
-      context.card(
-        `[${fence}] An Envoy message delivered to this session, which nobody here typed:\n${item.content}`,
-      )
+      context.card(quotedCard(fence, item.content))
     } else {
       context.part(
         `[${fence}] A person wrote to you from Dispatch (message ${item.dispatchMessageId}):\n${item.content}`,

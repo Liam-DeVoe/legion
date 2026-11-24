@@ -540,6 +540,14 @@ export function quoteFence(
 const MOD_RANDOM_BYTES = (count: number): number[] =>
   Array.from({ length: count }, () => Math.floor(Math.random() * 256))
 
+/** A card as a prompt quotes it: its words under the router's label, behind the mark of the
+ *  prompt's fence, which says the line is the router's. Both prompts that quote cards label each
+ *  so: the one at unread rows (`quotedUnread`) and the Codex inbox's hook text (`inboxContext`,
+ *  `../src/codex/codex-inbox.ts`). */
+export function quotedCard(fence: string, text: string): string {
+  return `[${fence}] An Envoy message delivered to this session, which nobody here typed:\n${text}`
+}
+
 /** One unread message as the prompt quotes it, under a label of the router's own: what the
  *  message is, behind the mark that says the line is the router's and not the message's. A
  *  prompt that called a card the person's own words would put words in their mouth that they
@@ -547,7 +555,7 @@ const MOD_RANDOM_BYTES = (count: number): number[] =>
 function quotedUnread(message: ModUnreadMessage, fence: string): string {
   return message.kind === "person"
     ? `[${fence}] Dispatch message ${message.messageId}, the person's own words:\n${message.text}`
-    : `[${fence}] An Envoy message delivered to this session, which nobody here typed:\n${message.text}`
+    : quotedCard(fence, message.text)
 }
 
 /**
