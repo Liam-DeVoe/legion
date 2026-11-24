@@ -13,22 +13,26 @@
  *  (`DISPATCH_E2E_MODELS=fake`, e2e/harness-models.ts), so every row also skips itself where it
  *  does not.
  *
- *  ONE SEED, AND NO ROW SEEDS. The issues these rows read, plan on and change are the review
- *  corpus's own (`seedBarIssues`, e2e/review-seed.ts): seven issues of project OPS, bob's, with
- *  no ask among them, which no page of the shot set draws, and the dome routed to the
- *  workspace's Planner, so a message to the Planner is placed on the dome. A row reads their
- *  keys from the seed file and scripts the fake models with them; it writes nothing before it
- *  opens the bar.
+ *  ONE SEED, AND NO ROW SEEDS FOR ANOTHER LOGIN. The issues these rows read, plan on and change
+ *  are the review corpus's own (`seedBarIssues`, e2e/review-seed.ts): seven issues of project
+ *  OPS, bob's, with no ask among them, which no page of the shot set draws, and the dome routed
+ *  to the workspace's Planner, so a message to the Planner is placed on the dome. A row reads
+ *  their keys from the seed file and scripts the fake models with them, and writes nothing
+ *  before it opens the bar but what its own login must have done: state 1 opens the two issues
+ *  its Recent lists, and state 6 writes the two comments on the shutter its plan edits and
+ *  deletes, since a plan edits or deletes only a comment its person wrote.
  *
  *  WHAT A ROW LEAVES. A row signs in as a login of its own (`bar-<state>`), so its runs, its
  *  conversations and History are its own: no other row's History lists them, and a plan that
  *  waits reaches that login's Inbox alone, never alice's, whose Inbox the pages' rows shoot. And
  *  each row ends what it starts: a run it holds working is stopped, a plan it leaves waiting is
  *  discarded, and a plan it applies is undone. What stays is a message on an issue of OPS, which
- *  Undo does not take back, and the one issue the filing row files, which no other row reads:
- *  the chart and the table read the seven seeded issues by key, and its words - a weather
- *  station on the roof - match none that another row searches for, so it is no hit of state
- *  1's search or of state 3's search step. So a row draws the same whichever rows ran before it.
+ *  Undo does not take back; the two comments state 6 writes on the shutter, which its discarded
+ *  plan leaves as they were, whose words match no row's search, and which no row after it reads;
+ *  and the one issue the filing row files, which no other row reads: the chart and the table
+ *  read the seven seeded issues by key, and its words - a weather station on the roof - match
+ *  none that another row searches for, so it is no hit of state 1's search or of state 3's
+ *  search step. So a row draws the same whichever rows ran before it.
  *  These writes are the states under review, so the guard every page row installs
  *  (`e2e/visual-guard.ts`), which stops each write its page sends, is not installed here. This
  *  project runs after both of the pages' instead (`visual-bar` is the last visual project of
@@ -94,7 +98,10 @@
 import { fileURLToPath } from "node:url";
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 
+import type { Result } from "../web/src/api/paths";
+
 import { setLiveSessions } from "./agents";
+import { dashboardOrigin } from "./api";
 import type { ChatReply, ChatRunScript, ChatTurn } from "./fake-chat-model";
 import {
   callTool,
@@ -238,6 +245,19 @@ function slow(turn: ChatTurn): ChatTurn {
 /** An answer naming `issue` by a link, which the bar draws as the issue's chip. */
 function naming(issue: string): string {
   return `[${issue}](/issues/${issue})`;
+}
+
+/** Writes a comment of `body` on `issue` as the person `page` is signed in as, through the route
+ *  the issue page's comment box posts to, and answers its id. `page.request` sends the page's
+ *  session cookie and no `Origin`, and the server refuses a cookie-authenticated write whose
+ *  `Origin` is not the dashboard's (enforceCookieOrigin), so the request names it. */
+async function commentOn(page: Page, issue: string, body: string): Promise<string> {
+  const answer = await page.request.post(`/api/v1/issues/${issue}/comments`, {
+    data: { body },
+    headers: { Origin: dashboardOrigin },
+  });
+  expect(answer.status(), `the comment on ${issue}: ${await answer.text()}`).toBe(201);
+  return ((await answer.json()) as Result<"/api/v1/issues/{key}/comments", "post">).id;
 }
 
 /** Waits until every item chip under `where` has its status and title, which it reads after it
@@ -626,20 +646,30 @@ const barRows: readonly BarRow[] = [
     state: "05",
   },
   {
-    // State 6. Scripts a run that proposes, in a slow turn, one row of each kind - a new issue, a
-    // change of fields, a document's text, a message to an agent and a close - and waits. The
-    // message goes to the Planner, whom the seed routes the dome to (`seedBarIssues`), so its row
-    // names the session, the issue it is posted on and its delivery (R7). The row discards the
-    // plan, so nothing is sent.
+    // State 6. Scripts a run that proposes, in a slow turn, one row of each kind - a new issue, an
+    // edit and a delete of a comment (a post's two rows), a change of fields, a document's text, a
+    // message to an agent and a close - and waits. A plan edits or deletes only a comment its
+    // person wrote, so the row writes the two comments on the shutter itself, as its own login,
+    // before it opens the bar. Their rows come right after the new issue's, so each shot shows
+    // them under the question. The message goes to the Planner, whom the seed routes the dome to
+    // (`seedBarIssues`), so its row names the session, the issue it is posted on and its delivery
+    // (R7). The row discards the plan, so nothing is sent, edited or deleted.
     reach: async (page, seed) => {
       const words = "plan a motor for the observatory dome";
       const { dome, mount, project, shutter } = seed.bar;
+      // Short, and sharing no word with any row's search, so neither comment is a hit of one:
+      // state 13's shot draws the hits of its words.
+      const hingeNow = "Oil its hinge every week.";
+      const hingeNext = "Oil its hinge every month.";
+      const latchNow = "Its latch rattles in wind.";
+      const hingeNote = await commentOn(page, shutter, hingeNow);
+      const latchNote = await commentOn(page, shutter, latchNow);
       await script(seed, [
         {
           afterwards: say("Discarded."),
           turns: [
             slow(
-              proposePlan("Fit a motor to the dome, and retire the old shutter it replaces.", [
+              proposePlan("Fit a dome motor, retire the old shutter, and fix your notes on it.", [
                 {
                   arguments: {
                     parent: dome,
@@ -650,6 +680,11 @@ const barRows: readonly BarRow[] = [
                   },
                   tool: "dispatch_issue",
                 },
+                {
+                  arguments: { body: hingeNext, comment: hingeNote },
+                  tool: "dispatch_edit_comment",
+                },
+                { arguments: { comment: latchNote }, tool: "dispatch_delete_comment" },
                 {
                   arguments: { issue: mount, labels: ["optics"], priority: 2 },
                   tool: "dispatch_issue_update",
@@ -686,6 +721,34 @@ const barRows: readonly BarRow[] = [
           words,
         },
       ]);
+      // The two post rows, in the bar and then in the panel: each says what it does to whose
+      // comment on the shutter, by the shutter's chip (the author is the row's own login,
+      // `drawState`). The edit shows its body as a field, the words the comment holds and the
+      // words the edit writes; the delete shows the words it takes out, struck through, and that a
+      // delete cannot be undone. Both stand in view under the question, so each shot shows them.
+      const postRows = planCard(page).locator('[data-testid="going-plan-row"][data-kind="post"]');
+      const postRowsDrawn = async (): Promise<void> => {
+        await expect(postRows).toHaveCount(2);
+        const edit = postRows.first();
+        await expect(edit.getByTestId("going-plan-post")).toHaveText(
+          new RegExp(`^Edit the comment by bar-06 on ${shutter}(?!\\d)`)
+        );
+        const body = edit.getByTestId("going-plan-field");
+        await expect(body).toHaveAttribute("data-field", "body");
+        await expect(body).toHaveText(/^Body: /);
+        await expect(body.getByTestId("going-plan-now")).toHaveText(hingeNow);
+        await expect(body.getByTestId("going-plan-next")).toHaveText(hingeNext);
+        const remove = postRows.last();
+        await expect(remove.getByTestId("going-plan-post")).toHaveText(
+          new RegExp(`^Delete the comment by bar-06 on ${shutter}(?!\\d)`)
+        );
+        await expect(remove.getByTestId("going-plan-quote").locator("del")).toHaveText(latchNow);
+        await expect(remove.getByTestId("going-plan-final")).toHaveText(
+          "Cannot be undone once deleted"
+        );
+        await expect(edit).toBeInViewport();
+        await expect(remove).toBeInViewport();
+      };
       await openTheBar(page, seed);
       await askTheAgent(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", {
@@ -694,7 +757,7 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
       });
-      await expect(planRows(planCard(page))).toHaveCount(5);
+      await expect(planRows(planCard(page))).toHaveCount(7);
       await expect(
         planCard(page)
           .getByTestId("item-chip")
@@ -708,6 +771,7 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page).getByTestId("going-plan-document")).toHaveText(
         new RegExp(`^Suggest a change to spec on ${dome}(?!\\d)`)
       );
+      await postRowsDrawn();
       // The card is taller than the view: it shows from its question down, its Approve and
       // Discard pinned at the foot of the conversation's scroll with no row under them, and the
       // hint under the box, from the box's left edge, says Enter approves.
@@ -719,12 +783,13 @@ const barRows: readonly BarRow[] = [
       await hintUnderBox(bar(page));
       await shoot(page, "06-plan-bar");
       await keepAtTheSide(page);
-      await expect(planRows(planCard(page))).toHaveCount(5);
+      await expect(planRows(planCard(page))).toHaveCount(7);
       await expect(
         planCard(page)
           .getByTestId("item-chip")
           .filter({ hasNot: page.getByTestId("item-chip-status") })
       ).toHaveCount(0);
+      await postRowsDrawn();
       // The panel scrolls as the bar does: the question at its top, nothing cut under its header,
       // Approve pinned at the foot of its scroll, and the hint under its box.
       await expect(newestRun(page).getByTestId("going-run-words")).toBeInViewport();

@@ -398,6 +398,7 @@ describe("every committed recording answers the display tree of every stored tex
       "BroadcastSummary.body",
       "CheckBlock.text",
       "CheckResult.observed",
+      "CommentEdited.body",
       "CommentWithTrees.body",
       "CommentWriteResponse.body",
       "Decision.text",
