@@ -5,6 +5,7 @@ package storetest
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"runtime"
 	"runtime/trace"
@@ -37,7 +38,7 @@ const xidGenerationWait = 10 * time.Second
 // fault that waits for the page table's lock, on a loaded machine for milliseconds of the thread's
 // CPU (xidTrace.warm). So the rig leaves the runtime's pool of trace buffers used and full
 // (xidTrace.warm), and makes every page of the tracer's memory present at each BEGIN
-// (xidHoldMemory). This test does what a BEGIN does and then writes more than three buffers of
+// (xidHoldWindowMemory). This test does what a BEGIN does and then writes more than three buffers of
 // events from the same thread: every page of the tracer's memory must be present at the burst's
 // start, the thread must take no page fault in the burst, and the runtime must map no new trace
 // buffer for it. The thread's faults are read with a raw system call, which writes no trace event.
@@ -52,18 +53,20 @@ const xidGenerationWait = 10 * time.Second
 // what was mapped since the trace started where it keeps none (xidTracerRanges). A hold that found
 // none leaves the two page checks nothing to read, so the test fails as UNKNOWN rather than pass
 // over an empty list; on a kernel that keeps no names the hold before this rule found none, and the
-// burst faulted on buffers it never made present (16 to 67 of 100 runs on such a kernel). The fault
-// count is the third check, and it holds only where the kernel counts a thread's faults: where it
-// does not (gVisor's counter stays still when a thread writes a fresh page), the test stops by the
-// repository's rule for a machine that cannot run it (xidRequireFaultCounter).
+// burst faulted on buffers it never made present (19 to 76 of 100 runs on such a kernel: 56 and 200
+// of 300 on two machines, 229 of 300 under load). The fault count is the third check, and it holds
+// only where the kernel counts a thread's faults: where it does not (gVisor's counter stays still
+// when a thread writes a fresh page), the test stops by the repository's rule for a machine that
+// cannot run it (xidRequireFaultCounter).
 //
 // Nothing but the tracer's writes may fault in the burst. The runtime preempts a goroutine that has
 // run for 10 ms (sysmon's forcePreemptNS) with a signal, and the kernel writes the signal's frame
 // onto the thread's signal stack, which a thread that never took a signal has not touched: that was
-// the fault left in about 3 of 400 runs once the tracer's pages were present. So, after the hold
-// and its checks, the goroutine yields, and the burst starts a whole time slice of its own, which
-// it takes 2 to 18 ms of; and before the hold the thread takes one signal (xidTouchSignalStack), so
-// a preemption of a burst that runs past its slice lands on pages already touched.
+// the fault left once the tracer's pages were present, in 1 of 2,000 runs, and in 1 of 400 under
+// load. So, after the hold and its checks, the goroutine yields, and the burst starts a whole time
+// slice of its own, which it takes 2 to 18 ms of; and before the hold the thread takes one signal
+// (xidTouchSignalStack), so a preemption of a burst that runs past its slice lands on pages already
+// touched.
 func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	if trace.IsEnabled() {
 		t.Fatal("an execution trace is already running - go test -trace takes one - and this test takes its own; run it without go test -trace")
@@ -96,7 +99,7 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 		for i := range xidBurstLogs + 1 {
 			if i == 1 {
 				xidTouchSignalStack()
-				xidHoldMemory()
+				xidHoldWindowMemory()
 				mapped, named = xidTracerMappings(t)
 				absent = xidAbsentPages(mapped)
 				runtime.Gosched()
@@ -243,6 +246,115 @@ func xidAbsentPages(ranges []xidTracerRange) []string {
 // execution tracer writes no event for.
 func xidThreadRusage(usage *unix.Rusage) {
 	unix.RawSyscall(unix.SYS_GETRUSAGE, uintptr(unix.RUSAGE_THREAD), uintptr(unsafe.Pointer(usage)), 0)
+}
+
+// On a kernel that names no anonymous mapping, the hold finds the execution tracer's memory as what
+// was mapped since the rig started the trace (xidUnnamedTracerRanges): each part of an anonymous
+// private writable mapping that no range mapped before the trace covers, less the Go heap's
+// mapping, the one that holds the heap object, and each thread's stack, a mapping right above a
+// one-page guard of no access. Where the runtime's names are on the mappings, it is the mappings
+// named the tracer's, whatever else was mapped meanwhile; and with no trace the rig started, it
+// finds none without names (xidTracerRanges). With the ranges mapped before the trace, the heap
+// object or the guard planted out of xidUnnamedTracerRanges, or the names planted unread, the rows
+// that rule is for fail.
+func TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted(t *testing.T) {
+	page := uintptr(os.Getpagesize())
+	const base, heap = uintptr(0x7f0000000000), uintptr(0xc000010000)
+	at := func(pages uintptr) uintptr { return base + pages*page }
+	pages := func(from, to uintptr) xidTracerRange { return xidTracerRange{at(from), at(to)} }
+	line := func(r xidTracerRange, rest string) string { return fmt.Sprintf("%x-%x %s\n", r.start, r.end, rest) }
+	const anonymous, guard = "rw-p 00000000 00:00 0", "---p 00000000 00:00 0"
+	for _, test := range []struct {
+		name   string
+		maps   string
+		before []xidTracerRange
+		want   []xidTracerRange
+	}{
+		{"a mapping made since the trace started is the tracer's whole",
+			line(pages(0, 16), anonymous), nil, []xidTracerRange{pages(0, 16)}},
+		{"a mapping that grew since the trace started is the tracer's from where it ended",
+			line(pages(0, 16), anonymous), []xidTracerRange{pages(0, 4)}, []xidTracerRange{pages(4, 16)}},
+		{"a mapping that grew on both sides of what was there is the tracer's on each side",
+			line(pages(0, 16), anonymous), []xidTracerRange{pages(4, 8)}, []xidTracerRange{pages(0, 4), pages(8, 16)}},
+		{"a mapping that was there whole before the trace is none of it",
+			line(pages(0, 16), anonymous), []xidTracerRange{pages(0, 16)}, nil},
+		{"the Go heap's mapping is none of it, however much of it is new",
+			line(xidTracerRange{0xc000000000, 0xc004000000}, anonymous), []xidTracerRange{{0xc000000000, 0xc000400000}}, nil},
+		{"a thread's stack, right above a one-page guard of no access, is none of it",
+			line(pages(0, 1), guard) + line(pages(1, 2049), anonymous), nil, nil},
+		{"a mapping right above a reservation of more than one page is the tracer's",
+			line(pages(0, 2), guard) + line(pages(2, 18), anonymous), nil, []xidTracerRange{pages(2, 18)}},
+		{"a file's mapping, a read-only one, a shared one and the main thread's stack are none of it",
+			line(pages(0, 16), "rw-p 00200000 08:01 123 /usr/bin/storetest.test") + line(pages(16, 32), "r--p 00000000 00:00 0") +
+				line(pages(32, 48), "rw-s 00000000 00:01 77 /dev/zero (deleted)") + line(pages(64, 80), anonymous+" [stack]"), nil, nil},
+	} {
+		if found := xidUnnamedTracerRanges([]byte(test.maps), test.before, heap); !slices.Equal(found, test.want) {
+			t.Errorf("%s: found %x, want %x, in\n%s", test.name, found, test.want, test.maps)
+		}
+	}
+
+	previous := xidMappedBeforeTrace.Load()
+	t.Cleanup(func() { xidMappedBeforeTrace.Store(previous) })
+	xidMappedBeforeTrace.Store(&[]xidTracerRange{})
+	named := line(pages(0, 16), anonymous+" [anon: Go: trace buffer]") + line(pages(16, 32), anonymous+" [anon: Go: heap]") +
+		line(pages(32, 48), anonymous+" [anon: Go: trace arena alloc]")
+	if found, want := xidTracerRanges([]byte(named)), []xidTracerRange{pages(0, 16), pages(32, 48)}; !slices.Equal(found, want) {
+		t.Errorf("where the runtime names the mappings, the tracer's memory was found as %x, want the two named the tracer's, %x", found, want)
+	}
+	xidMappedBeforeTrace.Store(nil)
+	if found := xidTracerRanges([]byte(line(pages(0, 16), anonymous))); found != nil {
+		t.Errorf("with no trace the rig started and no names, the tracer's memory was found as %x, want none", found)
+	}
+}
+
+// A BEGIN at which the hold finds none of the execution tracer's memory leaves the tracer's first
+// writes inside the window's gaps free to land on pages never touched, which a gap would read as
+// the code's time: so the window is UNKNOWN, naming that BEGIN's reason in place of its unread
+// gaps, and the run does not pass (xidHoldWindowMemory, XidTracer.lockTransaction,
+// analyzeXidWindows). Here the search is planted to find nothing (xidFindTracerMemory) while the
+// rig's own trace runs, and the window has two gaps. With the hold planted to take an empty search
+// as nothing to hold, as it did before this rule, the window is judged off the clocks of a thread
+// whose tracer pages were never made present, the run passes, and this test fails.
+func TestABeginThatFindsNoTracerMemoryIsUnknown(t *testing.T) {
+	RequireXidGapJudgment(t)
+	database := Open(t)
+	tracer := NewXidTracer()
+	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
+	xidFindTracerMemory = func([]byte) []xidTracerRange { return nil }
+	t.Cleanup(func() { xidFindTracerMemory = xidTracerRanges })
+	report := tracer.Measure(t, traced.Pool, func() {
+		ctx := MarkXid(context.Background())
+		tx, err := traced.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "select pg_current_xact_id()"); err != nil {
+			t.Fatalf("take a transaction id: %v", err)
+		}
+		if _, err := tx.Exec(ctx, "select 1"); err != nil {
+			t.Fatalf("a second statement: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	})
+	if len(report.Windows) != 1 || len(report.Windows[0].Gaps) == 0 {
+		t.Fatalf("the rig judged %d windows, want one with a gap, or this run proves nothing", len(report.Windows))
+	}
+	window := report.Windows[0]
+	want := fmt.Sprintf("UNKNOWN: backend %d's window (%s) was read off no thread's clocks: at the transaction's BEGIN the rig could not hold the process's memory still (xidHoldWindowMemory): none of the execution tracer's memory was found to make present",
+		window.Transaction.PID, xidSQL(window.Statements[0].SQL))
+	t.Logf("problems: %q", report.Problems)
+	if !slices.ContainsFunc(report.Problems, func(problem string) bool { return strings.HasPrefix(problem, want) }) {
+		t.Errorf("problems %q, want one that begins %q", report.Problems, want)
+	}
+	if slices.ContainsFunc(report.Problems, func(problem string) bool { return strings.Contains(problem, "was not read off one thread's clocks") }) {
+		t.Errorf("problems %q, want the BEGIN's reason in place of each unread gap's and statement's", report.Problems)
+	}
+	if err := report.Err(); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("verdict %v, want the rig problem that names the BEGIN's reason", err)
+	}
 }
 
 // xidStallTheCalibration plants a 50 ms stall into the trace's calibration (xidTieClocks), once,

@@ -4,6 +4,7 @@ package storetest
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -270,7 +271,8 @@ func xidHoldThread() (release func(), held bool) {
 	}, true
 }
 
-// xidHoldMemory holds the process's memory still for a window, in two ways.
+// xidHoldWindowMemory holds the process's memory still for a window, in two ways, and answers why
+// it could not hold it, empty when it did.
 //
 // On a machine NUMA balancing runs on, it keeps NUMA balancing off every page the process has
 // mapped private and writable - its heap, its stacks, its data - by setting each such mapping's
@@ -284,35 +286,40 @@ func xidHoldThread() (release func(), held bool) {
 //
 // On every machine, it makes every page of the execution tracer's memory present
 // (MADV_POPULATE_WRITE, which faults each page in writable and writes nothing to it): the trace's
-// buffers and the blocks of its tables (xidTracerRanges). The tracer writes events from the
-// measured thread inside every gap, and the first write to a page is a page fault, which takes the
-// page table's lock; another thread of the process may hold it, and on a loaded machine one fault
-// waited 11.3 ms for it on the thread's CPU (xidTrace.warm). Only that memory is made present: all
-// the process's private writable mappings came to 460 MiB for a test process of 66 MiB, its
-// threads' 8 MiB stacks and the heap's reservation, and the tracer's to under 1 MiB.
+// buffers and the blocks of its tables (xidTracerRanges, through xidFindTracerMemory). The tracer
+// writes events from the measured thread inside every gap, and the first write to a page is a page
+// fault, which takes the page table's lock; another thread of the process may hold it, and on a
+// loaded machine one fault waited 11.3 ms for it on the thread's CPU (xidTrace.warm). Only that
+// memory is made present: all the process's private writable mappings came to 460 MiB for a test
+// process of 66 MiB, its threads' 8 MiB stacks and the heap's reservation, and the tracer's to
+// under 1 MiB.
 //
 // lockTransaction holds the memory at each marked BEGIN, inside that statement, since a mapping
 // the process made since the last window - a trace buffer among them - has no policy of its own
-// and pages not yet present. The thread-clock probe holds it once too, to learn whether it can
-// (xidThreadClocksUnavailable). Nothing puts the old policy back: once a mapping is set to
-// MPOL_LOCAL here, it stays so for the rest of the process's life, which for a test binary is the
-// rest of its tests.
+// and pages not yet present. The thread-clock probe holds it once too, through xidHoldMemory, to
+// learn whether it can (xidThreadClocksUnavailable). Nothing puts the old policy back: once a
+// mapping is set to MPOL_LOCAL here, it stays so for the rest of the process's life, which for a
+// test binary is the rest of its tests.
 //
-// It answers false when NUMA balancing is on and the kernel refuses mbind, and when an execution
-// trace the rig started runs (startXidTrace) and none of its memory could be found: then the
-// tracer's first writes inside a gap can land on pages never touched, which the gap would read as
-// the code's time. A mapping that goes away between the read of /proc/self/maps and its mbind or
-// madvise is one there is nothing left to hold. A kernel without MADV_POPULATE_WRITE (before
-// Linux 5.14) leaves the tracer's pages to fault in as the tracer writes them, which can fail a
-// gap the code did not make, never pass one.
-func xidHoldMemory() bool {
+// It says why it could not hold the memory when there is memory to hold and /proc/self/maps cannot
+// be read, when NUMA balancing is on and the kernel refuses mbind, and when an execution trace the
+// rig started runs (startXidTrace) and none of the tracer's memory is found: then the tracer's
+// first writes inside a gap can land on pages never touched, which the gap would read as the code's
+// time, so the BEGIN's window is UNKNOWN by that reason (analyzeXidWindows). A mapping that goes
+// away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left to
+// hold. A kernel without MADV_POPULATE_WRITE (before Linux 5.14) leaves the tracer's pages to fault
+// in as the tracer writes them, which can fail a gap the code did not make, never pass one.
+func xidHoldWindowMemory() (unheld string) {
 	balancing := xidNUMABalancing()
 	tracing := xidMappedBeforeTrace.Load() != nil
 	maps, err := os.ReadFile("/proc/self/maps")
 	if err != nil {
-		return !balancing && !tracing
+		if !balancing && !tracing {
+			return ""
+		}
+		return fmt.Sprintf("the process's mappings could not be read to hold them: %v", err)
 	}
-	held := true
+	refused := false
 	if balancing {
 		for line := range bytes.Lines(maps) {
 			fields := bytes.Fields(line)
@@ -325,16 +332,36 @@ func xidHoldMemory() bool {
 			}
 			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
 			if errno == unix.EPERM || errno == unix.ENOSYS {
-				held = false
+				refused = true
 			}
 		}
 	}
-	tracer := xidTracerRanges(maps)
+	tracer := xidFindTracerMemory(maps)
 	for _, r := range tracer {
 		unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
 	}
-	return held && (len(tracer) > 0 || !tracing)
+	if refused {
+		return "the kernel refused mbind MPOL_LOCAL on the process's mappings, so NUMA balancing may move a page under the window's thread"
+	}
+	if !tracing || len(tracer) > 0 {
+		return ""
+	}
+	searched := "this kernel names no anonymous mapping, and no anonymous writable mapping but the Go heap's and threads' stacks was mapped since the rig started the trace"
+	if xidRuntimeNamesMappings(maps) {
+		searched = "no mapping is named the tracer's ([anon: Go: trace buffer] or [anon: Go: trace arena alloc])"
+	}
+	return fmt.Sprintf("none of the execution tracer's memory was found to make present (%s), so the tracer's first writes inside a gap could land on pages never touched, which the gap would read as the code's time", searched)
 }
+
+// xidHoldMemory holds the process's memory as xidHoldWindowMemory does and answers whether it held
+// it. The thread-clock probe asks it before any trace starts, so its answer is of NUMA balancing
+// alone there (xidThreadClocksUnavailable).
+func xidHoldMemory() bool { return xidHoldWindowMemory() == "" }
+
+// xidFindTracerMemory finds the execution tracer's memory in a read of /proc/self/maps for the
+// hold (xidHoldWindowMemory): xidTracerRanges, in a variable so that the test of a BEGIN that finds
+// none can plant that (TestABeginThatFindsNoTracerMemoryIsUnknown).
+var xidFindTracerMemory = xidTracerRanges
 
 // xidTracerRange is an address range of the execution tracer's memory, or, in
 // xidMappedBeforeTrace, of anything the process had mapped.
