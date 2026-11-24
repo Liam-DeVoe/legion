@@ -28,12 +28,7 @@ func fixWorkers(p phase.Phase, fixRunning bool) []claim.Role {
 // cancelPauseOf is what a cancel made while the project is paused is handed: the moment, the
 // backstop, and roles as the workflow's rule of the workers of an issue's open phase.
 func cancelPauseOf(at time.Time, backstop time.Duration, roles func(phase.Phase, bool) []claim.Role) ReleaseCancelPause {
-	return ReleaseCancelPause{At: at, Backstop: backstop, OpenPhaseRole: func(p phase.Phase) claim.Role {
-		if open := roles(p, false); len(open) > 0 {
-			return open[0]
-		}
-		return ""
-	}}
+	return ReleaseCancelPause{At: at, Backstop: backstop, OpenRoles: roles}
 }
 
 // The idle view of a cancel made while the project is paused reads, beside the issue's phase,

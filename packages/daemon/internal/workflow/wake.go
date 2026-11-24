@@ -225,9 +225,14 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the worker of the pod's open phase is woken: the settlement is that worker's business and
-// no one else's, and an architect reads it from its own notices. A head that settles again as each
-// of its checks finishes wakes the pod no second time, because the role's resume is still open.
+// The workers of the pod's open phase are woken (OpenRoles): the settlement is their business and
+// no one else's, and an architect reads it from its own notices. That is the worker of the issue's
+// phase, and the implementer while a fix runs beside its step. A head that settles again as each
+// of its checks finishes wakes the pod no second time, because each role's resume is still open.
+//
+// It answers the worker of the issue's phase where this call woke it, which tellChecks then tells
+// nothing, and "" otherwise. A fix's implementer it woke is not answered: a fix runs only on a task
+// that takes a fix (record.PlanTask.FixesCI), whose settlement tellChecks tells the owner alone.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -244,15 +249,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || issue == nil {
 		return "", err
 	}
-	role := OpenPhaseRole(issue.Phase)
-	if role == "" {
-		return "", nil
-	}
-	released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, role)
-	if err != nil || !found || released.ServingGeneration != issue.Generation {
-		return "", err
-	}
-	// The role is the settlement's to tell only when this call is what woke it: a wake another
+	// A role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
 	//
@@ -263,11 +260,24 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
-	if err != nil || !woken {
-		return "", err
+	var phaseWorker claim.Role
+	for _, role := range OpenRoles(*issue) {
+		released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, role)
+		if err != nil {
+			return "", err
+		}
+		if !found || released.ServingGeneration != issue.Generation {
+			continue
+		}
+		woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+		if err != nil {
+			return "", err
+		}
+		if woken && !FixWork(*issue, role) {
+			phaseWorker = role
+		}
 	}
-	return role, nil
+	return phaseWorker, nil
 }
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
@@ -449,16 +459,47 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It is the one statement of "the worker of the open phase" the release
-// reads: which role a release arms a backstop for — an architect gets none, because nothing of
-// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
-// armed in it.
-func OpenPhaseRole(p phase.Phase) claim.Role {
-	if role := phase.RoleFor(p); role != claim.RoleArchitect {
-		return role
+// OpenRolesOf is the workers of an issue standing in p, each once: the role of p where it has one
+// and it is no architect's, whose phases (admitted and accepting) are the architect's own turn
+// rather than a worker's, and then the implementer where fixRunning, a fix running beside the step
+// of p (record.Issue.RunningFix), which runs the task's first implementation step again. It is the
+// one statement of "the workers of the open phase": which roles a release arms a backstop for — an
+// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
+// would hold a pod open for the backstop period — which roles a CI settlement wakes, which live
+// claims of a pod have a phase reminder armed in them, and which roles the boot, the silence
+// repair, the ready of a claim and admission's repairs give work again. A fix that still reads its
+// failed job runs at no entry, so it is no worker here.
+func OpenRolesOf(p phase.Phase, fixRunning bool) []claim.Role {
+	var roles []claim.Role
+	if role := phase.RoleFor(p); role != "" && role != claim.RoleArchitect {
+		roles = append(roles, role)
 	}
-	return ""
+	if fixRunning && !slices.Contains(roles, claim.RoleImplementer) {
+		roles = append(roles, claim.RoleImplementer)
+	}
+	return roles
+}
+
+// OpenRoles is OpenRolesOf issue's phase and whether a fix runs beside its step.
+func OpenRoles(issue record.Issue) []claim.Role {
+	return OpenRolesOf(issue.Phase, issue.RunningFix > 0)
+}
+
+// FixWork says whether role's work on issue is the fix that runs beside the issue's step rather
+// than the work of the issue's phase: role is an open worker of the issue (OpenRoles) that the
+// issue's phase alone does not name.
+func FixWork(issue record.Issue, role claim.Role) bool {
+	return issue.RunningFix > 0 && slices.Contains(OpenRoles(issue), role) && !slices.Contains(OpenRolesOf(issue.Phase, false), role)
+}
+
+// WorkStanding is issue as role's work on it stands. The fix's work (FixWork) stands in
+// implementing, the phase of the task's first implementation step, which a fix runs again (the
+// implementer step is a plan's one step of type implementation), and is held nowhere, as the
+// fix's start stands it (startFix): a held issue's fix runs on. Every other role's work stands
+// where the issue does.
+func WorkStanding(issue record.Issue, role claim.Role) record.Issue {
+	if FixWork(issue, role) {
+		issue.Phase, issue.Hold = phase.Implementing, nil
+	}
+	return issue
 }

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,9 +51,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
+// Until then this name has callers of its own inside this module: leftItsPhase and noticeFor's
+// two reads (engine.go), startFix, tellStepsOfFix and moveFromHold (fix.go), tellGateMoved
+// (gate.go), mergeForward and mergeForwardLanded (merge_forward.go), tellChecks (review.go) and
+// one test (checks_red_test.go). Each reads the same table as a
 // caller of phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
@@ -108,8 +110,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
-// not linger, up and between turns, in no update round, holding no task it still works, with no
+// of a worker of issue's open phase (OpenRoles), on an issue at work in a tree that does not
+// linger, up and between turns, in no update round, holding no task it still works, with no
 // acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last three
 // terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
@@ -117,15 +119,18 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 // can name the same claim when it is behind the entry its phases row names, and both then send
 // that entry's work (repairSilence, SendOwedEntry); whichever writes first leaves a queued start
 // the other's rule reads and passes over. BackgroundStalledWorker stands on it too, so the two
-// rules agree on which claim they are about.
+// rules agree on which claim they are about. The work, the task and the start of a fix's
+// implementer are read where the fix's work stands (WorkStanding), in the phase of the step the
+// fix runs again, since a held issue's fix runs on.
 func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if !slices.Contains(OpenRoles(issue), role) {
 		return false
 	}
-	if !record.AtWork(issue, gate) || root.Lingers() {
+	stands := WorkStanding(issue, role)
+	if !record.AtWork(stands, gate) || root.Lingers() {
 		return false
 	}
 	c := run.Claim
@@ -135,23 +140,28 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if c.UpdateRound != "" {
 		return false
 	}
-	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
+	if c.Pending != nil && c.Pending.StillWorked(stands.Generation, stands.Phase, c.State) {
 		return false
 	}
 	stop := actingStop(run, root)
-	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, stands.Phase)
 }
 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
-// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
-// role's phase row too, an empty row naming the issue and role where the record holds none, so
-// the silence repair reads it once.
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). The fix's
+// implementer (FixWork) is owed its turn while the fix runs: the fix's own end is what ends its
+// work, and it takes the fix off the record (record.Issue.RunningFix), while the row keeps the
+// completion of the step the fix runs again. It answers the role's phase row too, an empty row
+// naming the issue and role where the record holds none, so the silence repair reads it once.
 func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
-	finished, err := PhaseFinished(ctx, store, tx, issue)
-	if err != nil || finished {
-		return record.PhaseRow{}, false, err
+	fixing := FixWork(issue, role)
+	if !fixing {
+		finished, err := PhaseFinished(ctx, store, tx, issue)
+		if err != nil || finished {
+			return record.PhaseRow{}, false, err
+		}
 	}
 	rows, err := store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -164,7 +174,7 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 			break
 		}
 	}
-	return row, row.CompletedAt.IsZero(), nil
+	return row, fixing || row.CompletedAt.IsZero(), nil
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
@@ -643,8 +653,14 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // sweep alone would otherwise reset a stuck tree's quiet time sixty times an hour, and the
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
+//
+// The work of the fix that runs beside the issue's step is sent as the fix's (resumeFix), never as
+// the phase's: it is the row's stored task, the fix's own, at its entry.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
+	if sent, err := e.resumeFix(ctx, tx, issue, role, row, row.Entry, marks); sent || err != nil {
+		return err
+	}
 	task := row.EntryTask
 	marks.stored = task != ""
 	if task == "" {
@@ -655,6 +671,32 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+}
+
+// resumeFix sends role its work again where that work is the fix that runs beside issue's step
+// (FixWork), and answers whether it did; it writes nothing for every other role. The fix's
+// resume task is the fix's stored task, the one its start wrote on the implementer's row
+// (record.PhaseRow.EntryTask, startFix), as each resume sends a row's stored task, at entry: the
+// row's for a claim behind it, 0 for a claim level with it, whose start marks say it is a resume
+// task. The start stands where the fix's work does (WorkStanding) and carries the fix's number
+// and the head its working copy is made at (startMarks.fix, fixFrom), so started writes it beside
+// the line of starts that wait for a slot (record.Store.EnqueueFixStart) and never into it. It is a
+// re-assertion, as every resume is (startMarks.reasserts). A fix still reading its failed job has
+// raised no entry, and no path resumes it: the issue record names no running fix then.
+func (e *Engine) resumeFix(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow, entry int64,
+	marks startMarks) (bool, error) {
+	if !FixWork(issue, role) {
+		return false, nil
+	}
+	_, fix, err := e.fixNamed(ctx, tx, issue, issue.RunningFix)
+	if err != nil || fix == nil {
+		return false, err
+	}
+	if row.EntryTask == "" {
+		return false, fmt.Errorf("resume fix %d of %s: the %s's row holds no task of it", fix.Fix, issue.Key, role)
+	}
+	marks.fix, marks.fixFrom, marks.stored, marks.reasserts = fix.Fix, fix.Head, true, true
+	return true, e.started(ctx, tx, WorkStanding(issue, role), role, row.EntryTask, entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -793,7 +835,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 			start.Fix, start.FixFrom = 0, ""
 			return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
 		}
-		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now())
+		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now(), move)
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
 }
@@ -801,10 +843,12 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // enqueueFixStart writes the start of a fix's task as one outbox row in the caller's own
 // transaction, beside the line of starts that wait for a slot (record.Store.EnqueueFixStart): it
 // carries no slot mark, so neither that line nor admission's repair of it reads it, and no start
-// of the phase the issue stands in takes it out, nor it that start. The fix's start puts a worker
-// to work on new work, so it is news of its issue and marks the issue moved, as startOrOwe marks a
-// transition's start.
-func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
+// of the phase the issue stands in takes it out, nor it that start. The fix's own start puts a
+// worker to work on new work, so it is news of its issue and marks the issue moved, as startOrOwe
+// marks a transition's start; a resume of the fix (resumeFix) sends work the record already owes,
+// and marks nothing (reassertion).
+func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time,
+	move movement) error {
 	if payload.Task == "" || payload.Phase == "" {
 		return fmt.Errorf("the start of fix %d of %s requires a task and a phase", payload.Fix, issue)
 	}
@@ -812,8 +856,10 @@ func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue s
 	if err != nil {
 		return err
 	}
-	if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
-		return err
+	if move == newsOfTheIssue {
+		if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
+			return err
+		}
 	}
 	return store.EnqueueFixStart(ctx, tx, row)
 }

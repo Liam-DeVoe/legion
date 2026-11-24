@@ -3641,8 +3641,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 			"sandbox", sandboxName, "claims", claims)
 		// No role was suspended and no bundle was saved, so the record carries neither. No
 		// backstop is armed either, which is the one act of the idle release this one must not
-		// make: armBackstops cancels the issue's open backstops before arming at most one of
-		// its own, and this release owes no wake. It
+		// make: armBackstops cancels the issue's open backstops before arming those of the open
+		// phase's workers, and this release owes no wake. It
 		// suspended no claim, and a claim an earlier idle release left `released` must keep the
 		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
@@ -3701,10 +3701,10 @@ func (r *outbox) issueSandboxName(issue string) string {
 // in between.
 //
 // A cancel while the project is paused queues no resume: the store records each role the release
-// had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
-// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
-// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenPhaseRole).
+// had stopped as stopped by the pause, holds the pod, and arms the backstop of each worker of the
+// open phase as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop
+// is the idle release's own (outbox.backstop), and the open phase's workers are the workflow's rule
+// (workflow.OpenRolesOf), which the store hands the issue's phase and whether a fix runs beside it.
 //
 // The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
 // which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other
@@ -3715,7 +3715,7 @@ func (r *outbox) issueSandboxName(issue string) string {
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoles: workflow.OpenRolesOf})
 		if err != nil {
 			return err
 		}
