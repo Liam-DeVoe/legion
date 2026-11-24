@@ -257,10 +257,10 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 				p.expectFrames(t, "ready")
 				child.awaitProgress(t, 3)
 				result, _ := p.readTotals(t, "read-1")
-				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{}})
 				if !bytes.Contains(p.last, []byte(`"counts":[]`)) {
 					t.Fatalf("the read's answer is %s, want its counts as an empty list", p.last)
 				}
+				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{}})
 			},
 		},
 	} {
@@ -271,6 +271,7 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 			sh := run(t, config(t, path, child), newClock())
 			p := daemon.accept(t)
 			p.open(t)
+			p.readAhead(t)
 			row.drive(t, sh, p, child)
 		})
 	}
@@ -285,6 +286,7 @@ func TestTheShimKeepsTheAnswersToItsOwnGetState(t *testing.T) {
 	run(t, config(t, path, child), newClock())
 	p := daemon.accept(t)
 	p.open(t)
+	p.readAhead(t)
 
 	child.awaitProgress(t, 4)
 	var seen []shimwire.Frame

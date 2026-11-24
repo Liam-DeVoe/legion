@@ -739,6 +739,8 @@ type peer struct {
 	chunks shimwire.Reassembler
 	// last is the line read last, as the shim wrote it.
 	last []byte
+	// ahead carries the lines readAhead read, once it runs.
+	ahead chan []byte
 }
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
@@ -750,9 +752,54 @@ func (p *peer) next(t *testing.T) shimwire.Frame {
 	return frame
 }
 
+// readAhead reads every line the shim writes from now on, as the daemon's reader does, whether
+// the test has asked for it yet or not. So no write of the shim waits on the test. Each read then
+// waits waitLimit on the test's side, and the connection's own read has no deadline.
+func (p *peer) readAhead(t *testing.T) {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear the read deadline: %v", err)
+	}
+	lines := make(chan []byte, 1<<12)
+	p.ahead = lines
+	go func() {
+		defer close(lines)
+		for {
+			line, err := p.r.ReadLine()
+			if err != nil {
+				return
+			}
+			lines <- bytes.Clone(line)
+		}
+	}()
+}
+
 // read is the next frame, or false where the shim closed the stream.
 func (p *peer) read(t *testing.T) (shimwire.Frame, bool) {
 	t.Helper()
+	line, ok := p.readLine(t)
+	if !ok {
+		return nil, false
+	}
+	p.last = bytes.Clone(line)
+	frame, err := shimwire.Decode(line)
+	if err != nil {
+		t.Fatalf("decode a frame from the shim: %v", err)
+	}
+	return frame, true
+}
+
+func (p *peer) readLine(t *testing.T) ([]byte, bool) {
+	t.Helper()
+	if p.ahead != nil {
+		select {
+		case line, ok := <-p.ahead:
+			return line, ok
+		case <-time.After(waitLimit):
+			t.Fatalf("the shim wrote no frame within %v", waitLimit)
+			return nil, false
+		}
+	}
 	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
@@ -763,12 +810,7 @@ func (p *peer) read(t *testing.T) (shimwire.Frame, bool) {
 	if err != nil {
 		t.Fatalf("read a frame from the shim: %v", err)
 	}
-	p.last = bytes.Clone(line)
-	frame, err := shimwire.Decode(line)
-	if err != nil {
-		t.Fatalf("decode a frame from the shim: %v", err)
-	}
-	return frame, true
+	return line, true
 }
 
 // nextWhole is the next whole frame, as the daemon's reader takes it (internal/stream's read): an
