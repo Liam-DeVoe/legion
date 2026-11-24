@@ -396,12 +396,13 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 }
 
 // launchTakenMessage is the issue's architect's workspace-taken notice for a launch's own
-// replacement of an issue pod (runtime.TakenPod): which pod, why the launch replaced it, what it
-// took — the pod and its disk, or, for an act that takes the volume (runtime.TakesVolume), the
-// issue's Sandbox, named by its uid, and the kept volume it owned — and what the read of its
-// workspace through the pod's launcher found before the replacement, or why no read could be made.
-// The architect reads it in its session and people read it in its history, so it follows
-// ASD-STE100.
+// replacement of an issue pod (runtime.TakenPod): what its act took and why the launch made it —
+// the pod and its disk, or, for an act that takes the volume (runtime.TakesVolume), the issue's
+// Sandbox, named by its uid, and the kept volume it owned, with the last pod known to have used
+// the volume where there is one — what the read of its workspace through the pod's launcher found
+// before the replacement, or why no read could be made, and, once, that work no branch at origin
+// holds is lost (the Legion reviewer's Minor on #5285 at 7da847c0). The architect reads it in its
+// session and people read it in its history, so it follows ASD-STE100.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
 	if named, ok := taken.Claim.Role(); ok {
@@ -411,25 +412,20 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 	if why == "" {
 		why = "the launch could not start the role in that pod"
 	}
-	gone := "The pod and its disk are gone. A role that ran in the pod lost what it had not pushed."
+	took := fmt.Sprintf("A launch of the %s replaced the pod of %s (pod %s) on its own account, because %s. The pod and its disk are gone.",
+		role, taken.Issue, taken.PodUID, why)
 	if taken.Act.Takes == runtime.TakesVolume {
-		gone = fmt.Sprintf("The issue's Sandbox (uid %s) and its kept volume, which was the disk of the issue's pods, are gone. A role that ran on that volume lost what it had not pushed.", taken.Act.Target)
+		took = fmt.Sprintf("A launch of the %s deleted the Sandbox of %s (uid %s) and the kept volume it owned, which was the disk of the issue's pods, on its own account, because %s.",
+			role, taken.Issue, taken.Act.Target, why)
+		if taken.PodUID != "" {
+			took += fmt.Sprintf(" The last pod that used the volume was pod %s.", taken.PodUID)
+		}
 	}
 	return strings.Join([]string{
-		fmt.Sprintf("A launch of the %s replaced the pod of %s (%s) on its own account, because %s.", role, taken.Issue, takenPodName(taken.PodUID), why),
-		gone,
+		took,
 		readFound(taken.Work, taken.Err),
 		"Work that is not on a branch at origin is lost. Each role must read its issue branch at origin to see the work that it pushed. You are told this once for this replacement.",
 	}, " ")
-}
-
-// takenPodName is how a workspace-taken notice names the pod a launch's replacement took: by its
-// uid, or, where the issue's Sandbox ran no pod of its own (runtime.TakenPod), by saying so.
-func takenPodName(pod string) string {
-	if pod == "" {
-		return "the issue's Sandbox ran no pod"
-	}
-	return "pod " + pod
 }
 
 // readFound is what a workspace-taken notice says the read before the replacement found

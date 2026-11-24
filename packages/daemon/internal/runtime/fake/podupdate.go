@@ -183,8 +183,9 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 // Sandbox runtime answers a turn another holds. Under the turn, an act that takes the pod
 // (runtime.TakesPod) is made where a ReplacePod replaced the target (took), and where the issue's
 // Sandbox no longer holds it (podGone); it is not made otherwise. An act that takes the kept volume
-// (runtime.TakesVolume) is made where the Sandbox of its target uid is gone (ScriptSandboxGone),
-// and uncertain otherwise, as the Sandbox runtime reads a Sandbox of that uid that still stands
+// (runtime.TakesVolume) is made where the Sandbox of its target uid is gone (ScriptSandboxGone), not
+// made where the issue's Sandbox runs a live pod of its own (runsOwnPod), which uses the volume, and
+// uncertain otherwise, as the Sandbox runtime reads a Sandbox of that uid that still stands
 // Suspended. It records no call, and decide runs with mu free.
 func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
 	if !r.turn.TryLock() {
@@ -200,9 +201,13 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 			state = runtime.ActMade
 		}
 	case runtime.TakesVolume:
-		state = runtime.ActUncertain
-		if r.sandboxGone[act.Target] {
+		switch {
+		case r.sandboxGone[act.Target]:
 			state = runtime.ActMade
+		case r.runsOwnPod(issue):
+			state = runtime.ActNotMade
+		default:
+			state = runtime.ActUncertain
 		}
 	default:
 		r.mu.Unlock()
@@ -224,6 +229,18 @@ func (r *Runtime) podGone(issue, pod string) bool {
 		gone = gone || !live || now != pod
 	}
 	return gone
+}
+
+// runsOwnPod is whether the issue's Sandbox runs a live pod of its own that nothing took: IssuePod
+// answers a pod for the issue (ScriptIssuePod), no replacement's suspension landed over it
+// (suspendedOver), and no ReplacePod replaced it (took). Called with mu held.
+func (r *Runtime) runsOwnPod(issue string) bool {
+	held, read := r.issuePods[issue]
+	if !read {
+		return false
+	}
+	now, live := r.podNow(held)
+	return live && !r.suspendedOver[now] && !r.took[now]
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that
