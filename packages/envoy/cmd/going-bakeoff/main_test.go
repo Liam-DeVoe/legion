@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -323,8 +324,12 @@ func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
 			if err := os.WriteFile(path, raw, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := readRecords(path); err == nil || !strings.Contains(err.Error(), "model-b") || !strings.Contains(err.Error(), by) {
-				t.Errorf("readRecords reads %v, want a refusal naming model-b and %q", err, by)
+			// The refusal's own words, never the bare word: every error readRecords answers names
+			// the record's path, and t.TempDir() names that path after this subtest, so the word is
+			// in any error at all.
+			want := fmt.Sprintf("holds model-b chosen by %q, which is neither %s nor %s", by, going.ChosenByRightChoices, going.ChosenByTieBreak)
+			if _, err := readRecords(path); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("readRecords reads %v, want the refusal %q", err, want)
 			}
 		})
 	}

@@ -283,15 +283,25 @@ type goingUndoSend struct {
 // builds the line the undo answers where the record settles the call - it left nothing Undo can
 // give back, or its record does not say what it left - and next reads the item now and answers
 // the line, with the one request the undo sends where it sends one. The settled line is built only
-// when the undo answers it, so a read of the run that asks only whether Undo goes on
-// (goingTakesBack) builds and logs nothing.
+// when the undo answers it, so a read of the run that asks only what Undo does with the call
+// (goingCallUndo) builds and logs nothing; stands says, beside settled, what that line will say of
+// the call's change: it still stands - its undo is refused with nothing sent, or it is sent, not
+// undone - or the call changed nothing, so nothing of it is left to take back.
 type goingUndoPlan struct {
 	settled func() goingUndoLine
+	stands  bool
 	next    func(ctx context.Context) (goingUndoLine, *goingUndoSend)
 }
 
-// goingSettled is the plan of a call its record settles, with the line line builds.
-func goingSettled(line func() goingUndoLine) goingUndoPlan {
+// goingStanding is the plan of a call its record settles while its change stands: its undo is
+// refused with nothing sent, or it is sent, not undone. line builds the line.
+func goingStanding(line func() goingUndoLine) goingUndoPlan {
+	return goingUndoPlan{settled: line, stands: true}
+}
+
+// goingNothingLeft is the plan of a call its record settles as one that changed nothing, so its
+// undo has nothing to take back and leaves nothing standing. line builds the line.
+func goingNothingLeft(line func() goingUndoLine) goingUndoPlan {
 	return goingUndoPlan{settled: line}
 }
 
@@ -330,21 +340,22 @@ func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndo
 
 // plan is what the undo of write makes of the call's record alone - its row's tool, its last
 // landed request and what that request's route recorded beside its landing - reading nothing
-// else, so the run's read decides from it whether Undo can still take the call back
-// (goingTakesBack) and the two never differ. A call that names no row of the run's plan, or whose
-// tool the table no longer holds, is refused, 409 GOING_UNDO_UNKNOWN. A call whose tool states no
-// undo, or of which only the requests it sends before its own landed - a close's reason, a
-// message - is named sent, not undone: no undo takes a message back, and nothing else of the
-// change stands. A call whose route recorded nothing that says what it found and left is refused,
-// 409 GOING_UNDO_AFTER_UNREAD, and one whose route found a value the row's read did not see, 409
-// GOING_UNDO_BEFORE_UNREAD: nothing is put back. A call its record says changed nothing is undone
-// by nothing (kind), and a kind this server has no way to run for the tool is refused, 501
-// GOING_UNDO_UNSERVED. Every other call goes on to its tool's undo.
+// else, so the run's read decides from it what Undo does with the call (goingCallUndo) and the
+// two never differ. A call that names no row of the run's plan, or whose tool the table no longer
+// holds, is refused, 409 GOING_UNDO_UNKNOWN. A call whose tool states no undo, or of which only
+// the requests it sends before its own landed - a close's reason, a message - is named sent, not
+// undone: no undo takes a message back, and nothing else of the change stands. A call whose route
+// recorded nothing that says what it found and left is refused, 409 GOING_UNDO_AFTER_UNREAD, and
+// one whose route found a value the row's read did not see, 409 GOING_UNDO_BEFORE_UNREAD: nothing
+// is put back. A call its record says changed nothing is undone by nothing (kind), and a kind this
+// server has no way to run for the tool is refused, 501 GOING_UNDO_UNSERVED. Every other call goes
+// on to its tool's undo. Each refusal here, and each call named sent, not undone, leaves its
+// change standing (goingStanding); a call that changed nothing leaves nothing (goingNothingLeft).
 func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndoPlan {
 	line := goingUndoLine{Plan: write.plan, Row: write.row, Tool: write.tool, Undo: goingUndoNotUndone, Item: u.landedItem(write)}
 	tool, held := goingWriteTools[write.tool]
 	if !held {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoUnknown,
 				Message: "this call names no write tool of the run's plan, so its undo is unknown and nothing was undone"}
 			return goingLineOf(line, nil)
@@ -352,7 +363,7 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 	}
 	line.Undo = tool.Undo
 	if tool.Undo == goingUndoNotUndone {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
 			return goingLineOf(line, nil)
 		})
@@ -360,7 +371,7 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 	last := write.requests[len(write.requests)-1]
 	prepared, own := goingRecordedCall(u.catalogue, write.tool, goingWriteRequest{Method: last.method, Path: last.path})
 	if !own {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Undo = goingUndoNotUndone
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
 			// The line names the row's item, not the message that landed.
@@ -382,14 +393,14 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 	line.Item = cmp.Or(undone.target, line.Item)
 	switch {
 	case err != nil:
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			slog.Warn("dispatch: read what a command-bar change left off its record", "run", write.key.run, "tool", write.tool, "error", err)
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
 				Message: "what this change left cannot be read off its record, so nothing was put back: read the item, and change it by hand to undo this change"}
 			return goingLineOf(line, undone.fields)
 		})
 	case undone.beforeUnread:
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
 				Message: "another writer changed the item between the read the change was approved over and the change, so what it replaced is unknown and nothing was put back: read the item to see what it holds"}
 			return goingLineOf(line, undone.fields)
@@ -420,7 +431,7 @@ func (u goingUndoer) kind(line goingUndoLine, undone goingUndone) goingUndoPlan 
 	case line.Undo == goingUndoCloseCreated && undone.tool == "dispatch_issue":
 		return u.closeCreated(line, undone)
 	}
-	return goingSettled(func() goingUndoLine {
+	return goingStanding(func() goingUndoLine {
 		line.Outcome = goingWriteOutcome{Status: http.StatusNotImplemented, Code: codeGoingUndoUnserved,
 			Message: "Dispatch has no way to run this change's undo, so nothing was undone"}
 		return goingLineOf(line, undone.fields)
@@ -454,13 +465,17 @@ func (u goingUndoer) landedItem(write goingLandedWrite) string {
 }
 
 // send makes the one request of an undo, in-process as the caller, carrying its landing
-// (goingUndoLanding), which records it and the line it answers in the route's own transaction. A
-// request answered below 300 landed, and answers that line. One refused may have landed all the
-// same - its route committed and then answered 5xx, or another press's request of the same undo
-// landed first, which rolls this one back - as the call's undo landing says: then it answers that
-// landing's line. Otherwise nothing of it landed: the line is the route's refusal, a refusal
-// `changed` names being another writer's change since the undo's read, and every field the undo
-// would have put back is left with it.
+// (goingUndoLanding), which records it and the line it answers in the route's own transaction.
+// Whether it landed is read from that landing, never from the status the route answered. Where
+// the call's undo landed, the request answers that landing's line: its own, whatever its route
+// answered (a route may commit and then answer 5xx), or another press's, whose request of the same
+// undo landed first and rolled this one back. A request answered below 300 where nothing landed
+// changed nothing - its route found the item already as the undo asked, as a follow of a session
+// that follows the ask already answers 204 - and says so, and that is recorded as its undo
+// landing in a statement of its own (landUnchanged), since the route's transaction recorded none.
+// Otherwise nothing of it landed: the line is the route's refusal, a refusal `changed` names being
+// another writer's change since the undo's read, and every field the undo would have put back is
+// left with it.
 func (u goingUndoer) send(ctx context.Context, key goingCallKey, send goingUndoSend) goingUndoLine {
 	line := send.landed
 	method, pattern, _ := strings.Cut(send.route, " ")
@@ -485,16 +500,15 @@ func (u goingUndoer) send(ctx context.Context, key goingCallKey, send goingUndoS
 	}
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(response.Body)
-	if response.StatusCode < http.StatusMultipleChoices {
-		if line.Outcome.OK {
-			line.Outcome.Status = response.StatusCode
-		}
-		return line
-	}
-	if landed, err := u.s.goingUndoLanded(ctx, key); err != nil {
+	landed, err := u.s.goingUndoLanded(ctx, key)
+	if err != nil {
 		return goingRefusedLine(line, goingFailed(err))
-	} else if landed != nil {
+	}
+	if landed != nil {
 		return *landed
+	}
+	if response.StatusCode < http.StatusMultipleChoices {
+		return u.s.landUnchanged(ctx, landing, response.StatusCode)
 	}
 	outcome := goingRefusalOf(response, answer).outcome()
 	if slices.Contains(send.changed, outcome.Code) {
@@ -515,6 +529,70 @@ func goingRefusedLine(line goingUndoLine, outcome goingWriteOutcome) goingUndoLi
 		}
 	}
 	return line
+}
+
+// goingUndoChangedNothing is what an undo says of a call whose one request its route answered as
+// done while it committed nothing: the item already stood as the undo asked, so nothing of the
+// call's change was left to undo. It is worded as the undos a record settles word a change that
+// changed nothing.
+const goingUndoChangedNothing = "the undo's route answered that it changed nothing - the item already stood as the undo asked - so there is nothing to undo"
+
+// goingUnchangedLine is line where its request was answered status, below 300, and committed
+// nothing: the line and every field it would have put back say the undo changed nothing, and every
+// field it kept stays kept.
+func goingUnchangedLine(line goingUndoLine, status int) goingUndoLine {
+	line.Outcome = goingWriteOutcome{OK: true, Status: status, Message: goingUndoChangedNothing}
+	line.Fields = slices.Clone(line.Fields)
+	for index, field := range line.Fields {
+		if field.OK {
+			line.Fields[index] = goingUndoField{Field: field.Field, OK: true, Message: goingUndoChangedNothing}
+		}
+	}
+	return line
+}
+
+// landUnchanged records the undo landing of landing's request, which its route answered status,
+// below 300, while it committed nothing, so the route's own transaction recorded none: in a
+// statement of its own, under the call's key, phase undo, request 0, with the line that says the
+// undo changed nothing (goingUnchangedLine), marked unchanged. A second press then answers the
+// call from it, as from any undo landing, and sends nothing again, and the run's read counts the
+// call neither as one Undo can take back nor as one an Undo took back (goingRunUndoColumns). Where
+// another press's request of the same undo landed first, that landing stands and its line is
+// answered. A record that fails is logged and the line still answered: the request changed
+// nothing, and a later press that sends it again changes nothing either.
+func (s *server) landUnchanged(ctx context.Context, landing goingUndoLanding, status int) goingUndoLine {
+	line := goingUnchangedLine(landing.line, status)
+	answer, err := json.Marshal(goingUndoLandingAnswer{Status: status, Body: json.RawMessage("null"), Line: line, Unchanged: true})
+	if err == nil {
+		var wrote bool
+		err = s.deps.Store.Pool.QueryRow(ctx, `
+			insert into going_landings (run_id, phase, step, call, request, method, path, body_digest, answer)
+			values ($1::uuid, 'undo', $2, $3, 0, $4, $5, $6, $7::jsonb)
+			on conflict do nothing
+			returning true
+		`, landing.key.run, landing.key.step, landing.key.call, landing.method, landing.path, landing.digest, string(answer)).Scan(&wrote)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Another press's request of the same undo landed first.
+		var landed *goingUndoLine
+		if landed, err = s.goingUndoLanded(ctx, landing.key); landed != nil {
+			return *landed
+		}
+	}
+	if err != nil {
+		slog.Error("dispatch: record a command-bar undo that changed nothing", "run", landing.key.run, "error", err)
+	}
+	return line
+}
+
+// goingUndoLandingAnswer is what an undo landing records beside the request: the status and body
+// its route answered of its transaction (goingRecordAnswer), the line the undo answers, and
+// unchanged for a request its route answered as done while it committed nothing (landUnchanged).
+type goingUndoLandingAnswer struct {
+	Status    int             `json:"status"`
+	Body      json.RawMessage `json:"body"`
+	Line      goingUndoLine   `json:"line"`
+	Unchanged bool            `json:"unchanged,omitempty"`
 }
 
 // goingUndoLanding is the landing of the one request the undo of a call sends: the call's key, the
@@ -547,11 +625,7 @@ func (l goingUndoLanding) step(running *atomic.Bool, sink *goingAnswerSink) stor
 		if line.Outcome.OK {
 			line.Outcome.Status = cmp.Or(status, line.Outcome.Status)
 		}
-		answer, err := json.Marshal(struct {
-			Status int             `json:"status"`
-			Body   json.RawMessage `json:"body"`
-			Line   goingUndoLine   `json:"line"`
-		}{status, goingJSONOrNullRaw(body), line})
+		answer, err := json.Marshal(goingUndoLandingAnswer{Status: status, Body: goingJSONOrNullRaw(body), Line: line})
 		if err != nil {
 			return err
 		}
@@ -1007,7 +1081,7 @@ func (u goingUndoer) writeBack(
 ) goingUndoPlan {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil || len(after) == 0 {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the change's record holds no field values to write back"))
 			return goingLineOf(line, undone.fields)
 		})
@@ -1074,7 +1148,7 @@ func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, li
 		PreviousToken string `json:"previous_token"`
 	}
 	if json.Unmarshal(last.body, &edited) != nil || edited.Token == "" || edited.PreviousToken == "" {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
 				Message: "the edit's record does not name the document it found and the one it left, so nothing was written back: read the document, and change it by hand to undo this edit"}
 			return goingLineOf(line, fields)
@@ -1094,7 +1168,7 @@ func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, li
 		}
 	}
 	if unread != "" {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			if unreadable != nil {
 				slog.Warn("dispatch: read the document an edit was approved over off its record", "run", write.key.run, "error", unreadable)
 			}
@@ -1212,7 +1286,7 @@ func goingHolderText(holder *goingHolder) string {
 func (u goingUndoer) claim(line goingUndoLine, undone goingUndone) goingUndoPlan {
 	var before, after *goingHolder
 	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the change's record holds no claim to undo"))
 			return goingLineOf(line, undone.fields)
 		})
@@ -1224,7 +1298,7 @@ func (u goingUndoer) claim(line goingUndoLine, undone goingUndone) goingUndoPlan
 	changed := []string{codeClaimHolderChanged}
 	switch {
 	case undone.unchanged:
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK,
 				Message: "the claim route answered that this change changed nothing - the claim already stood as it asked - so there is nothing to undo"}
 			return goingLineOf(line, undone.fields)
@@ -1234,12 +1308,12 @@ func (u goingUndoer) claim(line goingUndoLine, undone goingUndone) goingUndoPlan
 		return goingSending(line, &goingUndoSend{route: goingReleaseRoute, values: values, body: map[string]any{},
 			condition: &goingCondition{WriteBack: true, ExpectHolder: &model.Actor{Kind: after.Kind, ID: after.ID}}, landed: reversed, changed: changed})
 	case before == nil:
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "nobody held the claim before this release, so there is nothing to take back"}
 			return goingLineOf(line, undone.fields)
 		})
 	case !u.claimsAs(before):
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			claimant := u.claimant()
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoNotCallers, Message: fmt.Sprintf(
 				"this release released the claim of %s, which the bar cannot claim for them: its claim would be recorded as %s, which never held it, so nothing was taken back",
@@ -1257,13 +1331,13 @@ func (u goingUndoer) claim(line goingUndoLine, undone goingUndone) goingUndoPlan
 func (u goingUndoer) follow(line goingUndoLine, undone goingUndone) goingUndoPlan {
 	var before, after goingFollowing
 	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the change's record holds no follow to undo"))
 			return goingLineOf(line, undone.fields)
 		})
 	}
 	if before.Following == after.Following {
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the change changed nothing, so there is nothing to undo"}
 			return goingLineOf(line, undone.fields)
 		})
@@ -1311,13 +1385,13 @@ func (u goingUndoer) comment(line goingUndoLine, undone goingUndone) goingUndoPl
 	var before, after goingCommentResolution
 	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil ||
 		after.Resolved && !before.Resolved && after.ResolvedAt == nil {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the change's record holds no resolve to undo"))
 			return goingLineOf(line, undone.fields)
 		})
 	}
 	if before.Resolved || !after.Resolved {
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was resolved before this change, so there is nothing to reopen"}
 			return goingLineOf(line, undone.fields)
 		})
@@ -1354,13 +1428,13 @@ func (u goingUndoer) comment(line goingUndoLine, undone goingUndone) goingUndoPl
 func (u goingUndoer) reopened(line goingUndoLine, undone goingUndone) goingUndoPlan {
 	var before, after goingCommentResolution
 	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the change's record holds no reopen to undo"))
 			return goingLineOf(line, undone.fields)
 		})
 	}
 	if !before.Resolved || after.Resolved {
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was open before this change, so there is nothing to resolve"}
 			return goingLineOf(line, undone.fields)
 		})
@@ -1390,13 +1464,13 @@ func (u goingUndoer) reopened(line goingUndoLine, undone goingUndone) goingUndoP
 // nothing.
 func (u goingUndoer) retract(line goingUndoLine, undone goingUndone) goingUndoPlan {
 	failed := func(err error) goingUndoPlan {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(err)
 			return goingLineOf(line, undone.fields)
 		})
 	}
 	nothing := func(message string) goingUndoPlan {
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: message}
 			return goingLineOf(line, undone.fields)
 		})
@@ -1454,7 +1528,7 @@ func (u goingUndoer) retract(line goingUndoLine, undone goingUndone) goingUndoPl
 // no issue of the run's.
 func (u goingUndoer) closeCreated(line goingUndoLine, undone goingUndone) goingUndoPlan {
 	if undone.unchanged {
-		return goingSettled(func() goingUndoLine {
+		return goingNothingLeft(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: fmt.Sprintf(
 				"this create made no issue: Dispatch already held %s for the external issue it named, so nothing was closed", undone.target)}
 			return goingLineOf(line, undone.fields)
@@ -1464,7 +1538,7 @@ func (u goingUndoer) closeCreated(line goingUndoLine, undone goingUndone) goingU
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(undone.after, &made); err != nil || made.Status == "" {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingFailed(errors.New("the create's record names no status the issue was left in, so no close can expect it"))
 			return goingLineOf(line, undone.fields)
 		})
@@ -1508,7 +1582,7 @@ func (u goingUndoer) suggestion(write goingLandedWrite, line goingUndoLine) goin
 	var posted commentRecovery
 	last := write.requests[len(write.requests)-1]
 	if json.Unmarshal(last.recovery, &posted) != nil || posted.CommentID == "" {
-		return goingSettled(func() goingUndoLine {
+		return goingStanding(func() goingUndoLine {
 			line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread,
 				Message: "the suggestion's record does not name the comment it posted, so nothing was rejected: read the document's suggestions, and reject it by hand"}
 			return goingLineOf(line, fields)

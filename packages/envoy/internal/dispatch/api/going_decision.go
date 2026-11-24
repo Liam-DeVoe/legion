@@ -124,10 +124,11 @@ type goingDecision struct {
 	Context string `json:"context" enum:"page,named,none"`
 }
 
-// goingDecide makes the run's one decision call, the action asked among the actions the caller
-// may run, and answers the decision it came to. It answers false - no decision, and so no
-// decision frame - with no decider configured, and for a call that could not be made or answered
-// nothing usable: the answer runs as it would with none, and the bar's line on top reads Ask.
+// goingDecide makes the run's one decision call, the action asked among the proposed actions the
+// caller may run (runnableBy: the twenty measured actions, never every write tool), and answers the
+// decision it came to. It answers false - no decision, and so no decision frame - with no decider
+// configured, and for a call that could not be made or answered nothing usable: the answer runs as
+// it would with none, and the bar's line on top reads Ask.
 func (s *server) goingDecide(ctx context.Context, words string, start goingRunStart) (goingDecision, bool) {
 	decider := s.deps.Decider
 	if decider == nil {
