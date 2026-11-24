@@ -314,22 +314,24 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, assignmentPlanContract,
-	// which states that contract in its header as every plugin from shapedAnswersContract on
-	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// OwnerPlanContract, so it stands below that row alone and the log holds that row's line and
-	// nothing else. This subtest does not catch a strip applied beside the loop, because it reads
-	// both its expectation and its answer from stateNarrowings; the subtests below, which name
-	// their lines as literals, are what catch that.
+	// told what it lost: a caller one contract below the highest row, stateSeqContract, which
+	// states that contract in its header as every plugin from shapedAnswersContract on does, is
+	// served at the recorded contract at or below it (recordedContractAtOrBelow),
+	// assignmentPlanContract, so it stands below that row alone and the log holds that row's line
+	// and nothing else. This subtest does not catch a strip applied beside the loop, because it
+	// reads both its expectation and its answer from stateNarrowings; the subtests below, which
+	// name their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		highest := stateNarrowings[len(stateNarrowings)-1].contract
+		if highest != stateSeqContract {
+			t.Fatalf("the highest row of stateNarrowings is contract %d, want stateSeqContract %d, whose keys this subtest reads", highest, stateSeqContract)
+		}
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
 
-		for _, row := range assignmentsOf(t, body, "LEGION-209") {
-			if _, carried := row["plan"]; carried {
-				t.Errorf("the body served to a caller below %d carries an assignment's `plan`, the key that contract added: %v",
-					highest, row)
+		for _, key := range []string{"stateSeq", "stateId", "stateRun"} {
+			if raw, carried := daemonKeyServed(t, body, key); carried {
+				t.Errorf("the body served to a caller below %d carries `daemon.%s`, a key that contract added: %s", highest, key, raw)
 			}
 		}
 		want := narrowingsExpected(state, highest-1)

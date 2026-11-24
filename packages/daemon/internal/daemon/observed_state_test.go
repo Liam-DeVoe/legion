@@ -64,7 +64,7 @@ func newObservedRig(t *testing.T) *observedRig {
 	t.Cleanup(r.claims.Close)
 	r.scoped = projectRecords{Store: r.records, project: cfg.Project}
 	// No design-gate step and no admission cap, as internal/projection's
-	// TestEveryIssueInTheWorkflowHasAPlace projects the fixture this seed records: the eleven
+	// TestEveryIssueInTheWorkflowHasAPlace projects the fixture this seed records: the thirteen
 	// words of the ladder read the same over these records with nothing promoted.
 	r.src = &source{store: r.claims, records: r.records, project: cfg.Project, projectToken: "legion", runtime: cfg.Runtime.Name,
 		startedAt: observedAt.Add(-time.Hour), now: func() time.Time { return observedAt }, settings: api.SettingsOf(cfg),
@@ -99,14 +99,16 @@ func observedClaim(t *testing.T, issue, tree string, role claim.Role, state supe
 }
 
 // seedObserved records the rig's store. Its first part is internal/projection's
-// TestEveryIssueInTheWorkflowHasAPlace over the real store, one issue for each of the eleven words
-// of admission.held: a member of a closed tree (LEGION-101) and of a parked tree (LEGION-111), a
-// root whose label is off (LEGION-120), a root whose Dispatch chain reaches another live root
-// (LEGION-140), a member of a tree whose root waits on a person (LEGION-151), a member under a shut
-// design gate (LEGION-161), a child an unfinished Dispatch link holds (LEGION-171), an issue past
-// its review (LEGION-172, at_work), an issue beneath it (LEGION-173, accepted_ancestor), an issue
-// none of the others is true of (LEGION-174), and a parent whose own children are still open
-// (LEGION-181). Its second part is a running tree, LEGION-300, whose members stand in the phases
+// TestEveryIssueInTheWorkflowHasAPlace over the real store, one issue for each of the thirteen
+// words of admission.held: a member of a closed tree (LEGION-101) and of a parked tree
+// (LEGION-111), a root whose label is off (LEGION-120), a root whose Dispatch chain reaches another
+// live root (LEGION-140), a member of a tree whose root waits on a person (LEGION-151), a member
+// under a shut design gate (LEGION-161), a child an unfinished Dispatch link holds (LEGION-171), an
+// issue past its review (LEGION-172, at_work), an issue beneath it (LEGION-173, accepted_ancestor),
+// an issue none of the others is true of (LEGION-174), a parent whose own children are still open
+// (LEGION-181), a parent held before its retro for the child at work beneath it (LEGION-195 over
+// LEGION-196, children_before_retro) and a root whose task was stopped in its merge (LEGION-197,
+// task_stopped). Its second part is a running tree, LEGION-300, whose members stand in the phases
 // the first part leaves out — planning, testing, reviewing, accepting, retro and held — and its
 // third the phases rows, pull requests and claims both views of the state read: rows of several
 // roles whose claims stand, a row whose claim is gone, claims no row names, an architect, claims on
@@ -127,6 +129,10 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		Since: record.EventMark{Seq: 5}}
 	held := observedIssue("LEGION-306", "LEGION-300", "LEGION-300", "in_progress", phase.Held)
 	held.Hold = &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}
+	heldParent := observedIssue("LEGION-195", "LEGION-195", "", "needs_review", phase.Held)
+	heldParent.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+	stoppedTask := observedIssue("LEGION-197", "LEGION-197", "", "needs_review", phase.Held)
+	stoppedTask.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldTaskStopped}
 	issues := []record.Issue{
 		observedIssue("LEGION-100", "LEGION-100", "", "done", phase.Done),
 		observedIssue("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted),
@@ -148,6 +154,9 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		observedIssue("LEGION-180", "LEGION-180", "", "todo", phase.Admitted),
 		observedIssue("LEGION-181", "LEGION-180", "LEGION-180", "todo", phase.Admitted),
 		answeredRoot,
+		heldParent,
+		observedIssue("LEGION-196", "LEGION-195", "LEGION-195", "in_progress", phase.Implementing),
+		stoppedTask,
 		observedIssue("LEGION-300", "LEGION-300", "", "in_progress", phase.Implementing),
 		observedIssue("LEGION-301", "LEGION-300", "LEGION-300", "in_progress", phase.Planning),
 		observedIssue("LEGION-302", "LEGION-300", "LEGION-300", "in_progress", phase.Testing),
@@ -194,6 +203,7 @@ func (r *observedRig) seedObserved(t *testing.T) {
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: observedAt},
 			{Issue: "LEGION-300", Index: 6, AdmittedAt: observedAt},
 			{Issue: "LEGION-302", Index: 7, AdmittedAt: observedAt},
+			{Issue: "LEGION-196", Index: 8, AdmittedAt: observedAt},
 		} {
 			if err := records.PutSlot(ctx, tx, slot); err != nil {
 				return err
@@ -206,14 +216,15 @@ func (r *observedRig) seedObserved(t *testing.T) {
 				return err
 			}
 		}
-		for _, tree := range []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190", "LEGION-300"} {
+		for _, tree := range []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190", "LEGION-195", "LEGION-197", "LEGION-300"} {
 			if _, err := records.OpenTreeLifecycle(ctx, tx, "legion", tree, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
 		}
 		shut := record.DesignGate{Issue: "LEGION-160", Step: record.DesignStepSpec, ArtifactID: "artifact-LEGION-160", LatestVersion: 2,
 			ApprovedVersion: &approved, EverOpened: true}
-		for _, gate := range []record.DesignGate{openGate("LEGION-150"), shut, openGate("LEGION-170"), openGate("LEGION-180"), openGate("LEGION-300")} {
+		for _, gate := range []record.DesignGate{openGate("LEGION-150"), shut, openGate("LEGION-170"), openGate("LEGION-180"),
+			openGate("LEGION-195"), openGate("LEGION-197"), openGate("LEGION-300")} {
 			if err := records.PutGate(ctx, tx, gate); err != nil {
 				return err
 			}
@@ -389,8 +400,8 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 				t.Errorf("AllPhases lists rows of %s, which no issue of the seed is", key)
 			}
 		}
-		if withRows < 6 || withPullRequests != 3 || withGates != 5 {
-			t.Fatalf("the seed compared %d issues with phases rows, %d with a pull request and %d with gates, want 6 or more, 3 and 5", withRows, withPullRequests, withGates)
+		if withRows < 6 || withPullRequests != 3 || withGates != 7 {
+			t.Fatalf("the seed compared %d issues with phases rows, %d with a pull request and %d with gates, want 6 or more, 3 and 7", withRows, withPullRequests, withGates)
 		}
 	})
 }
