@@ -184,6 +184,15 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
+	// FORCED (never committed to a pull request): every line a role process wrote of itself, read
+	// when the test ends, so a passing run shows whether a process met the listener's restart.
+	t.Cleanup(func() {
+		for line := range strings.SplitSeq(rig.pods.log(), "\n") {
+			if strings.Contains(line, "idle rig role process:") {
+				t.Logf("FORCED: the launchers' log: %s", line)
+			}
+		}
+	})
 	rig.kube.serve(t)
 	// Boot reads runtime.kubernetes' kubeconfig whatever runtime it is given (readSandbox,
 	// kubeClient), and with none it reads the pod's in-cluster credentials, so the rig names its
@@ -268,7 +277,10 @@ func (r *idleWakeRig) awaitListenerReady() {
 			restarted = true
 			port := r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			// FORCED (never committed to a pull request): the restarted listener keeps /v1 closed
+			// for 40 s, which widens the window a starting listener answers 503 "service starting".
+			r.t.Logf("FORCED: the restarted Envoy listener keeps /v1 closed for 40s")
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port, "LEGION_FORCED_V1_OPEN_DELAY=40s")
 		}
 		return false
 	})
