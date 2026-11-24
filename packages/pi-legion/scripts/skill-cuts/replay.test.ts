@@ -128,6 +128,7 @@ function world(answer: (n: number) => Response) {
     keyFile,
     concurrency: 2,
     timeoutMs: 5_000,
+    spend: null,
     fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init.body)));
       headers.push(new Headers(init.headers));
@@ -801,6 +802,7 @@ test("a navigation case passes on its read alone, and fails when the read is of 
     keyFile,
     concurrency: 1,
     timeoutMs: 5_000,
+    spend: null,
     fetch: async (_url, init) => {
       const step = JSON.parse(String(init.body)).messages[0].content[1].text as string;
       steps.push(step);
@@ -970,6 +972,7 @@ test("a run's requests carry an id no other run carries, the same in every round
     keyFile,
     concurrency: 3,
     timeoutMs: 5_000,
+    spend: null,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;
       bodies.push(body);
@@ -1021,6 +1024,7 @@ test("the batch probe: a fixed session id sets its batch's count, and the runner
     keyFile,
     concurrency: 8,
     timeoutMs: 5_000,
+    spend: null,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;
       const id = bodyIdentity(body);
@@ -1104,6 +1108,7 @@ test("each run sends its arm's body as replayOnce sends it, but for a session id
       keyFile,
       concurrency: 2,
       timeoutMs: 5_000,
+      spend: null,
       fetch: async (_url, init) => {
         texts.push(String(init.body));
         return answer();

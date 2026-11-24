@@ -11,6 +11,7 @@ import {
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { createSpendRecorder } from "../skill-scenarios/spend-record";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm, snapshotTag } from "./arms";
 import { ListingMeasure } from "./build";
@@ -58,27 +59,45 @@ import {
   type Stage,
   scoreSkill,
 } from "./score";
-import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
+import {
+  postedSpan,
+  startCollector,
+  truncatedSkillsTree,
+  writeGhStandIn,
+} from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
 // 127.0.0.1 built on recorder.ts, which answers in the stream shape of the F5 replies
-// (testdata/CAPTURE.md). The behaviour commands read their cases from a temporary directory, made
-// from F1 (an Oh My Pi 18.18.6 session of a scratch profile with the made-up skills alpha and
-// beta: 0 the user's prompt, 1 a read of skill://alpha, 2 its result, 3 a read of
-// skill://alpha/references/x.md, 4 its result, 5 a read of the missing skill://gamma, 6 its
-// result, 7 a `task` call), and replay bodies recorded from F2 (the request body Oh My Pi sends for
-// a replayed history, `omp -p --mode json --no-session --hook <replay hook>` against the recorder),
+// (testdata/CAPTURE.md), and with its usage spans posted to a stand-in collector on 127.0.0.1
+// (testdata/fixtures.ts's `startCollector`), every other OTEL_* variable taken out. The behaviour
+// commands read their cases from a temporary directory, made from F1 (an Oh My Pi 18.18.6 session
+// of a scratch profile with the made-up skills alpha and beta: 0 the user's prompt, 1 a read of
+// skill://alpha, 2 its result, 3 a read of skill://alpha/references/x.md, 4 its result, 5 a read
+// of the missing skill://gamma, 6 its result, 7 a `task` call), and replay bodies recorded from F2
+// (the request body Oh My Pi sends for a replayed history, `omp -p --mode json --no-session --hook
+// <replay hook>` against the recorder),
 // each with its arm's read result put in, saved where the capture step reads a capture back: no
 // Oh My Pi runs here. No test here reaches a network. Every skill, repository and store is made up.
 
 const CLI = path.join(import.meta.dir, "cli.ts");
 const scratch = temporaryDirectory("skill-cuts-cli", { real: true });
 
-/** The environment of each command: this one's, less every GH_* and GITHUB_* variable. */
-const ENV = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !/^(GH|GITHUB)_/.test(name))
-);
+/** The stand-in spend collector each command's usage spans go to. */
+const collector = startCollector();
+afterAll(() => {
+  collector.close();
+});
+
+/** The environment of each command: this one's, less every GH_*, GITHUB_* and OTEL_* variable,
+ *  with the stand-in collector as its spend endpoint. */
+const ENV: Readonly<Record<string, string | undefined>> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(GH|GITHUB|OTEL)_/.test(name))
+  ),
+  OTEL_EXPORTER_OTLP_ENDPOINT: collector.url,
+  OTEL_RESOURCE_ATTRIBUTES: "theorem.project=skill-cuts-test",
+};
 
 /** What one command did. */
 interface Ran {
@@ -251,6 +270,70 @@ describe("read", () => {
     expect(log).not.toContain(key);
     expect(log).not.toContain("alpha checklist");
     expect(log).not.toContain("one line");
+  }, 30_000);
+
+  test("records one usage span of its model call, sent before it exits, whose request log line gives the same span", async () => {
+    const { config, keyFile } = setup();
+    const input = path.join(scratch, "spans-in.json");
+    writeFileSync(
+      input,
+      JSON.stringify({ skill: "alpha", files: [{ path: "SKILL.md", text: SKILL_MD }] })
+    );
+    answer = () => JSON.stringify({ findings: [] });
+    const out = path.join(scratch, "spans-out.json");
+    const from = recorder.requests.length;
+    const posted = collector.posts.length;
+    const ran = await cli([
+      "read",
+      "--config",
+      config,
+      "--key-file",
+      keyFile,
+      "--prompt",
+      "attack",
+      "--in",
+      input,
+      "--out",
+      out,
+    ]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const requests = requestsSince(from);
+    expect(requests).toHaveLength(1);
+    // The command flushed its usage spans before it exited: its one span is here already.
+    const spans = collector.posts.slice(posted);
+    expect(spans.map((post) => post.path)).toEqual(["/v1/traces"]);
+    const [post] = spans;
+    if (post === undefined) throw new Error("no span");
+    const live = postedSpan(post);
+    const { model } = loadPrompt("attack").settings;
+    expect(live.attributes).toMatchObject({
+      "gen_ai.provider.name": "anthropic",
+      "gen_ai.request.model": model,
+      "gen_ai.response.model": model,
+      "gen_ai.response.id": `msg_standin_${requests[0]?.n}`,
+      "gen_ai.usage.input_tokens": "10",
+      "gen_ai.usage.output_tokens": "3",
+      "omp.gen_ai.auth.kind": "api_key",
+    });
+    expect(JSON.parse(post.body).resourceSpans[0].resource.attributes).toEqual([
+      { key: "theorem.project", value: { stringValue: "skill-cuts-test" } },
+      { key: "service.name", value: { stringValue: "spend-record" } },
+      { key: "theorem.harness", value: { stringValue: "script" } },
+    ]);
+
+    // The request log's line of that call, sent through `recordLogged` as a backfill sends it,
+    // gives the same attributes, and a start no later than the live span's.
+    const [line] = readFileSync(`${out}.requests.jsonl`, "utf8").trim().split("\n");
+    const backfill = createSpendRecorder({ env: { OTEL_EXPORTER_OTLP_ENDPOINT: collector.url } });
+    backfill.recordLogged(JSON.parse(line ?? "{}"));
+    await backfill.flush();
+    const [again] = collector.posts.slice(posted + 1);
+    if (again === undefined) throw new Error("no span of the logged line");
+    const logged = postedSpan(again);
+    expect(logged.attributes).toEqual(live.attributes);
+    const apart =
+      BigInt(String(live.span.startTimeUnixNano)) - BigInt(String(logged.span.startTimeUnixNano));
+    expect(apart >= 0n && apart < 900_000_000_000n).toBe(true);
   }, 30_000);
 
   test("refuses an unknown prompt and an input its reader's schema refuses, before any call", async () => {

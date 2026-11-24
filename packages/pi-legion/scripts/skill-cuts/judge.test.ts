@@ -258,6 +258,7 @@ function world(answer: (body: MessagesBody, n: number) => Response, budgetUsd?: 
     keyFile,
     concurrency: 1,
     timeoutMs: 5_000,
+    spend: null,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;

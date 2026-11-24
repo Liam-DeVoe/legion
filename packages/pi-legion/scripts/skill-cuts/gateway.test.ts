@@ -126,6 +126,7 @@ function world(
     keyFile: keyFileHolding(fixtureSecret("gw")),
     concurrency: 4,
     timeoutMs: 5_000,
+    spend: null,
     fetch,
     sleep: async (ms) => {
       slept.push(ms);

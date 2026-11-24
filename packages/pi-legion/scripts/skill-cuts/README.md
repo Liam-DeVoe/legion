@@ -1344,6 +1344,55 @@ id, its request id and the provider's request id, the gateway's headers of it (`
 cache read and write tokens, usage and dollars at list price. It never holds the key or a
 message's text.
 
+## Usage records
+
+Each model answer the runner gets records one usage span, as a program with no agent harness of
+its own must (`skill-scenarios/spend-record.ts`, the spend client's `spend_record.py` in
+TypeScript): one OTLP/HTTP JSON span, shaped like Oh My Pi's model-response span, posted to the
+spend collector.
+
+- **The one place.** `skill-scenarios/messages-api.ts`'s `postMessages` gives each ok answer of
+  each try, its body read whole, to `gateway.ts`'s recorder (`createGateway`'s `spend`, which
+  every gateway must name). Every command that calls a model opens its gateway with the process's
+  recorder (`processSpendRecorder()`): `read`, `control`, `behaviour` and `load` through
+  `cli.ts`'s `openGateway`, `build-cases` and `build-tasks` through `build.ts`'s
+  `readerGateway`. So every replay, judge call, reader call, hint call and load run records its
+  answer there, and nowhere else.
+- **Which answers.** Every ok answer, the provider having billed each: one the runner then asks
+  again for (a reply it cannot read), and a stream that ends in a content-policy refusal after
+  its answer started, among them. A streamed answer is read as the whole answer it assembles: a
+  Messages stream's `message_start` message with its `message_delta` counts, or a Responses
+  stream's `response.completed` response. A stream that ends before its answer starts holds no
+  usage, and records nothing; so do a 429, a 5xx, any other refusal and a body that fails while
+  it arrives.
+- **What a span says.** The provider (from the model: anthropic for a Claude model, openai for a
+  GPT one), the body's model and the answer's, the answer's id (`msg_…`, `resp_…`), when the try
+  was sent and when its answer ended, the session id the gateway logs for the body (the
+  `session_id` of a Messages body's `metadata.user_id`, else a Responses body's
+  `prompt_cache_key`, else its `user`), and the token counts: all the prompt's tokens (a Messages
+  answer's uncached input with its cache reads and writes), the cache reads, the cache writes
+  with their 5-minute and 1-hour parts, the output, and a Responses answer's reasoning. It sends
+  no cost: the runner knows only its own list-price count, so the collector prices the row.
+- **Where it goes.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `/v1/traces`, with `Content-Type: application/json` and no other header, never through a proxy
+  (Bun's fetch reads `http_proxy` and the rest; each post sets `proxy: false`). Its resource
+  attributes are every pair of `OTEL_RESOURCE_ATTRIBUTES` and `theorem.harness=script`. An
+  environment with neither endpoint variable records nothing, and stderr says so once.
+- **Never in the way.** A span is queued (1000 at most; one more is dropped) and one sender posts
+  them in order, each post ended after 2 s. The first failure is written once to stderr. Each
+  command's `main` waits up to 2 s for the queue on every way out; a run ended by a signal loses
+  what is still queued.
+- **The child programs.** Oh My Pi (`behaviour`'s captures, `load`'s captures and their hint runs)
+  and Claude Code (`load`) run with an environment the runner builds from nothing, which holds no
+  `OTEL_*` variable (and, for Claude Code, `DISABLE_TELEMETRY`), so neither records a span. Their
+  model requests go to the recorder (`recorder.ts`), never to the gateway: it answers each turn
+  itself, which is no model call, and sends each hint request it is owed through the gateway,
+  which records that answer once. Given the OpenTelemetry variables, they would record the
+  recorder's stand-in replies as model calls, and each hint call twice.
+- **A backfill.** `recordLogged(line)` queues the span of one line of a request log (above) with
+  the line's own start (`sentAt`), end (`durationMs` later), ids and usage; a line of a failed call
+  is passed over. A backfill awaits `flush(timeoutMs)` after each 1000 lines at most.
+
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a

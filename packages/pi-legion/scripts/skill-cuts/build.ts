@@ -509,6 +509,7 @@ import path from "node:path";
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { mapLimit, outRefusal } from "../skill-scenarios/production-dispatch";
+import { processSpendRecorder, type SpendRecorder } from "../skill-scenarios/spend-record";
 import {
   readCalls,
   readTargets,
@@ -862,6 +863,9 @@ export interface BuildIo {
   /** One try of a read of the registry's tarball of a package version (`registryTarball` when
    *  absent); `GithubReads.tarball` sends a try that failed for a transient reason again. */
   readonly npm?: NpmTarball;
+  /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
+   *  in a real run), flushed before `main` returns; none when absent. */
+  readonly spend?: SpendRecorder;
 }
 
 /** The file in a spool directory (`spoolDir`) that says which run holds it: `<pid> <token>`. */
@@ -5744,11 +5748,12 @@ function taskSkill(dir: string): { name: string; description: string } {
   };
 }
 
-/** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`,
- *  and takes `concurrency` calls at once. */
+/** The gateway of a builder's readers, which records each answer's usage with `recorder`, starts
+ *  no call once its spend reaches `budgetUsd`, and takes `concurrency` calls at once. */
 function readerGateway(
   config: SkillCutsConfig,
   keyFile: string,
+  recorder: SpendRecorder | null,
   budgetUsd?: number,
   concurrency = 1
 ): Gateway {
@@ -5758,6 +5763,7 @@ function readerGateway(
     concurrency,
     timeoutMs: READER_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    spend: recorder,
   });
 }
 
@@ -7516,6 +7522,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     gateway: readerGateway(
       config,
       given["key-file"],
+      io.spend ?? null,
       budgetUsd === undefined ? undefined : Math.max(0, budgetUsd - priorSpend.usd),
       concurrency
     ),
@@ -9192,7 +9199,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out, io);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
   const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
-  const gateway = readerGateway(config, given["key-file"]);
+  const gateway = readerGateway(config, given["key-file"], io.spend ?? null);
   const spend = () => addSpend(priorSpend, gateway.spend());
   let terms = prior?.terms;
   const queries: TasksQuery[] = [];
@@ -9608,7 +9615,7 @@ async function buildControlTasks(
   // the next session.
   const spools = spoolDir(given.out, io);
   const spool = path.join(spools, "session.jsonl");
-  const gateway = readerGateway(config, given["key-file"]);
+  const gateway = readerGateway(config, given["key-file"], io.spend ?? null);
   const spend = () => addSpend(priorSpend, gateway.spend());
   const sessions: ControlRecord[] = [];
   const write = (done: boolean, extra: Record<string, unknown> = {}) =>
@@ -9889,7 +9896,8 @@ async function buildControlTasks(
 const USAGE = [BUILD_CASES_USAGE, BUILD_TASKS_USAGE].join("\n");
 
 /** `skill-cuts build-cases …` and `skill-cuts build-tasks …`: `argv` starts with the command's
- *  name. Returns the exit status (EXIT). */
+ *  name. Returns the exit status (EXIT), once the usage spans its reader calls queued are sent
+ *  (`io.spend`'s `flush`, at most FLUSH_MS), on every way out. */
 export async function main(argv: readonly string[], io: BuildIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -9910,6 +9918,7 @@ export async function main(argv: readonly string[], io: BuildIo): Promise<number
     return EXIT.failed;
   } finally {
     releaseSpools(io);
+    await io.spend?.flush();
   }
 }
 
@@ -9920,6 +9929,7 @@ if (import.meta.main) {
       err: (line) => process.stderr.write(`${line}\n`),
       gh: spawnGh,
       now: () => performance.now(),
+      spend: processSpendRecorder(),
     })
   );
 }

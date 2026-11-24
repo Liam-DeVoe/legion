@@ -237,6 +237,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
+import { processSpendRecorder, type SpendRecorder } from "../skill-scenarios/spend-record";
 import { readTargets } from "../skill-scenarios/transcript";
 import {
   type Arm,
@@ -395,6 +396,9 @@ export interface CliIo {
   err(line: string): void;
   /** The process's peak resident memory so far, in bytes (`procPeakRssBytes`). */
   peakRssBytes(): number;
+  /** Where each model answer records its usage span (spend-record.ts; `processSpendRecorder()` in
+   *  a real run), flushed before `main` returns; none when absent. */
+  readonly spend?: SpendRecorder;
 }
 
 /** The io of a real run. Where the kernel keeps no `VmHWM`, the resident memory is read every
@@ -405,6 +409,7 @@ function processIo(): CliIo {
     out: (text) => process.stdout.write(text),
     err: (line) => process.stderr.write(`${line}\n`),
     peakRssBytes: procPeakRssBytes,
+    spend: processSpendRecorder(),
   };
 }
 
@@ -528,12 +533,14 @@ const GATEWAY_OPTIONS = {
 } as const;
 
 /** The gateway a command's options name: the configuration's address, the key file, the budget
- *  and the concurrency. Throws a refusal on an option out of range. */
+ *  and the concurrency, its answers' usage recorded with `spend`. Throws a refusal on an option
+ *  out of range. */
 function openGateway(values: {
   config: SkillCutsConfig;
   keyFile: string;
   budgetUsd?: string;
   concurrency?: string;
+  spend: SpendRecorder | null;
 }): Gateway {
   const concurrency =
     values.concurrency === undefined ? DEFAULT_CONCURRENCY : Number(values.concurrency);
@@ -553,6 +560,7 @@ function openGateway(values: {
     concurrency,
     timeoutMs: CALL_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    spend: values.spend,
   });
 }
 
@@ -624,6 +632,7 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
+    spend: io.spend ?? null,
   });
   const logged = loggedGateway(
     gateway,
@@ -754,6 +763,7 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
+    spend: io.spend ?? null,
   });
   const logged = loggedGateway(
     gateway,
@@ -2688,6 +2698,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
+    spend: io.spend ?? null,
   });
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
@@ -2850,6 +2861,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
+    spend: io.spend ?? null,
   });
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const result = await runLoad({
@@ -2912,7 +2924,8 @@ const USAGE = [
   "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]",
 ].join("\n");
 
-/** The command line. Returns the exit status (EXIT). */
+/** The command line. Returns the exit status (EXIT), once the usage spans its model calls queued
+ *  are sent (`io.spend`'s `flush`, at most FLUSH_MS), on every way out. */
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -2944,6 +2957,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           err: io.err,
           gh: spawnGh,
           now: () => performance.now(),
+          spend: io.spend,
         });
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
@@ -2959,6 +2973,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     io.err(`skill-cuts: ${command}: ${messageFor(error)}`);
     return EXIT.failed;
+  } finally {
+    await io.spend?.flush();
   }
 }
 
