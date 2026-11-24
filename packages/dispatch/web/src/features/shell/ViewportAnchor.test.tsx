@@ -453,6 +453,48 @@ test("a press on no row that takes the focus out of the row at the centre keeps 
   }
 });
 
+// The anchor shares the keeper's press cancellation listeners. Some presses send no
+// `mouseup`: one the browser turns into a drag, as it does a press on a link in an Inbox card; one
+// it cancels; a right press whose context menu opens as its button goes down; and one whose release
+// falls outside the window. Ended only by a `mouseup`, each held its row as the reader's place for
+// every commit after it, at the top of the page too, where no row is held.
+test("a press that ends with no mouseup - a drag, a cancel, a context menu, the window's blur - holds no row once it has ended", () => {
+  const endings: readonly (readonly [string, (target: Element) => void])[] = [
+    [
+      "a drag",
+      (target) => {
+        fireEvent.dragStart(target);
+        fireEvent.dragEnd(target);
+      },
+    ],
+    ["a cancel", (target) => fireEvent.pointerCancel(target)],
+    ["a context menu", (target) => fireEvent.contextMenu(target)],
+    ["the window's blur", () => fireEvent.blur(window)],
+  ];
+  /** The row each ending left the next commit to anchor to: none, for every one. */
+  const after: Record<string, AnchorRow | null> = {};
+  for (const [ending, end] of endings) {
+    const view = render(<List rows={ids(12)} />);
+    try {
+      const pressed = document.querySelector<HTMLElement>('[data-row="r3"] button');
+      if (pressed === null) throw new Error("r3 button missing");
+      fireEvent.pointerDown(pressed, { clientX: 50, clientY: 225 });
+      fireEvent.mouseDown(pressed, { clientX: 50, clientY: 225 });
+      expect(chosen(), `${ending}: the press under way is the hand on its row`).toEqual({
+        id: "r3",
+        via: "pointer",
+      });
+      end(pressed);
+      after[ending] = chosen();
+    } finally {
+      view.unmount();
+    }
+  }
+  expect(after, "a press held its row once it had ended").toEqual(
+    Object.fromEntries(endings.map(([ending]) => [ending, null]))
+  );
+});
+
 test("a disabled anchor measures nothing and leaves the scroll alone", () => {
   const view = render(<List enabled={() => false} rows={ids(12)} />);
   try {

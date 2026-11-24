@@ -1412,6 +1412,60 @@ test("a send that lands gives the box back the focus from Send", async () => {
   }
 });
 
+// The box takes the focus back from a landed send with no scroll of the browser's own, which
+// centres a control not wholly in view and moved the page under the reader: the box scrolls to
+// its nearest edge only where the reader cannot see it whole (`focusIntoView`), as when the
+// reader scrolled it away while the send was out.
+test("a send that lands gives the box back the focus with no scroll of the browser's own", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const out = Promise.withResolvers<Message>();
+  page.createAgentMessage.mockImplementation(() => out.promise);
+  /** Each focus that moved the focus to the box: whether it was asked to scroll nothing. */
+  const given: boolean[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.getAttribute("aria-label") === "Comment" && document.activeElement !== this) {
+      given.push(options?.preventScroll === true);
+    }
+    focus.call(this, options);
+  });
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await type(user, comment, "Check the deployment");
+    await user.click(within(planner).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+    // The reader scrolls the box out of the window, below it, while the send is out.
+    const top = window.innerHeight + 100;
+    comment.getBoundingClientRect = () =>
+      ({ bottom: top + 40, height: 40, left: 0, right: 100, top, width: 100 }) as DOMRect;
+    given.length = 0;
+    scrolls.mockClear();
+
+    await act(async () => out.resolve(message("Check the deployment")));
+    await waitFor(() => expect(comment).toHaveValue(""));
+    expect(comment).toHaveFocus();
+    expect(given, "the box took the focus with the browser's own scroll").toEqual([true]);
+    expect(
+      scrolls.mock.contexts.filter((element) => element === comment),
+      "the box out of sight was not scrolled to"
+    ).toHaveLength(1);
+  } finally {
+    focuses.mockRestore();
+    scrolls.mockRestore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a send that lands leaves a focus the reader took off the composer while it was out", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
@@ -3157,6 +3211,38 @@ test("the broadcast composer's exclusion line is no Tab stop of its own", async 
     );
     expect(within(excludedLine).getByRole("link", { name: "Reviewer" })).toBeTruthy();
     expect(excludedLine).toHaveAttribute("tabindex", "-1");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A line of words alone, as the recipient limit's is, keeps the Tab stop the compact grid's
+// sideways scroll gives it, the one way a keyboard reader scrolls it, so it is a region named for
+// what it holds. The name is on the box around the words and not on the words that describe Send:
+// a name there would be what Send's description reads in place of the words.
+test("the broadcast composer's recipient limit line is a region named for what it holds, and Send still reads its words", async () => {
+  const user = userEvent.setup();
+  const [one] = agents;
+  if (one === undefined) throw new Error("the fixture holds no agent");
+  const crowd = Array.from({ length: 101 }, (_, index) => ({
+    ...one,
+    session_id: `crowd-${index}-session`,
+    title: `Crowd ${index}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    const broadcast = within(region).getByRole("region", { name: "Broadcast" });
+    const limit = "At most 100 recipients per broadcast; this one would reach 101.";
+    expect(
+      within(broadcast).getByRole("region", { name: "Notice for this send" })
+    ).toHaveTextContent(limit);
+    expect(
+      within(broadcast).getByRole("button", { name: "Send to 101" })
+    ).toHaveAccessibleDescription(limit);
   } finally {
     page.view.unmount();
     page.restore();

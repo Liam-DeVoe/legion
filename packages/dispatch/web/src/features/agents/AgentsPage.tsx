@@ -132,14 +132,38 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
  *  row on a short one. A refusal or an exclusion reads as a warning; the mode alone does not. */
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
-const composerLine = `${composerLineLayout} ${dangerText}`;
-/** The Tab stop of the notice slot's line where it names an agent: none. In the compact grid the
- *  line scrolls sideways, and Firefox makes a box that scrolls a Tab stop of its own, with no
- *  name. Each agent the line names is a link (`AgentName`), the Tab stop that brings that part of
- *  the line into view, and the arrow keys scroll the line from it. A line of words alone, as the
- *  recipient limit's is, keeps the stop: it is the one way a keyboard reader scrolls it. */
-function composerLineStop(parts: readonly AgentPart[]): { tabIndex?: number } {
-  return parts.some((part) => typeof part !== "string") ? { tabIndex: -1 } : {};
+/** The notice slot's line, in `tone`. In the compact grid it scrolls sideways, and a box that
+ *  scrolls is a Tab stop of its own: Firefox's for any such box, and every engine's where it holds
+ *  no control. A line that names an agent takes no stop: each agent it names is a link
+ *  (`AgentName`), the Tab stop that brings that part of the line into view, and the arrow keys
+ *  scroll the line from it. A line of words alone, as the recipient limit's is, keeps the stop, the
+ *  one way a keyboard reader scrolls it, as a region named for what it holds, so the stop does not
+ *  read as nothing. The name is on the box around the words and never on the words `id` names,
+ *  which describe Send: named, they would be read as their name in place of their words. */
+function ComposerLine({
+  id,
+  parts,
+  tone,
+}: {
+  id?: string;
+  parts: readonly AgentPart[];
+  tone: string;
+}): ReactNode {
+  const className = `${composerLineLayout} ${tone}`;
+  if (parts.some((part) => typeof part !== "string")) {
+    return (
+      <p className={className} id={id} tabIndex={-1}>
+        <AgentParts parts={parts} />
+      </p>
+    );
+  }
+  return (
+    <section aria-label="Notice for this send" className={className}>
+      <p id={id}>
+        <AgentParts parts={parts} />
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -1349,16 +1373,9 @@ function BroadcastComposer({
         value={body}
       />
       {sendState.notice !== null ? (
-        <p className={composerLine} id={noticeId} {...composerLineStop(sendState.notice)}>
-          <AgentParts parts={sendState.notice} />
-        </p>
+        <ComposerLine id={noticeId} parts={sendState.notice} tone={dangerText} />
       ) : asideOnly.length > 0 ? (
-        <p
-          className={`${composerLineLayout} ${textMutedOnSurface}`}
-          {...composerLineStop(asideLine)}
-        >
-          <AgentParts parts={asideLine} />
-        </p>
+        <ComposerLine parts={asideLine} tone={textMutedOnSurface} />
       ) : null}
       <RefusableButton
         className="mt-2 narrow-or-short:order-2 narrow-or-short:col-start-3 narrow-or-short:mt-0 narrow-or-short:justify-self-end short:col-start-4"

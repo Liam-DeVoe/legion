@@ -7476,8 +7476,12 @@ test("a pinned history line of an edited post's event says edited after the line
 });
 
 // An Unpin takes its pin's row away, so the focus goes on to the next pin's link, else the one
-// before it, else the Pinned heading, rather than falling to the page.
-test("Unpin gives the focus to the next pin, else the one before, else the Pinned heading", async () => {
+// before it, else the Pinned heading, rather than falling to the page; each with no scroll of the
+// browser's own, which centres a control not wholly in view. The next pin's link moves up into the
+// place of the row the reader pressed in, so it is scrolled to nowhere, wherever it stands as it
+// takes the focus; the one before and the heading stay where they stand, so each is scrolled to
+// its nearest edge where the reader cannot see it whole (`focusIntoView`).
+test("Unpin gives the focus to the next pin, else the one before, else the Pinned heading, with no scroll of the browser's own", async () => {
   const user = userEvent.setup();
   const { getMyState, pinReads, restore } = stubIssueApi();
   const [first, second, third] = [
@@ -7502,30 +7506,64 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   ]);
   // Each unpin is held out, so the page shows its own state of the pins throughout.
   const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  /** Each focus that moved the focus since the last read, by the words of what took it, and
+   *  whether it was asked to scroll nothing. */
+  let given: { readonly to: string; readonly still: boolean }[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (document.activeElement !== this) {
+      given.push({ still: options?.preventScroll === true, to: this.textContent ?? "" });
+    }
+    focus.call(this, options);
+  });
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  /** Draws `element` wholly out of the window, below it or above it. */
+  const outOfSight = (element: HTMLElement, below: boolean) => {
+    const top = below ? window.innerHeight + 100 : -100;
+    element.getBoundingClientRect = () =>
+      ({ bottom: top + 20, height: 20, left: 0, right: 100, top, width: 100 }) as DOMRect;
+  };
   const { unmount } = renderDetails();
   const unpin = async (id: string) => {
     const row = document.querySelector(`[data-pin="${conversationItemId("comment", id)}"]`);
     if (!(row instanceof HTMLElement)) throw new Error(`Pinned draws no row for ${id}`);
     act(() => within(row).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    given = [];
+    scrolls.mockClear();
     await user.keyboard("{Enter}");
   };
+  /** The elements `scrollIntoView` was called on since the last unpin, by their words. */
+  const scrolled = () => scrolls.mock.contexts.map((element) => (element as Element).textContent);
 
   try {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
     await within(pins).findByRole("link", { name: "Third pin." });
 
+    outOfSight(within(pins).getByRole("link", { name: "Third pin." }), true);
     await unpin(second);
     await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(2));
     expect(document.activeElement, "Unpin did not give the focus to the next pin").toBe(
       within(pins).getByRole("link", { name: "Third pin." })
     );
+    expect(given, "Unpin gave the next pin the focus with the browser's own scroll").toEqual([
+      { still: true, to: "Third pin." },
+    ]);
+    expect(scrolled(), "Unpin scrolled to the next pin").toEqual([]);
 
+    outOfSight(within(pins).getByRole("link", { name: "First pin." }), false);
     await unpin(third);
     await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(1));
     expect(
       document.activeElement,
       "Unpin of the last pin did not give the focus to the one before it"
     ).toBe(within(pins).getByRole("link", { name: "First pin." }));
+    expect(given, "Unpin gave the pin before the focus with the browser's own scroll").toEqual([
+      { still: true, to: "First pin." },
+    ]);
+    expect(scrolled(), "Unpin left the pin before out of sight").toEqual(["First pin."]);
 
     await unpin(first);
     await waitFor(() => expect(pins).toHaveTextContent(CONTROL_LABELS.none));
@@ -7533,8 +7571,13 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
       document.activeElement,
       "Unpin of the only pin did not give the focus to the Pinned heading"
     ).toBe(within(pins).getByRole("heading", { name: CONTROL_LABELS.pinned }));
+    expect(given, "Unpin gave the heading the focus with the browser's own scroll").toEqual([
+      { still: true, to: CONTROL_LABELS.pinned },
+    ]);
   } finally {
     unmount();
+    focuses.mockRestore();
+    scrolls.mockRestore();
     putIssueState.mockRestore();
     restore();
   }

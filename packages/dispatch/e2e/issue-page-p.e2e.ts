@@ -2802,6 +2802,50 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
   });
 });
 
+// The keeper's hand-off moves the focus and nothing else: a write that takes the focused labels'
+// count away while the reader has scrolled the header out of the window hands the focus to "Issue
+// actions" (decision 216), with no scroll of the browser's own, which brought the header back
+// over what the reader was reading. At 390 px the whole header scrolls away with the page. The
+// page is given room below it, so the window scrolls the header wholly out of sight.
+// SLOW(>=2s): 2.4 s in Job infra-2160-fixc-before-z2ndv: one load with twenty labels, a scroll,
+// and a label write through the API, waited on until the count goes and the fallback takes focus.
+test("a write that takes the focused labels' count away while the header is out of sight hands the focus on with no scroll", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(IPHONE_13);
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count at 390 px").toBeVisible();
+    await count.focus();
+    await page.evaluate(() => {
+      document.body.style.minHeight = "5000px";
+      window.scrollTo(0, 1500);
+    });
+    const actions = issueHeader(page).getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.issue_actions,
+    });
+    const bottomOfActions = () =>
+      actions.evaluate((button) => button.getBoundingClientRect().bottom);
+    await expect
+      .poll(bottomOfActions, { message: "the header did not scroll out of the window" })
+      .toBeLessThan(0);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await expect(actions, "the count's going left the focus off Issue actions").toBeFocused();
+    await framesDrawn(page, 2);
+    expect(
+      await bottomOfActions(),
+      "the hand-off scrolled the header back into the window"
+    ).toBeLessThan(0);
+  });
+});
+
 /** A review's path, `/api/v1/artifacts/{id}/versions/{number}/reviews`, the write Approve and
  *  Request changes make of the version the page read (dispatch://INFRA-2160), with the
  *  document's id as its group. */

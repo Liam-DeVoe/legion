@@ -2,7 +2,7 @@ import { type MutationKey, useQueryClient } from "@tanstack/react-query";
 import { createContext, type RefObject, useCallback, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
-import { panelOf } from "../../components/focus-place";
+import { focusIntoView, panelOf } from "../../components/focus-place";
 import { copyText } from "../../lib/clipboard";
 import { focusVisibleRing } from "../../theme/classes";
 import { conversationItemId } from "../issue/pins";
@@ -199,8 +199,9 @@ export function useTurnKeys({
   /** What Enter and `o` do on `turn`: open or close its comment thread - with the reply box
    *  standing, so the focus stays on the turn - or press its conversation's other fold
    *  (`TURN_FOLD`). Where the press takes the turn away, a reply in the closed thread or fold,
-   *  its conversation takes the focus. Null where there is nothing to open or close, and on a
-   *  thread whose own reply is out, which stays open until it lands, as a resolve holds it. */
+   *  its conversation takes the focus (`focusIntoView`, as a turn given back does below). Null
+   *  where there is nothing to open or close, and on a thread whose own reply is out, which
+   *  stays open until it lands, as a resolve holds it. */
   const toggleOf = (turn: HTMLElement): (() => void) | null => {
     const root = turn.closest<HTMLElement>(ROOT_TURN);
     if (root === null) return null;
@@ -222,7 +223,7 @@ export function useTurnKeys({
     const pressed = press;
     return () => {
       flushSync(pressed);
-      if (!turn.isConnected) root.focus();
+      if (!turn.isConnected) focusIntoView(root);
     };
   };
   /** Where `r` puts the caret from `turn`: in its comment thread's reply box - opening the thread
@@ -257,6 +258,12 @@ export function useTurnKeys({
       dockedReplyFrom.current = turn;
     };
   };
+  /** Gives the focus back to the turn `r` was pressed on for the thread of comment `comment`,
+   *  else to the thread's own turn. A turn given the focus back, here and from the docked
+   *  composer, may stand anywhere in the list, far above the box the reader leaves, and the
+   *  browser's own scroll of a focused element centres one not wholly in view: it takes the focus
+   *  with no scroll of that kind and scrolls to its nearest edge only where the reader cannot see
+   *  it whole. */
   const giveBackFromThread = (comment: string) => {
     const from = replyOrigins.current.get(comment);
     const turn =
@@ -265,7 +272,7 @@ export function useTurnKeys({
         : turnList.current?.querySelector<HTMLElement>(
             `[data-turn="${CSS.escape(conversationItemId("comment", comment))}"]`
           );
-    turn?.focus();
+    if (turn !== null && turn !== undefined) focusIntoView(turn);
   };
   useKeymap("issue", [
     ...(
@@ -320,7 +327,7 @@ export function useTurnKeys({
     giveBackFromDockedReply: () => {
       const from = dockedReplyFrom.current;
       dockedReplyFrom.current = null;
-      if (from?.isConnected === true) from.focus();
+      if (from?.isConnected === true) focusIntoView(from);
     },
     giveBackFromThread,
     keyedThreads,

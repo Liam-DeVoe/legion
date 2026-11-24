@@ -5776,6 +5776,100 @@ test("the frame after Escape gives the row back a focus the editor dropped, and 
   }
 });
 
+/** Watches every focus a row of the outline is given from the call on. `read` answers each one
+ *  given since the last read, by the row's node and whether it was asked to scroll nothing, and
+ *  empties the record. */
+function rowFocuses(): {
+  readonly read: () => { readonly row: string | null; readonly still: boolean }[];
+  readonly restore: () => void;
+} {
+  let given: { row: string | null; still: boolean }[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const spy = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.hasAttribute("data-node-row")) {
+      given.push({
+        row: this.getAttribute("data-node-id"),
+        still: options?.preventScroll === true,
+      });
+    }
+    focus.call(this, options);
+  });
+  return {
+    read: () => {
+      const read = given;
+      given = [];
+      return read;
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+// A hand-off of the outline's own gives a row the focus with no scroll of the browser's own,
+// which Chromium and Firefox give a row not wholly in view by centring it: the row brings itself
+// on screen by the page's one rule, only where the reader cannot see it whole (`useRowOnScreen`),
+// as the Decisions view's rows do. Escape in a row's editor gives the row the focus at once, and
+// the frame after it gives the row back a focus the editor dropped; each is such a hand-off.
+test("Escape in a row's editor, and the frame after it, give the row the focus with no scroll of the browser's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user);
+  const statement = editable.closest<HTMLElement>("[data-node-row]");
+  if (statement === null) throw new Error("the editor is in no row");
+  const frames = framesByHand();
+  const focuses = rowFocuses();
+  try {
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape left the focus off the row").toBe(statement);
+    expect(focuses.read(), "Escape gave the row the focus with the browser's own scroll").toEqual([
+      { row: "spec#b-r1", still: true },
+    ]);
+
+    // The editor leaving the row drops the focus to the page, and the frame gives it back.
+    await act(async () => statement.blur());
+    focuses.read();
+    await frames.run();
+    expect(document.activeElement, "the frame after Escape left the focus on the page").toBe(
+      statement
+    );
+    expect(
+      focuses.read(),
+      "the frame after Escape gave the row the focus with the browser's own scroll"
+    ).toEqual([{ row: "spec#b-r1", still: true }]);
+  } finally {
+    focuses.restore();
+    frames.restore();
+  }
+});
+
+// The same for the row whose editor could not open: the focus is the row's, and the row takes it
+// back as it says so, with no scroll of the browser's own.
+test("a row whose editor could not open takes the focus back with no scroll of the browser's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user, () => (
+    <div contentEditable suppressContentEditableWarning />
+  ));
+  const focuses = rowFocuses();
+  try {
+    await drawStatementBlocks(editable);
+    await waitFor(() =>
+      expect(rowReport(view.container), "the row did not say its editor could not open").toBe(
+        KEY_REPORTS.editor_closed
+      )
+    );
+    expect(focusedRow(view.container)).toBe("spec#b-r1");
+    expect(
+      focuses.read(),
+      "the row whose editor could not open took the focus with the browser's own scroll"
+    ).toEqual([{ row: "spec#b-r1", still: true }]);
+  } finally {
+    focuses.restore();
+  }
+});
+
 test("q reaches every open question while the tree is read one node at a time", async () => {
   setViewport(1000);
   expect(window.matchMedia(ZOOMED_TREE_QUERY).matches).toBe(true);
@@ -6509,6 +6603,83 @@ test("t h on an issue with no children changes nothing", async () => {
   expect(view.address()).toBe(before);
   expect(focusedRow(view.container)).toBe("comment-1");
   expect(rowReport(view.container)).toBeUndefined();
+});
+
+// `t h` to a row the outline draws, which is focused where it stands, and to one a zoom left
+// undrawn, which takes the focus once the render has drawn it, gives the row the focus with no
+// scroll of the browser's own, as every hand-off of the outline's own does (`rowFocuses`).
+for (const zoomed of [false, true]) {
+  const at = zoomed ? "from a zoom" : "to a drawn row";
+  test(`t h ${at} gives the first child's row the focus with no scroll of the browser's own`, async () => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const focuses = rowFocuses();
+    try {
+      const view = renderTree(childrenTree());
+      await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+      if (zoomed) {
+        await user.keyboard(".");
+        await waitFor(() =>
+          expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+        );
+      }
+      focuses.read();
+      await user.keyboard("th");
+      await waitFor(() => expect(focusedRow(view.container)).toBe("CORE-2"));
+      expect(
+        focuses.read(),
+        `t h ${at} gave a row the focus with the browser's own scroll`
+      ).toEqual([{ row: "CORE-2", still: true }]);
+    } finally {
+      focuses.restore();
+    }
+  });
+}
+
+// Escape from a link `f` stopped on gives its row back, with no scroll of the browser's own.
+test("Escape from a link f stopped on gives the row back with no scroll of the browser's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            name: "The spec block",
+            ref: `dispatch://${KEY}/spec#b-r1`,
+          },
+        ],
+        id: "decisions#b-d1",
+        reference: decision.ref,
+        type: "decision",
+        waiting: true,
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, {
+    artifacts: [decisionsDocument],
+    decisions: { decisions: [decision], document: null, open_questions: [] },
+  });
+  const focuses = rowFocuses();
+  try {
+    const [row] = rowsFor(view.container, "decisions#b-d1");
+    if (row === undefined) throw new Error("the decision has no row");
+    await act(async () => row.focus());
+    await user.keyboard("f");
+    expect((document.activeElement as HTMLElement).textContent).toBe("The spec block");
+    focuses.read();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape did not give the row back").toBe(row);
+    expect(focuses.read(), "Escape gave the row back with the browser's own scroll").toEqual([
+      { row: "decisions#b-d1", still: true },
+    ]);
+  } finally {
+    focuses.restore();
+  }
 });
 
 // `.` zooms into the focused node, and the key then takes the reader to that node so its

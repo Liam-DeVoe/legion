@@ -580,15 +580,21 @@ export function IssueTree({
     (id: string) => {
       const row = body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(id));
       if (row === null || row === undefined) goToNode(id);
-      else row.focus();
+      else row.focus({ preventScroll: true });
     },
     [goToNode]
   );
 
+  // The row takes the focus here and in `reach` with no scroll of the browser's own, which would
+  // centre a row not wholly in view: it brings itself on screen by the page's one rule, only
+  // where the reader cannot see it whole, as it takes the focus (`useRowOnScreen`), and the row
+  // a zoom leaves the reader on is placed with the zoom's crumb line (`zoomMade`).
   useEffect(() => {
     if (wanted === undefined) return;
     setWanted(undefined);
-    body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(wanted))?.focus();
+    body.current
+      ?.querySelector<HTMLElement>(nodeRowSelectorOf(wanted))
+      ?.focus({ preventScroll: true });
   }, [wanted]);
 
   // A zoom draws the crumb line above the rows it roots the tree at, and the line is the way

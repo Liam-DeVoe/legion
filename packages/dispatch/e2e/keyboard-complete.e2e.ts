@@ -1042,8 +1042,11 @@ async function pressChoiceKeys(
   return shown;
 }
 
-/** Presses `key`, the step `step`, and reads that `choice` shows the item's value again (`rest`),
- *  with its list closed, and that the press sent no request. */
+/** Presses `key`, the step `step`, and reads that the press sent no request, and that `choice`
+ *  shows the item's value again (`rest`), with its list closed. The count is read before the
+ *  control is, as `pressChoiceKeys` reads it: an Escape or a Tab that wrote can take the control
+ *  off the page - the hand-on's write hands the question on, and its card leaves - and the step
+ *  then fails as a press that sent a request, not on a read of a control that left. */
 async function pressToItemValue(
   page: Page,
   choice: ChoiceControl,
@@ -1054,6 +1057,8 @@ async function pressToItemValue(
   const say = `k-choice-writes-on-enter: ${choice.what}, ${step}`;
   const before = requestsSent([choice.writes]);
   await page.keyboard.press(key);
+  await nextFrames(page);
+  expect(requestsSent([choice.writes]), `${say} sends no request`).toBe(before);
   await expect
     .poll(
       async () => {
@@ -1063,7 +1068,6 @@ async function pressToItemValue(
       { message: `${say} shows the item's value, ${rest.text}` }
     )
     .toBe(true);
-  expect(requestsSent([choice.writes]), `${say} sends no request`).toBe(before);
 }
 
 /** Every step of k-choice-writes-on-enter on one choice control, on the page that draws it. */

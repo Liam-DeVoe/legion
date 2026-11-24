@@ -2,7 +2,9 @@ import { Component, type ReactNode, type RefObject } from "react";
 
 import { CONTROL, controlIn } from "../../components/control-names";
 import { openerOf, pressArmed, pressMadeIn } from "../../components/focus-place";
+import { hearPressCancellation } from "../issue-page/focus-keeper";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
+import { focusOnDocument } from "./roving";
 
 export interface AnchorRow {
   id: string;
@@ -292,22 +294,26 @@ export class ViewportAnchor extends Component<
    *  kept the row at the list's centre - the very card it moved up its group - and the window
    *  followed it 1,700 px up, so the tap opened nothing (the tester's round 16). */
   private focusGoingTo: Element | null = null;
-  /** The pointer's press in flight, from its `mousedown` to its `mouseup`: the element it landed
-   *  on, the height it landed at in viewport pixels, and the row the focus left as the press moved
-   *  it (`focusLeaving`), null while it left none. The `mousedown` moves the focus, and a press on
-   *  no row - the list's background, the page's margin beside it - takes it to the page's `main`
-   *  or to none, where it is the hand on no row, while a row its host holds as long as the focus is
-   *  in it is let go inside that move: the Inbox lets go of a card a priority pick moved into
-   *  another band (`releaseOnFocusOut`), and the commit moves the card up its group. Measured at
-   *  99f90b1e with that card at the list's centre: the centre was that card, and the view followed
-   *  it up, 1,351 px in the Inbox's cards at 1024 px and 1,375 px in its drawer at 1440 px on a
-   *  click on the list's background, and 1,711 px on a phone on a tap on the page's margin. So
-   *  while the press is in flight it is the hand on the row it landed on, else on the row nearest
-   *  the height it landed at, and the row the focus left is never the place to keep (`current`).
-   *  Nor is holding no row: the browser's own anchoring takes that card for its anchor - React
-   *  moves the rows above it, not the card - and followed it all the same, 1,711 px, on a tap on
-   *  the page's margin level with the card's middle. */
+  /** The pointer's press in flight, from its `mousedown` to its `mouseup`, or until the browser
+   *  ends it without a release (`hearPressCancellation`). Without those other endings, a drag
+   *  of a link could hold its row as the reader's place in every later commit, even at the top
+   *  of the page. It holds the element the press landed on, the height
+   *  it landed at in viewport pixels, and the row the focus left as the press moved it
+   *  (`focusLeaving`), null while it left none. The press's `mousedown` moves the focus, and a
+   *  press on no row - the list's background, the page's margin beside it - takes it to the
+   *  page's `main` or to none, where it is the hand on no row, while a row its host holds as long
+   *  as the focus is in it is let go inside that move: the Inbox lets go of a card a priority pick
+   *  moved into another band (`releaseOnFocusOut`), and the commit moves the card up its group.
+   *  Measured at 99f90b1e with that card at the list's centre: the centre was that card, and the
+   *  view followed it up, 1,351 px in the Inbox's cards at 1024 px and 1,375 px in its drawer at
+   *  1440 px on a click on the list's background, and 1,711 px on a phone on a tap on the page's
+   *  margin. So while the press is in flight it is the hand on the row it landed on, else on the
+   *  row nearest the height it landed at, and the row the focus left is never the place to keep
+   *  (`current`). Nor is holding no row: the browser's own anchoring takes that card for its
+   *  anchor - React moves the rows above it, not the card - and followed it all the same,
+   *  1,711 px, on a tap on the page's margin level with the card's middle. */
   private pressing: { left: HTMLElement | null; target: Element; y: number } | null = null;
+  private stopHearingCancellations: (() => void) | null = null;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -525,6 +531,7 @@ export class ViewportAnchor extends Component<
     document.addEventListener("focusin", this.focusArrived, true);
     document.addEventListener("mousedown", this.pressStarted, true);
     document.addEventListener("mouseup", this.pressEnded, true);
+    this.stopHearingCancellations = hearPressCancellation(document, this.pressEnded);
   }
 
   componentWillUnmount(): void {
@@ -533,6 +540,9 @@ export class ViewportAnchor extends Component<
     document.removeEventListener("focusin", this.focusArrived, true);
     document.removeEventListener("mousedown", this.pressStarted, true);
     document.removeEventListener("mouseup", this.pressEnded, true);
+    this.stopHearingCancellations?.();
+    this.stopHearingCancellations = null;
+    this.pressing = null;
     this.contentSize?.disconnect();
     this.contentSize = null;
     this.releaseNativeAnchoring();
@@ -611,9 +621,7 @@ export class ViewportAnchor extends Component<
     const root = this.root;
     if (root === null) return null;
     const going = this.focusGoingTo;
-    const inTransit =
-      going?.isConnected === true &&
-      (document.activeElement === null || document.activeElement === document.body);
+    const inTransit = going?.isConnected === true && focusOnDocument();
     const focused = this.handRow(inTransit ? going : document.activeElement);
     const resting =
       this.hovered !== null && (!this.onOwnCard || refPreviewOpenedIn(this.hovered))

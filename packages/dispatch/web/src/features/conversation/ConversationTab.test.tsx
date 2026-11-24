@@ -3349,6 +3349,67 @@ test("r on a message presses its Reply, and Escape in the composer gives the foc
   }
 });
 
+// A turn the focus is given back to may stand anywhere in the list, far above the docked
+// composer or a long thread's box, and the browser's own scroll of a focused element centres one
+// not wholly in view: each turn takes the focus with no scroll of that kind, and scrolls to its
+// nearest edge only where the reader cannot see it whole (`focusIntoView`). Escape in a thread's
+// box or in the docked composer gives a turn back, and so does `o` on a reply, which takes the
+// reply away with the thread it closes.
+test("a turn given back the focus, by Escape from a reply box or by o on a reply, takes it with no scroll of the browser's own", async () => {
+  const user = userEvent.setup();
+  /** Each focus that moved the focus to a turn or a reply since the last read: the turn's
+   *  `data-turn`, else `reply`, and whether it was asked to scroll nothing. */
+  let given: { readonly at: string; readonly still: boolean }[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const focuses = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.matches("[data-turn], [data-reply]") && document.activeElement !== this) {
+      given.push({ at: this.dataset.turn ?? "reply", still: options?.preventScroll === true });
+    }
+    focus.call(this, options);
+  });
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    await waitFor(async () => expect(await threadBox(root)).toHaveFocus());
+    given = [];
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(root);
+    const fromThreadBox = given;
+    given = [];
+
+    await user.keyboard("j");
+    expect(document.activeElement?.hasAttribute("data-reply")).toBe(true);
+    given = [];
+    await user.keyboard("o");
+    expect(document.activeElement).toBe(root);
+    const fromReply = given;
+    given = [];
+
+    const message = page.turn("message:message-2");
+    act(() => message.focus());
+    await user.keyboard("r");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(composer.querySelector("[data-reply-box]")).toHaveFocus());
+    given = [];
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(message);
+
+    expect({ fromDockedComposer: given, fromReply, fromThreadBox }).toEqual({
+      fromDockedComposer: [{ at: "message:message-2", still: true }],
+      fromReply: [{ at: "comment:comment-1", still: true }],
+      fromThreadBox: [{ at: "comment:comment-1", still: true }],
+    });
+  } finally {
+    page.cleanup();
+    focuses.mockRestore();
+  }
+});
+
 // A post its author deleted takes no reply (409 POST_DELETED), so its turn draws no Reply and its
 // thread no reply box: `r` on a deleted comment's turn has no box to put the caret in, so it opens
 // no thread and the focus stays on the turn, as on a handoff, which takes no reply either.

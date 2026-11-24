@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
-import { focusLost } from "../../components/focus-place";
+import { focusIntoView, focusLost } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import type { Sending } from "../../hooks/useSending";
 import {
@@ -137,7 +137,10 @@ export function AgentMessageComposer({
    *  the send itself, the control it was made from having left the page. A reader who has moved
    *  on while the send was out - to another control, or to the body by a press on nothing -
    *  keeps where they went: otherwise the next keys, `Ctrl+Enter` included, would land in the
-   *  composer they have already sent from, addressed to another agent. */
+   *  composer they have already sent from, addressed to another agent. The box takes the focus
+   *  with no scroll of the browser's own, which centres a control not wholly in view and moved
+   *  the page under the reader: it scrolls to its nearest edge only where the reader cannot see
+   *  it whole (`focusIntoView`). */
   const refocusComposer = () => {
     const from = sentFrom.current;
     sentFrom.current = null;
@@ -149,7 +152,7 @@ export function AgentMessageComposer({
       active === field ||
       (active !== null && (active === send || active === from)) ||
       (focusLost() && from?.isConnected === false);
-    if (stillThere) field.focus();
+    if (stillThere) focusIntoView(field);
   };
   /** Where the focus goes once the Issue list has closed, set by the close that moves it on: a
    *  pick - the issue changed or not - hands the reader to the message it addresses, and Escape

@@ -635,7 +635,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           (document.activeElement as HTMLElement | null)?.blur();
           return;
         }
-        elements[at(elements)]?.focus();
+        // The row holds the control the reader was on, so it is on screen around it, and the
+        // browser's own scroll of a focused element centres a row not wholly in view: the row
+        // takes the focus back with no scroll.
+        elements[at(elements)]?.focus({ preventScroll: true });
       },
       when: () => {
         const { elements } = drawn();
