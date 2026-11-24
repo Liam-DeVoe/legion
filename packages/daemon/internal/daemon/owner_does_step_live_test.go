@@ -27,7 +27,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -37,7 +36,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -62,16 +60,6 @@ const ownerDoesStepText = "Make the change the issue asks for."
 // ownerDoesStepLive is one run of the proof: the owner's steps driver over three issues.
 type ownerDoesStepLive struct {
 	*ownerStepsLive
-}
-
-// ownerDoesStepNotice is one notice the owner's role topic took, as the outbox published it: its
-// kind, the step's role ("" for the retro, which is no step of the plan), the phase the issue stood
-// in, and the step's task.
-type ownerDoesStepNotice struct {
-	Kind   string `json:"kind"`
-	Role   string `json:"role"`
-	Phase  string `json:"phase"`
-	Reason string `json:"reason"`
 }
 
 // TestOwnerDoesStepLive drives the proof's checks against one booted daemon and one Dispatch, over
@@ -143,7 +131,7 @@ func (l *ownerDoesStepLive) ownerStep() {
 	owner := l.worker(claim.RoleArchitect)
 	id, version := l.writeHandoff(owner.session, "implement")
 	since = l.launched()
-	status, body := l.completeStep(api.CompleteStepRequest{Step: 1, Summary: "implemented", Commit: stepRecordsHead, HandoffID: id, HandoffVersion: version})
+	status, body := l.ownerReports(api.CompleteStepRequest{Step: 1, Summary: "implemented", Commit: stepRecordsHead, HandoffID: id, HandoffVersion: version})
 	if status != http.StatusOK {
 		t.Fatalf("the owner's complete_step of step 1 of %s = %d %s, want 200", l.key, status, body)
 	}
@@ -251,7 +239,7 @@ func (l *ownerDoesStepLive) mergesWithItsPullRequest() {
 // role. It waits until the topic holds told such notices or such a launch is made, then watches
 // liveSettle for the launch, or a notice more, which it must not see. It answers the last notice,
 // or what does not hold.
-func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase.Phase, says ...string) (ownerDoesStepNotice, error) {
+func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase.Phase, says ...string) (record.Notice, error) {
 	l.t.Helper()
 	fresh := func() []string {
 		var launches []string
@@ -260,19 +248,19 @@ func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase
 		}
 		return launches
 	}
-	testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool { return len(l.ownerSteps()) >= told || len(fresh()) != 0 })
-	testwait.Holds(liveSettle, 100*time.Millisecond, func() bool { return len(l.ownerSteps()) > told || len(fresh()) != 0 })
-	notices, launches := l.ownerSteps(), fresh()
+	testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool { return len(l.ownerNotices(record.OwnerStepNotice)) >= told || len(fresh()) != 0 })
+	testwait.Holds(liveSettle, 100*time.Millisecond, func() bool { return len(l.ownerNotices(record.OwnerStepNotice)) > told || len(fresh()) != 0 })
+	notices, launches := l.ownerNotices(record.OwnerStepNotice), fresh()
 	owner := l.token(claim.RoleArchitect)
 	switch {
 	case len(launches) != 0:
-		return ownerDoesStepNotice{}, fmt.Errorf("%s launched %v for its step in %s, and its owner %s was told %d notices owner-step %+v; want the owner told its step and no claim launched for it",
+		return record.Notice{}, fmt.Errorf("%s launched %v for its step in %s, and its owner %s was told %d notices owner-step %+v; want the owner told its step and no claim launched for it",
 			l.key, launches, at, owner, len(notices), notices)
 	case len(notices) != told:
-		return ownerDoesStepNotice{}, fmt.Errorf("the owner %s of %s was told %d notices owner-step %+v, want %d", owner, l.key, len(notices), notices, told)
+		return record.Notice{}, fmt.Errorf("the owner %s of %s was told %d notices owner-step %+v, want %d", owner, l.key, len(notices), notices, told)
 	}
 	last := notices[told-1]
-	if last.Role != string(role) || last.Phase != string(at) {
+	if last.Role != role || last.Phase != at {
 		return last, fmt.Errorf("the owner %s of %s was told owner-step of role %q in %s, want role %q in %s", owner, l.key, last.Role, last.Phase, role, at)
 	}
 	for _, text := range says {
@@ -281,43 +269,6 @@ func (l *ownerDoesStepLive) ownerTold(since, told int, role claim.Role, at phase
 		}
 	}
 	return last, nil
-}
-
-// ownerSteps is every notice owner-step the owner's role topic took for the walk's issue, in the
-// order the outbox published them.
-func (l *ownerDoesStepLive) ownerSteps() []ownerDoesStepNotice {
-	l.t.Helper()
-	var told []ownerDoesStepNotice
-	for _, published := range l.notices.acceptedOn(notify.RoleTopicPrefix + string(l.token(claim.RoleArchitect))) {
-		var notice ownerDoesStepNotice
-		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
-			l.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
-		}
-		if notice.Kind == string(record.OwnerStepNotice) {
-			told = append(told, notice)
-		}
-	}
-	return told
-}
-
-// completeStep is the owner's `complete_step` of the walk's issue, as the owner's plugin sends it:
-// in a turn of the owner's own, its model answering (ownTurn), with a grant minted for its session
-// now, POST /legion/v1/steps/complete with req. It answers the daemon's status and body.
-func (l *ownerDoesStepLive) completeStep(req api.CompleteStepRequest) (int, string) {
-	l.t.Helper()
-	owner := l.worker(claim.RoleArchitect)
-	owner.ownTurn()
-	req.GrantID, req.Issue = owner.grant(), l.key
-	status, body := l.d.request(http.MethodPost, "/legion/v1/steps/complete", req, false)
-	return status, string(body)
-}
-
-// rateRetro is the owner's report of the retro of the walk's issue (step 0): the commit it stands
-// on and the rating of the plan with its reason, deploymentRating and deploymentReason.
-func (l *ownerDoesStepLive) rateRetro() (int, string) {
-	l.t.Helper()
-	rating, reason := deploymentRating, deploymentReason
-	return l.completeStep(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead, PlanRating: &rating, PlanReason: &reason})
 }
 
 // ownerDoesStepEnd is what the check of tester-alone read once it held: what `dispatch steps
