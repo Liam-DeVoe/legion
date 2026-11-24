@@ -342,7 +342,6 @@ func (d *driver) newChain(at time.Time) {
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
-	d.admission.UseExperimentSource(draw)
 	d.admission.UseStalledTreeNotice(time.Duration(w.StalledTreeNotice))
 	d.admission.UseWorkerSilence(time.Duration(w.WorkerSilence), time.Duration(w.WorkerBackground))
 	d.admission.UsePassObserver(d.snap.pass)

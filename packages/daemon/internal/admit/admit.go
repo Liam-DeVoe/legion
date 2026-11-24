@@ -41,11 +41,10 @@ type Admission struct {
 	// experiments are the project's declared experiments (UseExperiments,
 	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
 	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
-	// experiment when it first records an issue (drawExperiments). source is the random source a
-	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
-	// test or a replay (UseExperimentSource), injected as now is (UseClock).
+	// experiment when it first records an issue (drawExperiments), each drawn with the engine's
+	// random source (workflow.Engine's ExperimentSource), the one source of the daemon's draws, and
+	// the one a replay of a recorded window seeds from its run (workflow.Config.ExperimentSource).
 	experiments []config.Experiment
-	source      func(uint64) (uint64, error)
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
 	// of this project may be quiet before the pass tells the project's controller once that it
 	// has stopped (tellStalledTrees). Zero is no bound and tells nobody, which is the
@@ -162,18 +161,6 @@ func (a *Admission) UseExperiments(experiments []config.Experiment) {
 	a.experiments = experiments
 }
 
-// UseExperimentSource sets the random source a `random` mode of the project's experiments is drawn
-// with (drawExperiments). New sets experiment.CryptoSource, the daemon's own, and a nil source is
-// that one; a replay of a recorded window sets a source seeded from its run, so two runs of one
-// window draw alike, as the engine's draw takes a seeded one (workflow.Config.ExperimentSource).
-// It is a setter rather than a parameter of New for the reason UseExperiments is.
-func (a *Admission) UseExperimentSource(source func(uint64) (uint64, error)) {
-	if source == nil {
-		source = experiment.CryptoSource
-	}
-	a.source = source
-}
-
 // UseStalledTreeNotice registers how long a tree of this project may be quiet before the
 // admission pass tells the project's controller that it has stopped (`stalled_tree_notice_hours`,
 // config.Config.StalledTreeNotice, tellStalledTrees). It is a setter rather than a parameter of
@@ -220,8 +207,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
-		unclassifiedLogged: make(map[string]uint64)}
+		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -1135,12 +1121,12 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 }
 
 // drawExperiments draws every experiment the project declares over unit (UseExperiments) and
-// records the answers against key, in the caller's transaction (experiment.DrawAndRecord): the
-// tree-unit experiments of a tree against its root's key when the tree's lifecycle row is
-// created (promoteHolds), and the issue-unit experiments of an issue against its own key when
-// the daemon first records it (putNewRoot).
+// records the answers against key, in the caller's transaction (experiment.DrawAndRecord), with
+// the engine's random source: the tree-unit experiments of a tree against its root's key when the
+// tree's lifecycle row is created (promoteHolds), and the issue-unit experiments of an issue
+// against its own key when the daemon first records it (putNewRoot).
 func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
-	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.source, a.now())
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.engine.ExperimentSource(), a.now())
 }
 
 // declaredAssignments is one entry per experiment the project declares now, carrying its name and

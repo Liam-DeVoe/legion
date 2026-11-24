@@ -201,8 +201,8 @@ projects:
         unit: issue
         roles: [planner, implementer]
         variants:
-          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md}
-          - {name: long}
+          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md, plan: owner}
+          - {name: long, plan: default}
 github_apps:
   implement:
     app_id: "1001"
@@ -264,7 +264,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	// it (PauseStateTx, pauseViewOf): every key of an ended pause, a session at `by` and at
 	// `endedBy`, and `endedAt` (controllerPause).
 	last := pauseViewOf(controllerPause(true))
-	// The slots reading of this project (contract 238): SHAPES-1 holds the one slot and waits on
+	// The slots reading of this project (contract 241): SHAPES-1 holds the one slot and waits on
 	// a person, and SHAPES-2, whose wait a person declined to answer, is a root whose work came
 	// back holding no slot, so it is the first issue that waits for a slot, with the holder
 	// ranked below it. The first body names no such issue, so `belowFirstWaiting.first` is
