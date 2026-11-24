@@ -3547,7 +3547,7 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 245: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
+// 255: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
 // issue's workspace, and its git runs no program a configuration names. Every launch of a reviewer
 // is told LEGION_WORKSPACE at that clone: under tmux `<state_dir>/reviews/<owner>/<repo>/<issue>`,
 // and in a pod `/legion/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which the
@@ -3636,9 +3636,12 @@ package api
 // group's 220 and the intake give-ups' 228 landed, read main and the head of each of the 490 open
 // pull requests, from 2026-11-24T10:27:51Z to 10:31:17Z: main at 228, 243 declared by #5349, and
 // 244 by #3831, the highest any open pull request declares, so this entry moved to 245, the
-// lowest number above every one of them. Read main's own number and every open pull request again
-// at every forward merge rather than from this line.)
-const DaemonAPIVersion = 245
+// lowest number above every one of them. A reading after that merge, from 2026-11-24T15:12:18Z to
+// 15:15:12Z, of main and the head of each of the 481 open pull requests, found main at 232, 245
+// declared by #5158, and 254 by #4432, the highest any open pull request declares, so this entry
+// moved to 255, the lowest number above every one of them. Read main's own number and every open
+// pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 255
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
 // entry of 206 above): a plugin at it or above has its completion naming one refused

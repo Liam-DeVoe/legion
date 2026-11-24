@@ -461,6 +461,8 @@ function toolSchema(pi: PiApi): unknown {
       .string()
       .describe(
         "pull_request_reviewer's and pull_request_verdict's reviewer session: the side reviewer you name, and whose verdict you relay"
+      )
+      .optional(),
     // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
     // open records through a stream sequence, checked whole before a grant is minted
     // (`giveUpSelection`), as `version` is.
@@ -754,7 +756,7 @@ export function createLegionTool(deps: {
         "when the Envoy delivery's sender session is the reviewer you named for that pull request and head. The daemon takes " +
         "both only from the controller, only for an open pull request no Legion issue owns on a repository whose verdict entry " +
         "takes side reviews, and only at the pull request's current head (VERDICT_CALLER_FORBIDDEN), and it refuses a verdict " +
-        "from a session not named for that pull request and head (VERDICT_REVIEWER_NOT_NAMED). ",
+        "from a session not named for that pull request and head (VERDICT_REVIEWER_NOT_NAMED). " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
@@ -876,6 +878,7 @@ export function createLegionTool(deps: {
             return jsonSuccess(
               await client.pullRequestVerdict({ grantId, ...pullRequest, verdict })
             );
+          }
           // The replay and the discard of the intake's give-ups name no issue either. Each is
           // validated whole, its selection and the discard's reason, before its grant is minted,
           // and each answer is the daemon's own: each record the replay took with how it ended and

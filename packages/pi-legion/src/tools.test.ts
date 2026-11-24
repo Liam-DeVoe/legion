@@ -350,6 +350,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "string",
       description:
         "pull_request_reviewer's and pull_request_verdict's reviewer session: the side reviewer you name, and whose verdict you relay",
+    },
     giveUp: {
       type: "number",
       description:
