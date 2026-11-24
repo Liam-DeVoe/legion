@@ -600,13 +600,13 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
   expect(requests).toHaveLength(1);
 });
 
-// register_plan's request can end while the daemon reads or checks the plan (contract 238), and
+// register_plan's request can end while the daemon reads or checks the plan (contract 240), and
 // the daemon then answers 503 PLAN_CHECK_STOPPED, the golden its route test writes: it decided
 // nothing and recorded nothing, and the same call can be sent again. The code makes the answer the
 // daemon's own, so the restart retry hands it back after one attempt, with the daemon's sentence
 // and no word of an attempt that may have been applied. The fault is the 503 with no code that
-// contract 219 answered, which daemonUnreachable reads as a proxy's dropped attempt: retried for
-// ten minutes, then reported as one that may have been applied.
+// contracts 219 and 220 answered, which daemonUnreachable reads as a proxy's dropped attempt:
+// retried for ten minutes, then reported as one that may have been applied.
 test("register_plan's 503 PLAN_CHECK_STOPPED is the daemon's answer, handed back once and never read as a dropped attempt", async () => {
   const stopped = daemonFixture("plan-check-stopped.json");
   const { fetch, requests } = daemon(() => Response.json(stopped, { status: 503 }));

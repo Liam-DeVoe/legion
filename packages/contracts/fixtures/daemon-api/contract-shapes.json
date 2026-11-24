@@ -33687,7 +33687,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -33697,14 +33697,14 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -33713,7 +33713,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -33723,14 +33723,14 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -33740,7 +33740,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -33797,6 +33797,7 @@
       "assignments.*.drawnAt",
       "assignments.*.experiment",
       "assignments.*.mode",
+      "assignments.*.plan",
       "assignments.*.variant",
       "check",
       "check.last",
@@ -34180,14 +34181,14 @@
     }
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "plan-register",
     "noBody": false,
     "keyPaths": [
@@ -34202,7 +34203,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -34217,7 +34218,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -34237,7 +34238,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -34270,7 +34271,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -34295,7 +34296,7 @@
     }
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -34307,7 +34308,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -34345,7 +34346,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -34465,6 +34466,7 @@
       "issues.*.assignments.*.drawnAt",
       "issues.*.assignments.*.experiment",
       "issues.*.assignments.*.mode",
+      "issues.*.assignments.*.plan",
       "issues.*.assignments.*.variant",
       "issues.*.check",
       "issues.*.check.last",
@@ -35014,7 +35016,7 @@
     }
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -35024,7 +35026,7 @@
     "domains": {}
   },
   {
-    "contract": 238,
+    "contract": 220,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
