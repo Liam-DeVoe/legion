@@ -751,10 +751,7 @@ func passingLegion(t *testing.T, path string) string {
 // git.executable-path naming another git, is refused in the shared check's words and with its
 // status, and legion is never run.
 func TestTheJJWrapperHandsAPushToLegionJJ(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -766,10 +763,10 @@ func TestTheJJWrapperHandsAPushToLegionJJ(t *testing.T) {
 	})
 	repo := filepath.Join(dir, "repo")
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
-	run.Run(dir, fixturegit.JJInit(repo, false)...)
+	run.Run(dir, jjInit(jj, repo)...)
 	// An alias of the repository's own that expands to a push, which jj reads from the repository
 	// a command runs in.
-	run.Run(repo, "jj", "config", "set", "--repo", "aliases.up", `["git", "push", "-b", "b"]`)
+	run.Run(repo, jj, "config", "set", "--repo", "aliases.up", `["git", "push", "-b", "b"]`)
 	// copyWith is a copy of the jj wrapper in a directory of its own whose real jj is real and
 	// whose legion is a logging stand-in, and the log of that legion.
 	copyWith := func(t *testing.T, real string) (script, legionLog string) {

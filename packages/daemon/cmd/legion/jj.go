@@ -84,14 +84,14 @@ func jjStepped(words []string) string {
 // command word is a built-in command, `jj git push` among them, and one with no command word that
 // holds a word of help or version (jjHelpWord), with no read of the aliases, and any other, a bare
 // `jj` included, after one read of jj's aliases and ui.default-command (readJJAliases), which
-// prints the warnings jj prints once and drops those it prints on every command (jjOnceOnly). A
-// command that is no push the step runs before (readJJPush), as the role wrote it or as jj expands
-// it, runs that jj at once with the role's own words, byte for byte, which jj then expands itself,
-// and with wrappedJJStepped set to their digest; one that legion jj cannot expand
-// (jjUnexpandable) prints one line first, `legion jj: could not expand <what>: <why>; the command
-// runs as written`. The --real form expands nothing: its line is the pod's wrapper's expansion
-// already. A table that is set but cannot be used (runtime.ReadRoleIdentities) prints one line
-// before a push, which then runs with the role's own words, as jj expands them, and with no step.
+// prints jjOnceOnly of its standard error. A command that is no push the step runs before
+// (readJJPush), as the role wrote it or as jj expands it, runs that jj at once with the role's own
+// words, byte for byte, which jj then expands itself, and with wrappedJJStepped set to their
+// digest; one that legion jj cannot expand (jjUnexpandable) prints one line first, `legion jj:
+// could not expand <what>: <why>; the command runs as written`. The --real form expands nothing:
+// its line is the pod's wrapper's expansion already. A table that is set but cannot be used
+// (runtime.ReadRoleIdentities) prints one line before a push, which then runs with the role's own
+// words, as jj expands them, and with no step.
 // A push the step runs before, written or expanded, is the line the step reads and the line the
 // real push runs with the step's words. Under --after, the step's first command is a read of the
 // configuration of the repository the push loads (jjStep.readConfiguration), which prints what jj
@@ -330,23 +330,22 @@ var jjConfigurationRead = []string{"--ignore-working-copy", "--color=never", "co
 // command that loads the configuration of a repository in that state, and for none after it. The
 // step's reads and its dry run print nothing of their standard error (jjStep.jj, dryRunFilled),
 // so the first of them would take such a warning from the role; this read takes it, and prints
-// what it printed on standard error but the warnings jj prints on every command (jjOnceOnly), as
-// the snapshot prints it, and as the pod's wrapper's read of git.executable-path prints it in a
-// pod. It takes no snapshot and adds no operation. A read that cannot start or exits non-zero is
-// a jjStepFailure, which runJJ prints whole, and the push does not run: jj alone fails on the
-// same configuration.
+// jjOnceOnly of its standard error (passOn), as the snapshot does, and as the pod's wrapper's read
+// of git.executable-path does in a pod. It takes no snapshot and adds no operation. A read that
+// cannot start or exits non-zero is a jjStepFailure, which runJJ prints whole, and the push does
+// not run: jj alone fails on the same configuration.
 func (s *jjStep) readConfiguration() error {
 	return s.passOn(slices.Concat(s.push.options, jjConfigurationRead))
 }
 
 // passOn runs one of the two commands of the step whose standard error it prints,
-// readConfiguration and snapshot: next with args, in env (output), and prints what it printed on
-// standard error but the warnings jj prints on every command (jjOnceOnly). A command that cannot
-// start or exits non-zero is output's jjStepFailure, of which passOn prints nothing.
+// readConfiguration and snapshot: next with args, in env (output), and prints jjOnceOnly of what
+// it printed on standard error. A command that cannot start or exits non-zero is output's
+// jjStepFailure, of which passOn prints nothing: runJJ prints it whole.
 func (s *jjStep) passOn(args []string) error {
 	_, stderr, err := s.output(s.env, args)
 	if err == nil {
-		fmt.Fprint(s.stderr, jjOnceOnly(stderr, true))
+		fmt.Fprint(s.stderr, jjOnceOnly(stderr))
 	}
 	return err
 }
@@ -415,15 +414,14 @@ func (s *jjStep) once() error {
 // command, next with the caller's options (jjPush.options), --quiet where the push has the role's
 // own (jjPush.quiet), and no --ignore-working-copy, in env, a read of the root commit's id, which
 // needs no working-copy commit, before which jj 0.38 and 0.45 alike snapshot the working copy (`jj
-// util snapshot` exists on 0.45 alone). It prints what that command prints on standard error, as
-// the push's snapshot would print it (passOn): jj's warning of a file it refuses to snapshot, its
-// line of the descendants of @ it rebased, which --quiet silences, its lines of an import of what
-// git changed, or a warning jj prints once that no command before it took; but not the warnings
-// jj prints on every command (jjOnceOnly), which the real push prints itself. A read before the
-// step takes a one-time warning such as `Your repo appears to have been copied` first: the pod's
-// wrapper's in a pod, and under tmux the read of the aliases (readJJAliases) or
-// readConfiguration. A snapshot that finds nothing new adds no operation. Once it has run, the
-// real push runs as snapshotted says.
+// util snapshot` exists on 0.45 alone). It prints jjOnceOnly of what that command prints on
+// standard error (passOn), as the push's own snapshot would print it: jj's warning of a file it
+// refuses to snapshot, its line of the descendants of @ it rebased, which --quiet silences, its
+// lines of an import of what git changed, or a warning jj prints once that no command before it
+// took. A read before the step takes a one-time warning such as `Your repo appears to have been
+// copied` first: the pod's wrapper's in a pod, and under tmux the read of the aliases
+// (readJJAliases) or readConfiguration. A snapshot that finds nothing new adds no operation. Once
+// it has run, the real push runs as snapshotted says.
 // A command that cannot start or exits non-zero is a jjStepFailure, with what it printed on
 // standard error (output), which runJJ prints whole: the push would fail at the same snapshot.
 func (s *jjStep) snapshot() error {

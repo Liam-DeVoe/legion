@@ -201,16 +201,26 @@ func isScript(path string) bool {
 // close-on-exec flag is clear. A file the kernel refuses to run (ENOEXEC), a script with no `#!`
 // line, runs as execvp runs it: /bin/sh with argv `/bin/sh <path> <args…>` (glibc's
 // maybe_script_execute). execWrapped returns only when the exec fails, having said so in command's
-// name: 127 when path does not exist, as a shell answers, and 126 otherwise.
+// name, with the line and the status of wrapperStartFailure.
 func execWrapped(command, path string, args, env []string, keep *os.File, stderr io.Writer) int {
 	err := syscall.Exec(path, append([]string{path}, args...), env)
 	if errors.Is(err, syscall.ENOEXEC) {
 		err = syscall.Exec("/bin/sh", append([]string{"/bin/sh", path}, args...), env)
 	}
 	runtime.KeepAlive(keep)
-	fmt.Fprintf(stderr, "%s: run %s: %v\n", command, path, err)
+	line, status := wrapperStartFailure(command, path, err)
+	fmt.Fprint(stderr, line)
+	return status
+}
+
+// wrapperStartFailure is what the wrapper command (`legion git`, `legion jj`) says of the program
+// at path that it could not start, err being why: the line `<command>: run <path>: <err>`, and the
+// status it exits with, 127 when path does not exist, as a shell answers, and 126 otherwise.
+// execWrapped prints it, and jjStep.command makes it the jjStepFailure of a command of the step.
+func wrapperStartFailure(command, path string, err error) (line string, status int) {
+	status = 126
 	if errors.Is(err, syscall.ENOENT) {
-		return 127
+		status = 127
 	}
-	return 126
+	return fmt.Sprintf("%s: run %s: %v\n", command, path, err), status
 }

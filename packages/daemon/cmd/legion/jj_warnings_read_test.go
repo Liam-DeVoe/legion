@@ -61,14 +61,16 @@ const (
 	// `Rebased `, and every line after it, after a warning jj prints on every command.
 	capturedRebased
 	// capturedFailure is jj's error, which jj prints last with its causes and hints: every line
-	// where the caller asks for jj's error, and no line where not. Its command exits non-zero, and
-	// every other shape's exits 0.
+	// where the filter keeps jj's error (the pod's wrapper's `once_only error`), and no line where
+	// it does not (jjOnceOnly, `once_only`). Its command exits non-zero, and every other shape's
+	// exits 0.
 	capturedFailure
 )
 
-// want is what jjOnceOnly gives of stderr, a capture of a shape that keeps k, where the caller
-// asks for jj's error (withError) or not. It is "" for a capture of capturedRebased that holds no
-// line that starts `Rebased ` after its first, which capturedStderrCases fails.
+// want is what a filter gives of stderr, a capture of a shape that keeps k: one that drops jj's
+// error (jjOnceOnly, `once_only`) where withError is false, and `once_only error`, which keeps
+// it, where withError is true. It is "" for a capture of capturedRebased that holds no line that
+// starts `Rebased ` after its first, which capturedStderrCases fails.
 func (k capturedKeeps) want(stderr string, withError bool) string {
 	switch {
 	case k == capturedKept, k == capturedFailure && withError:
@@ -140,8 +142,8 @@ var capturedStderrShapes = map[string]capturedStderrShape{
 	"config-error":              {kept: capturedFailure},
 }
 
-// capturedStderrCases are the cases of every capture (capturedStderrs), each without jj's error
-// and with it, wanting what its shape's entry says (capturedStderrShapes). A release directory
+// capturedStderrCases are the cases of every capture (capturedStderrs), each wanting what its
+// shape's entry says without jj's error and with it (capturedStderrShapes). A release directory
 // that is not one of capturedStderrReleases, a capture of no shape the table names or of a release
 // the shape's entry does not name, a shape a release prints that it holds no capture of, a
 // capture with no standard error, a capture whose exit status is not its shape's (non-zero for
@@ -191,9 +193,7 @@ func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 			case shape.kept == capturedRebased && !strings.Contains(stderr, "\nRebased "):
 				t.Errorf("%s holds no line that starts `Rebased ` after its first", path)
 			}
-			for _, withError := range []bool{false, true} {
-				cases = append(cases, jjOnceOnlyCase{path, stderr, withError, shape.kept.want(stderr, withError)})
-			}
+			cases = append(cases, jjOnceOnlyCase{path, stderr, shape.kept.want(stderr, false), shape.kept.want(stderr, true)})
 		}
 		for _, name := range slices.Sorted(maps.Keys(capturedStderrShapes)) {
 			if shape := capturedStderrShapes[name]; !held[name] && (shape.releases == nil || slices.Contains(shape.releases, release)) {
@@ -209,7 +209,12 @@ func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 // heading, a warning jj prints on every command, each warning with the lines jj prints as its
 // parts, and some with jj's colours, and jj's note of a key a read names and no configuration
 // sets. They are in an order that puts a block that jjOnceOnly keeps, one with no heading among
-// them, right after each that it drops.
+// them, right after each that it drops. Among them are lines on each side of each edge of the
+// first lines that jjEveryCommand matches and the pod's wrapper's once_only copies, the kept ones
+// lines that no jj prints: the built-in command's name in quotes or not; the alias table's name
+// right after the backtick or later in the line, of one letter or of none, and of a-z alone or
+// with a digit; and the source of a migrated setting one word of letters and `-`, two words, or
+// none. So TestThePodWrappersFilterOfJJsOutputIsLegionJJs fails where the two drift apart.
 var jjOnceOnlyBlocks = []struct {
 	name, text string
 	kept       bool
@@ -222,10 +227,18 @@ var jjOnceOnlyBlocks = []struct {
 		text: "Rebased 1 descendant commits onto updated working copy.\n"},
 	{name: "an alias named for a built-in command, with no full stop as in jj 0.38",
 		text: "Warning: Cannot define an alias that overrides the built-in command 'log'\n"},
+	{name: "a line like that warning whose name is not in quotes", kept: true,
+		text: "Warning: Cannot define an alias that overrides the built-in command log\n"},
 	{name: "the repository configuration not found", kept: true,
 		text: "Warning: Per-repo config not found. Generating an empty one.\nPer-repo config is stored in the same directory as your user config for security reasons.\nIf you work across multiple computers, you may want to keep your user config directory in sync.\n"},
 	{name: "a revset alias that does not parse",
 		text: "Warning: Failed to load `revset-aliases.foo(`:  --> 1:5\n  |\n1 | foo(\n  |     ^---\n  |\n  = expected <strict_identifier>\n"},
+	{name: "a line of `Failed to load` that names an alias table only after the backtick's name", kept: true,
+		text: "Warning: Failed to load `x.y`: bad revset-aliases.z\n"},
+	{name: "an alias table of a one-letter name that does not load",
+		text: "Warning: Failed to load `a-aliases.x`: Expected a string, but is integer\n"},
+	{name: "a line of `Failed to load` with no table's name in front of `-aliases`", kept: true,
+		text: "Warning: Failed to load `-aliases.x`: Expected a string, but is integer\n"},
 	{name: "the migrated configuration", kept: true,
 		text: "Warning: Your config file has been migrated from /b/repo/.jj/repo/config.toml to /home/.config/jj/repos/0123/config.toml. You can edit the new file with `jj config edit`\n"},
 	{name: "an alias that does not load, with jj 0.46's causes",
@@ -234,8 +247,16 @@ var jjOnceOnlyBlocks = []struct {
 		text: "Warning: Refused to snapshot some files:\n  large.bin: 2.0MiB (2097152 bytes); the maximum size allowed is 1.0MiB (1048576 bytes)\nHint: This is to prevent large files from being added by accident. To fix this:\n  * Add the file(s) to `.gitignore`\n"},
 	{name: "a deprecated setting",
 		text: "Warning: Deprecated user-level config: ui.old-name is renamed to ui.new-name\n"},
+	{name: "a line of `Deprecated` whose source is two words", kept: true,
+		text: "Warning: Deprecated two words config: x\n"},
+	{name: "a deprecated setting whose source's name holds capitals and a hyphen",
+		text: "Warning: Deprecated CLI-provided config: ui.old-name is renamed to ui.new-name\n"},
+	{name: "a line of `Deprecated` with no source", kept: true,
+		text: "Warning: Deprecated  config: x\n"},
 	{name: "a template alias that does not load",
 		text: "Warning: Failed to load `template-aliases.x`: Expected a string or a table with a `definition` string key, but is integer\n"},
+	{name: "a line of `Failed to load` whose table's name holds a digit", kept: true,
+		text: "Warning: Failed to load `revset2-aliases.x`: Expected a string, but is integer\n"},
 	{name: "aliases that -R, --config or --config-file would define",
 		text: "Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments.\n"},
 	{name: "a key a read names and no configuration sets, as jj 0.45 and 0.46 note it",
@@ -269,20 +290,20 @@ var jjOnceOnlyErrors = []string{
 	"\x1b[1m\x1b[38;5;1mError: \x1b[39mThere is no jj repo in \".\"\x1b[0m\n",
 }
 
-// jjOnceOnlyCase is a text of jj's standard error, whether the filter is to keep jj's error, and
-// what the filter gives of it.
+// jjOnceOnlyCase is a text of jj's standard error and what each filter gives of it: want, what
+// jjOnceOnly and the pod's wrapper's `once_only` give, which drop jj's error, and withError, what
+// `once_only error` gives, which keeps it.
 type jjOnceOnlyCase struct {
-	name, text string
-	withError  bool
-	want       string
+	name, text      string
+	want, withError string
 }
 
-// jjOnceOnlyCases are the texts that each filter of jj's standard error is read over, without jj's
-// error and with it: each capture of capturedStderrs, which gives what its shape's entry says
-// (capturedStderrCases); each block of jjOnceOnlyBlocks alone, which gives the block where its
-// kept says so and nothing where not; all of them in one text, which gives the blocks it keeps;
-// and all of them followed by each of jjOnceOnlyErrors, which gives the blocks it keeps and, with
-// the error, the error whole after them.
+// jjOnceOnlyCases are the texts that each filter of jj's standard error is read over: each capture
+// of capturedStderrs, which gives what its shape's entry says (capturedStderrCases); each block of
+// jjOnceOnlyBlocks alone, which gives the block where its kept says so and nothing where not; all
+// of them in one text, which gives the blocks it keeps; and all of them followed by each of
+// jjOnceOnlyErrors, which gives the blocks it keeps and, where the filter keeps jj's error, the
+// error whole after them.
 func jjOnceOnlyCases(t *testing.T) []jjOnceOnlyCase {
 	t.Helper()
 	cases := capturedStderrCases(t)
@@ -294,17 +315,12 @@ func jjOnceOnlyCases(t *testing.T) []jjOnceOnlyCase {
 			kept.WriteString(block.text)
 		}
 		all.WriteString(block.text)
-		cases = append(cases, jjOnceOnlyCase{block.name, block.text, false, want}, jjOnceOnlyCase{block.name, block.text, true, want})
+		cases = append(cases, jjOnceOnlyCase{block.name, block.text, want, want})
 	}
-	cases = append(cases,
-		jjOnceOnlyCase{"every block in one text", all.String(), false, kept.String()},
-		jjOnceOnlyCase{"every block in one text", all.String(), true, kept.String()})
+	cases = append(cases, jjOnceOnlyCase{"every block in one text", all.String(), kept.String(), kept.String()})
 	for _, failure := range jjOnceOnlyErrors {
 		heading, _, _ := strings.Cut(failure, "\n")
-		name := "every block, then jj's error " + heading
-		cases = append(cases,
-			jjOnceOnlyCase{name, all.String() + failure, false, kept.String()},
-			jjOnceOnlyCase{name, all.String() + failure, true, kept.String() + failure})
+		cases = append(cases, jjOnceOnlyCase{"every block, then jj's error " + heading, all.String() + failure, kept.String(), kept.String() + failure})
 	}
 	return cases
 }
@@ -316,22 +332,23 @@ func jjOnceOnlyCases(t *testing.T) []jjOnceOnlyCase {
 // colours read as it reads with none, and the colours of a block it keeps kept. A line of no
 // heading right after a line it drops, such as the snapshot's line of the descendants it rebased,
 // is kept. jj's error, each of jjOnceOnlyErrors after those blocks, and every line after it, are
-// dropped where the caller asks for no error, and kept where it asks for the error.
+// dropped.
 func TestTheFilterOfJJsOutputDropsOnlyTheWarningsJJPrintsOnEveryCommand(t *testing.T) {
 	t.Parallel()
 	for _, c := range jjOnceOnlyCases(t) {
-		if got := jjOnceOnly(c.text, c.withError); got != c.want {
-			t.Errorf("%s, with error %v: the filter gives\n%q\nwant\n%q", c.name, c.withError, got, c.want)
+		if got := jjOnceOnly(c.text); got != c.want {
+			t.Errorf("%s: the filter gives\n%q\nwant\n%q", c.name, got, c.want)
 		}
 	}
 }
 
 // The pod's wrapper's filter of what jj prints on standard error for one of its reads
 // (packages/daemon/docker/jj's once_only) is legion jj's (jjOnceOnly), one rule in two languages:
-// read out of the script, from `once_only() {` to the `}` that closes it, with the line that sets
-// the escape character it reads and with `set -u`, as the wrapper runs it, and run under /bin/sh
-// without the argument `error` and with it, it prints for each of jjOnceOnlyCases, every capture
-// of jj's releases among them, what jjOnceOnly gives for the same text, and what the case wants.
+// read out of the script, from `once_only() {` to the `}` that closes it, with `set -u`, as the
+// wrapper runs it, and run under /bin/sh, it prints for each of jjOnceOnlyCases, every capture of
+// jj's releases and the lines on each side of the edges of what it drops among them, what
+// jjOnceOnly gives for the same text, and what the case wants; and with the argument `error`, what
+// the case wants with jj's error kept.
 func TestThePodWrappersFilterOfJJsOutputIsLegionJJs(t *testing.T) {
 	t.Parallel()
 	read, err := os.ReadFile(filepath.Join("..", "..", "docker", "jj"))
@@ -339,33 +356,34 @@ func TestThePodWrappersFilterOfJJsOutputIsLegionJJs(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(string(read), "\n")
-	esc := slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, "esc=") })
 	start := slices.Index(lines, "once_only() {")
-	if esc < 0 || start < 0 {
-		t.Fatalf("packages/daemon/docker/jj holds no line that sets esc (%d) or no `once_only() {` (%d)", esc, start)
+	if start < 0 {
+		t.Fatal("packages/daemon/docker/jj holds no `once_only() {`")
 	}
 	end := slices.Index(lines[start:], "}")
 	if end < 0 {
 		t.Fatal("packages/daemon/docker/jj holds no `}` that closes once_only")
 	}
-	program := strings.Join(slices.Concat([]string{"set -u", lines[esc]}, lines[start:start+end+1], []string{`once_only "$1"`}), "\n")
-	for _, c := range jjOnceOnlyCases(t) {
-		mode := ""
-		if c.withError {
-			mode = "error"
-		}
+	program := strings.Join(slices.Concat([]string{"set -u"}, lines[start:start+end+1], []string{`once_only "$1"`}), "\n")
+	// onceOnly is what once_only prints of text, under the argument mode.
+	onceOnly := func(name, mode, text string) string {
 		cmd := exec.Command("/bin/sh", "-c", program, "once_only", mode)
 		cmd.Env = []string{"PATH=/usr/bin:/bin"}
-		cmd.Stdin = strings.NewReader(c.text)
+		cmd.Stdin = strings.NewReader(text)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("%s: once_only %q failed: %v\n%s", c.name, mode, err, stderr.String())
+			t.Fatalf("%s: once_only %q failed: %v\n%s", name, mode, err, stderr.String())
 		}
-		got := string(out)
-		if want := jjOnceOnly(c.text, c.withError); got != want || got != c.want {
-			t.Errorf("%s: once_only %q prints\n%q\nwant what jjOnceOnly gives\n%q\nand the case wants\n%q", c.name, mode, got, want, c.want)
+		return string(out)
+	}
+	for _, c := range jjOnceOnlyCases(t) {
+		if got, want := onceOnly(c.name, "", c.text), jjOnceOnly(c.text); got != want || got != c.want {
+			t.Errorf("%s: once_only prints\n%q\nwant what jjOnceOnly gives\n%q\nand the case wants\n%q", c.name, got, want, c.want)
+		}
+		if got := onceOnly(c.name, "error", c.text); got != c.withError {
+			t.Errorf("%s: once_only error prints\n%q\nwant\n%q", c.name, got, c.withError)
 		}
 	}
 }

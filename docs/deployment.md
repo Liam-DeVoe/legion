@@ -455,9 +455,14 @@ line after it says that the read failed.
 So a warning that jj prints once, such as `Your repo appears to have been copied`, prints once
 where the read is the command that takes it, and a warning that jj prints on every command prints
 as often as jj alone prints it for the command that runs after the read.
-In a pod, jj itself prints such a warning twice for each command: the wrapper puts its
-`--config` on every line it runs, and jj expands a line with a `--config` or a `-R` twice (its
-`warn_if_args_mismatch`).
+In a pod, jj itself prints each warning of its aliases, such as
+`Cannot define an alias that overrides the built-in command`, twice for each command, and three
+times for one with a `-R`: the wrapper puts its `--config` on every line it runs, and jj expands a
+line, loading its aliases and printing their warnings, once, again for a `--config`, and a third
+time for a `-R` (its `warn_if_args_mismatch`).
+jj's other warnings of every command come from no such expansion: a deprecated setting's prints
+once for each command, and that of a `trunk()` that does not resolve once for each load of the
+workspace, in a pod as in a pane.
 The expansion has four limits.
 An alias that a `[[--scope]]` defines for `jj config` alone is expanded as the worker image's
 wrapper expands it, so its push runs with the step where jj alone refuses it.
@@ -526,10 +531,10 @@ jj keeps each of `--config` and `--config-file` only from the deepest of the thr
 command line that holds one, in front of `git push`, between its two words and after them, so
 every command of the step carries only those.
 The dry run's own `--config ui.quiet=false` goes at the end of the place that holds the push's
-kept `--config`, or after the dry run's flags where the push has none, in front of a `--`, so jj
-keeps both and reads it after each `--config-file` there or in front of it; only a
-`--config-file` at a deeper place that sets `ui.quiet = true` silences the dry run, which the step
-then cannot read.
+kept `--config`, or, where the push has none, right in front of the dry run's own flags, which go
+in front of a `--`; so jj keeps both and reads it after each `--config-file` there or in front of
+it; only a `--config-file` at a deeper place that sets `ui.quiet = true` silences the dry run,
+which the step then cannot read.
 Where a commit's author is not the identity that the table gives the trailer's role, the step
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,

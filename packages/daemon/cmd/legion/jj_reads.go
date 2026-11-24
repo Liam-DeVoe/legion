@@ -307,19 +307,16 @@ func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 }
 
 // command runs next with args in env and waits for it (runJJCommand). A command that cannot start
-// is a jjStepFailure whose status is execWrapped's for the same failure, 127 where next does not
-// exist and 126 otherwise, and whose output names it as execWrapped does: `legion jj: run <next>:
-// <error>`.
+// is a jjStepFailure whose status and output are execWrapped's for the same failure
+// (wrapperStartFailure): 127 where next does not exist and 126 otherwise, and the line `legion jj:
+// run <next>: <error>`.
 func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
 	stdout, stderr, code, err = runJJCommand(s.next, env, args)
 	if err == nil {
 		return stdout, stderr, code, nil
 	}
-	status := 126
-	if errors.Is(err, syscall.ENOENT) {
-		status = 127
-	}
-	return "", "", 0, jjStepFailure{code: status, output: fmt.Sprintf("legion jj: run %s: %v\n", s.next, err)}
+	line, status := wrapperStartFailure("legion jj", s.next, err)
+	return "", "", 0, jjStepFailure{code: status, output: line}
 }
 
 // runJJCommand runs next with args in env and waits for it, as a child in this process's group,
@@ -428,15 +425,17 @@ var jjSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // (packages/daemon/docker/jj's once_only) hold one rule. A warning that jj prints once and then
 // never again, such as `Your repo appears to have been copied …` (lib/src/secure_config.rs), is
 // printed: the first command in the state that makes jj print it is the one that prints it, and
-// that may be a command of legion jj's own. Where withError is false, jj's error and every line
-// after it (jjErrorHeading) are left out too, for a caller whose own line names that error.
-func jjOnceOnly(stderr string, withError bool) string {
+// that may be a command of legion jj's own. jj's error, which jj prints last, and every line after
+// it (jjErrorHeading) are left out too: jj prints it only for a command that fails, whose failure
+// the caller reports itself, readJJAliases by the line of its jjUnexpandable, and passOn, which
+// filters only what a command that exited 0 printed, by the jjStepFailure that runJJ prints whole.
+func jjOnceOnly(stderr string) string {
 	var kept strings.Builder
 	part := false
 	for line := range strings.SplitAfterSeq(stderr, "\n") {
 		plain := jjSGR.ReplaceAllString(strings.TrimSuffix(line, "\n"), "")
 		switch {
-		case !withError && jjErrorHeading.MatchString(plain):
+		case jjErrorHeading.MatchString(plain):
 			return kept.String()
 		case jjEveryCommand.MatchString(plain):
 			part = true

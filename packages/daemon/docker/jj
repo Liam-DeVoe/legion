@@ -66,25 +66,29 @@ run() {
 # wrapper's own reads, to its standard output, but for the warnings jj prints on every command: the
 # command the wrapper runs after its reads prints those itself, so each prints as often as jj alone
 # prints it for that command. They are, in jj's cli/src/cli_util.rs and cli/src/config.rs of all
-# three versions: an alias that has the name of a built-in command, an alias of an alias table that
-# does not load, a setting jj migrates, aliases that -R, --config or --config-file would define,
-# and a trunk() that does not resolve, with its hint. Each goes with the lines that jj prints as its
-# parts, with no heading: those of a parse error or of jj 0.46's causes, which are blank or start
-# with a space, a digit or `Caused by:`, trunk()'s second line, and the `Example: jj config set …`
-# and `For details, see: …` lines of jj 0.38's deprecation of git.auto-local-bookmark and
-# git.push-new-bookmarks. jj's note of a key that a read names and no configuration sets, `No
-# matching config key for: <key>` (with no colon in jj 0.38), is left out as well: only a read
-# prints it, and jj alone prints none for the command the wrapper runs. Every other line goes
-# through: a warning that jj prints for the first command in its state and never again, such as
-# `Your repo appears to have been copied` (lib/src/secure_config.rs), which a read may be, and a
-# line after a dropped warning that is no part of it, such as a snapshot's `Rebased 1 descendant
-# commits`. Without the argument `error`, jj's error, which jj prints last, and every line after
-# it, its causes and hints, are left out too: the refusal after such a read says that the read
-# failed. jj prints its warnings of aliases before it reads --color, so where ui.color is always,
-# they hold jj's colours under a read's --color=never too: each line is matched with jj's colours
-# left out (ESC `[`, digits and `;`, then `m`), as jjOnceOnly in legion jj matches it, and printed
-# as it came.
+# three versions: an alias that has the name of a built-in command, the name in quotes; an alias
+# of an alias table that does not load, the table's name, `aliases` or one or more of a-z then
+# `-aliases`, right after the backtick; a setting jj migrates, the name of its source one or more
+# of A-Z, a-z and `-`; aliases that -R, --config or --config-file would define; and a trunk() that
+# does not resolve, with its hint. Their first lines are those that jjEveryCommand in legion jj
+# matches, and no others. Each goes with the lines that jj prints as its parts, with no heading:
+# those of a parse error or of jj 0.46's causes, which are blank or start with a space, a digit or
+# `Caused by:`, trunk()'s second line, and the `Example: jj config set …` and `For details, see: …`
+# lines of jj 0.38's deprecation of git.auto-local-bookmark and git.push-new-bookmarks. jj's note
+# of a key that a read names and no configuration sets, `No matching config key for: <key>` (with
+# no colon in jj 0.38), is left out as well: only a read prints it, and jj alone prints none for
+# the command the wrapper runs. Every other line goes through: a warning that jj prints for the
+# first command in its state and never again, such as `Your repo appears to have been copied`
+# (lib/src/secure_config.rs), which a read may be, and a line after a dropped warning that is no
+# part of it, such as a snapshot's `Rebased 1 descendant commits`. Without the argument `error`,
+# jj's error, which jj prints last, and every line after it, its causes and hints, are left out
+# too: the refusal after such a read says that the read failed. jj prints its warnings of aliases
+# before it reads --color, so where ui.color is always, they hold jj's colours under a read's
+# --color=never too: each line is matched with jj's colours left out (ESC `[`, digits and `;`,
+# then `m`), as jjOnceOnly in legion jj matches it, and printed as it came.
 once_only() {
+  # esc is the escape character, which starts each of jj's colours.
+  esc=$(printf '\033')
   part=''
   while IFS= read -r line || [ -n "$line" ]; do
     [ "$part" != error ] || continue
@@ -110,16 +114,40 @@ once_only() {
       esac
     fi
     part=''
+    # every is whether the line is the first line of a warning jj prints on every command.
+    every=''
     case "$plain" in
-      'Warning: Cannot define an alias that overrides the built-in command '* | \
-        'Warning: Failed to load `aliases.'* | 'Warning: Failed to load `'[a-z]*'-aliases.'* | \
-        'Warning: Deprecated '*' config: '* | \
+      "Warning: Cannot define an alias that overrides the built-in command '"* | \
+        'Warning: Failed to load `aliases.'* | \
         'Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments'* | \
         'Warning: Failed to resolve `revset-aliases.trunk()`: '* | \
         'Hint: Use `jj config edit --repo` to adjust the `trunk()` alias'*)
-        part=more
-        continue
+        every=1
         ;;
+      'Warning: Failed to load `'*'-aliases.'*)
+        # name is what stands between the backtick and the first `-aliases.`.
+        name=${plain#'Warning: Failed to load `'}
+        name=${name%%-aliases.*}
+        case "$name" in
+          '' | *[!a-z]*) ;;
+          *) every=1 ;;
+        esac
+        ;;
+      'Warning: Deprecated '*' config: '*)
+        # name is what stands between `Deprecated ` and the first ` config: `.
+        name=${plain#'Warning: Deprecated '}
+        name=${name%%' config: '*}
+        case "$name" in
+          '' | *[!A-Za-z-]*) ;;
+          *) every=1 ;;
+        esac
+        ;;
+    esac
+    if [ -n "$every" ]; then
+      part=more
+      continue
+    fi
+    case "$plain" in
       'Warning: No matching config key for'[:\ ]*) continue ;;
       'Error: '* | 'Config error: '* | 'Internal error: '*)
         if [ "${1-}" != error ]; then
@@ -296,8 +324,7 @@ fi
 # caller's options, and with `--include-defaults`: jj's defaults hold aliases of their own (`st`,
 # `b`, `ci`, `desc` in all three versions), which `jj config list` leaves out without it ("No
 # matching config key"), and which an alias of the same name in a file replaces. Each read prints
-# on standard error what jj prints there but the warnings jj prints on every command, its note of a
-# key no configuration sets and its error (once_only).
+# on standard error `once_only` of what jj prints there (read_jj).
 #
 # One read a key, through a template that prints the key's own entry and nothing else: `D`, the
 # number of words and one word a line for a list, or for a table's `definition`; `E` and the value
@@ -309,8 +336,6 @@ fi
 # wrapper found nothing for is: jj runs it or refuses it, under the git wrapper's last layer.
 nl='
 '
-# The escape character, which starts each of jj's colours (once_only).
-esc=$(printf '\033')
 seen=' '
 via=''
 defaulted=''
