@@ -470,15 +470,6 @@ func main() {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
 	}
 
-	// Every project has an owner: a project the access migration left with none is given to
-	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
-	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
-	// repairs.
-	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
-		slog.Error("dispatch: give every project an owner", "error", err)
-		os.Exit(1)
-	}
-
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
 		slog.Error("dispatch: resolve web dist dir", "error", err)
@@ -543,6 +534,15 @@ func main() {
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
+	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
+	// repairs. The grant appends events, so it runs after restoreDecidedWordings, which takes the
+	// copy lock.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
 	// restoreDecidedWordings, which takes the copy lock (see below).

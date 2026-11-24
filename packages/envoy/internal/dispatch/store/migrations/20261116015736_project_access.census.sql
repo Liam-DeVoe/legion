@@ -14,6 +14,8 @@
 --   select key, default_assignee from projects p
 --   where not exists (select 1 from people where email = p.default_assignee);
 --
--- (cmd/dispatch/README.md, "Giving a project to another owner").
+-- (cmd/dispatch/README.md, "Giving a project to another owner"). projects.default_assignee is
+-- 0116_project_default_assignee's and people.email 0068_people's, both shipped releases before
+-- this one.
 select count(*) from projects p
 where not exists (select 1 from people where email = p.default_assignee);
