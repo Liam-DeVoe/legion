@@ -151,10 +151,13 @@ const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name
  * API's own guard is the document token, which Dispatch checks under the write's lock where a
  * replacement names it, the Dispatch page's own upload among them. A replacement naming none is
  * taken unchecked for now and refused 400 PRECONDITION_REQUIRED in a later release (INFRA-4980),
- * so the rule names both.
+ * so the rule names both. A file holds no tree and so no token, and Dispatch refuses an upload over
+ * one that names a token (409 PRECONDITION_FAILED where a Markdown upload makes the file its role's
+ * document, 400 INVALID_PRECONDITION where the upload is stored as a file), so over a file the rule
+ * names force alone.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
-  'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
+  'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints); over a file, which has no token, send it with force alone.';
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the
