@@ -1024,6 +1024,53 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	}
 }
 
+// The tester answered the round under the earlier release, and the deploy's reset kept that
+// answer and cleared its ask mark (podUpdateDeployReset), as in the test above. Here the tester's
+// machine is in a decision when a sweep reads it, as a machine still deciding the last sweep's
+// post is on a loaded pod; the decision changes nothing of the claim (holdInDecision). That sweep
+// still reads the tester's answer and asks it nothing: the answer is a fact about the claim, and
+// only the decision to replace the pod reads a deciding claim as not having answered
+// (roundGroup's mask), because that decision may delete a disk. The implementer has not answered
+// and is asked once, so the rig's sweeps do ask.
+func TestPodUpdateRoundOpenAtTheDeployAsksNoRoleThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	deploy := podUpdateStart.Add(3 * time.Hour)
+	unanswered := readyWorker(claim.RoleImplementer)
+	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
+	answeredBefore := readyWorker(claim.RoleTester)
+	answeredBefore.round, answeredBefore.reasons, answeredBefore.signalled = podUpdateRound, podUpdateDrift, true
+	rig := newPodUpdateRig(t, unanswered, answeredBefore)
+	rig.clockAt(deploy)
+	if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
+		t.Fatalf("reset the open pod round as the migration does: %v", err)
+	}
+	next := rig.restart()
+	if c := next.claimOf(claim.RoleTester); c.UpdateSignalledAt == nil || c.UpdateTaskedAt != nil {
+		t.Fatalf("the tester after the deploy answered at %v and was asked at %v, want the earlier release's answer and no ask mark", c.UpdateSignalledAt, c.UpdateTaskedAt)
+	}
+	next.drifts(podUpdateDrift)
+
+	next.tick()
+	next.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	next.settleAll()
+	release := next.holdInDecision(claim.RoleTester)
+	next.tick()
+	release()
+	for range 2 {
+		next.tick()
+	}
+	asked := map[claim.Role]int{}
+	for _, ask := range next.asks() {
+		asked[ask.Role]++
+	}
+	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0}
+	for role, n := range want {
+		if asked[role] != n {
+			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		}
+	}
+}
+
 // The bound has come and no claim has answered, so the walk lets the replacement through. The
 // runtime then finds no pod to replace — the Sandbox is absent or suspended, or its pod is not
 // the locator's — and returns nil without asking the last word. Nothing was replaced, so the
@@ -1052,6 +1099,39 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 	}
 	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
 		t.Fatalf("the sweep logged a bounded end %+v, want none: the runtime found no pod and replaced nothing", lines)
+	}
+	if ended := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(ended) != 1 || ended[0]["atTheBound"] != false {
+		t.Fatalf("the round's end was logged %+v, want one line that no bound made", ended)
+	}
+}
+
+// Every role of the round has answered, and the round's bound has come by the sweep that replaces
+// the pod. Here the tester's machine is in a decision through that whole sweep (holdInDecision),
+// so the replacement's own decision reads the tester as not having answered (roundGroup's mask),
+// and the bound steps over that reading as it steps over every wait for an answer. What the lines
+// report is what each role said, not that reading: the tester answered, so no line of a bounded
+// end is written, and the line of the round's end says that no bound made it.
+func TestPodUpdateBoundLineIsNotWrittenForAnAnswerReadWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+	rig.clockAt(podUpdateBound)
+
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+
+	if calls := rig.replacements(); len(calls) != 1 {
+		t.Fatalf("the pod was replaced %d times by the sweep at the bound, want once", len(calls))
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
+		t.Fatalf("the sweep logged a bounded end %+v, want none: every role had answered", lines)
 	}
 	if ended := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(ended) != 1 || ended[0]["atTheBound"] != false {
 		t.Fatalf("the round's end was logged %+v, want one line that no bound made", ended)

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2654,6 +2655,47 @@ func (r *podUpdateRig) settleAll() {
 		m.Wait()
 		testwait.Eventually(r.t, string(role)+" to be deciding nothing", func() bool { return m.Deciding() == nil })
 	}
+}
+
+// holdInDecision puts role's machine in a decision and keeps it there until release is called:
+// the decision is the claim's connection closing (supervise.StreamClosed), whose probe of the
+// claim's process waits inside the runtime (fake's HoldProbe). The probe then finds the process
+// alive, so the decision changes nothing of the claim. Until release, the machine is deciding
+// (Machine.Deciding), its published view shows the claim as it was, and an event the sweep posts
+// to it waits on its feed. This is the moment a loaded pod gives by chance, when a machine is
+// slow to decide a post a sweep made, and a later sweep reads the claim. release lets the probe
+// answer and waits for the decision to end. A test that stops before it releases is released at
+// its cleanup, ahead of the supervisor's stop, which waits for the held decision.
+func (r *podUpdateRig) holdInDecision(role claim.Role) (release func()) {
+	r.t.Helper()
+	token := r.tokens[role]
+	m, ok := r.sup.Machine(token)
+	if !ok {
+		r.t.Fatalf("%s is not supervised", role)
+	}
+	inside, held := make(chan struct{}), make(chan struct{})
+	r.rt.HoldProbe(func(loc runtime.Locator) {
+		if loc.Claim != token {
+			return
+		}
+		r.rt.HoldProbe(nil)
+		close(inside)
+		<-held
+	})
+	decided := make(chan error, 1)
+	release = sync.OnceFunc(func() {
+		close(held)
+		if err := <-decided; err != nil {
+			r.t.Errorf("the %s's held decision ended with %v, want nil: the probe found the process alive", role, err)
+		}
+	})
+	r.t.Cleanup(release)
+	go func() { decided <- m.Handle(r.ctx, supervise.StreamClosed{Claim: token}) }()
+	testwait.Receive(r.t, fmt.Sprintf("the %s's probe to wait inside the runtime", role), inside)
+	if m.Deciding() == nil {
+		r.t.Fatalf("the %s's machine is deciding nothing while its probe waits, want the closed connection's decision", role)
+	}
+	return release
 }
 
 // The report names the members of the round that lost work, and nothing else of the issue. Two
