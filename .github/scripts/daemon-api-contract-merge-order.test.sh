@@ -47,7 +47,8 @@ commit() {
 }
 base=$(git rev-parse HEAD)
 base_number=$(bash scripts/daemon-contract.sh HEAD)
-echo "base $base declares contract $base_number"
+base_fixtures=$(git ls-tree -r --name-only HEAD -- packages/contracts/fixtures/daemon-api/contracts | wc -l)
+echo "base $base declares contract $base_number and holds $base_fixtures entry fixtures"
 
 api=packages/daemon/internal/api
 
@@ -202,9 +203,11 @@ branch_b_changes "$entry_b"
   { cat "$scratch/update-b.txt"; fail "branch b: go test ./internal/api -update failed"; }
 commit "b: an entry with a new state key and its band"
 
+# Each branch holds the base's entry fixtures, however many HEAD's tree holds, and its own one.
 for b in a b; do
   fixtures=$(git ls-tree -r --name-only "$b" -- packages/contracts/fixtures/daemon-api/contracts | wc -l)
-  [ "$fixtures" -eq 1 ] || fail "branch $b holds $fixtures entry fixtures, want 1"
+  [ "$fixtures" -eq $((base_fixtures + 1)) ] ||
+    fail "branch $b holds $fixtures entry fixtures, want the base's $base_fixtures and its own"
   echo "branch $b: $(git diff --name-only main "$b" | tr '\n' ' ')"
 done
 
