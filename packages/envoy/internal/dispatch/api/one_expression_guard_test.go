@@ -1,10 +1,11 @@
 //go:build !race
 
 // A ninth static check beside the eight source guards, under the tag they carry and for the same
-// saving: it reads text - the api package's parsed declarations, and the bytes of every non-test
-// .go file of the module - and opens no database and starts no goroutine, so the race detector
-// has nothing here to watch. Behind the tag the race build neither compiles it nor walks
-// packages/envoy a second time to run it (lock_level_test.go's header weighs that walk).
+// saving: it reads text - the api package's parsed declarations, the bytes of every non-test .go
+// file of the module and the SQL of every .sql file of it - and opens no database and starts no
+// goroutine, so the race detector has nothing here to watch. Behind the tag the race build neither
+// compiles it nor walks packages/envoy a second time to run it (lock_level_test.go's header weighs
+// that walk).
 //
 // The tag is also what puts this check in the job its subject asks for. R15 of
 // dispatch://INFRA-1066's spec has a test whose subject is a file's words run in a text-check job
@@ -37,12 +38,15 @@ package api
 // nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
 // and the line below is the declaration that holds that job's filter to what it reads.
 //ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+//ci:reads packages/envoy/**/*.sql TestOneExpressionDecidesWhoWaitsInOneSpelling walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
 
 import (
 	"fmt"
 	"go/ast"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -64,10 +68,29 @@ func namesTheExpression(node ast.Node) bool {
 	return named
 }
 
+// sqlCommentOrString matches a SQL comment, a `--` line or a `/* */` block, or a quoted string,
+// which it matches only so that a `--` inside one is not read as the start of a comment.
+var sqlCommentOrString = regexp.MustCompile(`'(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/`)
+
+// sqlCode is a SQL text with its comments blanked: the statements Postgres runs, a function's
+// body and a string's contents kept.
+func sqlCode(text string) string {
+	return sqlCommentOrString.ReplaceAllStringFunc(text, func(match string) string {
+		if strings.HasPrefix(match, "'") {
+			return match
+		}
+		return " "
+	})
+}
+
+// sqlRuleNeedle is the Go count's needle below, `coalesce(a.asked_of`, in every spelling SQL
+// takes for it: any alias or none, any case, any space.
+var sqlRuleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:\w+\.)?asked_of\b`)
+
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
 // one constant: each of the six names it, and the SQL it holds - the expression and the three
-// joins it reads over - is spelled once in the module. The precedent for reading the source
-// rather than the behaviour is api/lock_level_test.go.
+// joins it reads over - is spelled once in the module's Go and never in its .sql files. The
+// precedent for reading the source rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	t.Parallel()
 	sources := moduleSources(t)
@@ -139,5 +162,54 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}
 	if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(joins, want) {
 		t.Fatalf("the joins the rule reads are spelled in %v, want them written once, in %v", joins, want)
+	}
+
+	// No .sql file of the module spells the rule at all. The counts above read Go alone, and a
+	// migration is SQL Postgres runs as it stands - a view, a function, a backfill - so a copy of
+	// the rule there, the two-step `coalesce(a.asked_of, i.assignee)` above all, answers a reader
+	// another person while both counts above pass. Comments are blanked first: an applied migration
+	// says what the rule was when it ran, and is never edited. The needle is first held to what it
+	// must and must not count, so a needle or a blanking that missed a copy fails here.
+	for _, planted := range []struct {
+		sql     string
+		spelled int
+	}{
+		{"select coalesce(a.asked_of, i.assignee) from asks a", 1},
+		{"SELECT COALESCE( asks.asked_of , issues.assignee ) FROM asks", 1},
+		{"select '--', coalesce(asked_of, assignee) from asks", 1},
+		{"-- coalesce(a.asked_of, i.assignee)\n/* coalesce(a.asked_of, i.assignee) */ select 1", 0},
+	} {
+		if got := len(sqlRuleNeedle.FindAllStringIndex(sqlCode(planted.sql), -1)); got != planted.spelled {
+			t.Fatalf("the needle counts %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
+		}
+	}
+	sqlCopies := []string{}
+	read, migrations := 0, 0
+	migrationDir := filepath.Join(moduleRoot, "internal", "dispatch", "store", "migrations")
+	if err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".sql") {
+			return err
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		read++
+		if filepath.Dir(path) == migrationDir {
+			migrations++
+		}
+		if spelled := len(sqlRuleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
+			sqlCopies = append(sqlCopies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s for .sql files: %v", moduleRoot, err)
+	}
+	if migrations == 0 {
+		t.Fatalf("read %d .sql files and none of %s: the migrations this check holds were not seen", read, migrationDir)
+	}
+	if len(sqlCopies) > 0 {
+		t.Fatalf("the rule is spelled in the SQL of %v, want it in no .sql file: %s names it once, in ask_rows.go",
+			sqlCopies, askedOfPersonExpressionName)
 	}
 }
