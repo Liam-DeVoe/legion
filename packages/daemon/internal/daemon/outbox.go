@@ -2108,31 +2108,34 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 			return false, err
 		}
 	}
-	return r.ownerSlotFor(ctx, row, owner, step, errNoticeWaits, "notice row")
+	if err := r.ownerSlotFor(ctx, row, owner, step, errNoticeWaits, "notice row"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ownerSlotFor is the one gate of an act told to owner, an issue's own architect, as role: an
 // owner-step (ownerSlotHolds) and a merge-forward message that asks an act (ownerSlotActs). It
-// answers true once the role the owner's slot acts as now (ownerSlotRole, the owner's own where it
+// answers nil once the role the owner's slot acts as now (ownerSlotRole, the owner's own where it
 // does no act of another role) shares role's App (sameApp) and the slot's gh files hold that App
 // (slotHoldsApp). While the slot acts as an App of another role, the act waits, with no write and
 // no ask of the runtime: the row is held on its backoff, wrapped in waits, the wait of its kind,
 // and what names the row in it.
-func (r *outbox) ownerSlotFor(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) (bool, error) {
+func (r *outbox) ownerSlotFor(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) error {
 	slot, acts, err := ownerSlotRole(ctx, r.pool, r.records, owner)
 	if err != nil {
-		return false, fmt.Errorf("read the role %s's slot acts as: %w", owner, err)
+		return fmt.Errorf("read the role %s's slot acts as: %w", owner, err)
 	}
 	if !acts {
 		slot = claim.RoleArchitect
 	}
 	if !r.sameApp(ctx, row.Issue, slot, role) {
-		return false, fmt.Errorf("%w: %s's %s %d of %s waits for its slot to act as %s, and it acts as %s", waits, owner, what, row.ID, row.Issue, role, slot)
+		return fmt.Errorf("%w: %s's %s %d of %s waits for its slot to act as %s, and it acts as %s", waits, owner, what, row.ID, row.Issue, role, slot)
 	}
 	return r.slotHoldsApp(ctx, row, owner, role, waits, what)
 }
 
-// slotHoldsApp answers true once owner's slot's gh files hold the credential of the App of role,
+// slotHoldsApp answers nil once owner's slot's gh files hold the credential of the App of role,
 // for the act that row tells owner of, so the owner's gh acts as that App when the act reaches it.
 // The runtime brings the slot for a role of another App than the owner's own (ownApp) to the App it
 // judges for the slot itself, in the serialization of the slot's writes, which is role's unless the
@@ -2147,29 +2150,29 @@ func (r *outbox) ownerSlotFor(ctx context.Context, row record.OutboxRow, owner c
 // of another role, and holds nothing for the owner's own App, which the slot of a pod built before
 // the slot's write held from its launch. Any other failure is the row's error. A runtime that holds
 // no slots writes none and holds nothing.
-func (r *outbox) slotHoldsApp(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) (bool, error) {
+func (r *outbox) slotHoldsApp(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) error {
 	own := r.ownApp(ctx, row.Issue, role)
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
 	if !ok {
-		return true, nil
+		return nil
 	}
 	if !own {
 		if err := slots.WriteSlotCredential(ctx, owner); errors.Is(err, wait.ErrWaiting) {
-			return false, fmt.Errorf("%w: %s's %s %d waits to write its slot for the App of %s: %w", waits, owner, what, row.ID, role, err)
+			return fmt.Errorf("%w: %s's %s %d waits to write its slot for the App of %s: %w", waits, owner, what, row.ID, role, err)
 		} else if err != nil {
-			return false, fmt.Errorf("write %s's slot for the App of %s: %w", owner, role, err)
+			return fmt.Errorf("write %s's slot for the App of %s: %w", owner, role, err)
 		}
 	}
 	if err := slots.SlotHoldsCredential(ctx, owner, role); err != nil {
 		switch {
 		case own && errors.Is(err, runtime.ErrAwaitsPodUpdate):
-			return true, nil
+			return nil
 		case errors.Is(err, wait.ErrWaiting) || errors.Is(err, runtime.ErrAwaitsPodUpdate):
-			return false, fmt.Errorf("%w: %s's %s %d waits for its slot to hold the App of %s: %w", waits, owner, what, row.ID, role, err)
+			return fmt.Errorf("%w: %s's %s %d waits for its slot to hold the App of %s: %w", waits, owner, what, row.ID, role, err)
 		}
-		return false, fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
+		return fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
 	}
-	return true, nil
+	return nil
 }
 
 // retroActsAs is the role the retro of issue's task is done as (record.RetroActsAs), read from the
