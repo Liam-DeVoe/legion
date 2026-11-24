@@ -336,26 +336,36 @@ func (e *Engine) mergeForwardWorker(issue record.Issue, at phase.Phase, step rec
 }
 
 // lostRole says whether role is a role of the deployment that deployment no longer defines: one
-// a daemon restarted without, whose task is stopped (stopLostRole) and whose claim no message of a
-// merge forward reaches. Legion's own roles are never lost.
+// a daemon restarted without, whose task is stopped (stopLostRoles) and whose claim no message of a
+// merge forward reaches. Legion's own roles are never lost. It is lostName of the role.
 func lostRole(role claim.Role, deployment plan.Deployment) bool {
-	return !claim.IsBuiltin(role) && !deployment.Defines(string(role))
+	return lostName(string(role), deployment)
 }
 
-// lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), is a role
-// deployment lost (lostRole): the agent runs in the slot of its name, the role of its first step
-// (record.NameAgents), so a pod of the deployment has no slot for it, whatever role its step has
-// now. A step of the key owner has no name, and is never lost this way.
+// lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), names a role
+// deployment lost (lostName): the agent runs in the slot of its name, the role of its first step or
+// a number of that role for a second or later agent of it (record.NameAgents), so a pod of the
+// deployment has no slot for it, whatever role its step has now. A step of the key owner has no
+// name, and is never lost this way.
 func lostAgent(name claim.Agent, deployment plan.Deployment) bool {
-	return name != "" && lostRole(claim.Role(name), deployment)
+	return name != "" && lostName(string(name), deployment)
 }
 
-// lostSlot says whether token's claim runs in a slot (claim.Token.Slot) that is a role deployment
+// lostSlot says whether token's claim runs in a slot (claim.Token.Slot) that names a role deployment
 // lost (lostAgent): its launch waits for a pod with that slot, which the deployment builds none of.
 // A token that names no slot is not lost this way.
 func lostSlot(token claim.Token, deployment plan.Deployment) bool {
 	slot, ok := token.Slot()
 	return ok && lostAgent(slot, deployment)
+}
+
+// lostName says whether name — a role, or the name of an agent or of the slot it runs in — names
+// no role defined for the issue: neither Legion nor deployment defines the role it is, or, for a
+// numbered name such as `implementer-2`, the role it numbers (claim.DefinedRole). The source of the
+// roles is the deployment alone: the one rule takes another source as one more argument.
+func lostName(name string, deployment plan.Deployment) bool {
+	_, defined := claim.DefinedRole(name, deployment)
+	return !defined
 }
 
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue

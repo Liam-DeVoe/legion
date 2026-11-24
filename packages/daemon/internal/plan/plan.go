@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -158,11 +159,25 @@ type Plan struct {
 type Deployment struct{ Roles map[string]RoleDef }
 
 // Defines says whether a step of the deployment can name role: one of Legion's own step roles or a
-// role its settings define. A role it does not define is one a daemon restarted without, whose
-// step no role may start (the workflow's Walk.lostAt) and whose claim no message reaches.
+// role its settings define. It reads a step's role, which is a role and never the name of an agent:
+// whether a role or an agent's name is defined for an issue, a numbered name read as the role it
+// numbers, is claim.DefinedRole's, over d (DefinedRoles). A role it does not define is one a daemon
+// restarted without, whose step no role may start (the workflow's Walk.lostAt) and whose claim no
+// message reaches.
 func (d Deployment) Defines(role string) bool {
 	_, defined := d.Roles[role]
 	return defined
+}
+
+// DefinedRoles are the roles d defines, Legion's own roles of a step and each role of its settings:
+// d is the deployment's source of the roles defined for an issue (claim.RoleSource,
+// claim.DefinedRole).
+func (d Deployment) DefinedRoles() []claim.Role {
+	roles := make([]claim.Role, 0, len(d.Roles))
+	for name := range d.Roles {
+		roles = append(roles, claim.Role(name))
+	}
+	return roles
 }
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the

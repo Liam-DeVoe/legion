@@ -311,18 +311,19 @@ func isSlotName(name claim.Role) bool {
 
 // agentSlotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<agent>`
 // for the name of an agent an issue's plan can name beside its role's own: a numbered agent of one
-// of roles (claim.NumberedAgentRole), such as `implementer-2`, which is no role of roles itself. It
-// answers that agent too, and "" and "" where name has no such form. No check at the daemon's boot
-// can know the plans that come later, so an operator's volume of that form could take the name of
-// that agent's slot volume at a pod's build (PodVolumeWarnings). A name of an agent no plan can
-// name, such as `cache`, which is no role, collides with nothing.
+// of roles, such as `implementer-2`, which is no role of roles itself, read by the one rule of a
+// name defined for an issue (claim.DefinedRole over roles). It answers that agent too, and "" and ""
+// where name has no such form. No check at the daemon's boot can know the plans that come later,
+// so an operator's volume of that form could take the name of that agent's slot volume at a pod's
+// build (PodVolumeWarnings). A name of an agent no plan can name, such as `cache`, which is no
+// role, collides with nothing.
 func agentSlotVolumeForm(name string, roles []claim.Role) (string, claim.Agent) {
 	for _, prefix := range slotVolumePrefixes {
 		agent, ok := strings.CutPrefix(name, prefix+"-")
-		if !ok || slices.Contains(roles, claim.Role(agent)) {
+		if !ok {
 			continue
 		}
-		if _, numbered := claim.NumberedAgentRole(agent, roles); numbered {
+		if role, defined := claim.DefinedRole(agent, claim.RoleList(roles)); defined && string(role) != agent {
 			return prefix, claim.Agent(agent)
 		}
 	}
