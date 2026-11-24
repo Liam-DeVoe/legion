@@ -23,9 +23,14 @@
 #       (an action ci-caches.yaml also runs, as the architecture and spec checks, saves its cache
 #       on a push).
 #   11. a cache family ci-caches.yaml saves, in its own steps or inside an action they run, whose
-#       key or path is not that of every restore of it, in ci.yaml, a workflow it calls, any other
-#       workflow, or an action any of them runs; a family nothing restores; a lookup that is not
-#       lookup-only or has restore-keys.
+#       key is neither exactly that of every restore of it (in ci.yaml, a workflow it calls, any
+#       other workflow, or an action any of them runs) nor that key followed by
+#       `-${{ github.sha }}`, or whose path is not that restore's; a family saved both under
+#       `-${{ github.sha }}` and without it; a save whose key holds hashFiles() or names
+#       `steps.<id>.outputs.cache-primary-key` of no restore of its job; a restore of a family
+#       saved under `-${{ github.sha }}` that sets lookup-only, or whose restore-keys are not
+#       exactly its key followed by `-`, so they hold its Go version (main's #5141 and #5148); a
+#       family nothing restores; and any other lookup that is not lookup-only or has restore-keys.
 #   12. a job of ci.yaml whose if: lacks `(github.event_name != 'merge_group' ||
 #       github.run_attempt == '1')` (or, admitting merge_group alone, `github.run_attempt == '1'`),
 #       and ci-ok or pr-title holding either.
