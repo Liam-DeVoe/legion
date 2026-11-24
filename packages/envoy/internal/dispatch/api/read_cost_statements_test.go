@@ -47,14 +47,21 @@ package api
 // pg_stat_statements evicts during a batch takes its time with it, which the read's line says
 // where pg_stat_statements_info counts an eviction.
 //
+// Beside each read's figure the run prints the statements behind it, the readCostTopStatements
+// slowest per reading, each with its queryid, its calls and its time per reading and the head of
+// its text (logReadCostStatements), so a reader can see which statements one side adds or slows.
+// The texts are read once, after the idle interval, and only for those statements.
+//
 // pg_stat_statements needs the server to preload it (shared_preload_libraries) and a role that
 // may create the extension. Where either is missing, the run says in one line that database time
 // was not measured and why, and measures everything else, failing on none of it.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -93,13 +100,33 @@ type readCostDatabaseTime struct {
 	readings int
 	length   time.Duration
 	// ms and calls are the time and the calls per reading of the statements that ran at least
-	// once per reading.
-	ms, calls float64
+	// once per reading, and statements how many statements those are.
+	ms, calls  float64
+	statements int
+	// top are the readCostTopStatements of those statements that took the most time, the slowest
+	// first.
+	top []readCostStatementTime
 	// otherMS is the time per reading of the statements that ran fewer times, and others how many
 	// statements those are.
 	otherMS float64
 	others  int
 	evicted int64
+}
+
+// readCostTopStatements is how many of the statements behind a read's database time are printed,
+// and readCostStatementText how many characters of each one's text.
+const (
+	readCostTopStatements = 12
+	readCostStatementText = 160
+)
+
+// readCostStatementTime is one statement behind a read's database time: its queryid, its calls
+// and its time per reading, and the first readCostStatementText characters of its text with its
+// whitespace collapsed, "" until it is read.
+type readCostStatementTime struct {
+	query     int64
+	calls, ms float64
+	text      string
 }
 
 // newReadCostStatements opens what database time is read with, for the run's database at
@@ -186,8 +213,10 @@ func (s *readCostStatements) snapshot(ctx context.Context) (readCostSnapshot, er
 
 // measure runs batch, which takes readings readings, between two snapshots, and then waits an idle
 // interval of the batch's length on the same server, with nothing reading, before a third. It
-// answers the database time of the batch and of the idle interval, each per reading of the batch.
-// Either is nil where s is nil or a snapshot failed, which it says, failing nothing.
+// answers the database time of the batch and of the idle interval, each per reading of the batch,
+// and then reads the texts of the statements behind the batch's time (readTexts). Either is nil
+// where s is nil or a snapshot failed, which it says, failing nothing; a text it cannot read it
+// says it did not read, and prints none.
 func (s *readCostStatements) measure(t *testing.T, readings int, batch func()) (database, idle *readCostDatabaseTime) {
 	t.Helper()
 	if s == nil {
@@ -209,20 +238,62 @@ func (s *readCostStatements) measure(t *testing.T, readings int, batch func()) (
 	}
 	database = readCostDatabaseTimeOf(before, after, readings)
 	time.Sleep(database.length)
-	rested, err := s.snapshot(ctx)
-	if err != nil {
+	if rested, err := s.snapshot(ctx); err != nil {
 		t.Logf("%s: the database time of the idle interval after this batch was not measured: %v", s.check, err)
-		return database, nil
+	} else {
+		idle = readCostDatabaseTimeOf(after, rested, readings)
 	}
-	return database, readCostDatabaseTimeOf(after, rested, readings)
+	if err := s.readTexts(ctx, database.top); err != nil {
+		t.Logf("%s: the texts of the statements behind this batch's database time were not read: %v", s.check, err)
+	}
+	return database, idle
+}
+
+// readTexts reads the text of each statement of top from pg_stat_statements, which the snapshots
+// leave out (showtext false) since only these few are printed.
+func (s *readCostStatements) readTexts(ctx context.Context, top []readCostStatementTime) error {
+	if len(top) == 0 {
+		return nil
+	}
+	queries := make([]int64, len(top))
+	for index, statement := range top {
+		queries[index] = statement.query
+	}
+	rows, err := s.conn.Query(ctx, `select queryid, coalesce(query, '') from pg_stat_statements(true)
+		where dbid = $1 and userid = $2 and toplevel and queryid = any($3)`, s.database, s.role, queries)
+	if err != nil {
+		return fmt.Errorf("read pg_stat_statements: %w", err)
+	}
+	defer rows.Close()
+	texts := make(map[int64]string, len(top))
+	for rows.Next() {
+		var query int64
+		var text string
+		if err := rows.Scan(&query, &text); err != nil {
+			return fmt.Errorf("read pg_stat_statements: %w", err)
+		}
+		texts[query] = text
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read pg_stat_statements: %w", err)
+	}
+	for index := range top {
+		text := strings.Join(strings.Fields(texts[top[index].query]), " ")
+		if characters := []rune(text); len(characters) > readCostStatementText {
+			text = string(characters[:readCostStatementText])
+		}
+		top[index].text = text
+	}
+	return nil
 }
 
 // readCostDatabaseTimeOf is the database time between two snapshots per reading of a batch of
-// readings: the statements that ran at least readings times, and apart from them those that ran
-// fewer times. A statement with fewer calls than before was evicted and recorded again since, so
-// all it holds is the interval's.
+// readings: the statements that ran at least readings times, with the readCostTopStatements of
+// them that took the most time, and apart from them those that ran fewer times. A statement with
+// fewer calls than before was evicted and recorded again since, so all it holds is the interval's.
 func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readCostDatabaseTime {
 	spent := &readCostDatabaseTime{readings: readings, length: after.at.Sub(before.at), evicted: after.evicted - before.evicted}
+	var counted []readCostStatementTime
 	for query, now := range after.statements {
 		was := before.statements[query]
 		if now.calls < was.calls {
@@ -232,6 +303,7 @@ func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readC
 		case calls >= int64(readings):
 			spent.ms += ms
 			spent.calls += float64(calls)
+			counted = append(counted, readCostStatementTime{query: query, calls: float64(calls) / float64(readings), ms: ms / float64(readings)})
 		case calls > 0:
 			spent.otherMS += ms
 			spent.others++
@@ -240,7 +312,29 @@ func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readC
 	spent.ms /= float64(readings)
 	spent.calls /= float64(readings)
 	spent.otherMS /= float64(readings)
+	slices.SortFunc(counted, func(one, other readCostStatementTime) int {
+		return cmp.Or(cmp.Compare(other.ms, one.ms), cmp.Compare(one.query, other.query))
+	})
+	spent.statements = len(counted)
+	spent.top = counted[:min(len(counted), readCostTopStatements)]
 	return spent
+}
+
+// logReadCostStatements prints the statements behind the database time of read on side, one per
+// line, the slowest first: each one's queryid, its calls and its milliseconds per reading, and
+// the head of its text. It says so where the time was not measured.
+func logReadCostStatements(t *testing.T, check, read, side string, database *readCostDatabaseTime) {
+	t.Helper()
+	if database == nil {
+		t.Logf("%s: the statements of %s on the %s: its database time was not measured", check, read, side)
+		return
+	}
+	t.Logf("%s: the statements of %s on the %s: the %d that took the most time of the %d that ran at least %d times, "+
+		"%.2f ms per reading in all; queryid, calls per reading, ms per reading, text", check, read, side, len(database.top),
+		database.statements, database.readings, database.ms)
+	for _, statement := range database.top {
+		t.Logf("%s: %s, %s: %d\t%.1f\t%.3f\t%s", check, read, side, statement.query, statement.calls, statement.ms, statement.text)
+	}
 }
 
 // readCostDatabaseLine is the database time a read's line prints beside its percentiles, and

@@ -803,9 +803,9 @@ func movedCostParameters(statement movedCostStatement) string {
 //
 // Each read on the new side and on the third side is held to twice its old side's p50. Every p90,
 // p95 and p99 is printed and bound at nothing, and so is each read's database time per reading on
-// each side, and that of an idle interval after it (readCostStatements), where the server's
-// pg_stat_statements can be read; where it cannot, the run says so in one line and fails on none
-// of it.
+// each side, with the statements behind it, and that of an idle interval after it
+// (readCostStatements), where the server's pg_stat_statements can be read; where it cannot, the
+// run says so in one line and fails on none of it.
 //
 // It fails, never skips, where STORES_BASE_SHA is unset, names no 40-character commit, or names a
 // commit that lacks one of the three migrations, before it builds anything.
@@ -901,6 +901,11 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 		name     string
 		readings map[string]readCostReading
 	}{{"old side", old}, {"new side", now}, {"third side", third}}
+	for _, read := range reads {
+		for _, side := range sides {
+			logReadCostStatements(t, "c-moved-read-cost", read.name+" ("+read.path+")", side.name, side.readings[read.name].database)
+		}
+	}
 	for _, read := range reads {
 		for _, side := range sides {
 			t.Logf("c-moved-read-cost: %s, %s, every reading in order, in ms: %v", read.name, side.name, readCostMilliseconds(side.readings[read.name].runs))
