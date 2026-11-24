@@ -386,29 +386,45 @@ func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 // code is returned, starts no poll and records no login, rather than wait the code out and record
 // it expired; one that had already lapsed is refused so too. The line names the interval the
 // broker named, or none, with the one used where the bounds raised it, and what ends the code
-// first: the time left of the broker's lifetime, or the hour this machine polls a code at most
-// where the broker names a longer lifetime or none. It names what must change at the broker, not
-// asking again, which would meet the same answer.
+// first: the broker's lifetime, the hour this machine polls a code at most where the broker names
+// a longer lifetime or none, or the answer's round trip, which x/oauth2 takes off the lifetime.
+// It names what must change at the broker, worded from that cause, not asking again, which would
+// meet the same answer, but where the round trip ended the code, which a faster answer cures.
 func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
-	const fix = `, so the code would lapse before its first poll; no machine login works at that broker until its poll interval is shorter than both its codes' lifetime and an hour$`
+	const lapses = `: the code would lapse before its first poll; no machine login works at that broker until `
+	const lapsed = `a device code that had lapsed by the time its answer arrived \(a negative lifetime, or one past about 292 years, which this machine's OAuth library wraps into the past\), with a poll interval of 1 s; no machine login works at that broker until its codes live longer than its poll interval, and less than about 292 years`
+	const hour = `, and this machine polls a device code for an hour at most` + lapses + `its poll interval is shorter than an hour`
 	for _, c := range []struct {
 		name   string
 		fields map[string]any
-		answer string // what the line says the broker answered, a regular expression
+		delay  time.Duration // how long the fake holds the device authorization's answer
+		answer string        // what the line says the broker answered and what must change, a regular expression
 	}{
-		{"an interval as long as the code", map[string]any{"interval": 900}, `a device code that lapses in (89\d|900) s, with a poll interval of 900 s`},
-		{"an interval of a day", map[string]any{"interval": 86400}, `a device code that lapses in (89\d|900) s, with a poll interval of 86400 s`},
-		{"an interval past what a time.Duration holds", map[string]any{"interval": int64(1e12)}, `a device code that lapses in (89\d|900) s, with a poll interval of 1000000000000 s`},
-		{"no interval and a code of 5 s", map[string]any{"interval": nil, "expires_in": 5}, `a device code that lapses in [1-5] s, with no poll interval, so one of 5 s`},
-		{"a negative interval and a code of 1 s", map[string]any{"interval": -3, "expires_in": 1}, `a device code that lapses in 1 s, with a poll interval of -3 s, so one of 1 s`},
-		{"a code of two hours and an interval past the hour", map[string]any{"interval": 5000, "expires_in": 7200}, `a poll interval of 5000 s, and this machine polls a device code for an hour at most`},
-		{"no lifetime and an interval of an hour", map[string]any{"interval": 3600, "expires_in": nil}, `a poll interval of 3600 s, and this machine polls a device code for an hour at most`},
-		{"a code that had already lapsed", map[string]any{"expires_in": -5}, `a device code that had lapsed by the time its answer arrived, with a poll interval of 1 s`},
+		{"an interval as long as the code", map[string]any{"interval": 900}, 0, `a device code that lives 900 s, with a poll interval of 900 s` + lapses + `its poll interval is shorter than its codes' lifetime`},
+		{"an interval of a day", map[string]any{"interval": 86400}, 0, `a device code that lives 900 s, with a poll interval of 86400 s` + lapses + `its poll interval is shorter than its codes' lifetime`},
+		{"an interval past what a time.Duration holds", map[string]any{"interval": int64(1e12)}, 0, `a device code that lives 900 s, with a poll interval of 1000000000000 s` + lapses + `its poll interval is shorter than its codes' lifetime`},
+		{"no interval and a code of 5 s", map[string]any{"interval": nil, "expires_in": 5}, 0, `a device code that lives 5 s, with no poll interval or one of 0 s, so one of 5 s` + lapses + `it names a poll interval shorter than its codes' lifetime, or its codes live longer than 5 s`},
+		{"no interval and a code of 1 s", map[string]any{"interval": nil, "expires_in": 1}, 0, `a device code that lives 1 s, with no poll interval or one of 0 s, so one of 5 s` + lapses + `its codes live longer than 5 s, or than both 1 s and a poll interval it names`},
+		// x/oauth2 reads an interval of 0 as none.
+		{"an interval of 0 and a code of 3 s", map[string]any{"interval": 0, "expires_in": 3}, 0, `a device code that lives 3 s, with no poll interval or one of 0 s, so one of 5 s` + lapses + `it names a poll interval shorter than its codes' lifetime, or its codes live longer than 5 s`},
+		// The broker's interval is already shorter than its code: only a longer lifetime helps.
+		{"a negative interval and a code of 1 s", map[string]any{"interval": -3, "expires_in": 1}, 0, `a device code that lives 1 s, with a poll interval of -3 s, so one of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps`},
+		{"a code of two hours and an interval past the hour", map[string]any{"interval": 5000, "expires_in": 7200}, 0, `a poll interval of 5000 s` + hour},
+		{"no lifetime and an interval of an hour", map[string]any{"interval": 3600, "expires_in": nil}, 0, `a poll interval of 3600 s` + hour},
+		// x/oauth2 reads a lifetime of 0 as none, so the hour ends the code, where the TypeScript
+		// device login refuses it as a code already lapsed.
+		{"a lifetime of 0 and an interval of an hour", map[string]any{"interval": 3600, "expires_in": 0}, 0, `a poll interval of 3600 s` + hour},
+		{"a code that had already lapsed", map[string]any{"expires_in": -5}, 0, lapsed},
+		// 1e10 s is past what a time.Duration holds: x/oauth2 wraps it to a time 268 years past.
+		{"a lifetime past what a time.Duration holds", map[string]any{"expires_in": int64(1e10)}, 0, lapsed},
+		// The broker's numbers leave the code a second past its first poll, which a slow answer
+		// takes: a faster one cures it.
+		{"a round trip that takes the code's margin", map[string]any{"interval": 1, "expires_in": 2}, 1500 * time.Millisecond, `a device code that lives 2 s, with a poll interval of 1 s, but its answer took \d+\.\d{3} s to arrive, which left (0\.\d{3} s of it: the code would lapse before its first poll|none of it, so the code had lapsed); a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeBroker(t)
 			f.mu.Lock()
-			f.deviceAuthFields = c.fields
+			f.deviceAuthFields, f.deviceAuthDelay = c.fields, c.delay
 			f.mu.Unlock()
 			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
@@ -416,7 +432,7 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Login answered the code %q, want a refusal", code)
 			}
-			if want := regexp.MustCompile(`^the broker answered ` + c.answer + fix); !want.MatchString(err.Error()) {
+			if want := regexp.MustCompile(`^the broker answered ` + c.answer + `$`); !want.MatchString(err.Error()) {
 				t.Fatalf("Login refused with %q, want it to match %s", err, want)
 			}
 			// Login records the login's state before it starts a poll, so no state is no poll.
@@ -425,6 +441,19 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 			}
 		})
 	}
+	// Control: a lifetime of 0 is none here, so a code with the fake's 1 s interval is polled for
+	// the hour, not refused as the TypeScript device login refuses it.
+	t.Run("a lifetime of 0 and an interval of 1 s", func(t *testing.T) {
+		f := newFakeBroker(t)
+		f.mu.Lock()
+		f.deviceAuthFields = map[string]any{"expires_in": 0}
+		f.mu.Unlock()
+		b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+		t.Cleanup(b.Close)
+		if code, err := b.Login(context.Background(), "host-a"); err != nil || code == "" {
+			t.Fatalf("Login answered %q, %v, want a code and no refusal", code, err)
+		}
+	})
 }
 
 // TestADevicePollReadsItsAnswerAsXOAuth2Does: devicePoll reads a token endpoint's answer as
