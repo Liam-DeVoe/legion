@@ -45,6 +45,13 @@ type readRuleRow struct {
 //     stream sequence N as the owed read's holder, and no message of INFRA is pending: that holder
 //     never makes the read".
 //
+// Seed 1030 (120 steps), the tester's round 19 at bc057cc2, fails invariant 2: the setting's daemon
+// is redeployed into the recorded old store and boots there (row 3.5), its next reads all fail
+// until the boot that holds the read is released, and every later message of that daemon is of a
+// store the cursor forgets, which makes no read while the cursor holds a store (callRead), so the
+// owed read is never made: "it owes a read that no message holds, and its last read failed or a
+// holder was released, but 3 next messages of the daemon did not bring the cursor up".
+//
 // Seeds 8 and 37 meet the rest: the read that stops answering until its holder is let go, six
 // take-overs, a redeploy to the old store, a stall and four redeploys. Each end waits up to
 // ReadRetryAfter of real time more where its steps left the owed read's holder handed back with a
@@ -52,6 +59,7 @@ type readRuleRow struct {
 var readRuleRows = []readRuleRow{
 	{seed: 7, steps: 5}, {seed: 18, steps: 7}, {seed: 36, steps: 24}, {seed: 29, steps: 25},
 	{seed: 12, steps: 27}, {seed: 5, steps: 40}, {seed: 8, steps: 40}, {seed: 37, steps: 40},
+	{seed: 1030, steps: 120},
 }
 
 // readRuleDefaultSteps is how many steps a seed named by LEGION_READ_RULE_SEED or

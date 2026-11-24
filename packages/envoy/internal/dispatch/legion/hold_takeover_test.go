@@ -985,3 +985,71 @@ func TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow(t *testi
 		t.Errorf("the message at 17 went back %d times, want once: once its read lands it holds nothing", handBacks[maker])
 	}
 }
+
+// TestAMessageOfANewStorePastTheCapDuringAReadOfTheOldStoreIsFound: R3 keeps a project that goes
+// quiet at most one minute behind while its reads succeed, and a read covers only the events of its
+// own store at or below the stateSeq it serves. INFRA's gap read of the rig's store is in flight,
+// held by its daemon, and serves 30. Then the daemon behind INFRA's URL is redeployed in a store of
+// its own (no write of the setting). Behind the read, 15 messages of the rig's store at or below 30
+// fill the runner with the gap message; one more of the rig's store at 29 arrives past the cap and
+// holds the next read; then the new store's boot arrives past the cap, and is acknowledged
+// unapplied. The read lands with the rig's store at 30. INFRA then goes quiet: within 75 s, a minute
+// on, on the intake's clock, INFRA's cursor follows the new store (R3-a: "a message of another store
+// calls for a read, so a daemon whose store was replaced is found again").
+//
+// At bc057cc2 the read's record checks the skipped record for its own store only
+// (cursor.skippedAbove), so the new store's boot owes nothing, the holder goes, and INFRA stays on
+// the rig's store at 30 with nothing owed. At 23a92974 the boot's reason stayed owed and the next
+// read found the new store.
+func TestAMessageOfANewStorePastTheCapDuringAReadOfTheOldStoreIsFound(t *testing.T) {
+	const newRun, newStore = "e4b81c2d-7a9f-4e36-b0d5-3c8a1f6e9b27", "f8d2a6c1-3e7b-4c95-a0f4-6b9e2d8c1a53"
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	release := daemon.holds(t)
+	daemon.serves(daemonState("INFRA", 30, inPhase("implementing")))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 2 }, func() string {
+		return "INFRA's gap read never began"
+	})
+	// The redeploy: every later read serves the new store.
+	daemon.serves(daemonStateIn("INFRA", 41, inPhase("reviewing"), newStore, newRun))
+	rig.clock.advance(ReadRetryAfter - 5*time.Second)
+	for seq := 13; seq < 13+stateMaxWaiting-1; seq++ {
+		rig.publish("INFRA", change(seq, "INFRA-1", moved("phase", "implementing")))
+	}
+	rig.waitFor(20*time.Second, func() bool {
+		info := rig.consumerInfo()
+		return info.NumPending == 0 && info.NumAckPending >= stateMaxWaiting
+	}, func() string {
+		return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
+	})
+	rig.publish("INFRA", change(29, "INFRA-1", moved("phase", "implementing")))
+	rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+		return fmt.Sprintf("control: the message past the cap was not delivered: %+v", rig.consumerInfo())
+	})
+	rig.publishIn("INFRA", newRun, newStore, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
+	rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+		return fmt.Sprintf("control: the new store's boot was not delivered: %+v", rig.consumerInfo())
+	})
+	time.Sleep(time.Second)
+	release()
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.lastSeq != nil && *c.lastSeq >= 30
+	}, func() string {
+		return fmt.Sprintf("control: the read did not land at 30: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	t.Logf("after the read: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	rig.clock.advance(6 * time.Second)
+	if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.stateID != nil && *c.stateID == newStore
+	}) {
+		t.Errorf("75 s after the read of the rig's store at 30, with INFRA quiet, INFRA's cursor is %s and the daemon served %d reads, want the store %s the daemon behind INFRA's URL now serves: the new store's boot past the cap was acknowledged unapplied and the read's record owed nothing for it",
+			cursorOf(t, rig.database, "INFRA"), daemon.served(), newStore)
+	}
+}
