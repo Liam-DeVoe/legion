@@ -80,9 +80,19 @@ type fixPass struct {
 }
 
 // fixRule is the one place a failure of a check that a CI job runs at the task's head is decided,
-// applied at the tail of every fact that names the issue key. It returns where the task does not
-// run (taskRuns) or has no head (taskHead), and otherwise takes each check that fails at the
-// head (failedChecks), in the set's order, to the first of these that applies, by the check's
+// applied at the tail of every fact that names the issue key. It takes each failure at the head
+// (fixFailures), then reads again the end of a task held before its retro (releaseRetroHold),
+// which the fact's failures, its states and its fix's end can all change.
+func (e *Engine) fixRule(ctx context.Context, tx pgx.Tx, key string) error {
+	if err := e.fixFailures(ctx, tx, key); err != nil {
+		return err
+	}
+	return e.releaseRetroHold(ctx, tx, key)
+}
+
+// fixFailures takes the failures at the head of the issue key's task. It returns where the task
+// does not run (taskRuns) or has no head (taskHead), and otherwise takes each check that fails at
+// the head (failedChecks), in the set's order, to the first of these that applies, by the check's
 // failure row at that head (record.CIFailure), which says whom the failure went to:
 //
 //   - a fix of the task is open (reading its job or running), wherever the task stands: the
@@ -91,6 +101,9 @@ type fixPass struct {
 //     needs nothing. No second fix starts while one is open.
 //   - the task stands at its retro or its merge: the failure goes to the merger, which reads
 //     GitHub, and nothing else is done.
+//   - the task is held at its end (atTaskEnd): where no fix ran for the check at that head and
+//     the task takes a fix and has an implementation step, a fix starts (openFix); else its owner
+//     is told once (endFailure).
 //   - before the task's end, for a task that takes a fix (a stored walk, record.PlanTask.FixesCI),
 //     a failure no one was given yet: where the task's implementation step runs, it goes to that
 //     step, whose implementer is told; where a step after the task's first implementation step
@@ -99,7 +112,7 @@ type fixPass struct {
 //
 // A task that takes no fix gets nothing of this rule before its end, and its CI settlements are
 // told as before (tellChecks).
-func (e *Engine) fixRule(ctx context.Context, tx pgx.Tx, key string) error {
+func (e *Engine) fixFailures(ctx context.Context, tx pgx.Tx, key string) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return err
@@ -142,7 +155,7 @@ func (e *Engine) fixRule(ctx context.Context, tx pgx.Tx, key string) error {
 }
 
 // fixFailure takes the failure of state's check at the pass's head to the first branch of the
-// fix rule that applies (fixRule).
+// fix rule that applies (fixFailures).
 func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state record.CheckState) error {
 	issue, w := pass.issue, pass.w
 	row, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, w.Task, state.Check, pass.head)
@@ -151,7 +164,7 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	}
 	failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: state.Check, Head: pass.head, At: e.now()}
 	switch {
-	case pass.open != nil:
+	case pass.open != nil && !e.noFixJoin:
 		return e.joinFix(ctx, tx, pass, state, row, failure)
 	case record.StandsIn(issue, phase.Retro, phase.Merging) && !atTaskEnd(issue):
 		if row != nil {
@@ -160,7 +173,9 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 		failure.WentTo = record.CIFailureToMerger
 		_, err := e.store.PutCIFailure(ctx, tx, failure)
 		return err
-	case atTaskEnd(issue) || !w.Stored || !pass.fixesCI || row != nil:
+	case atTaskEnd(issue):
+		return e.endFailure(ctx, tx, pass, state, row, failure)
+	case !w.Stored || !pass.fixesCI || row != nil:
 		return nil
 	}
 	first, hasImplementation := firstImplementation(w)
@@ -177,9 +192,55 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 		}
 		return e.tellImplementer(ctx, tx, issue, ciFailureSentence(state, pass.head)+" Fix it in this step.")
 	case hasImplementation && w.Place.Kind == record.PlaceStep && w.Place.Position > first:
-		return e.openFix(ctx, tx, pass, state.Check, first, failure)
+		return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
 	}
 	return nil
+}
+
+// endFailure is the fix rule's branch of a task held at its end (atTaskEnd) with no fix open,
+// row being the failure's row at the head, nil for none. A fix runs once for each check at each
+// head, and the end is judged by the row's fix and whether its owner was told, never by whether a
+// row exists, so a row of the implementer's or the merger's blocks neither: where no fix ran for
+// the check at the head (no row, or a row of no fix) and the task takes a fix and has an
+// implementation step, a fix starts there (openFix), the row taking its number; else its owner is
+// told once, by one ci-failed notice (record.Store.TellOwnerOnce, ciFailedNotice), the row the
+// owner's where none was written.
+func (e *Engine) endFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state record.CheckState, row *record.CIFailure, failure record.CIFailure) error {
+	issue, w := pass.issue, pass.w
+	fixed := row != nil && row.Fix > 0
+	if first, hasImplementation := firstImplementation(w); !fixed && w.Stored && pass.fixesCI && hasImplementation {
+		return e.openFix(ctx, tx, pass, state.Check, first, failure, row)
+	}
+	if row == nil {
+		failure.WentTo = record.CIFailureToOwner
+		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
+			return err
+		}
+	}
+	told, err := e.store.TellOwnerOnce(ctx, tx, issue.Key, issue.Generation, w.Task, state.Check, pass.head)
+	if err != nil || !told {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a failed CI check at a task's end that no fix takes is told to its owner", "issue", issue.Key, "task", w.Task,
+		"check", state.Check, "head", pass.head, "fixEnded", fixed)
+	return e.notice(ctx, tx, issue.Key, ciFailedNotice(issue, w, state.Check, pass.head, fixed))
+}
+
+// ciFailedNotice is the ci-failed notice to the owner of issue, on w, the walk of its run, of
+// check failing at head where no fix takes it, fixEnded where its one fix ran and ended: what
+// failed, and the owner's acts, the move back, and the stop of its task where the issue runs a
+// plan.
+func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded bool) record.Notice {
+	why := "no fix takes it"
+	if fixEnded {
+		why += ": its one fix ended"
+	}
+	act := "send it back with request_backward_move"
+	if w.Stored {
+		act = "send the task back with request_backward_move, or stop it with stop_task"
+	}
+	return record.Notice{Kind: "ci-failed", Role: claim.RoleArchitect, Phase: record.StandsAt(issue), Reason: fmt.Sprintf(
+		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, act)}
 }
 
 // stepRuns says whether role's phases row of issue holds an open entry: one raised that its
@@ -218,10 +279,12 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 
 // openFix starts fix of the task of the pass for check at the pass's head, at place, the task's
 // first implementation step: the fix reads its failed job first (record.FixReading), the failure
-// names it, and one read of the job is queued (record.FixJobRead), whose answer starts the fix's
-// step. Each other check that fails at the head in the same pass joins it (joinFix), since the
-// pass now holds it open.
-func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure) error {
+// names it, its row written, or row, the one there already, given the fix's number
+// (record.Store.MarkCIFailureFix), and one read of the job is queued (record.FixJobRead), whose
+// answer starts the fix's step. A task held at its end for its CI is held for its fix from then
+// on, from retro still. Each other check that fails at the head in the same pass joins it
+// (joinFix), since the pass now holds it open.
+func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure, row *record.CIFailure) error {
 	issue, w := pass.issue, pass.w
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil {
@@ -236,12 +299,27 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	if err := e.store.PutFix(ctx, tx, fix); err != nil {
 		return err
 	}
-	failure.WentTo, failure.Fix = record.CIFailureToFix, number
-	if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
-		return err
+	if row != nil {
+		if err := e.store.MarkCIFailureFix(ctx, tx, issue.Key, issue.Generation, w.Task, check, pass.head, number); err != nil {
+			return err
+		}
+	} else {
+		failure.WentTo, failure.Fix = record.CIFailureToFix, number
+		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
+			return err
+		}
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.FixJobRead{Generation: issue.Generation, Task: w.Task, Fix: number, Check: check, Head: pass.head}); err != nil {
 		return err
+	}
+	if record.HeldFor(issue, record.HoldForCI) {
+		hold := *issue.Hold
+		hold.Reason = record.HoldForFix
+		issue.Hold = &hold
+		if err := e.WriteIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		pass.issue = issue
 	}
 	pass.open = &fix
 	e.logOnCommit(ctx, "workflow: a failed CI check starts a fix beside the task's steps", "issue", issue.Key, "task", w.Task,

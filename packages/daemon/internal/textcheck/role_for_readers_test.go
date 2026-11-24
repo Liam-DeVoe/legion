@@ -52,11 +52,13 @@ type roleForReader struct {
 // acceptance step after it; and a fix's three: Engine.startFix reads the step at the fix's
 // place, Engine.tellStepsOfFix each step of the fix's task, passing over the architect as it
 // passes over no role, and Engine.moveFromHold the step of the task its way returns to),
-// or reads the retro's own phase and the phase of the last step of a parent's task, neither of
-// which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
-// before its retro for the issues beneath it), or never reads admitted at all because a check
-// before it refuses that phase, which is what each named test holds it to. The owner walk reads no
-// role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// or reads the retro's own phase and the phase of the last step of a task, neither of which is
+// admitted (retroHeldFor, the notice of every hold before a retro, Engine.startHeldRetro, which
+// runs only for an issue held before its retro, and Engine.retroReport, which reads the last step
+// of a task in its retro),
+// or never reads admitted at all because a check before it refuses that phase, which is what each
+// named test holds it to. The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -80,7 +82,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:              {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:              {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
-	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
+	{file: "internal/workflow/engine.go", fn: "backwardFrom"}:                     {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/fix.go", fn: "Engine.startFix"}:                     {calls: 1, test: "TestTheFixStartsInItsOwnCopyWithItsJob"},
 	{file: "internal/workflow/fix.go", fn: "Engine.tellStepsOfFix"}:               {calls: 1, test: "TestTheReviewerIsToldOfTheFix"},
 	{file: "internal/workflow/fix.go", fn: "Engine.moveFromHold"}:                 {calls: 1, test: "TestRows3And4ForAnImplementerReviewerTask"},
@@ -94,8 +96,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:      {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
-	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:              {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
-	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/retro_hold.go", fn: "retroHeldFor"}:                 {calls: 1, test: "TestATaskIsNotDoneWhileItsJobRuns"},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.retroReport"}:           {calls: 1, test: "TestTheDefaultStepsRetroIsToldTheReviewsReport"},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                  {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                 {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:              {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},
