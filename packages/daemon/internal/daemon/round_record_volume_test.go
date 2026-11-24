@@ -69,3 +69,25 @@ func TestALaunchsVolumeRecordIsToldOnlyOnceItsSandboxIsGone(t *testing.T) {
 		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
 	}
 }
+
+// The Legion reviewer's Minor on #5285 at 7da847c0 (fake.go:926-930): a launch's record of its
+// delete of the issue's Sandbox and the kept volume it owns is not made while that Sandbox runs a
+// live pod of its own: the pod uses the volume, as the Sandbox runtime reads it (actState). The
+// sweep forgets the record and tells nobody.
+func TestALaunchsVolumeRecordWhoseSandboxRunsALivePodIsForgotten(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	if err := rig.s.recordLaunchTakes(rig.ctx, volumeResetTaken(rig, "launch-reset-1", podUpdatePod)); err != nil {
+		t.Fatalf("record the launch's delete of the Sandbox and its volume: %v", err)
+	}
+	for range roundSweeps {
+		rig.tick()
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records while the Sandbox runs its live pod on the volume, want the launch's forgotten", records)
+	}
+	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
+		t.Fatalf("the architect was told %+v of a delete that was not made, want nothing", told)
+	}
+}

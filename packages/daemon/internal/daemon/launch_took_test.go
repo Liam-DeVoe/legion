@@ -81,3 +81,40 @@ func movedFacetTaken(r *podUpdateRig, operation string, work runtime.WorkspaceWo
 		Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
 		Act: runtime.PodAct(podUpdatePod), Work: work, Err: err}
 }
+
+// The Legion reviewer's Minor on #5285 at 7da847c0 (podkeep.go:409): the notice of a launch's own
+// replacement opens on what its act took, and says the loss once. An act that deletes the issue's
+// Sandbox and the kept volume it owns opens on that Sandbox and its volume, also where the Sandbox
+// ran no pod of its own; an act that takes the pod opens on the pod.
+func TestALaunchsNoticeOpensOnWhatItsActTookAndSaysTheLossOnce(t *testing.T) {
+	t.Parallel()
+	token := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
+	unread := errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")
+	deleted := "A launch of the implementer deleted the Sandbox of " + podUpdateIssue + " (uid " + keptSandboxUID + ") and the kept volume it owned"
+	for _, tc := range []struct {
+		name  string
+		taken runtime.TakenPod
+		// opens is how the notice opens, and never what it must not say.
+		opens, never string
+	}{
+		{name: "a_delete_of_a_sandbox_that_ran_no_pod", opens: deleted, never: "replaced the pod",
+			taken: runtime.TakenPod{Claim: token, Issue: podUpdateIssue, Why: "the volume carries the reset mark", Act: runtime.VolumeAct(keptSandboxUID), Err: unread}},
+		{name: "a_delete_that_names_the_last_pod_of_the_volume", opens: deleted, never: "replaced the pod",
+			taken: runtime.TakenPod{Claim: token, Issue: podUpdateIssue, PodUID: podUpdatePod, Why: "the volume carries the reset mark",
+				Act: runtime.VolumeAct(keptSandboxUID), Err: unread}},
+		{name: "a_replacement_of_the_pod", opens: "A launch of the implementer replaced the pod of " + podUpdateIssue + " (pod " + podUpdatePod + ")",
+			never: "Sandbox of", taken: runtime.TakenPod{Claim: token, Issue: podUpdateIssue, PodUID: podUpdatePod,
+				Why: "a facet of the pod that is fixed for its life moved", Act: runtime.PodAct(podUpdatePod), Work: roundUnpushed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			notice := launchTakenMessage(tc.taken)
+			if !strings.HasPrefix(notice, tc.opens) || strings.Contains(notice, tc.never) {
+				t.Fatalf("the notice reads %q, want it to open %q and never say %q", notice, tc.opens, tc.never)
+			}
+			if lost := strings.Count(notice, "lost"); lost != 1 {
+				t.Fatalf("the notice says the loss %d times, want once: %q", lost, notice)
+			}
+		})
+	}
+}
