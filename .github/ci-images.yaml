@@ -77,7 +77,8 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
-  # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
+  # NATS: the `services:` NATS of the pi-envoy job, the JetStream NATS the pi-legion job's
+  # .github/actions/pi/pi-legion starts with `docker run ... -js`, both testnats.Image constants,
   # the envoy-client and claude-envoy jobs' pre-pulls, packages/envoy-client/test/nats-server.ts
   # and scripts/e2e/lib/nats-stream.test.ts.
   - upstream: docker.io/library/nats:2.10

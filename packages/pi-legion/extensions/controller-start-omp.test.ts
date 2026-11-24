@@ -31,6 +31,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import {
   completeLines,
   endsWhole,
@@ -1196,9 +1197,10 @@ test.skipIf(natsUrl === undefined)(
 
 /**
  * Whether the NATS server LEGION_TEST_NATS_URL names runs JetStream, which the two cases below need
- * to make a stream. CI's pi-legion job runs nats:2.10 with no JetStream, where no stream can capture
- * a relay subject and `deleteRelayCapturingStreams` deletes nothing (the relay case above runs that
- * path there); a pod's `nats-server -js` runs them.
+ * to make a stream. CI's pi-legion job starts its NATS with `-js` (.github/actions/pi/pi-legion),
+ * as a pod's `nats-server -js` runs; a server without JetStream holds no stream that can capture a
+ * relay subject, so `deleteRelayCapturingStreams` deletes nothing there (the relay case above runs
+ * on either).
  */
 const natsJetStream =
   natsUrl === undefined
@@ -1216,6 +1218,17 @@ const natsJetStream =
           await probe.close();
         }
       })();
+
+/** What the two cases below pass `test.skipIf`: a run with no server at all is `ompNatsGuard`'s to
+ *  name, and one whose server has no JetStream skips, except on GitHub Actions, where the
+ *  pi-legion job supplies JetStream and the file fails naming it (`requireOrSkip`). */
+const noJetStream =
+  natsUrl === undefined ||
+  requireOrSkip(
+    "JetStream on the NATS server LEGION_TEST_NATS_URL names (nats-server -js)",
+    natsJetStream,
+    "pi-legion"
+  );
 
 /**
  * A stream of the case's own on one relay subject of its own, which `deleteRelayCapturingStreams`
@@ -1253,7 +1266,7 @@ const OWN_STREAM_TRIES = 5;
 // only once both calls have theirs. It holds that both calls go on, and that the stream is gone,
 // once the two deletes of it were answered one taken and one "stream not found", which is the
 // interleaving made.
-test.skipIf(!natsJetStream)(
+test.skipIf(noJetStream)(
   "two cases that delete the same stream on the relay subjects at once both go on, and none is left",
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });
@@ -1322,7 +1335,7 @@ test.skipIf(!natsJetStream)(
 // The control of the case above: a stream that captures a relay subject and is there after the
 // deletes fails the call, by name, however its delete was answered. The stream is made again as
 // soon as its delete is answered, before the call lists the streams again.
-test.skipIf(!natsJetStream)(
+test.skipIf(noJetStream)(
   "a stream on the relay subjects made again after its delete fails the call, naming it",
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });

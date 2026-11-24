@@ -895,8 +895,10 @@ service on a job whose other steps would start it for nothing.
 
 Two jobs over packages/pi-legion. pi-held, named `pi-legion / pi-legion`, runs
 the plugin's test suite with what only it needs - jj, the pinned Oh My Pi, Go and the go-daemon
-restore for daemon-pane's `go run`, and the NATS service controller-start-omp.test.ts's role
-claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone. It is a slow
+restore for daemon-pane's `go run`, and the NATS server controller-start-omp.test.ts's role
+claim needs, which a step of .github/actions/pi/pi-legion starts with JetStream on (`-js`, which
+a `services:` container cannot be given) for that file's two stream cases - on ubuntu-24.04,
+since the Oh My Pi release ships linux-x64 alone. It is a slow
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
 `pi-held` output (.github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request).
 The pi job's pi-legion-build leg builds contracts, typechecks the plugin and packs it as the
@@ -913,8 +915,8 @@ The TypeScript packages, a leg each named with its old job's check-run name;
 
 The Oh My Pi plugins and the Claude Code plugin, a leg each named with its old job's check-run
 name (.github/actions/pi/<leg>). The installs that write $GITHUB_ENV are steps of ci.yaml. The
-NATS service of the pi-envoy and pi-legion legs runs ghcr.io/cybermonklabs/legion/ci, the copy
-of nats:2.10 (.github/ci-images.yaml).
+NATS service of the pi-envoy leg, and the JetStream NATS the pi-legion job starts, run
+ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml).
 
 ## The claude-envoy-names job
 

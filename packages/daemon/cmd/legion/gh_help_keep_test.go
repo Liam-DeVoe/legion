@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -412,8 +416,9 @@ func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
 
 // A kept copy that is not this user's alone is not read, and the help is read from gh: a copy
 // its group or others may write, one in a directory others may write, a keep whose directory and
-// copy another user owns, a copy alone another user owns (made only where the test runs as root,
-// which alone can give a file away), a link in the copy's place and a link in the directory's.
+// copy another user owns, a copy alone another user owns (given away as root, or through
+// passwordless sudo, which GitHub's hosted runners give their user: giveCopiesAway), a link in
+// the copy's place and a link in the directory's.
 // Where the directory is still this user's, the fresh read is kept again, as a file of mode 0600
 // in a directory of mode 0700.
 func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
@@ -432,16 +437,7 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 			}
 		}, true},
 		{"a keep another user owns", func(_ *testing.T, _ string, keep *ghHelpKeep) { keep.uid = os.Getuid() + 1 }, false},
-		{"a copy alone another user owns", func(t *testing.T, dir string, _ *ghHelpKeep) {
-			if os.Geteuid() != 0 {
-				t.Skip("only root gives a file to another user")
-			}
-			for _, name := range copyNames(t, dir) {
-				if err := os.Lchown(filepath.Join(dir, name), os.Getuid()+1, -1); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}, true},
+		{"a copy alone another user owns", func(t *testing.T, dir string, _ *ghHelpKeep) { giveCopiesAway(t, dir) }, true},
 		{"a link in the copy's place", func(t *testing.T, dir string, _ *ghHelpKeep) {
 			elsewhere := t.TempDir()
 			for _, name := range copyNames(t, dir) {
@@ -611,6 +607,37 @@ func chmodCopies(t *testing.T, dir string, perm os.FileMode) {
 	for _, name := range copyNames(t, dir) {
 		if err := os.Chmod(filepath.Join(dir, name), perm); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// giveCopiesAway gives every copy in dir to another user, this one's uid plus one, which only root
+// can do: as root with os.Lchown, and otherwise through passwordless sudo (`sudo -n chown -h`),
+// which GitHub's hosted runners give their user. A test with neither skips off GitHub Actions and
+// fails on it (testprereq.Require), naming what it lacks. The copies stay removable by this user,
+// as t.TempDir's cleanup removes them: removing a file takes write permission on its directory,
+// not the file's ownership, and the directory is this user's.
+func giveCopiesAway(t *testing.T, dir string) {
+	t.Helper()
+	other := os.Getuid() + 1
+	if os.Geteuid() == 0 {
+		for _, name := range copyNames(t, dir) {
+			if err := os.Lchown(filepath.Join(dir, name), other, -1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	probe, err := exec.Command("sudo", "-n", "true").CombinedOutput()
+	if said := bytes.TrimSpace(probe); err != nil && len(said) > 0 {
+		err = fmt.Errorf("%w: %s", err, said)
+	}
+	testprereq.Require(t, err == nil, "daemon-go",
+		"neither root nor passwordless sudo, one of which gives a file to another user (`sudo -n true`: %v)", err)
+	for _, name := range copyNames(t, dir) {
+		path := filepath.Join(dir, name)
+		if output, err := exec.Command("sudo", "-n", "chown", "-h", strconv.Itoa(other), path).CombinedOutput(); err != nil {
+			t.Fatalf("sudo -n chown -h %d %s: %v: %s", other, path, err, output)
 		}
 	}
 }

@@ -544,8 +544,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 28
     env: {JOB_TIMEOUT_MINUTES: 28}
-    services:
-      nats: {image: 'ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f', ports: ["4222:4222"]}
     steps:
       - *checkout
       - uses: ./.github/actions/setup-bun
