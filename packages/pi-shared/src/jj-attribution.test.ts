@@ -832,7 +832,7 @@ describe("userConfigChain", () => {
     // runs off the child's own exit, so the bound is no part of it. The production default of
     // 10 s was tried here: a starved host fired it before the fake jj printed, failing a correct
     // run 1 time in 20 at 240 busy loops on this two-CPU pod, and reproducibly when the fake jj
-    // answers one second late. So the budget below sits above this row's own 60 s limit, where
+    // answers one second late. So the budget below sits above this row's own 100 s limit, where
     // it can never fire inside a run the runner allows, and the runner's limit is what ends a
     // `jj` that never prints. The row above passes such a bound too, and gives up through its
     // signal once the wrapper's child has written its pid.
@@ -841,9 +841,11 @@ describe("userConfigChain", () => {
     expect(paths).toBe("/u/a.toml");
     // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
     await reaped(row, pidFile, pid);
-    // A hang guard, not a measurement: a pidfile that is never written, or a detached child the
-    // kill misses, hangs the row rather than passing it.
-  }, 60_000);
+    // A hang guard: what can hang is a pidfile that is never written, or a detached child the kill
+    // misses. Worst measured cost: 14 098 ms over 20 runs at the 240 rung in the Job
+    // infra-1580-jj-vkdjb of the cluster's `builds` namespace, two CPUs and 8 GiB (350 busy loops
+    // for the 240 rung, row A 33.7 s), at 7025b6c8. 100_000 is 7.1 times that.
+  }, 100_000);
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
     expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBe(10_000);
