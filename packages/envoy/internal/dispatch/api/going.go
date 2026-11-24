@@ -58,10 +58,6 @@ const goingRequestColumns = `id::text, author, project, words, created_at, ends_
 // goingEventColumns is the going_events select list scanGoingEvent reads, in scan order.
 const goingEventColumns = `sequence, name, data`
 
-// goingTerminalNames are the two frame names that end a stream (going.Event.Terminal), the pair
-// the going_events_terminal index holds as literals.
-var goingTerminalNames = []string{contracts.GoingEventEnd, contracts.GoingEventError}
-
 // goingTerminalWrites bounds how many sequences one terminal write tries. Every frame this build
 // writes of a run queues at the run's interaction node (appendGoingEvent), so a terminal write
 // loses its sequence only to a frame a pod of the release before wrote during a roll, which takes
@@ -197,19 +193,14 @@ func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, 
 	return author, live, nil
 }
 
-// goingTerminalNamesSQL is goingTerminalNames as the SQL list the going_events_terminal index's
-// predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
-// proves that partial index answers, where a bound array leaves a prepared statement's generic
-// plan nothing to prove it by.
-var goingTerminalNamesSQL = store.QuoteLiterals(goingTerminalNames)
-
 // goingNextFrame reads what a frame of the run $1 takes, once the run's node is held: the next
-// sequence, the frame's value at that sequence (graphstore.FrameValueSQL over the frame's name $2
-// and its JSON $3), whether the run has stored a terminal frame, and the transaction's now(), which
-// the frame's going_events row takes as its created_at. The sequence and the ending are one index
-// probe each, never a read of every frame the run holds: its newest sequence, read backward on the
-// (request_id, sequence) key, and its one terminal frame on going_events_terminal, which the
-// literal names (goingTerminalNamesSQL) let the planner use (TestTheNextFrameReadsTwoIndexProbes).
+// sequence (graphstore.RunNextSequenceSQL), the frame's value at that sequence
+// (graphstore.FrameValueSQL over the frame's name $2 and its JSON $3), whether the run has stored a
+// terminal frame, and the transaction's now(), which the frame's going_events row takes as its
+// created_at. The sequence and the ending are one index probe each, never a read of every frame the
+// run holds: its newest sequence, read backward on the (request_id, sequence) key, and its one
+// terminal frame on going_events_terminal, which the literal names
+// (graphstore.TerminalFrameNamesSQL) let the planner use (TestTheNextFrameReadsTwoIndexProbes).
 // It takes the run's going_requests row `for key share`, the lock the frame's own row's foreign
 // key would take, so a delete of the run's row an hour on by a process of the release before,
 // which takes no node lock, waits for the frame rather than failing its insert; the sweep's own
@@ -222,9 +213,9 @@ var goingNextFrame = `
 	       now()
 	from going_requests r
 	cross join lateral (
-		select coalesce((select max(e.sequence) from going_events e where e.request_id = r.id), 0) + 1 as sequence,
+		select ` + graphstore.RunNextSequenceSQL("r.id") + ` as sequence,
 		       exists (select 1 from going_events e
-		               where e.request_id = r.id and e.name in (` + goingTerminalNamesSQL + `)) as ended
+		               where e.request_id = r.id and e.name in (` + graphstore.TerminalFrameNamesSQL + `)) as ended
 	) next
 	where r.id = $1::uuid
 	for key share of r`
@@ -427,7 +418,7 @@ func readGoingTerminalEvent(ctx context.Context, pool *store.Pool, requestID str
 		select `+goingEventColumns+`
 		from going_events
 		where request_id = $1::uuid and name = any($2::text[])
-	`, requestID, goingTerminalNames))
+	`, requestID, graphstore.TerminalFrameNames))
 }
 
 // goingEventsAfter is every frame of one run past a sequence, in stream order: $1 the run, $2
@@ -439,24 +430,15 @@ const goingEventsAfter = `
 	where request_id = $1::uuid and sequence > $2
 	order by sequence`
 
-// goingRunStateOf reads one run's state, $1 the run and $2 the terminal frame names: the
-// sequence of its terminal frame, 0 while it has stored none, whether now is past its ends_at,
-// and whether a post the run gave its model no longer stands (goingWithdrawal): a recorded
-// comment or message that no row answers with deleted_at unset, which is a deleted post and a
-// post whose row is gone alike. Queued beside goingEventsAfter, for the reason it is named.
-const goingRunStateOf = `
-	select coalesce(
-	         (select e.sequence from going_events e where e.request_id = r.id and e.name = any($2::text[])),
-	         0
-	       ),
+// goingRunStateOf reads one run's state, $1 the run: the sequence of its terminal frame, 0 while it
+// has stored none (graphstore.RunEndingSQL), whether now is past its ends_at, and whether a post the
+// run gave its model no longer stands (goingWithdrawal), by the one test of that
+// (graphstore.RunWithdrawnSQL), which the graph read of the run's own address reads too. Queued
+// beside goingEventsAfter, for the reason it is named.
+var goingRunStateOf = `
+	select coalesce(` + graphstore.RunEndingSQL("r.id") + `, 0),
 	       now() >= r.ends_at,
-	       exists (
-	         select 1
-	         from going_request_posts p
-	         left join comments c on c.id = p.comment_id and c.deleted_at is null
-	         left join messages m on m.id = p.message_id and m.deleted_at is null
-	         where p.request_id = r.id and c.id is null and m.id is null
-	       )
+	       ` + graphstore.RunWithdrawnSQL("r.id") + `
 	from going_requests r
 	where r.id = $1::uuid`
 
@@ -485,7 +467,7 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 		frames = collected
 		return err
 	})
-	batch.Queue(goingRunStateOf, requestID, goingTerminalNames).QueryRow(func(row pgx.Row) error {
+	batch.Queue(goingRunStateOf, requestID).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&state.Terminal, &state.PastDeadline, &state.Withdrawn)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
@@ -519,6 +501,13 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 // stored, so a reader is written exactly one ending, in the ending's place: a reader that
 // already holds that sequence was written the run's ending, and streamGoingAnswer writes it
 // nothing more.
+//
+// The read of the run's own address, `dispatch://interaction/<uuid>`, is a second view of the same
+// frames, and answers what this does rather than deciding it again (refs' interactionFrames): for a
+// run the same test calls withdrawn (graphstore.RunWithdrawnSQL), the node's frames are this one
+// frame, at the sequence of the run's stored ending, or, where the run has stored none, at the
+// sequence this call would store it at (graphstore.RunNextSequenceSQL), and none of the frames the
+// run stored. That read writes nothing.
 func (s *server) goingWithdrawal(ctx context.Context, requestID string, state goingRunState) (goingEvent, error) {
 	withdrawal := going.Fault(contracts.GoingErrorAnswerWithdrawn)
 	ending := state.Terminal
@@ -636,7 +625,7 @@ func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 // (errGoingRunGone) and is passed over.
 func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
 	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, []any{goingTerminalNames}, func(id string) error {
+	return eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, []any{graphstore.TerminalFrameNames}, func(id string) error {
 		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
 			return err
 		}

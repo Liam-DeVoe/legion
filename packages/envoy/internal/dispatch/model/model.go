@@ -3838,8 +3838,11 @@ type GraphNode struct {
 	Pin            *BlockPin   `json:"pin,omitempty"`
 	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, on the
 	// read of the run's own address (refs.Node), and absent for a run that holds none, for a run
-	// at an edge's far end and for every other kind. A server of the release before never sends
-	// it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	// at an edge's far end and for every other kind. A run whose answer is withdrawn - a comment
+	// or an issue message it gave its model has since been deleted - answers the one frame its
+	// stream then writes, the withdrawal at the sequence of its ending, and none of its own (api's
+	// goingWithdrawal). A server of the release before never sends it, and `omitempty` keeps every
+	// other node's answer byte for byte as it was.
 	Frames []GraphFrame `json:"frames,omitempty"`
 }
 

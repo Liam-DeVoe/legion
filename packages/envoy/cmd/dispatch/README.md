@@ -4294,6 +4294,7 @@ A write on a context with no run appends none, so the block-index reconciliation
 A document's settlement carries no run either (`docs.Service.settleRoomWithin`), even the one an issue's close runs on the closer's context before it closes (`settleIssueBeforeClose`): it saves what the room's writers left in it, so the asks it retracts or restores and the blocks it indexes name no run.
 
 The delete of a comment or an issue message whose text a run gave its model ends that run's stream for every reader after it, as the stream route's description in `GET /api/v1` says (`goingWithdrawal`, `internal/dispatch/api/going.go`).
+A read of the run's own address answers the same as the node's `frames`: the one withdrawal frame the stream writes, `error` with `ANSWER_WITHDRAWN`, at the sequence of the run's ending, or at the sequence its ending would take where the run has stored none, and none of the frames the run stored; the read writes nothing, and the two read one test of the delete (`graphstore.RunWithdrawnSQL`, `interactionFrames` in `internal/dispatch/refs/interaction_nodes.go`).
 
 ## Keyed writes
 
