@@ -60,7 +60,8 @@ var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s
 // runtime (`runtime.tmux.pane_env`), or "" when nothing here refuses it. The loader asks it at load
 // (config) and the tmux runtime again at boot (tmux.New), each beside its own checks of what only
 // it can see. The tmux runtime also asks it, with no value, of each provider key's name at boot
-// (tmux's readProviderKeyNames), since the shim exports a provider key into Oh My Pi's
+// (tmux's readProviderKeyNames), and the loader of each provider key's name under runtime tmux
+// (config's checkTmuxProviderKeyNames), since the shim exports a provider key into Oh My Pi's
 // environment. A variable that places the session a resume reads is refused, since the runtime
 // places a pane's sessions itself and a resume must find the session where the agent left it; so
 // is one the runtime sets after the operator's variables on every Claude Code pane, or on every
