@@ -3764,9 +3764,10 @@ package api
 // of main 4ad19fe8459c a census of the 520 open heads (2026-11-24T01:48:37Z to 01:54:21Z) found 221
 // to 238 and 240 declared by other pull requests and 239 by none, so this change keeps 239
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-md). At the merge of main
-// 9688b2b23292, which carried 228 (dispatch://INFRA-1575, the entry above), a census of the 493
-// open heads (2026-11-24T09:42:14Z to 09:47:58Z) found 239 declared by this change's pull request
-// alone, so this change keeps 239, above main's 228
+// 843a9f45a3a0, which carries 228 (dispatch://INFRA-1575, the entry above), a census of the 493
+// open heads (2026-11-24T09:42:14Z to 09:47:58Z, against main 9688b2b23292; the five main commits
+// after it declare no contract) found 239 declared by this change's pull request alone, so this
+// change keeps 239, above main's 228
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-d-md). From this entry answers.go's
 // SupportedContracts names `gateBasisContract` after `intakeGiveUpsContract`. Read the base's own
 // number and every open head again, by a REST raw read of each head's file, at the next forward
