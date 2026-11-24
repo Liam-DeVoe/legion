@@ -1,0 +1,45 @@
+name: Large PR label
+
+# Puts the label large-pr on a pull request of 100 changed files or more, or of 10,000 changed
+# lines or more, and takes it off one that shrank, at every push
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+# .github/workflows/large-pr-lanes.yaml reads the label on an approval, whose event carries no
+# size, to decide whether the approval runs the pull request's slow suites.
+#
+# A workflow of its own, not a step of ci.yaml's: a pull request's labels need
+# `pull-requests: write`, and this job checks out `.github` alone and runs this repository's own
+# script, where every job of ci.yaml that could hold the step runs more than that (the lint job
+# runs dependency code) or reads a tree that has no script in it (`changes`).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# A newer push's run replaces an older one's, which would write the label from an older size.
+concurrency:
+  group: large-pr-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  label:
+    # Only a pull request that may be large, or that carries the label: 100 changed files, or
+    # 5,000 additions or deletions (a sum of 10,000 has one of the two at 5,000 or more). The
+    # script decides by the exact lines; every other push is skipped before a runner starts.
+    if: ${{ github.event.pull_request.changed_files >= 100 || github.event.pull_request.additions >= 5000 || github.event.pull_request.deletions >= 5000 || contains(github.event.pull_request.labels.*.name, 'large-pr') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Label the pull request large-pr when it is large, and take the label off when it is not
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/large-pr-lanes.sh label

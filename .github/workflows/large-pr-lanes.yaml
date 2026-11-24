@@ -8,8 +8,8 @@ name: Large PR lanes
 # person's), so its event starts this workflow, where an event made with GITHUB_TOKEN would start
 # nothing. Every review of every pull request starts a run, and on all but an approval of a pull
 # request labelled large-pr both jobs are skipped by their `if:`, which reads the event alone, so
-# such a run starts no runner and leaves no check named ci-ok. ci-job-lint.yaml's label step puts
-# that label on at every push (.github/scripts/large-pr-lanes.sh label).
+# such a run starts no runner and leaves no check named ci-ok. large-pr-label.yaml puts that
+# label on at every push of a large pull request (.github/scripts/large-pr-lanes.sh label).
 #
 # `approval` calls ci.yaml on this event. A called workflow runs under its caller's event, and on
 # pull_request_review each `changes` output a pull request holds back takes its paths filter's
@@ -71,7 +71,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-      issues: write
+      issues: read
       pull-requests: read
     uses: ./.github/workflows/ci.yaml
     secrets: inherit

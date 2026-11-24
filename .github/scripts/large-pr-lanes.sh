@@ -11,7 +11,7 @@
 # verdict, as on a merge group, so the run selects exactly the slow suites the change's paths
 # select, beside every fast job.
 #
-#   label  ci-job-lint.yaml's step on a pull request: reads the pull request's size and puts the
+#   label  large-pr-label.yaml's job on a pull request: reads the pull request's size and puts the
 #          label large-pr on a large pull request, or takes it off one that is no longer large.
 #          Large is LARGE_FILES (100) changed files or more, or LARGE_LINES (10,000) additions
 #          plus deletions or more. The approval workflow reads the label rather than the size,

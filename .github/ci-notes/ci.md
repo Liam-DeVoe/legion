@@ -1538,12 +1538,17 @@ requests a day cross one of them.
 
 Three pieces make it:
 
-- ci-job-lint.yaml's step "Label a pull request of 100 files or 10,000 lines large-pr, so its
-  approval runs its slow suites" runs `.github/scripts/large-pr-lanes.sh label` at every push of
-  a pull request. It reads the size from the event's payload and puts the label `large-pr` on a
-  large pull request, or takes it off one that shrank, with the lint job's GITHUB_TOKEN. An
-  event that token makes starts no workflow run, and none is wanted: the label is read later, by
-  the approval's run. A fork's pull request is passed over, since its token cannot write a label.
+- .github/workflows/large-pr-label.yaml runs `.github/scripts/large-pr-lanes.sh label` at every
+  push of a pull request that may be large: its job's `if:` admits 100 changed files or more,
+  5,000 additions or 5,000 deletions or more (a sum of 10,000 has one of the two at 5,000), or the
+  label already on, and skips every other push before a runner starts. The script reads the size
+  from the event's payload and puts the label `large-pr` on a large pull request, or takes it off
+  one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
+  need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
+  every attempt, test pull request #5347's run 45353759536), in a job that checks out `.github`
+  alone and runs this repository's own script, no dependency's code. An event that token makes
+  starts no workflow run, and none is wanted: the label is read later, by the approval's run. A
+  fork's pull request is passed over, since its token cannot write a label.
 - .github/workflows/large-pr-lanes.yaml runs on every submitted review. The review is made with
   the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
   mechanism writes has to start one. Both its jobs run only on an approval of a pull request
@@ -1673,15 +1678,12 @@ would fail `changes`, whose result every job's `if:` reads.
 
 ## Why the lint job holds each of its scopes
 
-The ci-ok-report step is the whole of this job's GitHub writing but one: it posts a failing ci-ok
+The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
 with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
 is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
 about to refuse a change it reads every open pull request of the repository, with the paths
-each changes, to name a number no other one has taken. `issues: write` is the large-pr label
-step's, which puts that label on a pull request, or takes it off, through the issues route
-(.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head);
-it is `issues` and not `pull-requests: write`, which would let the token write reviews too.
-The pull request's text is the `pr-title` job's, which declares the scopes its own routes read.
+each changes, to name a number no other one has taken. The pull request's text is the
+`pr-title` job's, which declares the scopes its own routes read.
 
 ## What the ci-images job copies, and why the order is the point
 

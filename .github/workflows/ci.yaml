@@ -286,7 +286,6 @@ jobs:
       contents: read
       actions: read
       checks: write
-      issues: write
       pull-requests: read
     uses: ./.github/workflows/ci-job-lint.yaml
     with:
