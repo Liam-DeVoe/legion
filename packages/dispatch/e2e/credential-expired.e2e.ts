@@ -6,6 +6,7 @@ import {
   setPendingCredentialRequests,
 } from "./fake-broker-helpers";
 import { expectInboxCount } from "./inbox-threads";
+import { expectInstant } from "./instants";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 
@@ -23,9 +24,23 @@ import { withAlice } from "./users";
  * queue and on the nightly.
  */
 
-/** When the expired rows' deadlines passed, as the broker wrote them: an hour before this run.
- *  Dispatch relays the broker's body unchanged, so the page's `<time>` carries this string. */
-const deadline = new Date(Date.now() - 3_600_000).toISOString();
+/** When the expired rows' deadlines passed: an hour before this run, at a millisecond that ends
+ *  in zero, rounded as `stall` rounds its moment in claim-unresponsive.e2e.ts. The Inbox first
+ *  reads its list of credential requests from the landing (`GET /api/v1/landing`), which reads
+ *  the broker's list and writes each moment again as Go writes it, as the real broker does
+ *  itself. Go drops a trailing zero of the milliseconds (`…:27.13Z` for 130 ms). The Inbox then
+ *  reads the list again every 15 s (`CREDENTIAL_POLL_INTERVAL_MS`, web/src/features/credentials/
+ *  pending.ts) from `GET /api/v1/credential-requests`, which relays the fake broker's bytes
+ *  unchanged (`…:27.130Z`). So the page can write one moment in either spelling, and the Inbox
+ *  rows compare the moment their `<time>` names, with expectInstant, and not its spelling. A
+ *  comparison of the strings failed whenever the milliseconds ended in zero, unless that poll
+ *  came inside the assertion's wait. The zero makes every run meet Go's spelling, and not only
+ *  one run in ten. */
+const deadlineAt = Math.floor((Date.now() - 3_600_000) / 10) * 10;
+/** That deadline as the fake broker writes it, with three digits of milliseconds. Dispatch
+ *  relays the machine-code lookup from the broker unchanged, so the machine-login page's
+ *  `<time>` carries this string. */
+const deadline = new Date(deadlineAt).toISOString();
 /** When they were asked, an hour before that. */
 const askedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
 /** The deadline of each pending row, an hour from now. */
@@ -132,7 +147,11 @@ test("an expired secret request is marked with its deadline, leads to no decisio
     await expect(expired.getByText("Expired", { exact: true })).toBeVisible();
     const passed = expired.getByText(/^Its deadline passed/);
     await expect(passed).toBeVisible();
-    await expect(passed.locator("time")).toHaveAttribute("datetime", deadline);
+    await expectInstant(
+      passed.locator("time"),
+      deadlineAt,
+      "the expired secret request's deadline"
+    );
     // No link of any kind: not the broker's page it still names, nor any other decision page.
     await expect(expired.locator("a")).toHaveCount(0);
     await expect(page.locator(`a[href="${retiredSecretPage}"]`)).toHaveCount(0);
@@ -175,7 +194,7 @@ test("an expired machine login is marked with its deadline, leads to no machine-
     await expect(expired.getByText("Expired", { exact: true })).toBeVisible();
     const passed = expired.getByText(/^Its deadline passed/);
     await expect(passed).toBeVisible();
-    await expect(passed.locator("time")).toHaveAttribute("datetime", deadline);
+    await expectInstant(passed.locator("time"), deadlineAt, "the expired machine login's deadline");
     await expect(expired.locator("a")).toHaveCount(0);
     await expect(requests.locator('a[href="/credentials/machine"]')).toHaveCount(1);
     await expectInboxCount(page, 1);

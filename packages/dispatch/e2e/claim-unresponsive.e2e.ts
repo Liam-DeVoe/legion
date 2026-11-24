@@ -9,7 +9,8 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { expect, type Locator, test } from "./test";
+import { expectInstant } from "./instants";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A session that has missed its heartbeats has not ended: it keeps the issue it is working, the
@@ -64,19 +65,6 @@ async function stall(msAgo: number): Promise<number> {
   await setSessionLastSeen(holder.session_id, lastSeen);
   await setSessionState(holder.session_id, "unresponsive");
   return lastSeen;
-}
-
-// expectInstant reads a <time> element's `datetime` and compares the moment it names with want,
-// rather than its spelling: the server writes the moment as Go formats it, which drops a trailing
-// zero from the milliseconds (`…:32.15Z` for 150 ms), while `Date.toISOString` always writes
-// three digits. Comparing the strings failed about one run in ten on that difference alone.
-async function expectInstant(locator: Locator, want: number, what: string) {
-  await expect(locator).toBeVisible();
-  await expect
-    .poll(async () => Date.parse((await locator.getAttribute("datetime")) ?? ""), {
-      message: `${what} names the moment ${new Date(want).toISOString()}`,
-    })
-    .toBe(want);
 }
 
 // @pr: A claim the server settles: an unresponsive holder keeps it, the page says since when and until when, and a second agent's claim is refused.
