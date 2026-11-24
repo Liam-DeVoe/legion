@@ -878,7 +878,22 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	if err != nil || ancestor == "" {
 		return err
 	}
-	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
+	// Planted fault, a control of a test, never merged: the notice is sent for one plan only. Where
+	// the ancestor's line holds no reviewer step, nothing is told.
+	above, err := e.store.Issue(ctx, tx, ancestor)
+	if err != nil || above == nil {
+		return err
+	}
+	w, err := e.walk(ctx, tx, *above)
+	if err != nil {
+		return err
+	}
+	for _, step := range w.Line {
+		if step == phase.Reviewing {
+			return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
+		}
+	}
+	return nil
 }
 
 // drawExperiments draws every issue-unit experiment the project declares (Config.Experiments)
