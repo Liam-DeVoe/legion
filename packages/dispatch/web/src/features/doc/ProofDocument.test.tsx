@@ -3,6 +3,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import * as Y from "yjs";
 
 import {
   changingEachHandle,
@@ -29,7 +30,7 @@ import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
 import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker-fixture";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
-import type { ConstructEditor } from "./editor";
+import { type ConstructEditor, constructEditor } from "./editor";
 import {
   afterTheFirstBatch,
   LONGEST_WAIT_FOR_THE_DOCUMENT_MS,
@@ -367,6 +368,75 @@ test("the document's own draw stops painting in the task the editor's build begi
   } finally {
     restoreParseWorker();
     view.unmount();
+  }
+});
+
+// A window answers a name no script has set with the element whose `id` it is, so an element of
+// id `__dispatchHoldBuild` in the page, which a stored document can draw, makes
+// `window.__dispatchHoldBuild` that element. The page hands the build only a function to await
+// between its batches: an element there throws at the first boundary, and the reader is left
+// with the first batch. The editor is the real one, over a document of more batches than one, so
+// its build passes a boundary.
+test("an element whose id names the build's hold leaves the editor's build as it is", async () => {
+  const blocks = Array.from({ length: 20 }, (_, index) => `Paragraph ${index} of the ledger.`);
+  const fake = fakeDocumentRuntime();
+  const element = document.body.appendChild(document.createElement("div"));
+  element.id = "__dispatchHoldBuild";
+  // happy-dom gives the name to its own window, not to the global one this suite's DOM is
+  // registered on (`register-dom.ts`), so the row names the element there as a browser does.
+  Object.defineProperty(window, "__dispatchHoldBuild", {
+    configurable: true,
+    get: () => document.getElementById("__dispatchHoldBuild") ?? undefined,
+  });
+  expect(window.__dispatchHoldBuild as unknown).toBe(element);
+  const { sync, view } = renderProofDocument({
+    fake: {
+      ...fake,
+      runtime: {
+        constructEditor,
+        // Each connection's document holds the blocks, as the room's state frame does.
+        loadTransport: async () => {
+          const connect = await fake.runtime.loadTransport();
+          return (artifactId, callbacks) => {
+            const connection = connect(artifactId, callbacks);
+            connection.doc.getXmlFragment("prosemirror").insert(
+              0,
+              blocks.map((words, index) => {
+                const block = new Y.XmlElement("paragraph");
+                block.setAttribute("blockId", `b-${index}`);
+                block.insert(0, [new Y.XmlText(words)]);
+                return block;
+              })
+            );
+            return connection;
+          };
+        },
+      },
+      text: `${blocks.join("\n\n")}\n`,
+    },
+  });
+
+  try {
+    await sync();
+    // The editor wears its name once it is bound, and the page says why where it never is. The
+    // editor loads its library on its first use, which can take more than a second.
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByRole("textbox", { name: "Document editor" }) ?? screen.queryByRole("alert")
+        ).not.toBeNull(),
+      { timeout: 10_000 }
+    );
+    expect(
+      screen.queryByRole("alert")?.textContent,
+      "the build threw where an element was named for its hold"
+    ).toBeUndefined();
+    const editor = screen.getByRole("textbox", { name: "Document editor" });
+    expect(editor.querySelectorAll("[data-block-id]")).toHaveLength(blocks.length);
+  } finally {
+    view.unmount();
+    Reflect.deleteProperty(window, "__dispatchHoldBuild");
+    element.remove();
   }
 });
 

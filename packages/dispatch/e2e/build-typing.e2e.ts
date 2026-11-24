@@ -96,10 +96,8 @@ declare global {
 }
 
 /** What the page is given to type (`theReaderTypes`): the first `chars` characters of `word`,
- *  at the start of the first block holding `quote`, into a document of `blocks` top-level
- *  blocks. */
+ *  at the start of the first block holding `quote`. */
 interface TheTyping {
-  readonly blocks: number;
   readonly chars: number;
   readonly quote: string;
   readonly word: string;
@@ -109,7 +107,7 @@ interface TheTyping {
  * Has the page itself type the first `chars` characters of `word` at the start of the first
  * block holding `quote`, one character a frame, from the earliest frame the editor takes one,
  * and record with each character where the build had got to (`TypedCharacter`), read against
- * the `blocks` top-level blocks the document has.
+ * the document's `BLOCKS` top-level blocks.
  *
  * The typing is the page's own, not this side's: which state of the build a character lands in
  * is what these rows are about, and a `page.keyboard` press is a round trip's business. Each
@@ -123,7 +121,9 @@ async function theReaderTypes(
   page: Parameters<typeof documentEditor>[0],
   plan: TheTyping
 ): Promise<void> {
-  await page.addInitScript((typing: TheTyping) => {
+  // The script runs in the page, which has nothing of this module, so `BLOCKS` goes in with it.
+  const given = { ...plan, blocks: BLOCKS };
+  await page.addInitScript((typing: typeof given) => {
     const typed: TypedCharacter[] = [];
     window.__buildTyping = typed;
     /** Collapses the caret before the first `quote` among the text a caret can enter, the way
@@ -195,7 +195,7 @@ async function theReaderTypes(
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
-  }, plan);
+  }, given);
 }
 
 /** Where the build had got to as each of the `chars` characters the page was given went in,
@@ -214,13 +214,26 @@ async function whatTheReaderTyped(
   return (await page.evaluate(() => window.__buildTyping)) ?? [];
 }
 
-/** Opens the issue's spec with the document's socket held, so the editor is constructed and
- *  standing with no batch in it, and lets the socket through once the reader's own draw of the
- *  document is on the screen, which is where the build begins. */
+/** That a batch landed between two of the characters the page typed into the build: two of them
+ *  went in with the editor's root holding different counts of the document's blocks, so the
+ *  caret placed for the first was carried over a batch before the second went in. */
+function aBatchLandedBetweenTwoOf(typed: readonly TypedCharacter[]): void {
+  expect(
+    new Set(typed.filter((each) => each.at === "building").map((each) => each.held)).size,
+    "no batch landed between two of the word's characters, so this run says nothing about " +
+      "a caret a later batch moves"
+  ).toBeGreaterThan(1);
+}
+
+/** Opens the issue's spec with every boundary between two of the build's batches waiting for a
+ *  frame of the page (`holdTheBuild`) and the document's socket held, so the editor is
+ *  constructed and standing with no batch in it, and lets the socket through once the reader's
+ *  own draw of the document is on the screen, which is where the build begins. */
 async function openWithTheBuildHeld(
   page: Parameters<typeof documentEditor>[0],
   issueKey: string
 ): Promise<void> {
+  await holdTheBuild(page, { eachBoundary: "a frame" });
   const transport = await documentTransport(page, { holding: true });
   await page.goto(`/issues/${issueKey}/spec`);
   await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached({
@@ -257,13 +270,14 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-// The three rows below type into the build itself, a character a frame. Each has every boundary
-// between two of the build's batches wait for one frame of the page and no longer
-// (`holdTheBuild`, `large-documents-build-hold.ts`), installed before the navigation: a
-// character goes in between every two batches until the page has typed what it was given, so a
-// batch lands between two of the word's characters on every machine, however fast it builds.
-// None of them reads how long anything took, so none throttles the renderer to make the build
-// last, and none is kept to Chromium, the one engine a throttle can be given.
+// The three rows below type into the build itself, a character a frame. Each opens its document
+// through `openWithTheBuildHeld`, which has every boundary between two of the build's batches
+// wait for one frame of the page and no longer (`holdTheBuild`, `large-documents-build-hold.ts`),
+// installed before the navigation: a character goes in between every two batches until the page
+// has typed what it was given, so a batch lands between two of the word's characters on every
+// machine, however fast it builds. None of them reads how long anything took, so none throttles
+// the renderer to make the build last, and none is kept to Chromium, the one engine a throttle
+// can be given.
 //
 // What these rows count as a character typed into the build is one typed while the editor held
 // part of the document, read off how many blocks its root held (`BuildState`), and never one
@@ -284,13 +298,7 @@ test("a word typed at a block's start from before the first batch is stored as t
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, {
-      blocks: BLOCKS,
-      chars: WORD.length,
-      quote: paragraph(0),
-      word: WORD,
-    });
-    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
     await openWithTheBuildHeld(page, issue.key);
 
     const typed = await whatTheReaderTyped(page, WORD.length);
@@ -324,13 +332,7 @@ test("a word typed at a block's start while the batches are still being placed i
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, {
-      blocks: BLOCKS,
-      chars: WORD.length,
-      quote: paragraph(0),
-      word: WORD,
-    });
-    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await theReaderTypes(page, { chars: WORD.length, quote: paragraph(0), word: WORD });
     await openWithTheBuildHeld(page, issue.key);
 
     const typed = await whatTheReaderTyped(page, WORD.length);
@@ -339,14 +341,7 @@ test("a word typed at a block's start while the batches are still being placed i
       "the build was over before the word was typed, so this run says nothing about a word " +
         "typed into one"
     ).toContain("building");
-    // And a batch landed between two of the word's characters: two of them went in with the
-    // editor's root holding different counts of the document's blocks, so the caret placed for
-    // the first was carried over a batch before the second went in.
-    expect(
-      new Set(typed.filter((each) => each.at === "building").map((each) => each.held)).size,
-      "no batch landed between two of the word's characters, so this run says nothing about " +
-        "a caret a later batch moves"
-    ).toBeGreaterThan(1);
+    aBatchLandedBetweenTwoOf(typed);
 
     await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
     await theServerHolds(issue.primary_artifact_id, withWordAt(0, WORD));
@@ -371,13 +366,7 @@ test("a word typed at a block's start across the build's hand-over to the bindin
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await theReaderTypes(page, {
-      blocks: BLOCKS,
-      chars: typedByThePage,
-      quote: paragraph(0),
-      word: WORD,
-    });
-    await holdTheBuild(page, { eachBoundary: "a frame" });
+    await theReaderTypes(page, { chars: typedByThePage, quote: paragraph(0), word: WORD });
     await openWithTheBuildHeld(page, issue.key);
 
     const typed = await whatTheReaderTyped(page, typedByThePage);
@@ -385,13 +374,7 @@ test("a word typed at a block's start across the build's hand-over to the bindin
       typed.map((each) => each.at),
       "the build was over before the page typed anything, so this run crosses no hand-over"
     ).toContain("building");
-    // And a batch landed between two of the characters the page typed into the build, as in
-    // the row above.
-    expect(
-      new Set(typed.filter((each) => each.at === "building").map((each) => each.held)).size,
-      "no batch landed between two of the word's characters, so this run says nothing about " +
-        "a caret a later batch moves"
-    ).toBeGreaterThan(1);
+    aBatchLandedBetweenTwoOf(typed);
 
     // The rest of the word goes in from the caret the editor was left holding: the reader
     // never asked for it to move, and the binding took the document over under them in

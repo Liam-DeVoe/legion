@@ -182,11 +182,10 @@ test(`a link to the decision block at the end of ${documentNames.large} lands on
 // on the screen and they take edits, which reach the Yjs document through a window onto the
 // blocks already built (`packages/proof-editor/src/progressive-build.ts`, acceptance A7). The
 // first of them needs no editor at all - a decision the server drew is answered through the
-// shared ask card in the page's own draw. The rows of the large-documents family and of
-// `build-typing.e2e.ts` hold a build through `holdTheBuild` (`large-documents-build-hold.ts`),
-// and the typing row and the two-people row hold theirs at a batch, not to time anything but so
-// the page draws frames while it runs, which is where a reader's edits land, whatever the
-// machine's speed.
+// shared ask card in the page's own draw. The typing row and the two-people row hold their build
+// at a batch (`holdTheBuild`, which docs/testing.md describes), not to time anything but so the
+// page draws frames while it runs, which is where a reader's edits land, whatever the machine's
+// speed.
 
 test("a reader answers a decision block the server drew, with the editor's socket held @phone", async ({
   browser,

@@ -226,13 +226,9 @@ export interface ProgressiveBuild {
   adopt(mapping: ProsemirrorMapping): void;
   /**
    * What the build awaits between two batches, called with how many batches it has placed so
-   * far, and no batch is placed until what it answers settles. `endOfTask` unless the host
-   * passes its own, which it does only to hold the build at a batch of its choosing: the
-   * end-to-end rows of Dispatch's large-documents family and its `build-typing.e2e.ts` do,
-   * through `holdTheBuild` (`e2e/large-documents-build-hold.ts` there), to put another
-   * person's write or a reader's edit between two given batches rather than wherever the
-   * machine's speed leaves it. The task between the last batch and the adoption is the
-   * build's own, and never this.
+   * far, and no batch is placed until what it answers settles: `endOfTask` unless the host
+   * passes its own. The task between the last batch and the adoption is the build's own, and
+   * never this.
    */
   betweenBatches?: (batchesDone: number) => Promise<void>;
   /** The document's own fragment, the one the binding will adopt. */

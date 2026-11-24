@@ -107,9 +107,7 @@ declare global {
   interface Window {
     /** What the editor's build awaits between two of its batches in place of its own hand-back
      *  (`@legion/proof-editor`'s `betweenBatches`), read when the editor is constructed. Nothing
-     *  in production sets it: the end-to-end rows of the large-documents family and of
-     *  `e2e/build-typing.e2e.ts` do, only through `holdTheBuild`
-     *  (`e2e/large-documents-build-hold.ts`), to hold the build at a batch of their choosing. */
+     *  in production sets it; docs/testing.md says which end-to-end rows set it, and how. */
     __dispatchHoldBuild?: (batchesDone: number) => Promise<void>;
   }
 }
@@ -709,9 +707,15 @@ function admitTheDocument(admission: Admission): void {
               theDrawsTurn();
             };
           },
-          // An end-to-end row's hold on the build between two batches, and unset everywhere
-          // else, where the build hands the thread back on its own (`__dispatchHoldBuild`).
-          betweenBatches: window.__dispatchHoldBuild,
+          // What an end-to-end row has the build await between two batches
+          // (`__dispatchHoldBuild`), unset everywhere else, where the build hands the thread
+          // back on its own. Passed only where it is a function: a window answers a name no
+          // script has set with the element whose `id` it is, so a document holding an element
+          // of that id would hand the build an element, which throws at its first boundary.
+          betweenBatches:
+            typeof window.__dispatchHoldBuild === "function"
+              ? window.__dispatchHoldBuild
+              : undefined,
           // A pane takes no edits and no comments: a reader who clicks into the text from a
           // list never changes the document they are reading. The admission may narrow this
           // further, and the binding reads both again before it builds anything.
