@@ -347,7 +347,9 @@
 #      matched_filters alone, which must be exactly `${{ github.event_name == 'workflow_dispatch'
 #      && 'all' || steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched
 #      run, whose filter step is skipped, skips there every step it gates - while no filter is
-#      named `changes`, under which the action would write that filter's verdict instead,
+#      named `changes`, under which the action would write that filter's verdict instead, and
+#      while every filter's name is letters, digits, `_` and `-` (which JSON writes as they are)
+#      and no two names differ only in case (GitHub's `contains` ignores case),
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the
@@ -383,7 +385,14 @@
 #      needs.changes, or an input other than as inputs.<name> (`needs['changes']`, `INPUTS.x`,
 #      `inputs. x`): GitHub reads those spellings as the same values, and no rule here reads them,
 #      so a gate so spelt would be held to nothing. An input's name is read in any case, as GitHub
-#      reads it. Rules 2 and 3 read the filter out of each `contains`
+#      reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which holds
+#      the list and filter_verdicts), filter_verdicts or `toJSON(needs)` other than as the
+#      payload's `!= ''`, which asks only whether ci.yaml is the caller; and a `run:`, `env:`,
+#      `with:` or other text of a job that reads the list, filter_verdicts or the payload, but
+#      ci.yaml's own `with:` to a workflow it calls, the ci-ok report action's `changes:` and
+#      ci.yaml's ci-ok job: each of these names every filter on every run, so a step reading one
+#      for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is gated on a filter no
+#      rule reads. Rules 2 and 3 read the filter out of each `contains`
 #      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are

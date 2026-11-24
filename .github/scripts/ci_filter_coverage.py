@@ -968,6 +968,22 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
                                                 f"dorny/paths-filter writes its list of the filters that matched "
                                                 f"under that name only while no filter has it, so the changes job's "
                                                 f"output {LIST_OUTPUT} would hand on that one filter's verdict"))
+        # A step reads its filter out of the list as `contains(<list>, '"<name>"')`, which holds
+        # only while JSON.stringify writes the name as it is and no other name is it in another
+        # case: GitHub's `contains` ignores case, so `"App"` would run app's steps.
+        for name in sorted(filters):
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                problems.append(error(FILTERS_FILE, f"{FILTERS_FILE} holds a filter named {name!r}: a step reads its "
+                                                    f"filter out of {LIST_OUTPUT} by its name in quotes, so a name "
+                                                    f"is letters, digits, _ and - alone, which JSON writes as they are"))
+        by_case = defaultdict(list)
+        for name in filters:
+            by_case[name.lower()].append(name)
+        for names in by_case.values():
+            if len(names) > 1:
+                problems.append(error(FILTERS_FILE, f"{FILTERS_FILE} holds filters {', '.join(sorted(names))}, one name "
+                                                    f"in different cases: GitHub's contains() ignores case, so a step "
+                                                    f"reading one of them out of {LIST_OUTPUT} runs when any matched"))
     for output, expression in outputs.items():
         if output == REF_OUTPUT:
             continue
@@ -1007,23 +1023,26 @@ LIST_SOURCE = "changes"
 # A condition that names the list at all, in any spelling (an input's `matched-filters`, an
 # index, another case), before or after its caller's values are put in.
 LIST_MENTION = re.compile(r"matched[_-]filters", re.I)
-# The one shape, the whole condition, after its caller's values are put in. Only the spaces and
-# the spelling of `contains`, which GitHub reads in any case, are free.
+# Each filter a `contains` reads out of the list: the one pattern the shape below and
+# gated_filters, which rules 2 and 3 and every other reader of a step's gate call, both read the
+# filter's name with. Only the spaces and the spelling of `contains`, which GitHub reads in any
+# case, are free.
+LIST_GATE_TEXT = (rf"(?i:contains)\s*\(\s*needs\.changes\.outputs\.{LIST_OUTPUT}\s*,\s*"
+                  r"'\"([A-Za-z0-9_-]+)\"'\s*\)")
+LIST_GATE = re.compile(LIST_GATE_TEXT)
+# The one shape, the whole condition, after its caller's values are put in.
 LIST_SHAPE = re.compile(
     rf"^\s*(?:\$\{{\{{)?\s*needs\.changes\.result\s*!=\s*'success'\s*\|\|\s*"
     rf"needs\.changes\.outputs\.{LIST_OUTPUT}\s*==\s*'all'\s*\|\|\s*"
-    rf"(?i:contains)\s*\(\s*needs\.changes\.outputs\.{LIST_OUTPUT}\s*,\s*'\"([A-Za-z0-9_-]+)\"'\s*\)"
-    rf"\s*(?:\}}\}})?\s*$")
-# Each filter a `contains` reads out of the list, wherever it stands, so that rule 3 names it
-# even in a condition rule 22 refuses.
-LIST_GATE = re.compile(
-    rf"(?i:contains)\s*\(\s*needs\.changes\.outputs\.{LIST_OUTPUT}\s*,\s*'\"([A-Za-z0-9_-]+)\"'\s*\)")
+    rf"{LIST_GATE_TEXT}\s*(?:\}}\}})?\s*$")
 
 
 def gated_filters(condition: str) -> list:
     """The filters a condition, resolved to ci.yaml's expressions, gates on: each output of the
     changes job it tests, which carries the one filter of its name, and each filter a `contains`
-    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them."""
+    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them. The one
+    reader of a gate's filter for every rule here: a rule that reads a step's or a job's gate
+    reads it through this, so the two shapes a gate takes are read the same everywhere."""
     return [name for name in GATE_REF.findall(condition) if name != LIST_OUTPUT] + LIST_GATE.findall(condition)
 
 
@@ -1086,6 +1105,103 @@ def spelling_refusals(text: str, path: str, where: str) -> list:
     return refusals
 
 
+# A read of a value carrying more than one filter's verdict, once its caller's values are put
+# in: the list of matched filters, the paths filter's verdict object (filter_verdicts), the
+# changes job whole (ci.yaml's ci-ok payload, `toJSON(needs.changes)`, which holds both) and every
+# job's outputs at once (`toJSON(needs)`).
+CARRIER = re.compile(
+    rf"needs\.changes\.outputs\.(?:{LIST_OUTPUT}|filter_verdicts)(?![A-Za-z0-9_-])"
+    r"|needs\.changes(?![A-Za-z0-9_.\[-])"
+    r"|(?<![A-Za-z0-9_.-])needs(?![A-Za-z0-9_.\[-])", re.I)
+# The one test of the payload a condition may make: whether ci.yaml handed it on at all, which
+# docs-site.yaml's and dispatch-browser.yaml's report steps ask, `inputs.ci-ok-changes != ''`.
+PAYLOAD_PRESENCE = re.compile(r"(?i:tojson)\s*\(\s*needs\.changes\s*\)\s*(?:!=|==)\s*''")
+# The one reader of the payload outside a condition: the ci-ok report action, which posts the
+# verdict of a merge-group run from it (`with: changes:`).
+CI_OK_REPORT_ACTION = "./.github/actions/ci-ok-report"
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+def carrier_condition_refusals(condition: str, path: str, job_id: str, step) -> list:
+    """Rule 22, its third half, over conditions: a condition, resolved to ci.yaml's expressions,
+    that reads a CARRIER other than the list (which list_refusals holds to its shape) reads only
+    the payload, and only as PAYLOAD_PRESENCE. The payload and the verdict object name every
+    filter on every run, so `contains(inputs.ci-ok-changes, 'apx')` gates a step on a filter no
+    rule reads, and is true on every run besides."""
+    if LIST_MENTION.search(condition) or not CARRIER.search(PAYLOAD_PRESENCE.sub("", condition)):
+        return []
+    return [error(path, f"{where_if(job_id, step)} reads the changes job's verdicts other than as the list of "
+                        f"matched filters in its one shape: the ci-ok payload (toJSON(needs.changes)), "
+                        f"filter_verdicts and toJSON(needs) name every filter on every run, so a condition reading "
+                        f"them for a filter gates on one no rule reads; test the payload only as != ''")]
+
+
+def texts(value, at: tuple = ()):
+    """Every string in a workflow's value, with the keys that lead to it."""
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield from texts(inner, at + (str(key),))
+    elif isinstance(value, list):
+        for index, inner in enumerate(value):
+            yield from texts(inner, at + (index,))
+    elif isinstance(value, str):
+        yield at, value
+
+
+def carrier_text_refusals(documents: dict, units: list) -> list:
+    """Rule 22, its third half, outside conditions: no `run:`, `env:`, `with:` or other text of a
+    job of ci.yaml or of a workflow it calls reads a CARRIER, once its caller's `with:` values are
+    put in for its inputs (in any case, as GitHub reads them), but in three places: ci.yaml's own
+    `with:` to a workflow it calls, which hands the values on to the conditions read there; the
+    ci-ok report action's `changes:`, which posts ci-ok's verdict from the payload; and ci.yaml's
+    ci-ok job, which is that verdict. A script that reads the list or the payload can test it
+    for any filter, so its work is gated on filters no rule reads (`case '${{
+    inputs.matched-filters }}' in *apx*)`)."""
+    ci_jobs = documents[WORKFLOW].get("jobs") or {}
+    refusals, said = [], set()
+    scanned = []  # (path, owner, the job's name or None for the file's own env/defaults, value)
+    for owner, path, job_id, document, job in units:
+        if path == WORKFLOW and job_id == VERDICT_JOB:
+            continue
+        body = {key: value for key, value in job.items() if key != "if" and not (path == WORKFLOW and key == "with")}
+        scanned.append((path, owner, job_id, body))
+        if path != WORKFLOW:
+            scanned.append((path, owner, None, {key: document.get(key) for key in ("env", "defaults") if key in document}))
+    for path, owner, job_id, body in scanned:
+        passed = {str(key).lower(): str(value) for key, value in ((ci_jobs.get(owner) or {}).get("with") or {}).items()}
+
+        def put_in(match):
+            value = passed.get(match.group(1).lower())
+            if value is None:
+                return match.group(0)
+            inner = EXPRESSION.fullmatch(value.strip())
+            return f"({inner.group(1)})" if inner else value
+
+        steps = body.get("steps") or []
+        for at, text in texts(body):
+            if at and at[-1] == "if":
+                continue  # a condition: list_refusals and carrier_condition_refusals read it
+            for expression in EXPRESSION.findall(text):
+                resolved = INPUT_REF.sub(put_in, expression) if path != WORKFLOW else expression
+                if not CARRIER.search(resolved):
+                    continue
+                step = steps[at[1]] if len(at) > 2 and at[0] == "steps" and isinstance(at[1], int) else None
+                if (step is not None and at[2:] == ("with", "changes")
+                        and str(step.get("uses", "")).split("@")[0] == CI_OK_REPORT_ACTION):
+                    continue
+                where = (f"{where_if(job_id, step)}'s {'.'.join(str(k) for k in at[2:] if not isinstance(k, int))}"
+                         if step is not None else
+                         f"{f'job {job_id}' if job_id else 'the file'}'s {'.'.join(str(k) for k in at if not isinstance(k, int))}")
+                message = (f"{where} reads ${{{{ {expression.strip()} }}}}, which carries every filter's verdict: a "
+                           f"script or value that reads the list of matched filters, filter_verdicts or the ci-ok "
+                           f"payload can test it for any filter, so its work is gated on filters no rule reads; "
+                           f"gate the step in its if: (rule 22's one shape) instead")
+                if (path, message) not in said:
+                    said.add((path, message))
+                    refusals.append(error(path, message))
+    return refusals
+
+
 def step_label(step: dict) -> str:
     return str(step.get("name") or step.get("id") or step.get("uses") or str(step.get("run", "")).strip())
 
@@ -1119,8 +1235,9 @@ INPUT_REF = re.compile(r"\binputs\.([A-Za-z0-9_-]+)")
 # contains(inputs.matched-filters, '"release_push_test"')` as one gate, on release_push_test. The
 # third is ci.yaml's ci-ok payload, the whole changes job as JSON: docs-site.yaml's report step
 # reads it (`if: always() && inputs.ci-ok-changes != ''`, which asks whether ci.yaml is the caller
-# rather than what changed), and since it names no output it can carry no filter into a
-# condition and hide none.
+# rather than what changed). It carries the list of matched filters and filter_verdicts, so it
+# names every filter: carrier_condition_refusals holds a condition to reading it only as `!= ''`,
+# and carrier_text_refusals holds every other reader to the ci-ok report action (rule 22).
 WITH_CHANGES = re.compile(r"^\$\{\{\s*(needs\.changes\.outputs\.[A-Za-z0-9_-]+|needs\.changes\.result"
                           r"|toJSON\(needs\.changes\))\s*\}\}$")
 # A value that names the changes job at all, in any shape: what the refusal below is about. One
@@ -1683,7 +1800,8 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
         for step, condition in conditions(job):
             resolved = resolve_condition(condition, inputs_of.get((path, own), {}))
             for refusal in (spelling_refusals(condition, path, where_if(job_id, step))
-                            + list_refusals(resolved, path, job_id, step)):
+                            + list_refusals(resolved, path, job_id, step)
+                            + carrier_condition_refusals(resolved, path, job_id, step)):
                 if (path, refusal.message) not in refused:
                     refused.add((path, refusal.message))
                     problems.append(refusal)
@@ -1705,6 +1823,9 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 if (WORKFLOW, refusal.message) not in refused:
                     refused.add((WORKFLOW, refusal.message))
                     problems.append(refusal)
+    # Rule 22's third half outside conditions: no script, value or input of a step reads the list,
+    # the verdict object or the payload but in the places that hand them on or report from them.
+    problems.extend(carrier_text_refusals(documents, units))
     for g in data.GATES:
         if g.filter not in filters:
             problems.append(error(WORKFLOW, f"{g.job} has no filter {g.filter} in the changes job"))

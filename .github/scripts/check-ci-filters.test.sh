@@ -1013,6 +1013,67 @@ check "fails" "$(is "$status" 1)"
 check "says a job is selected by an output of its own" \
   "$(contains "$out" "job called's if: reads needs.changes.outputs.matched_filters, a list that gates steps")"
 
+# The ci-ok payload (toJSON(needs.changes)) and the list name every filter, so a step that reads
+# either for a filter anywhere but rule 22's one shape is gated on a filter no rule reads. These
+# cases add a step to the list gate's called file, before its report step.
+# add_called_step <root> <step>: <step>, a whole step's YAML at the steps' indent, in called.yaml.
+add_called_step() {
+  replace "$1/.github/workflows/called.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+    "$2"$'\n'"      - name: Report ci-ok when this job decides a merge-group run"
+}
+
+echo "case: a step gated on the ci-ok payload for a filter"
+root=$(fixture carrier-payload-if)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        if: contains(inputs.ci-ok-changes, \'apx\')\n        run: echo apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and what it reads" \
+  "$(contains "$out" "job called step \"Note apx\" reads the changes job's verdicts other than as the list of matched filters in its one shape")"
+
+echo "case: a step testing only that the ci-ok payload is there passes"
+root=$(fixture carrier-payload-presence)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note the caller\n        if: always() && inputs.ci-ok-changes != \'\'\n        run: echo ci.yaml called'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a step whose run: script reads the list"
+root=$(fixture carrier-list-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: case \'${{ inputs.matched-filters }}\' in *apx*) echo apx;; esac'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.matched-filters }}, which carries every filter's verdict")"
+
+echo "case: a step whose run: script reads the ci-ok payload"
+root=$(fixture carrier-payload-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: echo \'${{ inputs.ci-ok-changes }}\' | grep -q apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.ci-ok-changes }}, which carries every filter's verdict")"
+
+echo "case: a step of a job of ci.yaml whose run: script reads the list"
+root=$(fixture carrier-list-ci-run)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ needs.changes.outputs.matched_filters }}'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, its step and the read" \
+  "$(contains "$out" "job lint step \"Lint everything\"'s run reads \${{ needs.changes.outputs.matched_filters }}")"
+
+echo "case: two filters whose names differ only in case, beside the list"
+root=$(fixture list-gate-name-cases)
+list_gate "$root"
+replace "$root/.github/ci-filters.yaml" $'\nimage:' $'\nAPP:\n  - \'docs/readme.md\'\nimage:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both filters" \
+  "$(contains "$out" ".github/ci-filters.yaml holds filters APP, app, one name in different cases")"
+
 # The two cases below read a `!` pattern, whose own semantics workflow_paths.test.sh now owns.
 # What they assert here is this checker's verdict on it: the file it names as read but excluded,
 # and the sentence it refuses a `!` pattern under `some` with.
