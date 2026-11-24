@@ -142,6 +142,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { RefusedGroup, signalGroup } from "../signal-group";
 
 export type Lane = "web" | "web-cold" | "harness";
 
@@ -1709,11 +1710,13 @@ const failedRow = /^\(fail\) (.*?)(?: \[\d+(?:\.\d+)?m?s\])?$/;
 /** Sends SIGKILL to every process of the group `leader` leads: a child the tool spawned with
  *  `detached`, which makes it the leader of a group of its own, and every process it started
  *  that stayed in that group, Bun's test process and its workers among them. A group that has
- *  already ended is no error. */
+ *  already ended is no error. A `leader` that kill would read as no group the tool started, 0 or
+ *  1, is refused, and the refusal thrown (`signalGroup`). */
 function killGroup(leader: number): void {
   try {
-    process.kill(-leader, "SIGKILL");
-  } catch {
+    signalGroup(leader, "SIGKILL");
+  } catch (error) {
+    if (error instanceof RefusedGroup) throw error;
     // ESRCH: no process of the group is left.
   }
 }

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
+import { signalGroup } from "../signal-group";
 import {
   bounds,
   eventually,
@@ -83,12 +84,15 @@ function holding(word: string): [number, string][] {
   );
 }
 
-/** Sends `signal` to `pid`, a process or, when negative, a process group. A process that ended
- *  between the read of the table and this kill answers ESRCH, which is no failure of the row, so
- *  it does not replace the assertion the row is making. */
-function kill(pid: number, signal: NodeJS.Signals): void {
+/** Sends `signal` to the process `target`, or to every process of the group `target.group` leads
+ *  (`signalGroup`, which refuses a group that kill would read as no group a row started). A
+ *  process that ended between the read of the table and this kill answers ESRCH, which is no
+ *  failure of the row, so it does not replace the assertion the row is making; any other error, a
+ *  refused group among them, is thrown on. */
+function kill(target: number | { readonly group: number }, signal: NodeJS.Signals): void {
   try {
-    process.kill(pid, signal);
+    if (typeof target === "number") process.kill(target, signal);
+    else signalGroup(target.group, signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
@@ -137,7 +141,7 @@ test.skipIf(commandLines() === undefined)(
           : `both sleeps did not start inside the short bound of ${bounds.short} ms:\n${runnerLog()}`
       ).toBe(true);
 
-      kill(-runner.pid, "SIGINT");
+      kill({ group: runner.pid }, "SIGINT");
       expect(
         await whether(exited),
         `the runner did not exit inside the short bound of ${bounds.short} ms after SIGINT:\n${runnerLog()}`
@@ -160,7 +164,7 @@ test.skipIf(commandLines() === undefined)(
       ).toEqual([]);
     } finally {
       if (runner !== undefined && runner.exitCode === null && runner.signalCode === null) {
-        kill(-runner.pid, "SIGKILL");
+        kill({ group: runner.pid }, "SIGKILL");
       }
       for (const [pid] of holding(seconds)) kill(pid, "SIGKILL");
       rmSync(directory, { force: true, recursive: true });
@@ -925,7 +929,7 @@ test.skipIf(!userScopes)(
         "the sleep, as the kill's table lists it"
       ).toMatchObject({ pid, unknown: false });
     } finally {
-      kill(-stranger.pid, "SIGKILL");
+      kill({ group: stranger.pid }, "SIGKILL");
     }
   },
   rowLimit("short", "short")

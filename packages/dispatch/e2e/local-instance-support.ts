@@ -5,13 +5,15 @@
  *  PostgreSQL's answer (`awaitPostgres`), the spec's decision block (`awaitDecisionBlock`) and the
  *  Inbox rows the seed declares (`awaitSeededInbox`), each a read repeated until a deadline
  *  (`awaitFact`), and the live view's first frame (`agentViewRefusal`). Nothing here runs on
- *  import, and of the other e2e modules only e2e/pg-url.ts is imported, which imports nothing and
- *  opens nothing, so `e2e/__tests__/local-instance-support.test.ts` drives it without a server. */
+ *  import, and of the other e2e modules only e2e/pg-url.ts and e2e/signal-group.ts are imported,
+ *  which import nothing and open nothing, so `e2e/__tests__/local-instance-support.test.ts` drives
+ *  it without a server. */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Ask, InboxRow } from "../web/src/api/types";
 import { splitDatabaseUrl } from "./pg-url";
+import { RefusedGroup, signalGroup } from "./signal-group";
 
 export class Interrupted extends Error {}
 
@@ -139,7 +141,8 @@ export class Supervisor {
   /** Aborts `signal`, sends SIGTERM to every process group started and not yet seen to stop,
    *  SIGKILL to whatever still runs `forceAfterMs` later, and returns the moment every leader has
    *  exited: the force-kill timer is cleared then, so a clean Ctrl-C does not keep the shell
-   *  prompt waiting on it. Answers whether the force-kill ran. */
+   *  prompt waiting on it. Answers whether the force-kill ran. A pid that kill would read as no
+   *  group the command started, 0 or 1, is refused, and the refusal thrown (`signalGroup`). */
   async stop(forceAfterMs = 10_000): Promise<boolean> {
     this.#stopping.abort();
     const running = this.#children.splice(0);
@@ -148,8 +151,9 @@ export class Supervisor {
         // A process that never started has no pid, and there is no group to signal.
         if (child.pid === undefined) continue;
         try {
-          process.kill(-child.pid, signal);
-        } catch {
+          signalGroup(child.pid, signal);
+        } catch (error) {
+          if (error instanceof RefusedGroup) throw error;
           // ESRCH: every process of that group has already exited.
         }
       }

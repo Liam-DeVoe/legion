@@ -68,13 +68,36 @@ recorded_pid() {
 # which is no error, so `|| :` keeps a caller's ERR trap quiet) and cut after its last `) `: a
 # process names itself, and a name that holds `) ` or a newline is then still read past, where a
 # read of the first line alone took a forged parent and no start.
+# A stat that is not PID's own live entry reads as gone too: one whose own pid, the field before the
+# first ` (`, is not PID, and one whose state is X (dead). The name stands between that first ` (`
+# and the last `) `, so no name reaches the pid. gVisor serves the stat of a task that has exited
+# with its pid, group and session zeroed: on 2026-11-24 replace-blocks.sh read
+#   0 (bash) X 31618 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 0 0 16659 0 0 …
+# for its instance, pid 31806, took field 5, 0, for the instance's group, and its start loop then
+# polled `kill -0 -0`, which names the loop's own group and so always succeeds, to its 900 s
+# deadline.
+#
+# proc_stat_text PID NAME reads /proc/PID/stat whole into the variable NAME, and empties NAME when
+# there is no such entry. It is the one read of a stat behind proc_stat_field and proc_start, so a
+# test plants a stat by redefining it.
+proc_stat_text() {
+  printf -v "$2" '%s' ''
+  { IFS= read -r -d '' "$2" <"/proc/$1/stat"; } 2>/dev/null || :
+}
+# proc_stat_fields PID NAME reads PID's stat (proc_stat_text) into the array NAME, from field 3, the
+# state, on, and fails, leaving NAME as it was, when the stat reads as gone.
+proc_stat_fields() {
+  local stat_text
+  proc_stat_text "$1" stat_text
+  case $stat_text in "$1 ("*") "*) ;; *) return 1 ;; esac
+  stat_text=${stat_text##*) }
+  case $stat_text in "X "*) return 1 ;; esac
+  read -r -a "$2" <<<"$stat_text"
+}
 proc_stat_field() {
-  local stat=
   local -a fields
   if [ -d /proc/self ]; then
-    { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-    [ -n "$stat" ] || return 0
-    read -r -a fields <<<"${stat##*) }"
+    proc_stat_fields "$1" fields || return 0
     printf '%s\n' "${fields[$2 - 3]}"
   else
     ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' ' || :
@@ -84,20 +107,17 @@ proc_parent() { proc_stat_field "$1" 4 ppid; }
 proc_group() { proc_stat_field "$1" 5 pgid; }
 # proc_start PID prints PID's start time, field 22 of /proc/PID/stat: clock ticks since boot, which
 # the kernel sets once, at the fork, and exec keeps, so a pid and its start name one process even
-# once the kernel has given the pid to another. It prints nothing for a process that is gone, a
-# zombie included, since a zombie runs nothing any more. A host with no /proc asks ps for the start
-# as a date (lstart).
+# once the kernel has given the pid to another. It prints nothing for a process that is gone
+# (proc_stat_fields), a zombie included, since a zombie runs nothing any more. A host with no /proc
+# asks ps for the start as a date (lstart).
 proc_start() {
-  local stat=
   local -a fields
   if [ ! -d /proc/self ]; then
     [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
     proc_stat_field "$1" 22 lstart
     return 0
   fi
-  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
-  [ -n "$stat" ] || return 0
-  read -r -a fields <<<"${stat##*) }"
+  proc_stat_fields "$1" fields || return 0
   [ "${fields[0]}" != Z ] || return 0
   printf '%s\n' "${fields[19]}"
 }
@@ -159,6 +179,27 @@ signalable() {
       ;;
   esac
   echo "refused to signal pid '$pid': it is not one process this run started" >&2
+  return 1
+}
+
+# group_signalable GROUP is whether GROUP can name a process group for `kill -SIGNAL -- -GROUP`: a
+# number without a leading zero above 1. kill reads group 0 as the group it is called from, which
+# holds the caller and, under a test runner, the runner too. It reads group 1 as -1, every process
+# the caller may signal. No group is written with a leading zero, and kill reads 00 as 0. Each is
+# refused whatever produced it: gVisor's stat of a process that had just exited once read as group 0
+# (proc_stat_fields, above), and a read that found no process or failed leaves an empty group. A
+# refusal is printed, naming GROUP, since a caller that hands one over has a bug.
+group_signalable() {
+  local why
+  case $1 in
+    '') why='it is empty' ;;
+    *[!0-9]*) why='it is not a number' ;;
+    0) why='kill reads group 0 as the group it is called from' ;;
+    1) why='kill reads group 1 as -1, every process it may signal' ;;
+    0*) why='no group is written with a leading zero' ;;
+    *) return 0 ;;
+  esac
+  echo "refusing to signal process group '$1': $why" >&2
   return 1
 }
 

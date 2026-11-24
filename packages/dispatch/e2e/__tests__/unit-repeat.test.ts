@@ -54,6 +54,20 @@ const scratch = temporaryDirectories("unit-repeat");
 
 const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 
+/** The files a copy of the tool needs, by their paths under `e2e`: the tool, its preload, and the
+ *  module the tool imports (`signalGroup`). */
+const toolFiles = ["tools/unit-repeat.ts", "tools/unit-repeat-progress.ts", "signal-group.ts"];
+
+/** Copies `toolFiles` into the package at `directory`, each to its path under that `e2e`. */
+function copyTool(directory: string): void {
+  for (const path of toolFiles) {
+    copyFileSync(
+      fileURLToPath(new URL(`../${path}`, import.meta.url)),
+      join(directory, "e2e", path)
+    );
+  }
+}
+
 const SEED = 4242;
 
 /** Passes its first run and fails every later one. */
@@ -696,9 +710,9 @@ test(
   rowLimit("short", "short", "short", "short")
 );
 
-/** Copies the tool and its preload into `directory` as a package of `files` under
- *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs, and answers
- *  the path of that copy of the tool. */
+/** Copies the tool, its preload and the module it imports (`copyTool`) into `directory` as a
+ *  package of `files` under `e2e/__tests__`, with a `test:harness` of two workers whatever the
+ *  machine's CPUs, and answers the path of that copy of the tool. */
 async function plantPackage(
   directory: string,
   files: Readonly<Record<string, string>>
@@ -707,9 +721,7 @@ async function plantPackage(
   const rows = join(directory, "e2e", "__tests__");
   mkdirSync(tools, { recursive: true });
   mkdirSync(rows, { recursive: true });
-  for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
-    copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
-  }
+  copyTool(directory);
   await Bun.write(
     join(directory, "package.json"),
     `${JSON.stringify({ name: "planted-package", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
@@ -1837,9 +1849,7 @@ driverRow(
     const tools = join(directory, "e2e", "tools");
     mkdirSync(tools, { recursive: true });
     mkdirSync(rows, { recursive: true });
-    for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
-      copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
-    }
+    copyTool(directory);
     const { scripts } = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
     ) as { scripts: Record<string, string> };
@@ -1872,11 +1882,20 @@ driverRow(
     mkdirSync(runner);
     // `set -m`, so that the step's bash runs as the runner starts it, with SIGINT not ignored as
     // a shell ignores it for a job it puts in the background with no job control. The driver runs
-    // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`).
+    // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`). A
+    // step pid that kill would read as no group the driver started is refused and named, as
+    // lib/process-tree.sh's group_signalable refuses it: kill reads group 0 as the driver's own
+    // group, which holds this test's runner too, and group 1 as every process it may signal.
     const driver =
       leftBehind +
       "capable || exit 2; set -m; bash -e step.sh & step=$!; set +m; " +
-      'seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; kill -KILL -- "-$step" 2>/dev/null; exit 2; }; ' +
+      'seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; ' +
+      'case $step in "") why="it is empty" ;; *[!0-9]*) why="it is not a number" ;; ' +
+      '0) why="kill reads group 0 as the group it is called from" ;; ' +
+      '1) why="kill reads group 1 as -1, every process it may signal" ;; ' +
+      '0*) why="no group is written with a leading zero" ;; *) why= ;; esac; ' +
+      'if [ -n "$why" ]; then echo "refusing to signal process group \'$step\': $why" >&2; ' +
+      'else kill -KILL -- "-$step" 2>/dev/null; fi; exit 2; }; ' +
       'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
       'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
     const { code, stdout, stderr } = await runBounded({

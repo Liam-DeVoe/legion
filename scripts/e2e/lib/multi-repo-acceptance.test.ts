@@ -20,6 +20,7 @@ import {
   stateBody,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
+import { signalGroup } from "./signal-group";
 
 // scripts/e2e/multi-repo-acceptance.sh is the observer for the live multi-repository acceptance
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and
@@ -322,7 +323,7 @@ describe("an interrupted run cleans up and actually stops", () => {
     });
     try {
       await daemon.reached;
-      process.kill(-proc.pid, "SIGINT");
+      signalGroup(proc.pid, "SIGINT");
       daemon.release();
       expect(await proc.exited).toBe(130);
       const stray = readdirSync(evidence).filter((f) => /\.raw\.[^.]{6}$/.test(f));

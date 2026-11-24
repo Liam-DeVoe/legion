@@ -53,8 +53,9 @@ name: Dispatch unit suite repeated
 # `workflow_dispatch` only once the default branch holds the file. After that,
 # `gh workflow run dispatch-unit-repeat.yaml --ref <branch>` runs a branch's copy, as
 # dispatch-browser-nightly.yaml says of its own. Until this file is on the default branch, the
-# `pull_request` trigger is the only way to run it. That trigger is filtered to this file, the tool
-# and its progress preload, and the web-cold lane's preload, so it also runs the job on a later
+# `pull_request` trigger is the only way to run it. That trigger is filtered to this file, the tool,
+# the module the tool signals a process group through, its progress preload, and the web-cold
+# lane's preload, so it also runs the job on a later
 # change to any of them before the merge, and on no other pull request. Main's ruleset does not
 # require its check, so it gates nothing. The other route was a job in
 # dispatch-browser-nightly.yaml. That would need a third cron there and an `if:` on that file's
@@ -125,6 +126,7 @@ on:
       - .github/workflows/dispatch-unit-repeat.yaml
       - packages/dispatch/e2e/tools/unit-repeat.ts
       - packages/dispatch/e2e/tools/unit-repeat-progress.ts
+      - packages/dispatch/e2e/signal-group.ts
       - packages/dispatch/web/src/__tests__/hold-lazy-loads.ts
 
 # A newer push to a pull request cancels the older run, waiting or running: its report answers

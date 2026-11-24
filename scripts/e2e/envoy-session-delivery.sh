@@ -372,14 +372,29 @@ running() {
   [[ "$state" != Z ]]
 }
 # kill_label LABEL SIGNAL: the process started under LABEL, and when it leads its own process group
-# (the proxies and the sessions run under setsid), everything in that group.
+# (the proxies and the sessions run under setsid), everything in that group. A group that cannot be
+# one the run started is refused and named, and nothing is signalled, since the pid is the same
+# value: kill reads group 0 as the group it is called from and group 1 as every process it may
+# signal. This script does not source lib/process-tree.sh, so its group_signalable is written here.
 kill_label() {
-  local label=$1 signal=$2 p=${pid[$1]:-} group
+  local label=$1 signal=$2 p=${pid[$1]:-} group why
   [[ "$p" =~ ^[1-9][0-9]*$ ]] || return 0
   group=""
   if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
   if [[ "$group" == "$p" ]]; then
-    kill "-$signal" -- "-$p" 2>/dev/null || true
+    case $p in
+      '') why='it is empty' ;;
+      *[!0-9]*) why='it is not a number' ;;
+      0) why='kill reads group 0 as the group it is called from' ;;
+      1) why='kill reads group 1 as -1, every process it may signal' ;;
+      0*) why='no group is written with a leading zero' ;;
+      *) why='' ;;
+    esac
+    if [[ -n "$why" ]]; then
+      echo "refusing to signal process group '$p': $why" >&2
+    else
+      kill "-$signal" -- "-$p" 2>/dev/null || true
+    fi
   else
     kill "-$signal" "$p" 2>/dev/null || true
   fi

@@ -320,7 +320,7 @@ cleanup_running=false
 # run that gets to its end calls it itself, before the rows that read the evidence it leaves
 # (transcript-in-evidence); every other way out reaches it through cleanup.
 teardown() {
-  local pid fd
+  local pid fd why
   # Once: a repeated INT or TERM, or the EXIT after one, finds the stop already running. Both are
   # ignored from here on rather than put back on their default, which a repeat would then end the
   # run by, before the stack stopped and dropped its databases.
@@ -332,11 +332,27 @@ teardown() {
   codex_stop
   # A client's input ending is its host going away: each closes the end this shell holds of every
   # fifo before it starts, so it sees the end here, runs its shutdown (deregistering its session)
-  # and exits; one still running 5 s later is killed with its process group.
+  # and exits; one still running 5 s later is killed with its process group. A pid that cannot lead
+  # a group the run started is refused and named, and gets no signal, not even the wait's signal 0,
+  # since the pid is the same value: kill reads group 0 as the group it is called from, which holds
+  # this run, and group 1 as every process it may signal. This script does not source
+  # lib/process-tree.sh, so its group_signalable is written here.
   for fd in "${scenario_fds[@]}"; do
     exec {fd}>&-
   done
   for pid in "${scenario_pids[@]}"; do
+    case $pid in
+      '') why='it is empty' ;;
+      *[!0-9]*) why='it is not a number' ;;
+      0) why='kill reads group 0 as the group it is called from' ;;
+      1) why='kill reads group 1 as -1, every process it may signal' ;;
+      0*) why='no group is written with a leading zero' ;;
+      *) why='' ;;
+    esac
+    if [ -n "$why" ]; then
+      echo "refusing to signal process group '$pid': $why" >&2
+      continue
+    fi
     for _ in $(seq 1 50); do
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.1
