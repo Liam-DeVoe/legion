@@ -42,9 +42,9 @@ import (
 
 // xidService is a document service on a traced pool of a fresh database, settling after an hour so
 // only the settlement a test runs itself settles. Its document store and its identity check every
-// call (checkedVersioned, checkedIdentity): none may run inside a transaction's xid window, from
-// its first write to its end (store.InXidWindow); and the tracer fails the test for document work
-// inside one (storetest.Traced).
+// call (checkedVersioned, collabtest.CheckedIdentity): none may run inside a transaction's xid
+// window, from its first write to its end (store.InXidWindow); and the tracer fails the test for
+// document work inside one (storetest.Traced).
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
@@ -53,7 +53,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		Store:       database,
 		Persistence: checkedVersioned(t, NewPgVersioned(database)),
 		Events:      events.NewBroker(),
-		Identity:    checkedIdentity(t, headerIdentity(database)),
+		Identity:    collabtest.CheckedIdentity(t, headerIdentity(database)),
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
@@ -344,14 +344,15 @@ func (noReferences) Items([]text.Prefix) (map[int]string, error) { return nil, n
 
 // The collaborator check's control through this package's rig, in every run: the tracer opens a
 // transaction's xid window at its first write (store.OpenXidWindow), and a call to a collaborator
-// the rig decorates (checkedIdentity, through collabtest.Check) is then named, where the same call
-// before the write is not. A tracer that stopped opening the window, a decorator that stopped
-// checking or a check that stopped reporting would leave every rig row passing, and fails this one.
+// the rig decorates (collabtest.CheckedIdentity, through collabtest.Check) is then named, where
+// the same call before the write is not. A tracer that stopped opening the window, a decorator
+// that stopped checking or a check that stopped reporting would leave every rig row passing, and
+// fails this one.
 func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	caught := &collabtest.RecordedFailures{TB: t}
-	people := checkedIdentity(caught, signedIn("alice@example.com"))
+	people := collabtest.CheckedIdentity(caught, signedIn("alice@example.com"))
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

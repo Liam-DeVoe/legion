@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -79,7 +80,7 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 	var people identity.Identity = headerIdentity(database)
 	_, windowRig := tracer.(*storetest.XidTracer)
 	if windowRig {
-		people = checkedIdentity(t, people)
+		people = collabtest.CheckedIdentity(t, people)
 	}
 	documents := docs.New(docs.Deps{Store: database, Identity: people, Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })

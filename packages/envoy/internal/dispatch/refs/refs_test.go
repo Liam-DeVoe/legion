@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // TestMain drops the databases the package's tests clone (storetest.Main).
@@ -435,10 +436,7 @@ func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
 
 	// A moment of the database's own clock between the two writes: the survivor was stamped
 	// before it, and the edge the second write adds after it.
-	var between time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&between); err != nil {
-		t.Fatalf("read the database's clock between the writes: %v", err)
-	}
+	between := testdb.ClockTimestamp(t, database.Pool)
 	replaceAndStamp(t, database, "comment", "c1", "now dispatch://CORE-1/ask/keep and dispatch://OPS-2/spec", 9)
 	second := readProvenance(t, database, "comment", "c1")
 	if len(second) != 2 {

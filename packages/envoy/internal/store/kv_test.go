@@ -2580,7 +2580,7 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 	assertRoleHolder(t, reg, role, newSession)
 	assertInterestTopicsForSession(t, reg, newSession, roleTopic)
 	assertInterestTopicsForSession(t, reg, oldSession, roleTopic, "notifications.slack.>")
-	waitForLogged(t, logs, "the WARN line for the old holder's failed cleanup",
+	logtest.AwaitLogged(t, logs, "the WARN line for the old holder's failed cleanup",
 		"level=WARN", "role=legion-controller", "old_session_id=ses_old", "new_session_id=ses_new")
 	t.Logf("old-holder cleanup warning: %s", strings.TrimSpace(logs.String()))
 }
@@ -2617,7 +2617,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 		t.Fatal("Get must not return a route after its watched value is malformed")
 	}
 
-	waitForLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
+	logtest.AwaitLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
 		"level=WARN", "key="+sessionID, "revision="+strconv.FormatUint(revision, 10))
 	t.Logf("interest watcher malformed-value warning: %s", strings.TrimSpace(logs.String()))
 }
@@ -2720,21 +2720,6 @@ func captureRegistryLogs(t *testing.T) *lockedBuffer {
 	var logs lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	return &logs
-}
-
-// waitForLogged waits until the captured log holds each of wants, the parts of the line what names.
-// A give-up prints the first part the log lacks, and the log.
-func waitForLogged(t *testing.T, logs *lockedBuffer, what string, wants ...string) {
-	t.Helper()
-	testwait.Until(t, what, func() (string, bool) {
-		logged := logs.String()
-		for _, want := range wants {
-			if !strings.Contains(logged, want) {
-				return fmt.Sprintf("no %q in the log %q", want, logged), false
-			}
-		}
-		return logged, true
-	})
 }
 
 type lockedBuffer = logtest.Buffer
@@ -3723,9 +3708,9 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 // never reaches the shape being measured. So this test is a demonstration, and it is not the
 // regression lock. The lock is TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot,
 // which is deterministic, cannot pass vacuously, and fails on either of those two readings.
-// Its verdict turns on the machine's clock (a 13 s hold against Open's 10 s JetStream MaxWait,
-// kv.go:133), so it runs only in benchtime's timing lane (benchtime.Timing), on a quiet machine and
-// never in CI, while the lock runs in every run.
+// Its verdict turns on the machine's clock (a 13 s hold against Open's 10 s JetStream MaxWait), so
+// it runs only in benchtime's timing lane (benchtime.Timing), on a quiet machine and never in CI,
+// while the lock runs in every run.
 func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	direct, cleanup := connectNATS(t)

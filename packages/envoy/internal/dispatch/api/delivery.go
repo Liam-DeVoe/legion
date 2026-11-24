@@ -691,8 +691,8 @@ func firstInstantPast(at time.Time) time.Time {
 // present (presetWindow), loses something the population holds or its daily series moves: the
 // first instant past the oldest row's merge + n, the oldest run start (each list that filters on
 // starts) + n, the oldest creation among the runs ListRuns read + n, and each waiting entry's ship
-// time + n; and the first instant past the next UTC midnight M (measures.DailySeries,
-// measures.go:240), by which a whole-day window's first and last days have both moved. A window
+// time + n; and the first instant past the next UTC midnight M (measures.DailySeries), by which a
+// whole-day window's first and last days have both moved. A window
 // whose end is the midnight itself has dropped its first day and holds none of the new one, so a
 // view read inside the midnight's microsecond is due at that microsecond's end and not at the next
 // midnight. DailySeries reads the window's end once more: the last day is Partial while that day's

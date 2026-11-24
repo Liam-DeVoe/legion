@@ -2,32 +2,13 @@ package docs
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
 )
-
-// checkedIdentity is the docs window rigs' decorator of the identity a document service resolves
-// a socket's person with: it checks Login, which takes its context from the request it resolves
-// (collabtest.Check), and calls through.
-func checkedIdentity(t testing.TB, next identity.Identity) identity.Identity {
-	return checkedLogin{t: t, next: next}
-}
-
-type checkedLogin struct {
-	t    testing.TB
-	next identity.Identity
-}
-
-func (c checkedLogin) Login(r *http.Request) (string, error) {
-	collabtest.Check(c.t, r.Context(), "identity.Identity", "Login")
-	return c.next.Login(r)
-}
 
 // checkedVersioned is the docs window rigs' decorator of the document store (VersionedStore): it
 // checks every method that takes a context (collabtest.Check) and calls through. The interface has

@@ -508,7 +508,7 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
-	waitForLogged(t, logs, "DeleteIf's WARN line for the malformed value it deletes",
+	logtest.AwaitLogged(t, logs, "DeleteIf's WARN line for the malformed value it deletes",
 		"session registry deleting a malformed value under a conditional delete")
 }
 
@@ -728,7 +728,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	}
 	waitForSessionEviction(t, reg, sessionID)
 
-	waitForLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
+	logtest.AwaitLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
 		"level=WARN", "key="+sessionID, "revision="+strconv.FormatUint(revision, 10))
 	t.Logf("session watcher malformed-value warning: %s", strings.TrimSpace(logs.String()))
 }
@@ -961,21 +961,6 @@ func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
 	var logs lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	return &logs
-}
-
-// waitForLogged waits until the captured log holds each of wants, the parts of the line what names.
-// A give-up prints the first part the log lacks, and the log.
-func waitForLogged(t *testing.T, logs *lockedBuffer, what string, wants ...string) {
-	t.Helper()
-	testwait.Until(t, what, func() (string, bool) {
-		logged := logs.String()
-		for _, want := range wants {
-			if !strings.Contains(logged, want) {
-				return fmt.Sprintf("no %q in the log %q", want, logged), false
-			}
-		}
-		return logged, true
-	})
 }
 
 type lockedBuffer = logtest.Buffer

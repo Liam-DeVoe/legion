@@ -1034,22 +1034,21 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				seedServiceText(t, service, artifactID, markdown(paragraphs, "before"))
 				// Every trial's transaction runs on a connection of its own that the pool does
 				// not own: Acquire takes one out of the pool and Hijack removes it from the
-				// pool altogether, which is how this repository's own Pool.Listener gets a
-				// connection no Close of the pool waits for (store/pool.go:318-335). A trial
-				// that ends while it owns the transaction gives the connection back by closing
-				// it in the release below; a trial whose commit is still in flight leaves it
-				// where it is, since nothing may take a connection a live Commit is writing,
-				// and because the pool no longer owns it the pool's Close does not wait for it.
-				// So a commit that never returns costs this trial its connection rather than
-				// the package's cleanup.
+				// pool altogether, which is how this repository's Pool.Listener (store) gets
+				// a connection no Close of the pool waits for. A trial that ends while it owns
+				// the transaction gives the connection back by closing it in the release below;
+				// a trial whose commit is still in flight leaves it where it is, since nothing
+				// may take a connection a live Commit is writing, and because the pool no longer
+				// owns it the pool's Close does not wait for it. So a commit that never returns
+				// costs this trial its connection rather than the package's cleanup.
 				pooled, err := database.Pool.Acquire(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
 				conn := pooled.Hijack()
-				// Bounded by the shared wait, as Pool.Dedicated bounds the close of the
-				// connection it hijacked (pool.go:350-356): a connection that went half-open
-				// must not hold the trial in its Terminate past it.
+				// Bounded by the shared wait, as Pool.Dedicated (store) bounds the close of the
+				// connection it hijacked: a connection that went half-open must not hold the
+				// trial in its Terminate past it.
 				closeConn := func() {
 					_ = conn.Close(testwait.Context(t))
 				}

@@ -2125,7 +2125,7 @@ Its own filter is the closure of this one package, not packages/envoy/**, so a c
 elsewhere in the module does not start this job. No Bun: no test file here runs it, and no
 job of this lane installs it. It runs under -race because a read that walks a live document
 without its lock races the room's peers, which no ordinary run shows
-(TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:40,
+(TestReadsOfALiveDocumentRunBesideItsPeers in internal/dispatch/docs/live_read_race_test.go,
 LEGION-499).
 
 ## The cleanup detector run of the document service

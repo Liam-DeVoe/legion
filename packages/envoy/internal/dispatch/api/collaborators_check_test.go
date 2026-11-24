@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -25,11 +24,12 @@ import (
 )
 
 // The xid window rigs' decorators of the collaborators the api package hands the product: docs.API,
-// the ones the api package declares, and identity, the embedder, the file store and the agent
-// stream. Each checks every method that takes a context (collabtest.Check) and calls through;
-// newTestServer hands them to the product whenever a row installs an xid tracer. They live here
-// rather than in collabtest, which imports no collaborator's package, so no other rig's test
-// binary reads these packages through it.
+// the ones the api package declares, and the embedder, the file store and the agent stream. Each
+// checks every method that takes a context (collabtest.Check) and calls through; newTestServer
+// hands them to the product whenever a row installs an xid tracer, with identity's decorator
+// (collabtest.CheckedIdentity), which the docs rig hands its document service too. They live here
+// rather than in collabtest, which imports no collaborator's package but identity, so no other
+// rig's test binary reads these packages through it.
 
 // checkedDocs wraps every docs.API method. ScheduleSettlement takes no context, so it cannot be
 // checked. A service that serves the document socket keeps serving it through the decorator
@@ -289,24 +289,6 @@ func (c checkedVerifier) Verify(ctx context.Context, raw string) (oidc.Claims, e
 	return c.next.Verify(ctx, raw)
 }
 
-// checkedIdentity wraps Login, which takes its context from the request it resolves.
-func checkedIdentity(t testing.TB, next identity.Identity) identity.Identity {
-	if next == nil {
-		return nil
-	}
-	return checkedLogin{t: t, next: next}
-}
-
-type checkedLogin struct {
-	t    testing.TB
-	next identity.Identity
-}
-
-func (c checkedLogin) Login(r *http.Request) (string, error) {
-	collabtest.Check(c.t, r.Context(), "identity.Identity", "Login")
-	return c.next.Login(r)
-}
-
 // checkedEmbedder wraps Embed. Identity and Limits take no context, so they cannot be checked:
 // both answer from the embedder's own configuration.
 func checkedEmbedder(t testing.TB, next embed.Embedder) embed.Embedder {
@@ -382,17 +364,18 @@ func (c checkedStream) Replay(ctx context.Context, sessionID string) (agentstrea
 
 func (c checkedStream) Watch(sessionID string) error { return c.next.Watch(sessionID) }
 
-// The control of the decorators above: a collaborator call the api rig's decorator wraps is
-// reported once its transaction has written, and not before. The call is identity's Login, as
-// the docs rig's own control makes it (docs.TestXidWindowCatchesACollaboratorCallInsideTheWindow),
-// through checkedIdentity on the traced pool's marked context: before the transaction's first
-// write the check stays silent, and after it the one call is reported, naming identity.Identity.Login.
-// A decorator that checked nothing would pass every route row of the xid window table unseen.
+// The control of the decorators the api rig hands the product: a collaborator call one of them
+// wraps is reported once its transaction has written, and not before. The call is identity's Login,
+// through collabtest.CheckedIdentity, which the docs rig's own control calls too
+// (docs.TestXidWindowCatchesACollaboratorCallInsideTheWindow), on the traced pool's marked context:
+// before the transaction's first write the check stays silent, and after it the one call is
+// reported, naming identity.Identity.Login. A decorator that checked nothing would pass every
+// route row of the xid window table unseen.
 func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	caught := &collabtest.RecordedFailures{TB: t}
-	people := checkedIdentity(caught, loginAs("alice@example.com"))
+	people := collabtest.CheckedIdentity(caught, loginAs("alice@example.com"))
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

@@ -52,16 +52,18 @@ func (f *Fill) Wake() {
 }
 
 // Stop ends the fill's context, as a serving process's stop does, and waits, through the shared
-// wait, for Run to return: what names that wait, and its failure carries the fill's log.
+// wait, for Run to return: what names that wait, and its failure carries the fill's log. The
+// reading is the fill's log buffer, which the shared wait renders (String) only when it gives up,
+// so an ask reads nothing of the log.
 func (f *Fill) Stop(t testing.TB, what string) {
 	t.Helper()
 	f.cancel()
-	testwait.Until(t, what, func() (string, bool) {
+	testwait.Until(t, what, func() (fmt.Stringer, bool) {
 		select {
 		case <-f.stopped:
-			return "", true
+			return nil, true
 		default:
-			return f.Log(), false
+			return f.logs, false
 		}
 	})
 }

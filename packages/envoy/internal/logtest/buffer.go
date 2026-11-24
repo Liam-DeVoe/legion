@@ -2,8 +2,10 @@ package logtest
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"sync"
+	"testing"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -11,9 +13,9 @@ import (
 // Buffer is the sink the goroutines of the code under test write while the test reads it, such as
 // the handler a test installs with SetDefault: the two happen at once, and the buffer's own mutex
 // is what makes the read safe, so the race detector sees a log the test may read at any moment
-// rather than a data race. A test that waits for a line waits on Stream through testwait.Next,
-// never by reading the log once. A type that needs a reader of its own embeds this one rather than
-// copying the body.
+// rather than a data race. A test that waits for a line waits on Stream through testwait.Next, or
+// for parts of the log through AwaitLogged, never by reading the log once. A type that needs a
+// reader of its own embeds this one rather than copying the body.
 type Buffer struct {
 	mu      sync.Mutex
 	written strings.Builder
@@ -70,4 +72,30 @@ func (b *Buffer) Lines(substring string) string {
 		}
 	}
 	return matched.String()
+}
+
+// AwaitLogged waits, through the shared wait (testwait.Until), until logs holds each of wants, the
+// parts of the line what names. A give-up prints the first part the log lacked at the last read,
+// and the log as it stood then.
+func AwaitLogged(t testing.TB, logs *Buffer, what string, wants ...string) {
+	t.Helper()
+	testwait.Until(t, what, func() (lacked, bool) {
+		logged := logs.String()
+		for _, want := range wants {
+			if !strings.Contains(logged, want) {
+				return lacked{want: want, logged: logged}, false
+			}
+		}
+		return lacked{}, true
+	})
+}
+
+// lacked is AwaitLogged's reading: the first part a read found the log without, and the log it
+// read. The shared wait renders it (String) only when it gives up, so a read quotes nothing.
+type lacked struct {
+	want, logged string
+}
+
+func (l lacked) String() string {
+	return fmt.Sprintf("no %q in the log %q", l.want, l.logged)
 }

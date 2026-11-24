@@ -126,7 +126,7 @@ func rawCreatedPayload(t *testing.T, handler http.Handler, key string) map[strin
 
 func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	fixture := newDuplicateVocabulary(t, handler, "FORCED", 1)
 
 	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -143,7 +143,7 @@ func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
 
 func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Astrolabe calibration drifts after a reseat",
@@ -281,7 +281,7 @@ func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
 
 func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	// Midway between the two bars, so the case holds for any pair with
 	// 0 < duplicateNudgeScore < duplicateRefuseScore < 1.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", (duplicateNudgeScore+duplicateRefuseScore)/2)
@@ -314,7 +314,7 @@ func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 
 func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	// Half the nudge bar: the candidate holds too little of the new text to be named.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", duplicateNudgeScore/2)
 
@@ -335,7 +335,7 @@ func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
 
 func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
 	t.Parallel()
-	handler, _ := newDuplicateTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", 1)
 
 	refused := createIssueRequest(t, handler, map[string]any{

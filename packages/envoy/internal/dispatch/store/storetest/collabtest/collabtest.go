@@ -9,13 +9,14 @@
 // it, as it checks the document work the tracer sees through docwork; neither reads a clock.
 //
 // The decorators sit beside the rigs that hand the collaborators: the api package's
-// (api/collaborators_check_test.go: docs.API, identity, the embedder, the file store, the agent
-// stream and publisher, the answerer and the token verifier) and the docs package's
-// (docs/collaborators_check_test.go: the document store and identity). The docs and api
-// interfaces cannot be wrapped here without an import cycle for those packages' own tests, and
-// this package imports no collaborator's package, so a rig's test binary reads none it does not
-// already read. What they share is here: Check, the HTTP client for the Envoy listener and
-// GitHub App clients, and RecordedFailures, the test a control hands Check in place of its own.
+// (api/collaborators_check_test.go: docs.API, the embedder, the file store, the agent stream and
+// publisher, the answerer and the token verifier) and the docs package's
+// (docs/collaborators_check_test.go: the document store). The docs and api interfaces cannot be
+// wrapped here without an import cycle for those packages' own tests. The identity both rigs hand
+// is wrapped here (CheckedIdentity): identity is the one collaborator's package this package
+// imports, so a rig's test binary reads no other collaborator's package through it. What the rigs
+// share is here: Check, CheckedIdentity, the HTTP client for the Envoy listener and GitHub App
+// clients, and RecordedFailures, the test a control hands Check in place of its own.
 package collabtest
 
 import (
@@ -27,6 +28,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -60,6 +62,27 @@ type checkedTransport struct {
 func (c checkedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	Check(c.t, request.Context(), "HTTP "+request.URL.Host, request.Method+" "+request.URL.Path)
 	return c.next.RoundTrip(request)
+}
+
+// CheckedIdentity is the window rigs' decorator of the identity Dispatch resolves a person with,
+// which the api rig hands the product and the docs rig a document service: it checks Login, which
+// takes its context from the request it resolves (Check), and calls through. A nil identity
+// stays nil, for a rig that hands the product none.
+func CheckedIdentity(t testing.TB, next identity.Identity) identity.Identity {
+	if next == nil {
+		return nil
+	}
+	return checkedLogin{t: t, next: next}
+}
+
+type checkedLogin struct {
+	t    testing.TB
+	next identity.Identity
+}
+
+func (c checkedLogin) Login(r *http.Request) (string, error) {
+	Check(c.t, r.Context(), "identity.Identity", "Login")
+	return c.next.Login(r)
 }
 
 // RecordedFailures is a testing.TB that records what a check reports through Errorf instead of

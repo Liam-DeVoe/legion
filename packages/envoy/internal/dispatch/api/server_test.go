@@ -383,7 +383,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// may run inside a transaction's xid window, from its first write to its end (store.InXidWindow).
 	if _, windowRig := options.tracer.(*storetest.XidTracer); windowRig {
 		documents = checkedDocs(t, documents)
-		people = checkedIdentity(t, people)
+		people = collabtest.CheckedIdentity(t, people)
 		agentPublisher = checkedAgentPublisher(t, agentPublisher)
 		embedder = checkedEmbedder(t, embedder)
 		answerer = checkedAnswerer(t, answerer)

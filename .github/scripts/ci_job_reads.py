@@ -634,7 +634,7 @@ RULES = {
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:775 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:88-89 go build .../daemon/cmd/legion"),
-        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1859,1866")],
+        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1873")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
@@ -710,23 +710,23 @@ RULES = {
     # go list closure of the text-check run, as the row above says, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for step_records_way_back_doc_test.go:58 (shippedText) and :45 "
-                               "(assertIsTheGuidesBlock, way_back_doc_test.go:164, through wayBackBlockOfTheGuide's shippedText, :182)")),
+                               "for step_records_way_back_doc_test.go's shippedText and its assertIsTheGuidesBlock "
+                               "(way_back_doc_test.go, through wayBackBlockOfTheGuide's shippedText)")),
     # This test reads the plan record's migration through migrations.WayBack, which reads the
     # store's migrations as the one above does, and internal/store's plan_ratings_way_back_test.go,
     # which runs that migration's way back, reads no text outside its package, so the guide is this
     # one's one row.
     f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:164, "
-                               "through wayBackBlockOfTheGuide's shippedText, :182) and :49 (entryLinkIn of shippedText)")),
+                               "for plan_ratings_way_back_doc_test.go's assertIsTheGuidesBlock (way_back_doc_test.go, "
+                               "through wayBackBlockOfTheGuide's shippedText) and its entryLinkIn of shippedText")),
     # This test reads the plan rows' migration through migrations.All, as the one above does, and
     # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
     # text outside its package, so the guide is this one's one row.
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for owner_steps_way_back_doc_test.go:28 (assertIsTheGuidesBlock, way_back_doc_test.go:164, "
-                               "through wayBackBlockOfTheGuide's shippedText, :182)")),
+                               "for owner_steps_way_back_doc_test.go's assertIsTheGuidesBlock (way_back_doc_test.go, "
+                               "through wayBackBlockOfTheGuide's shippedText)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -836,16 +836,14 @@ RULES = {
     # packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
     f"{ENVOY}/cmd/dispatch/twobuild_documents_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json",
-         "cmd/dispatch/twobuild_documents_test.go:59 readManifest (os.ReadFile :114) of the current build's block manifest"),
+         "cmd/dispatch/twobuild_documents_test.go:114 readManifest's os.ReadFile of the current build's block manifest"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/corpus/*.md",
-         "cmd/dispatch/twobuild_documents_test.go:72 the current build's corpus: corpusFiles :417 os.ReadDir, and "
+         "cmd/dispatch/twobuild_documents_test.go:417 corpusFiles' os.ReadDir of the current build's corpus, and "
          ":504 os.ReadFile of each .md file it lists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:73 the current build's reference fixtures, read by "
-         "referencesMarkdown :689 os.ReadFile"),
+         "cmd/dispatch/twobuild_documents_test.go:689 referencesMarkdown's os.ReadFile of the current build's reference fixtures"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:73 the current build's reference fixtures, read by "
-         "referencesMarkdown :689 os.ReadFile")),
+         "cmd/dispatch/twobuild_documents_test.go:689 referencesMarkdown's os.ReadFile of the current build's reference fixtures")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
@@ -868,7 +866,7 @@ RULES = {
          "cmd/spec-check/main_test.go:436 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/cipher/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/cipher/config/config_test.go:1891,1921 Load the URL whose sslrootcert is this bundle (rdsBundle :1851), which pgx reads to build the root pool")),
+                                                            "internal/cipher/config/config_test.go:1891,1921 Load the URL whose sslrootcert is this bundle (rdsBundle), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cipher/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/cipher/store/storetest", ["."], "internal/cipher/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
@@ -3330,7 +3328,7 @@ GATES = [
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
-        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:256-260 reads every .md of skillAndPromptRoots (:30-33)"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:256-260 reads every .md of skillAndPromptRoots"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:23-159 imports")
       + install_omp("pi-envoy") + bun_job("pi-envoy")),
 

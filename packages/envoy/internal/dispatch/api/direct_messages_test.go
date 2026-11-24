@@ -353,10 +353,10 @@ func TestAgentRepliesToADirectMessageAreUnreadForItsSenderUntilRead(t *testing.T
 }
 
 // Three things turn this red and nothing else does: the read-mark write's model.CanonicalLogin
-// (state.go:441), direct_marks' deliberate canonical/raw split, and the arguments the shared read
-// path builds (unreadDirectRepliesArgs). It never calls the conversation window, so it is not
-// window coverage; deleting it as redundant would take all three guards away with every other
-// test still green.
+// (putUserAgentState), direct_marks' deliberate canonical/raw split, and the arguments the
+// shared read path builds (unreadDirectRepliesArgs). It never calls the conversation window, so
+// it is not window coverage; deleting it as redundant would take all three guards away with
+// every other test still green.
 //
 // It exercises GET /me/agents/state and the read-mark write; it never reads the conversation
 // window.
