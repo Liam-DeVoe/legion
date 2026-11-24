@@ -3,20 +3,27 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/pprof/profile"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -56,27 +63,52 @@ var (
 	c28LeftOut = regexp.MustCompile(`reearth/ygo|coldRead`)
 	// c28Rooms matches a frame of the rooms: the samples with one are the rooms' part.
 	c28Rooms = regexp.MustCompile(`reearth/ygo`)
+	// c28DisplayCache matches a frame of the display-tree cache's part, the part c28 named: the
+	// trees a request's reader copies from the table (api's displayTreeReader.storedTrees), the
+	// trees this process reads for display itself (pmdoc's encodeDisplayTree), and the cache's
+	// own entries, list elements and map, which bytelru allocates under the pmdoc function that
+	// keeps a tree (PutStoredDisplayTree for a stored one, DisplayJSONOf for one read here). What
+	// else those frames allocate - the query's rows, the markdown's parse - is dropped before the
+	// request ends, so on a server at rest the samples with one are what the cache holds.
+	c28DisplayCache = regexp.MustCompile(`\(\*displayTreeReader\)\.storedTrees$|pmdoc\.(encodeDisplayTree|PutStoredDisplayTree|DisplayJSONOf)$`)
 )
 
+// c31Flat is how much the heap of the function c28 named may grow between a leak's two sets once
+// the caches its path fills are full (check c31): 1 MB.
+const c31Flat = 1_000_000
+
 // c28Leaks holds a test for each leak c28 named in production, under the leak's name (check c31).
-// c28 compared production's heap over 2026-11-19T18:02:06Z to 2026-11-20T15:11:12Z and named none:
-// the heap outside the rooms and the read cache shrank by 11.47 MB, the rooms' part divided by
-// resident_bytes stayed under twice its first value, and each cache with a bound stayed within it.
+// c28 compared production's heap over 2026-11-19T18:02:06Z to 2026-11-20T15:11:12Z. The heap
+// outside the rooms and the read cache shrank by 11.47 MB, and the rooms' part divided by
+// resident_bytes stayed under twice its first value, but one cache with a bound held more than
+// it, which c28's cache rule names a leak: the display-tree cache, whose bound is 64 MiB
+// (67,108,864 B). Its part was 70.8 MB in the kept set at the window's start and 79.2 MB at its
+// end: the stored trees under displayTreeReader.storedTrees 54,834,403 B, the trees built under
+// encodeDisplayTree 19,013,086 B, and bytelru's entries and list nodes 5,359,880 B, as the tester
+// read the same profiles again with go tool pprof
+// (dispatch://INFRA-1588/artifact/tester-evidence-9e363310-md, section c28). The cache charged
+// each tree the bytes of its JSON alone. The fix charges each tree its whole array, its key and
+// its entry (6190183f), and makes the cache's map afresh as the cache turns over, so an entry
+// costs no more the longer the process runs (bytelru's renewItems, pmdoc's
+// displayCacheEntryBytes).
 //
 // A leak c28 names is one row here. Its test starts a server with the memory harness
 // (newMemoryHarness, memoryHarness.start, memoryServer.profiler), drives the leak's code path on it
 // many times, until every cache that path fills is full, takes a set (takeC28Set), drives the path
-// as many times again, takes a second set, and fails unless the flat heap of the function c28
-// named (c28Set.flatOutside, or c28Set.inuse with c28Rooms for a leak of the rooms) grew by at
-// most 1 MB between the two. At the commit before the leak's fix the test fails: that function's
-// heap grows with each pass.
-var c28Leaks []struct {
+// as many times again, takes a second set, and fails unless the heap of the function c28 named
+// (c28Set.flatOutside, or c28Set.inuse with the regexp of its part, c28Rooms for a leak of the
+// rooms) grew by at most 1 MB between the two (c31Flat). At the commit before the leak's fix the
+// test fails.
+var c28Leaks = []struct {
 	name string
 	test func(t *testing.T)
+}{
+	{"the display-tree cache holds no more heap than its bound", displayCacheHoldsItsBound},
 }
 
 // Each leak c28 named in production is fixed, and a test that drives its path holds the heap of the
-// function c28 named flat (c28Leaks). c28 named no leak, so the test holds no subtest, and says so.
+// function c28 named flat (c28Leaks). c28 named one leak, the display-tree cache past its bound, so
+// the test holds one subtest; were c28 to name none, it would hold none and say so.
 func TestTheLeaksOfC28AreFixed(t *testing.T) {
 	t.Parallel()
 	if len(c28Leaks) == 0 {
@@ -86,6 +118,247 @@ func TestTheLeaksOfC28AreFixed(t *testing.T) {
 	for _, leak := range c28Leaks {
 		t.Run(leak.name, leak.test)
 	}
+}
+
+const (
+	// displayCacheIssues issues of displayCacheComments comments each are the texts the display
+	// cache's row reads, each comment displayCacheWordsLeast words and up to displayCacheWordsSpan
+	// more (displayCacheText), whose trees are about 2,200 to 5,700 bytes. The texts together are
+	// about 1.44 times what the cache holds charged as it charges them now, and 1.24 times charged
+	// by their JSON alone as the code before the fix charged them, so a pass that reads each text
+	// once finds none of them still held from the pass before and puts every one again.
+	displayCacheIssues     = 210
+	displayCacheComments   = 100
+	displayCacheWordsLeast = 420
+	displayCacheWordsSpan  = 700
+	// displayCacheWorkers is how many issues the row writes, and reads, at once.
+	displayCacheWorkers = 4
+	// displayCachePasses is how many times the row reads every text before its first set, and
+	// again between its two sets.
+	displayCachePasses = 3
+	// displayCacheNudge is the comment a pass posts on each issue before it reads it: a new
+	// comment moves both of the issue's lists' validators, as every write does, so the pass's
+	// reads build both answers rather than being given the bytes the list-answer cache kept. It is
+	// one text, so the trees it adds to the cache are one entry.
+	displayCacheNudge = "Read again."
+	// displayCacheFullSlack is more than the cache charges any one tree of the row's: a cache that
+	// has evicted for the last put holds within one entry of its bound.
+	displayCacheFullSlack = 64 << 10
+)
+
+// The display-tree cache holds no more heap than its bound however long it turns over, which c28
+// named it a leak for (c28Leaks). The texts are written by a server of their own, stopped before
+// the measured one starts; the measured server records every allocation in its heap profile
+// (GODEBUG=memprofilerate=1), so each set reads the cache's part exactly rather than estimated
+// from one allocation in 512 KB as production's sets are. A pass reads every issue as the
+// dashboard reads one after a write: a comment on it (displayCacheNudge), then its activity feed
+// and its comment list with the display trees (Dispatch-Trees: 1). Before each pass the stored
+// trees of every other issue are deleted, as a parser change leaves a deployment's texts with no
+// tree of the running version, so half the trees enter the cache read for display here
+// (encodeDisplayTree) and half copied from the table (displayTreeReader.storedTrees), the two ways
+// production's cache was filled.
+//
+// Each pass puts about 1.44 times what the cache holds, so the first set is taken after the cache
+// has turned over about four times and the second after as many again. The cache's map renews
+// itself each half turnover (bytelru's renewItems) and is at its full size after the first
+// renewal: a copy of bytelru read these texts in this order held its part flat within 0.01 MB
+// from the second turnover to the thirtieth, 1.53 MB under the bound. So the first set finds the
+// cache and its map both full. The test fails unless, between the two sets, the cache's part
+// (c28DisplayCache) grew by at most 1 MB (c31Flat), and unless that part at the second set is at
+// most the cache's bound (pmdoc.DisplayCacheBytes), as c28's cache rule reads it. The second is
+// what fails at the code before the fix: that cache charged each tree its JSON alone, and the same
+// copy held 8.96 MB past the bound, flat, since a cache held to any bound grows no further pass
+// after pass.
+func displayCacheHoldsItsBound(t *testing.T) {
+	memory := newMemoryHarness(t)
+	writer := memory.start(t)
+	keys := writer.writeDisplayCacheTexts(t)
+	writer.stop(t)
+
+	memory.env = []string{"DISPATCH_PPROF_PORT=0", "GODEBUG=memprofilerate=1"}
+	server := memory.start(t)
+	memory.env = nil
+	profiler := server.profiler(t)
+	var everyOther []string
+	for index, key := range keys {
+		if index%2 == 1 {
+			everyOther = append(everyOther, key)
+		}
+	}
+	unstored := displayCacheSums(everyOther)
+	passes := func() {
+		t.Helper()
+		for range displayCachePasses {
+			memory.dropStoredTrees(t, unstored)
+			eachDisplayCacheIssue(t, keys, func(key string) error {
+				if err := server.tryComment(key, displayCacheNudge); err != nil {
+					return err
+				}
+				if err := server.tryReadTrees("/api/v1/issues/" + key + "/events"); err != nil {
+					return err
+				}
+				return server.tryReadTrees("/api/v1/issues/" + key + "/comments")
+			})
+		}
+	}
+
+	passes()
+	heldAtStart := server.requireDisplayCacheFull(t)
+	start := takeC28Set(t, profiler)
+	passes()
+	heldAtEnd := server.requireDisplayCacheFull(t)
+	end := takeC28Set(t, profiler)
+
+	first, second := start.inuse(t, c28DisplayCache, nil), end.inuse(t, c28DisplayCache, nil)
+	t.Logf("the display-tree cache's part: %d B at the first set, %d B at the second, %v later, against a bound of %d B; the cache charged %d B and %d B",
+		first, second, end.at.Sub(start.at).Round(time.Second), int64(pmdoc.DisplayCacheBytes), heldAtStart, heldAtEnd)
+	if growth := second - first; growth > c31Flat {
+		t.Errorf("between the two sets the display-tree cache's part grew %d B, from %d B to %d B, want at most %d B: the cache's heap grows as it turns over",
+			growth, first, second, int64(c31Flat))
+	}
+	if second > pmdoc.DisplayCacheBytes {
+		t.Errorf("at the second set the display-tree cache's part is %d B, past its bound of %d B (pmdoc.DisplayCacheBytes), while it charged %d B: it charges a tree less than holding the tree costs the heap",
+			second, int64(pmdoc.DisplayCacheBytes), heldAtEnd)
+	}
+}
+
+// displayCacheText is the body of comment number of issue key: a sentence naming both, so no two
+// comments of the row share a text, then displayCacheWordsLeast to displayCacheWordsLeast +
+// displayCacheWordsSpan - 1 words, spread over that range within each issue.
+func displayCacheText(key string, number int) string {
+	words := displayCacheWordsLeast + number*37%displayCacheWordsSpan
+	return fmt.Sprintf("Comment %d on %s says %s", number, key, strings.Repeat("word ", words))
+}
+
+// displayCacheSums is the sum each comment of the issues keys is stored under (pmdoc.TextSum).
+func displayCacheSums(keys []string) [][]byte {
+	sums := make([][]byte, 0, len(keys)*displayCacheComments)
+	for _, key := range keys {
+		for number := range displayCacheComments {
+			sum := pmdoc.TextSum(displayCacheText(key, number))
+			sums = append(sums, sum[:])
+		}
+	}
+	return sums
+}
+
+// writeDisplayCacheTexts creates displayCacheIssues issues of the harness's project and posts
+// each one's displayCacheComments comments (displayCacheText), displayCacheWorkers issues at a
+// time, and answers the issues' keys. Each write stores its text's tree, as every write does.
+func (p *memoryServer) writeDisplayCacheTexts(t *testing.T) []string {
+	t.Helper()
+	keys := make([]string, displayCacheIssues)
+	for index := range keys {
+		body := fmt.Sprintf(`{"project":"MEM","title":"Display texts %d","force":true}`, index)
+		created := p.send(t, http.MethodPost, "/api/v1/issues", "application/json", strings.NewReader(body), http.Header{"X-Dispatch-User": {"alice"}})
+		var issue struct{ Key string }
+		if created.status != http.StatusCreated || json.Unmarshal(created.body, &issue) != nil || issue.Key == "" {
+			t.Fatalf("create issue %d: status %d body %.300s", index, created.status, created.body)
+		}
+		keys[index] = issue.Key
+	}
+	eachDisplayCacheIssue(t, keys, func(key string) error {
+		for number := range displayCacheComments {
+			if err := p.tryComment(key, displayCacheText(key, number)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return keys
+}
+
+// eachDisplayCacheIssue runs work for every issue of keys, displayCacheWorkers at once, and fails
+// the test with every error work answered.
+func eachDisplayCacheIssue(t *testing.T, keys []string, work func(key string) error) {
+	t.Helper()
+	next := make(chan string)
+	failures := make([]error, displayCacheWorkers)
+	var group sync.WaitGroup
+	for worker := range displayCacheWorkers {
+		group.Go(func() {
+			for key := range next {
+				if failures[worker] == nil {
+					failures[worker] = work(key)
+				}
+			}
+		})
+	}
+	for _, key := range keys {
+		next <- key
+	}
+	close(next)
+	group.Wait()
+	if err := errors.Join(failures...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tryComment posts body as a comment on the issue key as alice, and answers an error unless it
+// was stored.
+func (p *memoryServer) tryComment(key, body string) error {
+	encoded, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return fmt.Errorf("encode the comment: %w", err)
+	}
+	answer, err := p.trySend(http.MethodPost, "/api/v1/issues/"+key+"/comments", "application/json", bytes.NewReader(encoded), http.Header{"X-Dispatch-User": {"alice"}})
+	if err == nil && answer.status != http.StatusCreated {
+		err = fmt.Errorf("comment on %s: status %d body %.300s", key, answer.status, answer.body)
+	}
+	return err
+}
+
+// tryReadTrees reads path as alice with every stored text's display tree (Dispatch-Trees: 1), as
+// the dashboard reads every route, and answers an error unless it answered 200.
+func (p *memoryServer) tryReadTrees(path string) error {
+	answer, err := p.trySend(http.MethodGet, path, "", nil, http.Header{"X-Dispatch-User": {"alice"}, "Dispatch-Trees": {"1"}})
+	if err == nil && answer.status != http.StatusOK {
+		err = fmt.Errorf("GET %s: status %d body %.300s", path, answer.status, answer.body)
+	}
+	return err
+}
+
+// dropStoredTrees deletes the stored display trees of the texts whose sums are sums, so the next
+// read of each reads it for display and stores its tree again.
+func (h *memoryHarness) dropStoredTrees(t *testing.T, sums [][]byte) {
+	t.Helper()
+	if _, err := h.database.Pool.Exec(t.Context(), `delete from text_trees where sum = any($1)`, sums); err != nil {
+		t.Fatalf("delete %d stored display trees: %v", len(sums), err)
+	}
+}
+
+// requireDisplayCacheFull answers what the display-tree cache charges its entries now, as the
+// server's /metrics shows it (pmdoc.DisplayCacheHeld), and fails the test unless that is within
+// displayCacheFullSlack of the cache's bound: a cache the passes did not fill would hold its
+// bound whatever it charged.
+func (p *memoryServer) requireDisplayCacheFull(t *testing.T) int64 {
+	t.Helper()
+	const sample = `envoy_dispatch_cache_bytes{cache="display_tree"} `
+	response, err := http.Get(p.base + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics: status %d %v", response.StatusCode, err)
+	}
+	for line := range strings.Lines(string(body)) {
+		value, found := strings.CutPrefix(strings.TrimSpace(line), sample)
+		if !found {
+			continue
+		}
+		held, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			t.Fatalf("read %q of /metrics: %v", line, err)
+		}
+		if held < pmdoc.DisplayCacheBytes-displayCacheFullSlack {
+			t.Fatalf("the display-tree cache charges %d B of its %d B bound, want it full: the passes did not fill it", held, int64(pmdoc.DisplayCacheBytes))
+		}
+		return held
+	}
+	t.Fatalf("/metrics holds no %q sample", strings.TrimSpace(sample))
+	return 0
 }
 
 const (
