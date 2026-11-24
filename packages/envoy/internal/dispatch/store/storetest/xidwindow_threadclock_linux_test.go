@@ -355,6 +355,15 @@ func xidLocalPolicy(t *testing.T) xidPolicy {
 // hasMemory, the nodes with memory: set_mempolicy takes a preferred node only from both. found is
 // false where no node is in both.
 func xidPreferredNode(allowed, hasMemory [16]uint64) (node int, found bool) {
+	// RED highest (scratch): the highest node in both, not the lowest.
+	if os.Getenv("PLANT") == "highest" {
+		for word := len(allowed) - 1; word >= 0; word-- {
+			if both := allowed[word] & hasMemory[word]; both != 0 {
+				return word*64 + 63 - bits.LeadingZeros64(both), true
+			}
+		}
+		return 0, false
+	}
 	for word := range allowed {
 		if both := allowed[word] & hasMemory[word]; both != 0 {
 			return word*64 + bits.TrailingZeros64(both), true
@@ -368,6 +377,15 @@ func xidPreferredNode(allowed, hasMemory [16]uint64) (node int, found bool) {
 // passed over, and answers names it with that answer. Any other answer ends the search: errno is
 // that answer, and node the node it was for.
 func xidFirstAcceptedNode(allowed [16]uint64, try func(node int) unix.Errno) (node int, found bool, answers []string, errno unix.Errno) {
+	// RED notry (scratch): the lowest node the thread may use, untried.
+	if os.Getenv("PLANT") == "notry" {
+		for node = range len(allowed) * 64 {
+			if allowed[node/64]&(1<<(node%64)) != 0 {
+				return node, true, nil, 0
+			}
+		}
+		return 0, false, nil, 0
+	}
 	for node = range len(allowed) * 64 {
 		if allowed[node/64]&(1<<(node%64)) == 0 {
 			continue
@@ -406,6 +424,10 @@ func xidNodesWithMemory(text []byte, readErr error) (hasMemory [16]uint64, absen
 			to, err = strconv.Atoi(last)
 		}
 		if err != nil || from < 0 || to < from || to >= len(hasMemory)*64 {
+			// RED laxparse (scratch): a part that is not a node or a range is passed over.
+			if os.Getenv("PLANT") == "laxparse" {
+				continue
+			}
 			return hasMemory, false, fmt.Errorf("read %s, %q, as a list of nodes", xidHasMemoryPath, text)
 		}
 		for node := from; node <= to; node++ {
