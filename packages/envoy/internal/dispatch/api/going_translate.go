@@ -545,6 +545,49 @@ func goingReplyTarget(value string) (id, block string) {
 	return value, ""
 }
 
+// goingPostID resolves a short post reference within the owner it names, as the CLI does.
+// The reference graph read already resolves such prefixes for the caller, including those
+// on project documents. Its node carries the full id. Passing the prefix directly to the
+// post route would instead let the route match posts on other owners.
+// A bare comment prefix, as reopen takes, uses the comment route's unscoped lookup.
+func goingPostID(ctx context.Context, read goingReader, kind, value string) (string, error) {
+	id, _ := goingReplyTarget(value)
+	if !text.IsIDPrefix(id) {
+		return id, nil
+	}
+	if ref, ok := text.ParseRef(value, ""); ok && (ref.Kind == kind || ref.Kind == "block" && ref.Item == kind) {
+		// Resolve the post itself, even when the supplied reference names one of its blocks.
+		post, _, _ := strings.Cut(value, "#")
+		var answer struct {
+			Node struct {
+				ID string `json:"id"`
+			} `json:"node"`
+		}
+		query := url.Values{"to": {post}}
+		if err := read.get(ctx, "/api/v1/references?"+query.Encode(), &answer); err != nil {
+			var refusal goingRefusal
+			if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound {
+				refusal.Message = fmt.Sprintf("No %s matches %s. Use the full id.", kind, value)
+				return "", refusal
+			}
+			return "", err
+		}
+		return answer.Node.ID, nil
+	}
+	if kind == "comment" && id == value {
+		var answer struct {
+			Comment struct {
+				ID string `json:"id"`
+			} `json:"comment"`
+		}
+		if err := read.get(ctx, goingCommentPath(id), &answer); err != nil {
+			return "", err
+		}
+		return answer.Comment.ID, nil
+	}
+	return id, nil
+}
+
 // goingAnchor is an anchor on the document id: the quote and its occurrence the call names.
 func goingAnchor(id string, arguments map[string]any) map[string]any {
 	anchor := goingPick(arguments, "quote", "occurrence")
@@ -577,12 +620,23 @@ func goingArgumentsAsBody(_ context.Context, _ goingReader, call goingCallInput)
 	return goingCall{path: call.path, body: body}, nil
 }
 
-// goingTranslateNoBody sends no body: a comment's resolve, a follow and its unfollow, and an
-// architecture sync of every source take everything from their path and the caller's credential.
-// This is the every-source sync row, chosen when the call names no `repo`; a sync that names one
-// takes the one-source row (goingTranslateArchitectureSyncRepo).
+// goingTranslateNoBody sends no body: a follow and its unfollow, and an architecture sync of every
+// source take everything from their path and the caller's credential. This is the every-source
+// sync row, chosen when the call names no `repo`; a sync that names one takes the one-source row
+// (goingTranslateArchitectureSyncRepo).
 func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path}, nil
+}
+
+// goingTranslateResolveComment resolves the thread whose root comment the call names, by id or by
+// a dispatch:// reference, whose id may be written short (goingPostID), and sends no body: the
+// resolve takes everything else from the caller's credential.
+func goingTranslateResolveComment(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	id, err := goingPostID(ctx, read, "comment", call.path["id"])
+	if err != nil {
+		return goingCall{}, err
+	}
+	return goingCall{path: map[string]string{"id": id}}, nil
 }
 
 // goingTranslateRoster sends read_roster, which takes no argument, as GET /api/v1/agents of the
@@ -1322,30 +1376,39 @@ func goingTranslateMessageReply(_ context.Context, _ goingReader, call goingCall
 
 // goingTranslateEditPost sends an edit of a comment or an issue message: the new body, to the
 // post the call names (goingCorrection).
-func goingTranslateEditPost(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	return goingCorrection(call, goingPick(call.arguments, "body")), nil
+func goingTranslateEditPost(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	return goingCorrection(ctx, read, call, goingPick(call.arguments, "body"))
 }
 
 // goingTranslateDeletePost sends a delete of a comment or an issue message, which takes nothing
 // but the writer (goingCorrection).
-func goingTranslateDeletePost(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	return goingCorrection(call, nil), nil
+func goingTranslateDeletePost(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	return goingCorrection(ctx, read, call, nil)
 }
 
 // goingCorrection is a correction of the post the call names, as the route takes it: the post's
 // id in the path, taken out of a dispatch:// reference where the call names one, since the path
-// takes an id and no reference, and in body the session the caller acts as, where it acts as
-// one, which is how the route reads a session's correction (correctionActor). A person's
-// credential names the person, so a person's call sends body as it is.
-func goingCorrection(call goingCallInput, body map[string]any) goingCall {
-	id, _ := goingReplyTarget(call.path["id"])
+// takes an id and no reference, and matched among the posts of the reference's owner where the
+// reference writes it short (goingPostID); and in body the session the caller acts as, where it
+// acts as one, which is how the route reads a session's correction (correctionActor). A person's
+// credential names the person, so a person's call sends body as it is. The post is a message
+// where the call names one by its argument message, and a comment otherwise.
+func goingCorrection(ctx context.Context, read goingReader, call goingCallInput, body map[string]any) (goingCall, error) {
+	kind := "comment"
+	if _, named := call.arguments["message"]; named {
+		kind = "message"
+	}
+	id, err := goingPostID(ctx, read, kind, call.path["id"])
+	if err != nil {
+		return goingCall{}, err
+	}
 	if call.session != "" {
 		if body == nil {
 			body = map[string]any{}
 		}
 		body["actor"] = goingActorSession(call.session)
 	}
-	return goingCall{path: map[string]string{"id": id}, body: body}
+	return goingCall{path: map[string]string{"id": id}, body: body}, nil
 }
 
 // goingTranslateSendToAgent sends to the session the call names by id or by title (recipient).

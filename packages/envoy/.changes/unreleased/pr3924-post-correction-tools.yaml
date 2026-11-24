@@ -14,3 +14,5 @@ body: |-
   message it read.`; its stream writes its plan frames and that end, and its plan reads as an
   ended run's, with no summary. A run where any other writer deleted a post it read keeps
   `ANSWER_WITHDRAWN`.
+  Before a post correction, resolve or reopen, the command bar resolves short post references
+  within their owner and refuses missing or ambiguous prefixes.

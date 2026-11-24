@@ -635,8 +635,14 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 			t.Fatalf("the claim's landing records claim_changed %s, want false", changed)
 		}
 		neverUndoable(t, run, "before Undo", 0)
-		if line := rig.undone(t, run, "dispatch_claim")[0]; !line.Outcome.OK || !strings.Contains(line.Outcome.Message, "changed nothing") {
-			t.Fatalf("Undo answered %+v, want nothing to undo", line)
+		if line := rig.undone(t, run, "dispatch_claim")[0]; !line.Outcome.OK || line.Outcome.Code != "" {
+			t.Fatalf("Undo answered %+v, want a successful no-op", line)
+		}
+		if claim := rig.issueRead(t, issue).Claim; claim == nil || claim.Actor.Kind != "user" || claim.Actor.ID != "alice" {
+			t.Fatalf("claim after Undo = %+v, want alice's pre-existing claim", claim)
+		}
+		if writes := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); writes != 0 {
+			t.Fatalf("Undo recorded %d landings, want none", writes)
 		}
 		neverUndoable(t, run, "after Undo", 0)
 	})
@@ -853,8 +859,8 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 		rig.fixture(t, "carol", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"priority": 1})
 		comment(t, issue)
 		field := kept(t, rig.undone(t, run, "dispatch_issue_update")[0], "title")
-		if field.By == nil || *field.By != bob || !strings.Contains(field.Message, "user bob") || strings.Contains(field.Message, "carol") {
-			t.Fatalf("the kept title answered by %+v, %q, want bob, who retitled it, and never carol", field.By, field.Message)
+		if field.By == nil || *field.By != bob || string(field.Now) != `"Bob's"` {
+			t.Fatalf("the kept title answered %+v, want Bob's title and Bob as its writer", field)
 		}
 	})
 
@@ -864,8 +870,8 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 		rig.exec(t, `update issues set title = 'Changed in the store' where key = $1`, issue)
 		comment(t, issue)
 		field := kept(t, rig.undone(t, run, "dispatch_issue_update")[0], "title")
-		if field.By != nil || !strings.Contains(field.Message, "another writer") || strings.Contains(field.Message, "carol") {
-			t.Fatalf("the kept title answered by %+v, %q, want no writer named", field.By, field.Message)
+		if field.By != nil || string(field.Now) != `"Changed in the store"` {
+			t.Fatalf("the kept title answered %+v, want the stored title with no writer", field)
 		}
 	})
 
@@ -875,8 +881,8 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/asks/"+ask, map[string]any{"question": "Ship it on Tuesday?"})
 		rig.fixture(t, "carol", http.MethodPatch, "/api/v1/asks/"+ask, map[string]any{"urgency": "high"})
 		field := kept(t, rig.undone(t, run, "dispatch_edit_ask")[0], "question")
-		if field.By == nil || *field.By != bob || !strings.Contains(field.Message, "user bob") || strings.Contains(field.Message, "carol") {
-			t.Fatalf("the kept question answered by %+v, %q, want bob, who reworded it, and never carol", field.By, field.Message)
+		if field.By == nil || *field.By != bob || string(field.Now) != `"Ship it on Tuesday?"` {
+			t.Fatalf("the kept question answered %+v, want Bob's question and Bob as its writer", field)
 		}
 	})
 
@@ -886,8 +892,9 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+created, map[string]any{"status": "in_progress"})
 		comment(t, created)
 		line := rig.undone(t, run, "dispatch_issue")[0]
-		if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "user bob moved it") || strings.Contains(line.Outcome.Message, "carol") {
-			t.Fatalf("Undo of the create answered %+v, want it kept, naming bob, who moved it, and never carol", line)
+		field := kept(t, line, "issue")
+		if field.By == nil || *field.By != bob || rig.issueRead(t, created).Status != "in_progress" {
+			t.Fatalf("Undo of the create answered %+v, want Bob's move to in_progress kept", line)
 		}
 	})
 
@@ -903,8 +910,9 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 		})
 		rig.fixture(t, "carol", http.MethodPost, "/api/v1/artifacts/"+notes.Artifact.ID+"/reviews", map[string]any{"state": "approved"})
 		line := rig.undone(t, run, "dispatch_doc_edit")[0]
-		if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "which user bob wrote") || strings.Contains(line.Outcome.Message, "carol") {
-			t.Fatalf("Undo of the edit answered %+v, want it kept, naming bob, who wrote its version, and never carol", line)
+		field := kept(t, line, "content")
+		if field.By == nil || *field.By != bob || rig.documentText(t, notes.Artifact.ID) != "# Notes\n\nThe line bob wrote.\n" {
+			t.Fatalf("Undo of the edit answered %+v, want Bob's version kept", line)
 		}
 	})
 }
@@ -1299,8 +1307,7 @@ func TestAnEditOfAPostIsUndoneUnlessItChangedSince(t *testing.T) {
 				t.Fatalf("Undo answered %+v, want the body kept, %s", line, codeGoingUndoChanged)
 			}
 			field := line.Fields[0]
-			if field.Field != "body" || field.OK || string(field.Now) != `"The ferry leaves at two."` || field.By == nil || *field.By != alice ||
-				!strings.Contains(field.Message, "user alice wrote after this run") {
+			if field.Field != "body" || field.OK || string(field.Now) != `"The ferry leaves at two."` || field.By == nil || *field.By != alice {
 				t.Fatalf("the body answered %+v, want it kept holding the body alice wrote since, naming her", field)
 			}
 			if body := c.body(t, rig, id); body != "The ferry leaves at two." {
@@ -1315,15 +1322,24 @@ func TestAnEditOfAPostIsUndoneUnlessItChangedSince(t *testing.T) {
 			var writes atomic.Int32
 			rig.hooks.set(t, http.MethodPatch, c.path+id, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
 				// alice edits the post after the undo's read and before its write back.
-				if writes.Add(1) == 1 {
-					if response := dispatchRequest(t, rig.mux, http.MethodPatch, c.path+id, map[string]any{"body": "The ferry leaves at three."}, "alice"); response.Code >= http.StatusMultipleChoices {
-						t.Errorf("alice's own edit answered %d %s", response.Code, response.Body.String())
-					}
+				if writes.Add(1) != 1 {
+					inner.ServeHTTP(w, r)
+					return
 				}
-				inner.ServeHTTP(w, r)
+				if response := dispatchRequest(t, rig.mux, http.MethodPatch, c.path+id, map[string]any{"body": "The ferry leaves at three."}, "alice"); response.Code >= http.StatusMultipleChoices {
+					t.Errorf("alice's own edit answered %d %s", response.Code, response.Body.String())
+				}
+				answer := httptest.NewRecorder()
+				inner.ServeHTTP(answer, r)
+				if code := goingAnswerCode(t, answer.Body.String()); answer.Code != http.StatusConflict || code != c.changed {
+					t.Errorf("the undo PATCH answered %d %s, want 409 %s", answer.Code, code, c.changed)
+				}
+				maps.Copy(w.Header(), answer.Header())
+				w.WriteHeader(answer.Code)
+				_, _ = w.Write(answer.Body.Bytes())
 			})
 			line := rig.undone(t, run, c.edit)[0]
-			if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "holds other words now") {
+			if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged {
 				t.Fatalf("Undo answered %+v, want the body kept on the route's %s", line, c.changed)
 			}
 			if body := c.body(t, rig, id); body != "The ferry leaves at three." {
@@ -1342,10 +1358,12 @@ func TestAnEditOfAPostIsUndoneUnlessItChangedSince(t *testing.T) {
 				t.Fatalf("Undo answered %d %s, want 200 with no word of the deleted %s", response.Code, response.Body.String(), c.kind)
 			}
 			lines := decodeBody[goingUndoAnswer](t, response).Lines
-			if len(lines) != 1 || lines[0].Outcome.Code != codeGoingUndoChanged ||
-				!strings.Contains(lines[0].Outcome.Message, "the "+c.kind+" was deleted after this run, by user alice, so no words were put back") ||
-				len(lines[0].Fields) != 1 || lines[0].Fields[0].OK || lines[0].Fields[0].Now != nil {
-				t.Fatalf("Undo answered %+v, want the %s named deleted by alice, nothing put back", lines, c.kind)
+			if len(lines) != 1 || lines[0].Outcome.Code != codeGoingUndoChanged || len(lines[0].Fields) != 1 {
+				t.Fatalf("Undo answered %+v, want one kept field", lines)
+			}
+			field := lines[0].Fields[0]
+			if field.Field != "body" || field.OK || field.Now != nil || field.By == nil || *field.By != alice {
+				t.Fatalf("Undo answered %+v, want the body kept with no text and Alice as its deleter", field)
 			}
 			if deleted := rig.textOf(t, `select (deleted_at is not null)::text from `+c.kind+`s where id = $1::uuid`, id); deleted != "true" {
 				t.Fatalf("after Undo the %s is deleted %s, want it left deleted", c.kind, deleted)

@@ -537,6 +537,18 @@ func goingLineOf(line goingUndoLine, fields []string) goingUndoLine {
 	return line
 }
 
+// goingLineKeptBy adds the writer to a kept line with no structured value to show.
+func goingLineKeptBy(line goingUndoLine, fields []string, writer *model.Actor) goingUndoLine {
+	line = goingLineOf(line, fields)
+	if writer != nil {
+		by := &goingHolder{Kind: writer.Kind, ID: writer.ID}
+		for i := range line.Fields {
+			line.Fields[i].By = by
+		}
+	}
+	return line
+}
+
 // landedItem is the item a landed call names before anything is read of it: what its last request
 // made, as its route answered it, else the last item its path names.
 func (u goingUndoer) landedItem(write goingLandedWrite) string {
@@ -1222,7 +1234,7 @@ func (u goingUndoer) postBody(line goingUndoLine, undone goingUndone) goingUndoP
 			if deleted.DeletedBy != nil {
 				by = &model.Actor{Kind: deleted.DeletedBy.Kind, ID: deleted.DeletedBy.ID}
 			}
-			return nil, goingUndoField{Message: fmt.Sprintf("the %s was deleted after this run, by %s, so no words were put back",
+			return nil, goingUndoField{By: deleted.DeletedBy, Message: fmt.Sprintf("the %s was deleted after this run, by %s, so no words were put back",
 				kind, goingWriterText(by))}, nil
 		case !goingSameJSON(held, after):
 			return nil, goingKeptField(held, u.postBodyWriter(ctx, kind, undone.target, undone.landedAt)), nil
@@ -1389,10 +1401,10 @@ func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, li
 			return goingLineOf(line, fields), nil
 		}
 		if token != edited.Token {
-			who := goingWriterText(u.documentVersionWriter(ctx, artifact.goingDocumentRead, now.Version, write.landedAt))
+			writer := u.documentVersionWriter(ctx, artifact.goingDocumentRead, now.Version, write.landedAt)
 			line.Outcome = goingChanged([]string{fmt.Sprintf("the document is at version %s now, which %s wrote after this run, so it is kept",
-				goingVersionText(now.Version), who)}, nil)
-			return goingLineOf(line, fields), nil
+				goingVersionText(now.Version), goingWriterText(writer))}, nil)
+			return goingLineKeptBy(line, fields, writer), nil
 		}
 		route, values := goingProjectUploadRoute, map[string]string{"key": artifact.Project}
 		if artifact.IssueKey != nil {
@@ -1740,10 +1752,10 @@ func (u goingUndoer) closeCreated(line goingUndoLine, undone goingUndone) goingU
 			line.Outcome = goingChanged([]string{fmt.Sprintf("the issue was closed at %s, by %s, so it is kept", *issue.ClosedAt, closer)}, nil)
 			return goingLineOf(line, undone.fields), nil
 		case issue.Status != made.Status:
-			mover := goingWriterText(u.issueFieldWriter(ctx, undone.target, "status", undone.seq))
+			mover := u.issueFieldWriter(ctx, undone.target, "status", undone.seq)
 			line.Outcome = goingChanged([]string{fmt.Sprintf("the issue is %s now, where %s moved it after this run left it %s, so it is kept",
-				issue.Status, mover, made.Status)}, nil)
-			return goingLineOf(line, undone.fields), nil
+				issue.Status, goingWriterText(mover), made.Status)}, nil)
+			return goingLineKeptBy(line, undone.fields, mover), nil
 		}
 		expected, _ := json.Marshal(made.Status)
 		closed := line

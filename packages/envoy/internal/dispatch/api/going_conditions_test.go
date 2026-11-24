@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,7 +119,10 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 // nobody holds and of one alice holds, the release, the reopen, the resolve, and the edits of a
 // comment and of an issue message. The issue's and the project's uploads replace a document, so
 // each names the token of the version it replaces, read off handler when it is sent, as the
-// command bar's upload names it (main's upload precondition).
+// command bar's upload names it (main's upload precondition). Each edit of a post writes a body no
+// send before it wrote (goingConditionEditBody), so a write a row should have refused cannot leave
+// the post holding the very body a later row's write then writes, which would read as that write
+// changing nothing.
 var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend{
 	"issue update": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{"title": "Written in process"})
@@ -154,11 +159,21 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 		return goingSend{method: http.MethodPost, path: "/api/v1/comments/" + f.comment + "/resolve"}
 	},
 	"comment edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
-		return goingJSONSend(t, http.MethodPatch, "/api/v1/comments/"+f.comment, map[string]any{"body": "Written in process."})
+		return goingJSONSend(t, http.MethodPatch, "/api/v1/comments/"+f.comment, map[string]any{"body": goingConditionEditBody()})
 	},
 	"message edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
-		return goingJSONSend(t, http.MethodPatch, "/api/v1/messages/"+f.message, map[string]any{"body": "Written in process."})
+		return goingJSONSend(t, http.MethodPatch, "/api/v1/messages/"+f.message, map[string]any{"body": goingConditionEditBody()})
 	},
+}
+
+// goingConditionEdits counts the post edits goingConditionWrites built, across the tests that run
+// at once.
+var goingConditionEdits atomic.Int64
+
+// goingConditionEditBody is the body of one post edit of goingConditionWrites, which no edit
+// before it wrote.
+func goingConditionEditBody() string {
+	return fmt.Sprintf("Written in process, edit %d.", goingConditionEdits.Add(1))
 }
 
 // TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute (deep review round 5, finding C): each

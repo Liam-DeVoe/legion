@@ -1838,3 +1838,59 @@ func TestAPlanRowOfAPostShowsItsAuthorAndBodyUntilItIsDeleted(t *testing.T) {
 		})
 	}
 }
+
+// TestThePlanCallGivesTheRunNoWordOfAPostItsRowsRead: a plan of an edit and a delete of a comment
+// and of an issue message reads each post as its person, whose plan shows the post's author and
+// body. The plan call's answer, which the run's agent is given and keeps as a step of the run,
+// names each row's post and its field body but carries no value now of it, so no word of a post
+// reaches the run through its plan: only through the run's own reads, each of which records the
+// post as the run's (recordGoingRunPosts), so that a later delete of it withdraws the run.
+func TestThePlanCallGivesTheRunNoWordOfAPostItsRowsRead(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	run, token := rig.working(t, "alice", "correct the ferry's posts")
+	defer rig.exec(t, `update going_runs set state = 'stopped', lease_token = null, lease_owner = null, lease_ends_at = null where id = $1::uuid`, run)
+	words := []string{"harbourpierword", "quaypierword", "jettypierword", "wharfpierword"}
+	var changes []agentwire.PlanChange
+	for _, c := range goingPostCases {
+		for _, change := range []func(id string) map[string]any{
+			func(id string) map[string]any { return c.editing(id, "The ferry leaves at two.") },
+			c.deleting,
+		} {
+			id, _ := c.make(t, rig, "The "+words[len(changes)]+" stands by the ferry.")
+			proposed := change(id)
+			encoded, err := json.Marshal(proposed["arguments"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes = append(changes, agentwire.PlanChange{Tool: proposed["tool"].(string), Arguments: encoded})
+		}
+	}
+	answer, err := rig.call(agentwire.CallRequest{Run: run, LeaseToken: token, Step: 2, Call: 1, Kind: agentwire.KindPlan,
+		Proposal: &agentwire.PlanProposal{Summary: "Correct the ferry's posts.", Changes: changes}})
+	if err != nil {
+		t.Fatalf("the plan call: %v", err)
+	}
+	var plan agentwire.PlanAnswer
+	if err := json.Unmarshal(answer.Body, &plan); err != nil || len(plan.Rows) != len(changes) {
+		t.Fatalf("the plan call answered %s (%v), want its %d rows", answer.Body, err, len(changes))
+	}
+	for index, row := range plan.Rows {
+		if row.Tool != changes[index].Tool || row.Item == "" || !slices.Equal(row.Fields, []string{"body"}) || len(row.Now) != 0 {
+			t.Errorf("the plan call's row of %s reads item %q, fields %v, now %s; want its post, its field body and no value now",
+				row.Tool, row.Item, row.Fields, row.Now)
+		}
+	}
+	shown, err := json.Marshal(rig.plan(t, run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, word := range words {
+		if strings.Contains(string(answer.Body), word) {
+			t.Errorf("the plan call's answer holds %q, a word of a post its rows read: %s", word, answer.Body)
+		}
+		if !strings.Contains(string(shown), word) {
+			t.Errorf("the plan alice reads holds no %q: the control decides nothing", word)
+		}
+	}
+}

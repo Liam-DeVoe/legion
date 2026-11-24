@@ -7,10 +7,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -461,5 +463,82 @@ func TestAReadWithHistoryReadsThePostsHistory(t *testing.T) {
 				t.Fatalf("dispatch_read %v reads %s (%v), want it refused: %s", arguments, goingRouteKey(route), err, goingReadHistoryRule)
 			}
 		})
+	}
+}
+
+func TestPostWritePrefixesResolveBeforeTheWrite(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Owns the posts", "# Spec\n\nFirst issue.\n").Key
+	other := rig.issue(t, "Owns different posts")
+	const shared, outside, ambiguous, bare = "ab100001", "ab100002", "ab100003", "ab100004"
+	for _, table := range []string{"comments", "messages"} {
+		for _, post := range []struct{ id, owner string }{
+			{chosenID(shared, 1), issue},
+			{chosenID(shared, 2), other},
+			{chosenID(outside, 1), other},
+			{chosenID(ambiguous, 1), issue},
+			{chosenID(ambiguous, 2), issue},
+			{chosenID(bare, 1), issue},
+		} {
+			seedExec(t, rig.database, "seed post", `insert into `+table+` (id, issue_key, author, body)
+				values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'Original words.')`, post.id, post.owner)
+		}
+	}
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice", Credential: personCredential, Proven: true}
+	doer := &goingRecordingDoer{doer: rig.served.goingDoer(goingBarCaller(alice, true, goingTestRun), testServerURL)}
+	caller := GoingCaller{Catalogue: catalogue, Doer: doer}
+	for _, tool := range []struct{ name, arg string }{
+		{"dispatch_edit_comment", "comment"},
+		{"dispatch_delete_comment", "comment"},
+		{"dispatch_edit_message", "message"},
+		{"dispatch_delete_message", "message"},
+		{"dispatch_resolve_comment", "comment"},
+		{"dispatch_reopen_comment", "comment"},
+	} {
+		for _, tc := range []struct {
+			name, prefix, id, code string
+			status                 int
+		}{
+			{"one on this owner", strings.ToUpper(shared), chosenID(shared, 1), "", 0},
+			{"one on a different owner", outside, "", "NOT_FOUND", http.StatusNotFound},
+			{"two on this owner", ambiguous, "", contracts.IDAmbiguous, http.StatusConflict},
+			{"bare prefix", bare, chosenID(bare, 1), "", 0},
+		} {
+			if tc.prefix == bare && tool.name != "dispatch_reopen_comment" {
+				continue // Reopen advertises bare prefixes; the other tools advertise references.
+			}
+			t.Run(tool.name+"/"+tc.name, func(t *testing.T) {
+				value := "dispatch://" + issue + "/" + tool.arg + "/" + tc.prefix
+				read := "GET /api/v1/references"
+				if tc.prefix == bare {
+					value, read = tc.prefix, "GET "+goingCommentPath(tc.prefix)
+				}
+				args := map[string]any{tool.arg: value}
+				if strings.HasPrefix(tool.name, "dispatch_edit_") {
+					args["body"] = "Replacement words."
+				}
+				doer.sent = nil
+				prepared, err := caller.prepare(ctx, tool.name, args)
+				if tc.code == "" {
+					if got := prepared.call.path["id"]; err != nil || got != tc.id {
+						t.Errorf("prepared id %q, error %v; want full id %q", got, err, tc.id)
+					}
+				} else {
+					var refusal goingRefusal
+					if !errors.As(err, &refusal) || refusal.Status != tc.status || refusal.Code != tc.code {
+						t.Errorf("prepare error %v, want %d %s", err, tc.status, tc.code)
+					}
+				}
+				if !slices.Equal(doer.sent, []string{read}) {
+					t.Errorf("prepare sent %v, want one read: %s", doer.sent, read)
+				}
+			})
+		}
 	}
 }

@@ -246,8 +246,16 @@ func goingToolRows(spec contracts.DispatchTool, named []goingToolRoute, undo []s
 // sends in it, under its own name, with the session the caller acts as in its actor where it
 // acts as one, as the `dispatch` command's generic command sends it.
 func goingTranslateBound(binding contracts.ToolRoute) goingTranslator {
-	return func(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	return func(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 		bound := goingCall{path: call.path}
+		// Keep the resolved id in the prepared path used for the write and its landing.
+		if binding.Method == http.MethodPost && binding.Pattern == "/api/v1/comments/{id}/reopen" {
+			id, err := goingPostID(ctx, read, "comment", call.path["id"])
+			if err != nil {
+				return goingCall{}, err
+			}
+			bound.path = map[string]string{"id": id}
+		}
 		for _, name := range binding.Query {
 			value, named := call.arguments[name]
 			if !named || value == nil {
@@ -391,7 +399,7 @@ var goingWriteTools = map[string]goingWriteTool{
 		Routes: []goingToolRoute{{
 			Method: http.MethodPost, Pattern: "/api/v1/comments/{id}/resolve",
 			Path:       map[string]string{"id": "comment"},
-			Translate:  goingTranslateNoBody,
+			Translate:  goingTranslateResolveComment,
 			UndoRoutes: []string{goingCommentReopenRoute},
 		}},
 		Observe: goingObserver.commentResolvedBy, Undo: goingUndoReverse,
