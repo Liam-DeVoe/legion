@@ -108,7 +108,7 @@ func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 }
 
 // An issue with no plan rows names no agent of a key: the worker of its first phase starts in its
-// role's own claim, which its row names, at the row's own entry plus one (R20).
+// role's own claim, which its row names, at entry 1, one above every row of the issue (R20).
 func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()

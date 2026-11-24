@@ -172,9 +172,9 @@ type PlanStep struct {
 	// written, where that agent took a name a key's agent held in an earlier generation, so the
 	// claim's session is that key's: every start of the step's agent carries it
 	// (SuperviseRequest.LeaveSession), and the claim leaves it where it still records it
-	// (supervise's revive). Only the project's default steps of a new generation set it
-	// (workflow's defaultRows), since an owner's version that would give a key's name to another
-	// agent is refused (UnnamedAgents); every other step holds "".
+	// (supervise's revive). Only the project's default steps set it (workflow's
+	// leaveKeySessions), since an owner's version that would give a key's name to another agent
+	// is refused (UnnamedAgents); every other step holds "".
 	LeaveSession string
 }
 
@@ -288,12 +288,14 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent), step.LeaveSession); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
-		// The name a key's agent holds is kept in the lasting record too (KeyNames): this write
-		// deletes the task's earlier rows, and the first step of a run deletes an earlier owner's
-		// plan, but the name's claim records the key's session in every later generation.
+		// The name a key's agent holds is kept in the lasting record too (KeyNames), with the
+		// latest generation that gave it: this write deletes the task's earlier rows, and the first
+		// step of a run deletes an earlier owner's plan, but the name's claim records the key's
+		// session in every later generation.
 		if name := step.AgentName(); step.AgentKey != "" && name != "" {
-			if _, err := tx.Exec(ctx, `insert into plan_key_names (issue, name, agent_key) values ($1, $2, $3)
-				on conflict (issue, name) do update set agent_key = excluded.agent_key`, v.Issue, string(name), step.AgentKey); err != nil {
+			if _, err := tx.Exec(ctx, `insert into plan_key_names (issue, name, agent_key, generation) values ($1, $2, $3, $4)
+				on conflict (issue, name) do update set agent_key = excluded.agent_key,
+				generation = greatest(plan_key_names.generation, excluded.generation)`, v.Issue, string(name), step.AgentKey, int64(v.Generation)); err != nil {
 				return fmt.Errorf("%s: the name %s of key %s: %w", describe, name, step.AgentKey, err)
 			}
 		}
@@ -371,20 +373,23 @@ func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]
 }
 
 // KeyNames is every name a key's agent held on issue, by name (plan_key_names): the lasting record
-// PutPlan writes for each step of a key, which no deletion of a plan removes. A row ends only with
-// the removal of the issue's own record, which no daemon makes, since a stored claim keeps the
+// PutPlan writes for each step of a key, which no deletion of a plan removes. No code removes a
+// row: the table names no issues row (a plan can be given before its issue is recorded), and a
+// stored claim keeps the
 // session it records across the issue's generations (supervise's launch resumes it), so a name a
 // key held names that key's session for as long as the issue does. NameAgents reserves each name it
 // answers for its key, beside the names the issue's plan_steps rows hold.
 func (s *Postgres) KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error) {
 	describe := fmt.Sprintf("read the names the keys of %s held", issue)
-	rows, err := tx.Query(ctx, `select name, agent_key from plan_key_names where issue = $1 order by name`, issue)
+	rows, err := tx.Query(ctx, `select name, agent_key, generation from plan_key_names where issue = $1 order by name`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (KeyName, error) {
 		var h KeyName
-		err := row.Scan(&h.Name, &h.AgentKey)
+		var generation int64
+		err := row.Scan(&h.Name, &h.AgentKey, &generation)
+		h.Generation = uint64(generation)
 		return h, err
 	})
 	if err != nil {
