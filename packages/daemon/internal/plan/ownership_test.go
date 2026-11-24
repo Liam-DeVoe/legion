@@ -37,17 +37,9 @@ func edited(p Plan, edit map[string]func(*Task), gone []string, added ...Task) P
 }
 
 // A part of a task is written by that task's sub-owner, and a task of the top level by the owner
-// of the issue (WriterOf). The parts of a task are listed in the order of their ids (PartsOf).
-func TestThePartsOfATaskAndTheWriterOfEach(t *testing.T) {
+// of the issue (WriterOf).
+func TestTheWriterOfEachTask(t *testing.T) {
 	p := ownedPlan()
-	if got, want := p.PartsOf("f"), []string{"f1", "f2"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("PartsOf(f) = %#v, want %#v", got, want)
-	}
-	for _, none := range []string{"h", "f1", "no-such-task"} {
-		if got := p.PartsOf(none); got != nil {
-			t.Errorf("PartsOf(%s) = %#v, want none", none, got)
-		}
-	}
 	for task, want := range map[string]string{"f": "", "h": "", "f1": "f", "f2": "f", "no-such-task": ""} {
 		if got := p.WriterOf(task); got != want {
 			t.Errorf("WriterOf(%s) = %q, want %q", task, got, want)

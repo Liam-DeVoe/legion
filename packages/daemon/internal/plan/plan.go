@@ -298,19 +298,6 @@ func StepsOf(t Task, defaults []Step) []Step {
 	return nil
 }
 
-// PartsOf is the ids of the tasks of p that are parts of task, the tasks whose PartOf is task, in
-// the order of their ids; none where task has no part.
-func (p Plan) PartsOf(task string) []string {
-	var parts []string
-	for _, t := range p.Tasks {
-		if t.PartOf == task {
-			parts = append(parts, t.ID)
-		}
-	}
-	slices.Sort(parts)
-	return parts
-}
-
 // WriterOf is the writer of task in p, who alone changes it: "" for a task of the top level,
 // which the owner of the issue writes, else its PartOf, the task whose sub-owner writes it. A
 // task p does not hold answers "".
