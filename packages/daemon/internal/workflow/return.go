@@ -57,8 +57,10 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // opensNewRun says whether fact, a status in work, opens a new run of issue, a record at phase
 // done (decision 8 of dispatch://INFRA-4730): a todo does, and so does a move out of Dispatch's
 // done into any status in work while the pull request of the run that ended is recorded merged,
-// the reopen of an issue its merge closed. A move from another status into work, such as R25's
-// fix moving an issue from the backlog to in_progress, opens nothing.
+// the reopen of an issue its merge closed. The pull request the record holds is that run's: a new
+// run clears every pull request of its issue that is not open (record.Store.ClearGeneration), and
+// its own Generation counts CI settlements, not runs. A move from another status into work, such
+// as R25's fix moving an issue from the backlog to in_progress, opens nothing.
 func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.Status == "todo" {
 		return true, nil
@@ -70,7 +72,7 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil || pr == nil {
 		return false, err
 	}
-	return pr.State == record.PullRequestMerged && uint64(pr.Generation) == issue.Generation, nil
+	return pr.State == record.PullRequestMerged, nil
 }
 
 // ReturnToWork takes back into Legion's work an issue a stop left in its phase (leave) that

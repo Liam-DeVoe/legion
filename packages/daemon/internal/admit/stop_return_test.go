@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -143,6 +145,9 @@ func TestAnIssueBackInWorkResumesItsPhaseAtANewEntry(t *testing.T) {
 // facts of the run that ended are cleared. A move of an issue the daemon closed from another status
 // than done into work, such as R25's fix moving an issue from the backlog to in_progress, opens
 // nothing, and a reopen of a closed issue whose pull request did not merge opens nothing either.
+// The issue stands at its third run and its pull request at the fortieth CI settlement, as a real
+// one does: the pull request's Generation counts settlements, not runs, so nothing may read it as
+// the run's.
 func TestAMergeClosedIssueReopenedOpensANewRun(t *testing.T) {
 	seed := func(t *testing.T, status string, merged bool) (*Admission, func() record.Issue) {
 		t.Helper()
@@ -150,33 +155,39 @@ func TestAMergeClosedIssueReopenedOpensANewRun(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
 		putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-			Title: key, Tree: key, Phase: phase.Done, Generation: 1, Status: status, DispatchStatus: status, Rank: key, HandedOver: true,
+			Title: key, Tree: key, Phase: phase.Done, Generation: 3, Status: status, DispatchStatus: status, Rank: key, HandedOver: true,
 			LastDispatchSeq: 1, HoldsGate: true, TakenBack: true})
 		state := record.PullRequestClosed
 		if merged {
 			state = record.PullRequestMerged
 		}
-		pwPullRequest(t, pool, key, state)
+		inTx(t, pool, func(tx pgx.Tx) {
+			pr := record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key, HeadSHA: "head-42",
+				Generation: 40, State: state, Base: "main", Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}
+			if err := record.NewStore().PutPullRequest(context.Background(), tx, pr); err != nil {
+				t.Fatalf("record the pull request of %s: %v", key, err)
+			}
+		})
 		apply(t, pool, admission, "reopened", srMove(key, "in_progress", 2), admission.engine)
 		return admission, func() record.Issue { return issue(t, pool, key) }
 	}
 	t.Run("reopened from done with its pull request merged", func(t *testing.T) {
 		_, got := seed(t, "done", true)
 		again := got()
-		if again.Generation != 2 || again.Phase != phase.Admitted || again.TakenBack {
-			t.Fatalf("the reopened issue = %#v, want a new run: generation 2 at admitted with its run's mark cleared", again)
+		if again.Generation != 4 || again.Phase != phase.Admitted || again.TakenBack {
+			t.Fatalf("the reopened issue = %#v, want a new run: generation 4 at admitted with its run's mark cleared", again)
 		}
 	})
 	t.Run("moved from the backlog into work", func(t *testing.T) {
 		_, got := seed(t, "backlog", true)
-		if again := got(); again.Generation != 1 || again.Phase != phase.Done {
-			t.Fatalf("the issue moved from the backlog = %#v, want it left at phase done at generation 1", again)
+		if again := got(); again.Generation != 3 || again.Phase != phase.Done {
+			t.Fatalf("the issue moved from the backlog = %#v, want it left at phase done at generation 3", again)
 		}
 	})
 	t.Run("reopened from done with its pull request not merged", func(t *testing.T) {
 		_, got := seed(t, "done", false)
-		if again := got(); again.Generation != 1 || again.Phase != phase.Done {
-			t.Fatalf("the reopened issue = %#v, want it left at phase done at generation 1", again)
+		if again := got(); again.Generation != 3 || again.Phase != phase.Done {
+			t.Fatalf("the reopened issue = %#v, want it left at phase done at generation 3", again)
 		}
 	})
 }
