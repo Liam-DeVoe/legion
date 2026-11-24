@@ -164,7 +164,7 @@ const schemas: Record<string, z.ZodType> = {
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   // Written beside state.json by internal/api's TestStateGolden: the observed view of the state
-  // state.json holds, the body of `GET /legion/v1/state?view=observed` (contract 232).
+  // state.json holds, the body of `GET /legion/v1/state?view=observed` (contract 254).
   "observed-state.json": LegionObservedStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -174,7 +174,7 @@ const schemas: Record<string, z.ZodType> = {
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
-  // refused turns the claim now ends with and whether this report failed it.
+  // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
@@ -2857,7 +2857,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
   // `plan` off each assignment, so the golden's rows are compared without it, the intake's
   // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the daemon block's
-  // `stateSeq`, `stateId` and `stateRun` at 232 (dispatch://INFRA-3931). One value strip stands
+  // `stateSeq`, `stateId` and `stateRun` at 254 (dispatch://INFRA-3931). One value strip stands
   // above 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract
   // 213, so that row is served here without its `source`, every other field of it and every other
   // row as the state golden holds them.

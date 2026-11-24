@@ -3514,7 +3514,35 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 232: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
+// 254: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
 // (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
 // committed (state_publication.last_seq, record.Store.StatePublication), read in the route's own
 // repeatable-read snapshot: every state event at or below it is in the body and every one above
@@ -3529,13 +3557,13 @@ package api
 // `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
 // writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
 // project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
-// and a caller whose contract is below 232, whether it states it (`Legion-Plugin-Contract`) or
+// and a caller whose contract is below 254, whether it states it (`Legion-Plugin-Contract`) or
 // the claims of its pod record it, is served the daemon block without any of the three
 // (shaping.go's stateSeqContract and withoutStateSeq): one built before sjawhar/legion#2788 reads
 // the state with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the keys instead.
 // `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
-// contract served such a body, or the body of a daemon before 232, takes them as absent rather
+// contract served such a body, or the body of a daemon before 254, takes them as absent rather
 // than as 0.
 // The same contract adds the observed view of the route, `GET /legion/v1/state?view=observed`
 // (api.ObservedState, StateSource.ObservedState): what Dispatch observes of a daemon and nothing
@@ -3547,7 +3575,7 @@ package api
 // shaping.go's answer AnswerObservedState, which is no row of Answers, and observedFor shapes it:
 // it is served at the caller's contract by the whole state's own bands and value strips, so at
 // every contract this daemon serves, each member of the view is the whole state's member at that
-// contract: a caller below 232 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
+// contract: a caller below 254 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
 // caller below 51 no `admission.trees` and no issue's `tree`. A request with no `view` gets the
 // whole state, whose body does not change. A request with any other `view` gets the whole state
 // too, and the daemon logs a warning that names the values given and the one view the route
@@ -3611,9 +3639,13 @@ package api
 // each of the 496 open pull requests, made between 2026-11-24T09:38:52Z and 09:41:52Z, found 229
 // declared by #2230, 230 by #4580 and 231 by #4540, and no open head declaring 232, so this
 // entry takes 232, the lowest number above main's 228 that no other open pull request declares.
-// A caller from 202 to 231 is served 202's `repositories.live` and none of the three keys.
-// stateSeqContract follows intakeGiveUpsContract, 228, as the last number of answers.go's
+// The forward merge of 2026-11-24 that brought main in at d27405712c7c brought main's own 232
+// (INFRA-4508's entry above), so the number moved a tenth time, to 254, the number INFRA-3118's
+// architect allocated to this pull request at 2026-11-24T12:42:03Z, while the numbers are allocated
+// rather than computed (dispatch://INFRA-1569).
+// A caller from 202 to 253 is served 202's `repositories.live` and none of the three keys.
+// stateSeqContract follows 232, INFRA-4508's entry, as the last number of answers.go's
 // SupportedContracts.
 // That is a reading and never the rule: read main's own number and every open head again at the
 // next forward merge rather than from this line.)
-const DaemonAPIVersion = 232
+const DaemonAPIVersion = 254
