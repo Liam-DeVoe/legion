@@ -64,7 +64,7 @@ import (
 // says, because that copy may have been read before the release wrote the mark, and a departure
 // is rare enough that one statement costs nothing.
 //
-// Nor does its pull request keep a merge forward (clearMergeForward): the ask, its landing and
+// Nor does its pull request keep a merge forward (clearMergeForwards): the ask, its landing and
 // the review it asked for are of the run that is leaving, and a run that comes back asks about a
 // conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
 // a departure.

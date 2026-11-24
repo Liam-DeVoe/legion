@@ -21,7 +21,7 @@ import (
 // it but two: the row is written from thirteen places — a pull request opened, reopened,
 // synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
 // its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
-// landing (mergeForwardLanded) and its clearing (clearMergeForward) — and a write site added
+// landing (mergeForwardLanded) and its clearing (clearTaskMergeForward, clearMergeForwards) — and a write site added
 // later would otherwise have to remember the mark. Routing them through
 // one function is what makes forgetting it hard rather than easy.
 //

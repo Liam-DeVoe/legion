@@ -337,7 +337,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // queued row by this rule, and no row outlives the state it was written for. The workflow calls
 // neither this nor leftMergeForwardAt: it writes these rows only in states the rule accepts. The
 // rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
-// clearMergeForward, which drops the ask they are about, since it restates their states for a row
+// clearTaskMergeForward, which drops the ask they are about, since it restates their states for a row
 // already queued. It is exported for that executor.
 func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
@@ -369,7 +369,7 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 // (pr, nil for none) is open and holds a merge forward of head (record.PullRequest.MergeForward)
 // that, for an ask or a hold, has not landed. In each other state the message would tell its role
 // of work nobody wants any more. The roles of a tree that lingers are suspended. The workflow drops
-// the ask on a move into implementing and when the issue leaves the workflow (clearMergeForward),
+// the ask on a move into implementing and when the issue leaves the workflow (clearTaskMergeForward and clearMergeForwards),
 // and a merge forward of another head is a newer ask, which has its own messages. A pull request
 // that is not open ends every step: mergeForward asks nothing for one, and once it closed or
 // merged nothing is left to merge forward, to hold for or to review. The ask and the hold end at

@@ -471,7 +471,7 @@ func TestDeleteTasksRemovesTheirStepsAndLeavesTheRest(t *testing.T) {
 // MoveTask writes where one task stands and its state, the place one function of the walk keeps
 // (workflow's moveTask): a task at a step, at its retro or at its merge, or at no act. A move takes
 // a stopped task's reason away, since the task is no longer stopped: the one move of a stopped
-// task that keeps it in the workflow is its start again at step 1 (workflow's restartTask). A stop
+// task that keeps it in the workflow is its start again at step 1 (workflow's startAtFirstStep). A stop
 // is StopTask's, which keeps the place and records why. A task the plan does not hold, a place no
 // plan has and a stop without its reason are refused.
 func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {

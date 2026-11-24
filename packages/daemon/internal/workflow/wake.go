@@ -525,8 +525,9 @@ type PhaseReader interface {
 // brings a worker back to its work reads, and each loops over every step it answers: which ready
 // claim is sent its step's task (readyWorkerTask), which suspended claims the boot resumes
 // (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which roles
-// a CI settlement wakes (wakeOnSettlement), and which claims an idle release keeps
-// (idlePhaseOpen).
+// a CI settlement wakes (wakeOnSettlement), which claims an idle release keeps
+// (idlePhaseOpen), and which roles' starts the pod start gate puts first (the daemon's
+// phaseRoles).
 func OpenStepsOf(issue record.Issue) []record.RunningStep {
 	var open []record.RunningStep
 	for _, step := range issue.Running {

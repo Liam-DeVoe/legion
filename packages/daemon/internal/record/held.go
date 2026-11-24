@@ -62,7 +62,7 @@ const (
 	// step to return to (HoldTaskStopped), and that keeps no slot where it stands: one held from
 	// accepting, retro or merging (KeepsSlot). No issue holds it, so heldBy is empty. A later
 	// version of the plan from its owner that changes the stopped task, or a person's todo on the
-	// root, ends the hold (workflow's restartTask and waitForFirstStep). A task stopped at a step keeps
+	// root, ends the hold (workflow's startAtFirstStep and waitForFirstStep). A task stopped at a step keeps
 	// that step's slot and stands in the active set, so one that keeps its slot and holds none is
 	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
 	// the two are never true of one issue, since an issue holds one hold reason.

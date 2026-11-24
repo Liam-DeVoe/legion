@@ -247,7 +247,7 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (restartTask, transition). said is the log line, which names the issue, the task, its place and
+// (startAtFirstStep, transition). said is the log line, which names the issue, the task, its place and
 // role, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
