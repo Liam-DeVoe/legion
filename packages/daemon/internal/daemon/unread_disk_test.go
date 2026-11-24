@@ -7,13 +7,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -490,4 +493,54 @@ func TestAKeptPodIsReadAgainAfterARoleOfItRanAgain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The error of a read that failed keeps its end wherever the daemon keeps it (INFRA-341's
+// reviewer's point 6 on R6's review fixes). Whichever process made the read cuts its error to one
+// line by keeping the start and the end (shimwire.CutAnswerError), since the end is where
+// workspace.RunCommand puts its note on a git lock (workspace.StaleGitLockNote), which says what to
+// do about the lock. The daemon then bounds the error as it bounds any far side's error text, and
+// that bound must keep the end too. Here the end is such a note, after a reason far longer than the
+// bound.
+//
+// the_kept_notice_and_the_hold: the launcher of a pod no role runs in cannot read it; the
+// workspace-kept notice to the issue's architect and the hold record's detail both hold the end.
+//
+// the_round's_notices: an update round's keep of a pod whose read failed (roundKeptMessage), and
+// the workspace-taken notices of a replacement that still took the disk (readFound), hold the end.
+func TestAFailedReadsErrorKeepsItsEnd(t *testing.T) {
+	t.Parallel()
+	const end = "The launcher removes the git lock /legion/repos/github.com/acme/widgets/.git/index.lock in about 16 minutes."
+	failed := errors.New(shimwire.CutAnswerError("Command failed (exit 1): jj log\n" +
+		strings.Repeat("jj could not read the working copy of the workspace. ", 200) + "\n" + end))
+	if runes := utf8.RuneCountInString(failed.Error()); runes <= storetext.FarSideErrorRunes || !strings.HasSuffix(failed.Error(), end) {
+		t.Fatalf("test setup: the read's error has %d runes and ends %q, want more than %d runes and the note at its end",
+			runes, failed.Error()[max(0, len(failed.Error())-120):], storetext.FarSideErrorRunes)
+	}
+
+	t.Run("the_kept_notice_and_the_hold", func(t *testing.T) {
+		rig, publisher := noRoleRig(t, false)
+		rig.rt.FailWorkspaceWork(rig.issue.Key, failed)
+		rig.w.releaseUnownedPods(context.Background())
+		rig.drain(t)
+		notices := keptNotices(t, rig, publisher)
+		if len(notices) != 1 || !strings.Contains(notices[0].Reason, end) {
+			t.Fatalf("%s notices to the architect = %+v, want one that holds the end of the read's error, %q", record.WorkspaceKeptNotice, notices, end)
+		}
+		held := holdsNamed(t, rig, workflow.IdleHoldUnownedWorkspaceUnread.String())
+		if len(held) != 1 || !strings.Contains(held[0].Detail, end) {
+			t.Fatalf("holds = %+v, want one %s hold whose detail holds the end of the read's error, %q", held, workflow.IdleHoldUnownedWorkspaceUnread, end)
+		}
+	})
+
+	t.Run("the_round's_notices", func(t *testing.T) {
+		for name, message := range map[string]string{
+			"roundKeptMessage": roundKeptMessage("LEGION-208", "pod-a", podUpdateDrift, nil, runtime.WorkspaceWork{}, failed),
+			"readFound":        readFound(runtime.WorkspaceWork{}, failed),
+		} {
+			if !strings.Contains(message, end) {
+				t.Errorf("%s = %q, want it to hold the end of the read's error, %q", name, message, end)
+			}
+		}
+	})
 }
