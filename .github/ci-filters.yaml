@@ -358,6 +358,9 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  - '.github/scripts/pg-connection-ceiling.sh'
+  - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+  - 'packages/envoy/internal/dispatch/testlimits/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -2606,6 +2609,7 @@ envoy_smoke:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/**/*_test.go'
@@ -2977,6 +2981,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
@@ -3255,6 +3260,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/cipherclient/**/*_test.go'
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
@@ -3372,6 +3378,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
   - '!packages/envoy/internal/config/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/cputest/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
