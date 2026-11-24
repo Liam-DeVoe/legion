@@ -431,12 +431,10 @@ that pair from npm on a stale-plugin relaunch.
 
 legion_build chooses the archives' bytes, and hands over only them and the version. This
 step puts the checkout back on the run's commit, then names the archives itself, from that
-version and that commit's target list, which it reads through `release-push.sh legion-targets`,
-the one read of the list that legion_build's build and lint's release path check share, and
-which refuses a target that is not `<os>/<arch>`; release-push.sh handed refuses a version that
-is not X.Y.Z and an artifact that is not exactly those archives, each a regular file, and prints
-the tag. SHA256SUMS is then written over them, and the tag and the explicit lists go to the
-steps after it, from "legion: Tag release" on.
+version and that commit's target list, which it reads through `release-push.sh legion-targets`;
+release-push.sh handed refuses a version that is not X.Y.Z and an artifact that is not exactly
+those archives, each a regular file, and prints the tag. SHA256SUMS is then written over them,
+and the tag and the explicit lists go to the steps after it, from "legion: Tag release" on.
 
 ## Why the deploy key reaches legion's tag step alone
 

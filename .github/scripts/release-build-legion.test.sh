@@ -3,18 +3,18 @@
 # it packs one archive per legion target of .github/go-release-targets.json, each holding that
 # target's static binary, built with the target's CGO_ENABLED=0, GOOS and GOARCH, and the
 # THIRD_PARTY_NOTICES the notices script writes under the same environment, and it stops, packing
-# nothing, when it cannot read the targets or one is not <os>/<arch>. Its modes, which
-# check-legion-release-paths.sh asks: `targets`, the legion targets one a line, as release-push.sh
-# legion-targets reads them; `list`, go list over ./cmd/legion in packages/daemon with a target's
-# environment; `env`, go env with that environment; and `modules`, the go.mod of each main module.
+# nothing, when release-push.sh legion-targets refuses the list. Its modes, which
+# check-legion-release-paths.sh asks: `targets`, release-push.sh legion-targets; `list`, go list
+# over ./cmd/legion in packages/daemon with a target's environment; `env`, go env with that
+# environment; and `modules`, the go.mod of each main module.
 # The modes read none of the build's variables, and a mode it does not know, one without its
 # target, or one given more than it takes, is refused.
 #
 # Each case builds a miniature repository under a temporary directory: a daemon module with a
 # legion command, the target list, and a stand-in scripts/go-third-party-notices.sh that writes
 # where it ran, its environment and its arguments to the file the notices go to. The real script,
-# and release-push.sh, whose legion-targets reads the list for it, are symlinked into it, so the
-# scripts under test are the files the release runs. Needs Go and jq.
+# and release-push.sh, whose legion-targets it runs, are symlinked into it, so the scripts under
+# test are the files the release runs. Needs Go and jq.
 #
 # Run from anywhere: .github/scripts/release-build-legion.test.sh
 # CI runs it in ci.yaml's test job, after setup-go.

@@ -2512,9 +2512,9 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:1064,1121,1209 source it for restart's, release's and "
+        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:1074,1131,1219 source it for restart's, release's and "
                                   "release-section's gh calls, which the stub gh answers"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:985 runs it for `version`, and the version cases read its refusals"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:995 runs it for `version`, and the version cases read its refusals"),
         (NOTICES_LOOPS, "release-push.test.sh's go-release-notices.sh case symlinks it into a fixture and runs it over an empty list"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release and legion archive check cases read "
                                            "those steps out of it and run them"),
@@ -4073,7 +4073,8 @@ GATES = [
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
         (NOTICES, f"{NOTICES_LOOPS} runs it once per release target"),
-        (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
+        (f"{SCRIPTS}/release-push.sh", f"{NOTICES_LOOPS} runs its legion-targets for the legion loop"),
+        (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads its envoy list, and release-push.sh's legion-targets its legion list"),
         (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     )),
@@ -4081,8 +4082,8 @@ GATES = [
     # A second gate on go_notices, lint's release-path check, so it runs exactly when the restore
     # of the module cache it reads does: the go list of ./cmd/legion it runs for each legion target
     # through release-build-legion.sh's list mode, and the files it reads to hold release.yaml's
-    # LEGION_VERSION_ARGS to that closure. Its go env GOWORK and go list -m compile nothing. The two gates claim
-    # different steps, so they do not collide.
+    # LEGION_VERSION_ARGS to that closure. Its go env GOWORK and go list -m compile nothing. The
+    # two gates claim different steps, so they do not collide.
     gate("go_notices", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
         (RELEASE_PATHS_CHECK, at("lint", RELEASE_PATHS_STEP)),
         (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its modes"),

@@ -1075,7 +1075,6 @@ jobs:
           dir="$RUNNER_TEMP/legion-assets"
           archives=()
           list=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" legion-targets)
-          [ -n "$list" ] || { echo "::error::.github/go-release-targets.json lists no legion target"; exit 1; }
           mapfile -t targets <<<"$list"
           for target in "${targets[@]}"; do
             os=${target%/*}

@@ -17,13 +17,11 @@
 # version this run releases, and $PI_LEGION_VERSION and $PI_ENVOY_VERSION, the plugin pair this
 # binary links, which the step's `env:` carries from the version and plugin_versions steps, and
 # $GITHUB_SHA and $GITHUB_WORKSPACE, which the runner sets. It reads the targets and writes out/
-# and assets/ of the checkout, and stops, building nothing, when it cannot read the targets or
-# one is not <os>/<arch>.
+# and assets/ of the checkout, and stops, building nothing, when release-push.sh legion-targets
+# refuses the list.
 #
 # targets: the legion targets, one <os>/<arch> a line, the list the build loops over, a line at a
-# time: release-push.sh legion-targets, beside this script, the one read of
-# .github/go-release-targets.json, which the release's publish job runs too and which refuses a
-# target that is not <os>/<arch>.
+# time: release-push.sh legion-targets, beside this script.
 # list: `go list <go list flag>... ./cmd/legion` in packages/daemon, with the environment the build
 # gives <os>/<arch>: what that target's binary is built from.
 # env: `go env <go env argument>...` in packages/daemon with that environment, such as GOWORK, the
@@ -43,8 +41,7 @@ set -euo pipefail
 usage='usage: release-build-legion.sh [targets | list <os>/<arch> <go list flag>... | env <os>/<arch> <go env argument>... | modules <os>/<arch>]'
 
 # targets: print the legion targets, one a line; release-push.sh's failure is the function's, so
-# the build's `list=$(targets)` stops on a list it cannot read or refuses rather than read it as an
-# empty one.
+# the build's `list=$(targets)` stops on a list it refuses.
 targets() {
   "$(dirname -- "${BASH_SOURCE[0]}")/release-push.sh" legion-targets
 }
@@ -62,7 +59,6 @@ build() {
   local -a each
   list=$(targets)
   mkdir -p out assets
-  [ -n "$list" ] || return 0
   mapfile -t each <<<"$list"
   for target in "${each[@]}"; do
     dir="legion-${target%/*}-${target#*/}"

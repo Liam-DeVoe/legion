@@ -202,19 +202,26 @@
 #            ::error:: on stderr naming what is wrong, and prints no tag.
 # legion-targets: print the targets .github/go-release-targets.json lists for
 #            legion, one <os>/<arch> a line in the list's order, and nothing
-#            else. It is the one read of that list: release-build-legion.sh
-#            builds the targets it prints and prints them in its `targets`
-#            mode, which a pull request's release path check reads, and
-#            release.yaml's publish job names the archives it checks after
-#            them, each reading the lines as they are. Each entry must be two
-#            names of lower-case letters and digits on each side of one /, as
-#            every GOOS and GOARCH go knows is: go builds an empty GOOS or
-#            GOARCH for the host's own and refuses a padded one only when it
-#            builds, and a reader that split the list into words would read
-#            either another way. An entry of another shape, named as JSON, a
-#            list jq cannot read and a legion key that is no list are each an
-#            ::error:: and exit 1, with nothing printed; an empty list prints
-#            nothing. It reads the list beside this script, at
+#            else. Every script and workflow step of this repository that
+#            reads that list runs it and reads its lines as they are:
+#            release-build-legion.sh, which builds the targets it prints and
+#            prints them in its `targets` mode, which
+#            check-legion-release-paths.sh, a pull request's release path
+#            check, runs; release.yaml's publish job, which names the
+#            archives it checks after them; and go-release-notices.sh, which
+#            writes each target's notices in lint and in ci-caches.yaml. The
+#            one other reader is .github/scripts/ci_job_reads.py, the model
+#            of which go commands CI runs, which reads the list's legion key
+#            itself to name the go commands of those scripts. Each entry must
+#            be two names of lower-case letters and digits on each side of
+#            one /, as every GOOS and GOARCH go knows is: go builds an empty
+#            GOOS or GOARCH for the host's own and refuses a padded one only
+#            when it builds, and a reader that split the list into words
+#            would read either another way. An empty list, an entry of
+#            another shape, named as JSON, a list jq cannot read and a
+#            legion key that is no list are each an ::error:: and exit 1,
+#            with nothing printed, so no caller keeps a rule of its own for
+#            them. It reads the list beside this script, at
 #            ../go-release-targets.json, so the checkout whose copy runs is
 #            the one whose list it reads.
 # no-credential: the tripwire a build job runs last: fail when a credential is
@@ -631,7 +638,10 @@ legion_targets() {
     echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: could not read the legion targets of $file: $listed" >&2
     exit 1
   fi
-  [ -n "$listed" ] || return 0
+  if [ -z "$listed" ]; then
+    echo "::error file=.github/go-release-targets.json::release-push.sh legion-targets: .github/go-release-targets.json lists no legion target; refusing the list" >&2
+    exit 1
+  fi
   mapfile -t entries <<<"$listed"
   for entry in "${entries[@]}"; do
     if ! [[ $entry =~ ^\"([a-z0-9]+/[a-z0-9]+)\"$ ]]; then

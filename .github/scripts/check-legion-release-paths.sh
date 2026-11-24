@@ -18,20 +18,23 @@
 #     step reads it so is the rule it holds, from that step's text and GitHub Actions' scoping: it
 #     fails when no step or more than one runs that command; when that step's `run:`, comment
 #     lines and blank lines apart, is anything but the command and its `>> "$GITHUB_OUTPUT"`;
-#     when a step of its job before it writes $GITHUB_ENV in its `run:`; when its job's env or
-#     its own sets the variable; and when a working directory, or a shell other than bash, is set
-#     for it at the step, its job's defaults or the workflow's. It reads no action an earlier step
-#     uses.
+#     when a step of its job before it has a `run:`, whatever it runs, since GitHub gives a later
+#     step what such a step writes to $GITHUB_ENV or $GITHUB_PATH under any name for them
+#     (${GITHUB_ENV}, ${{ github.env }}); when its job's env or its own sets the variable; when
+#     the workflow's, the job's or the step's env sets BASH_ENV, ENV, SHELLOPTS or BASHOPTS, the
+#     names through which bash or sh reads a startup file or its options from the environment;
+#     and when a working directory, or a shell other than bash, is set for it at the step, its
+#     job's defaults or the workflow's. It does not read what an action an earlier step uses
+#     writes. An IFS or GLOBIGNORE in an env is not refused: measured with bash 5.2.21, neither
+#     changes how `bash -e` splits and expands the list.
 #   * Which of those words are the paths: release-push.sh's own parse of `version`'s arguments,
 #     which `release-push.sh version-paths` runs and prints.
 #   * Which files those paths cover: git, which reads them as pathspecs when release-bump.sh runs
 #     `git log ... -- <paths>`. `git ls-files -- <paths>` at the root lists the files they cover,
 #     and `git ls-files` the files git tracks.
 #   * Which targets legion is built for, with which environment and command:
-#     release-build-legion.sh, whose modes run what its build runs. Its `targets` is
-#     `release-push.sh legion-targets`, the one read of .github/go-release-targets.json, which the
-#     release's publish job runs too, and which refuses a target that is not <os>/<arch>; this
-#     script reads its lines as they are, as the build does.
+#     release-build-legion.sh, whose modes run what its build runs; its `targets` is
+#     `release-push.sh legion-targets`.
 #   * Which files a target's binary is built from: go. `go list -deps -f` over ./cmd/legion, run
 #     through release-build-legion.sh list, names for each package the files it compiles or
 #     embeds (GoFiles, CgoFiles, CFiles, CXXFiles, MFiles, HFiles, FFiles, SFiles, SwigFiles,
@@ -47,8 +50,8 @@
 #
 # It fails naming each package directory of this repository with a required file the paths do
 # not cover, and each module or workspace file the paths do not cover. It fails, too, when
-# release-build-legion.sh cannot read the legion targets, refuses one or reads none, when go list
-# or go env fails for a target, when the go.work the build reads or a module it uses is outside
+# release-build-legion.sh targets refuses the legion targets, when go list or go env fails for a
+# target, when the go.work the build reads or a module it uses is outside
 # the repository, when release.yaml has no LEGION_VERSION_ARGS or its step does not read the list
 # as this script does (above), when release-push.sh refuses its words, when git cannot list the
 # files, and when go list printed no package of this repository: a check that compared nothing
@@ -69,14 +72,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 release=.github/workflows/release.yaml
 
-# The targets the release builds legion for, one <os>/<arch> a line, each read as it is.
+# The targets the release builds legion for, one <os>/<arch> a line.
 if ! .github/scripts/release-build-legion.sh targets >"$work/targets" 2>"$work/errors"; then
   echo "::error file=.github/go-release-targets.json::could not read the legion targets of .github/go-release-targets.json (release-build-legion.sh targets), so the packages the legion binary links are unknown:" >&2
   cat "$work/errors" >&2
-  exit 1
-fi
-if [ ! -s "$work/targets" ]; then
-  echo "::error file=.github/go-release-targets.json::.github/go-release-targets.json lists no legion target, so the packages the legion binary links are unknown" >&2
   exit 1
 fi
 mapfile -t targets <"$work/targets"
@@ -114,7 +113,6 @@ done
 # LEGION_VERSION_ARGS as release.yaml's workflow env holds it, and the step that reads it, which
 # must read it as this script does (the header's first point).
 if ! arguments=$(python3 - "$release" <<'PY'
-import re
 import sys
 from pathlib import Path
 
@@ -123,8 +121,8 @@ import yaml
 RELEASE = Path(sys.argv[1])
 COMMAND = ".github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS"
 LINE = f'{COMMAND} >> "$GITHUB_OUTPUT"'
-# A run: line that writes the environment of every later step of its job.
-ENV_WRITE = re.compile(r"\$\{?GITHUB_ENV\b")
+# The names through which bash or sh reads a startup file or its options from the environment.
+STARTUP = ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")
 
 
 def fatal(message: str) -> None:
@@ -166,10 +164,13 @@ def label(step: dict, at: int) -> str:
 problems = []
 if (run := commands(step)) != [LINE]:
     problems.append(f"runs {' and '.join(f'`{line}`' for line in run)}, not `{LINE}` alone")
-problems += [f'comes after the step "{label(earlier, at)}", which writes $GITHUB_ENV'
-             for at, earlier in enumerate(job["steps"][:index]) if any(ENV_WRITE.search(line) for line in commands(earlier))]
-problems += [f"sets LEGION_VERSION_ARGS in {where}" for where, env in (("its job's env", job.get("env")), ("its env", step.get("env")))
-            if isinstance(env, dict) and "LEGION_VERSION_ARGS" in env]
+problems += [f'comes after the step "{label(earlier, at)}", which runs a command'
+             for at, earlier in enumerate(job["steps"][:index]) if "run" in earlier]
+envs = (("the workflow's env", document.get("env")), ("its job's env", job.get("env")), ("its env", step.get("env")))
+problems += [f"sets LEGION_VERSION_ARGS in {where}" for where, env in envs[1:]
+             if isinstance(env, dict) and "LEGION_VERSION_ARGS" in env]
+problems += [f"sets {variable} in {where}" for where, env in envs if isinstance(env, dict)
+             for variable in STARTUP if variable in env]
 problems += [f"sets {where} ({value})" for where, value in (
     ("its working-directory", step.get("working-directory")),
     ("its job's default working-directory", run_default(job, "working-directory")),
