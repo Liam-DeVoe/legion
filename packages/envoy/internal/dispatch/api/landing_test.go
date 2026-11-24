@@ -3,15 +3,18 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -93,6 +96,8 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 		{"shell.pinned_issues", landing.Shell["pinned_issues"], "/api/v1/issues?pinned=true"},
 		{"shell.projects", landing.Shell["projects"], "/api/v1/projects"},
 		{"shell.agent_states", landing.Shell["agent_states"], "/api/v1/me/agents/state"},
+		// Null on both sides: newTestServer configures no broker. The list itself, read from a
+		// broker, is TestLandingCredentialRequestsAreTheValuesTheRouteRelays' row.
 		{"shell.credential_requests", landing.Shell["credential_requests"], "/api/v1/credential-requests?approver=me"},
 		{"shell.priority_summary", landing.Shell["priority_summary"], "/api/v1/priorities?summary=true"},
 		{"shell.agents", landing.Shell["agents"], "/api/v1/agents"},
@@ -193,6 +198,84 @@ func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing
 	} {
 		assertSameJSON(t, part.part, part.body, readRouteBody(t, handler, part.route))
 	}
+}
+
+// The landing reads the secrets broker's pending list through the same client as GET
+// /api/v1/credential-requests?approver=me, but the two do not hand it on in the same way. The route
+// relays the broker's bytes unparsed. The landing decodes them into wire.PendingResponse and
+// encodes them again (landingCredentialRequests). That round trip keeps only the fields the type
+// declares, and it writes each value in Go's own spelling. This row reads one list through both
+// and holds the two to the same values. TestLandingAnswersWhatThePerResourceRoutesAnswer compares
+// this part too, but on a server with no broker, where both sides are null.
+//
+// The fake broker answers both reads with one body, which is what the real broker writes: a
+// wire.PendingResponse that encoding/json marshalled. It holds one row that is pending and one row
+// that expired. Both rows are secret requests, because a machine login carries no approve_url and
+// no session ids, and this row must set every field. assertEveryFieldSet reads the fields from the
+// type, so a field that the type gets later, and that this row does not set, fails here: a field
+// left zero is the same zero on both sides, or is omitted on both, and so it passes whatever the
+// landing does with it. Each time is at a millisecond that ends in zero, a value whose spelling Go
+// makes shorter (".12" for ".120"). The row compares each time as the moment it names, so that a
+// different spelling is no failure and a different moment is one, and it compares each other value
+// exactly.
+//
+// That the route's body is the broker's bytes as sent is the row of
+// TestCredentialRouteForwardsBrokerSuccessBodyAndAuth, so what the route answers here is what the
+// broker wrote.
+func TestLandingCredentialRequestsAreTheValuesTheRouteRelays(t *testing.T) {
+	t.Parallel()
+	id := func(value string) *string { return &value }
+	sent := wire.PendingResponse{Pending: []wire.PendingEntry{
+		{
+			RecordID:    "rec-pending",
+			Kind:        "agent_secret",
+			Identifiers: []string{"GITHUB_TOKEN", "NPM_TOKEN"},
+			RequestedAt: time.Date(2026, 11, 24, 9, 30, 15, int(120*time.Millisecond), time.UTC),
+			Session:     wire.RecordSessionResp{Request: id("ses-request-1"), Enrollment: id("ses-enrolled-1")},
+			ApproveURL:  "https://secrets.example.com/approve/rec-pending",
+			State:       "pending",
+			ExpiresAt:   time.Date(2026, 11, 24, 9, 45, 15, int(120*time.Millisecond), time.UTC),
+		},
+		{
+			RecordID:    "rec-expired",
+			Kind:        "agent_secret",
+			Identifiers: []string{"PYPI_TOKEN"},
+			RequestedAt: time.Date(2026, 11, 23, 16, 2, 7, int(450*time.Millisecond), time.UTC),
+			Session:     wire.RecordSessionResp{Request: id("ses-request-2"), Enrollment: id("ses-enrolled-2")},
+			ApproveURL:  "https://secrets.example.com/approve/rec-expired",
+			State:       "expired",
+			ExpiresAt:   time.Date(2026, 11, 23, 16, 17, 7, int(450*time.Millisecond), time.UTC),
+		},
+	}}
+	assertEveryFieldSet(t, "PendingResponse", reflect.ValueOf(sent))
+	body, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("encode the broker's pending list: %v", err)
+	}
+
+	// The path and the query that cipher.Client.Pending sends for alice. A read that asks for
+	// anything else gets no list, so neither side can agree with the other by a different read.
+	const pendingQuery = "approver=alice&state=pending&state=expired"
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/pending" || r.URL.RawQuery != pendingQuery {
+			t.Errorf("the broker was asked %s %s, want GET /v1/pending?%s", r.Method, r.URL.RequestURI(), pendingQuery)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(broker.Close)
+	handler := newCredentialTestHandler(t, broker.URL)
+
+	// Any page does: the shell, which carries the list, is the same on each page.
+	carried := readLanding(t, handler, "/api/v1/landing?page=inbox").Shell["credential_requests"]
+	if string(carried) == "null" {
+		t.Fatalf("the landing's shell.credential_requests is null: its read of the broker failed, or answered after %v",
+			landingServiceBound)
+	}
+	assertSameJSONMoments(t, "shell.credential_requests", carried,
+		readRouteBody(t, handler, "/api/v1/credential-requests?approver=me"))
 }
 
 // A page the route does not know is refused by name, and so is a page that needs a parameter the
@@ -796,5 +879,121 @@ func assertSameJSONExcept(t *testing.T, part string, landing json.RawMessage, ro
 	}
 	if !reflect.DeepEqual(carried, answered) {
 		t.Errorf("the landing's %s is not what its route answers:\nlanding: %s\n  route: %s", part, landing, route)
+	}
+}
+
+// assertSameJSONMoments is assertSameJSON for a part that the landing decodes into a Go type and
+// encodes again, where its route relays the bytes of another service as that service wrote them.
+// Go writes a time in its own spelling, which can differ from the relayed spelling of the same
+// moment. Thus a string that reads as an RFC 3339 time on both sides is compared as the moment it
+// names. Every other value is compared exactly, and a key on one side must be on the other side.
+// Each difference is named by its path in the part, so a failure says which key or value differs.
+func assertSameJSONMoments(t *testing.T, part string, landing json.RawMessage, route []byte) {
+	t.Helper()
+	var carried, answered any
+	if err := json.Unmarshal(landing, &carried); err != nil {
+		t.Fatalf("decode the landing's %s %s: %v", part, landing, err)
+	}
+	if err := json.Unmarshal(route, &answered); err != nil {
+		t.Fatalf("decode the route behind %s %s: %v", part, route, err)
+	}
+	assertSameJSONValue(t, part, carried, answered)
+}
+
+// assertSameJSONValue is assertSameJSONMoments for one decoded value at path, and for each value
+// that it holds.
+func assertSameJSONValue(t *testing.T, path string, carried, answered any) {
+	t.Helper()
+	differs := func() {
+		t.Errorf("%s: the landing carries %s, the route answers %s", path, jsonText(carried), jsonText(answered))
+	}
+	switch answer := answered.(type) {
+	case map[string]any:
+		object, isObject := carried.(map[string]any)
+		if !isObject {
+			differs()
+			return
+		}
+		for _, key := range slices.Sorted(maps.Keys(answer)) {
+			if _, held := object[key]; !held {
+				t.Errorf("%s.%s: the route answers %s, and the landing has no such key", path, key, jsonText(answer[key]))
+				continue
+			}
+			assertSameJSONValue(t, path+"."+key, object[key], answer[key])
+		}
+		for _, key := range slices.Sorted(maps.Keys(object)) {
+			if _, held := answer[key]; !held {
+				t.Errorf("%s.%s: the landing carries %s, and the route has no such key", path, key, jsonText(object[key]))
+			}
+		}
+	case []any:
+		list, isList := carried.([]any)
+		if !isList || len(list) != len(answer) {
+			differs()
+			return
+		}
+		for i := range answer {
+			assertSameJSONValue(t, fmt.Sprintf("%s[%d]", path, i), list[i], answer[i])
+		}
+	case string:
+		if text, isText := carried.(string); !isText || (text != answer && !sameMoment(text, answer)) {
+			differs()
+		}
+	default:
+		// A number, a boolean or null.
+		if !reflect.DeepEqual(carried, answered) {
+			differs()
+		}
+	}
+}
+
+// sameMoment reports whether both texts are RFC 3339 times that name the same moment.
+func sameMoment(first, second string) bool {
+	firstTime, err := time.Parse(time.RFC3339Nano, first)
+	if err != nil {
+		return false
+	}
+	secondTime, err := time.Parse(time.RFC3339Nano, second)
+	return err == nil && firstTime.Equal(secondTime)
+}
+
+// jsonText is a decoded value written as JSON again, for a failure message.
+func jsonText(value any) string {
+	text, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(text)
+}
+
+// assertEveryFieldSet fails for each field of value, and of each struct, pointer and list that
+// value holds, that is the zero value of its type. A row that compares two encodings of one value
+// holds only the fields that value sets: a zero field is the same zero on both sides, or is
+// omitted on both, whatever either side does with it. The fields are read from the type, not from
+// a list that this file keeps, so a field that the type gets later fails here until the row sets
+// it. A time is one value, not a struct of parts, so it is not walked into.
+func assertEveryFieldSet(t *testing.T, path string, value reflect.Value) {
+	t.Helper()
+	if value.IsZero() {
+		t.Errorf("%s is the zero value of its type: set it, so that the row compares it", path)
+		return
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		assertEveryFieldSet(t, path, value.Elem())
+	case reflect.Struct:
+		if value.Type() == reflect.TypeFor[time.Time]() {
+			return
+		}
+		for i := range value.NumField() {
+			assertEveryFieldSet(t, path+"."+value.Type().Field(i).Name, value.Field(i))
+		}
+	case reflect.Slice:
+		if value.Len() == 0 {
+			t.Errorf("%s is empty: give it an element, so that the row compares one", path)
+		}
+		for i := range value.Len() {
+			assertEveryFieldSet(t, fmt.Sprintf("%s[%d]", path, i), value.Index(i))
+		}
 	}
 }
