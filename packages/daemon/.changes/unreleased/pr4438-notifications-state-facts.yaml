@@ -153,7 +153,13 @@ body: |-
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
   the role. A text that a project's pause held, a `low` one too, launches its reader at the resume,
   and the pause's two notices to the controller (`project-paused`, `project-resumed`) are records on
-  the list. The update ask names each of its five steps in their order (`push_to`,
+  the list. So is the controller's `intake-gave-up` notice, which names the project key as its
+  `issue` beside its `count` and its `giveUps`, and a `parked-decision` of a person's approval that
+  a later change of its parked root's status kept from queuing the root names, in place of a
+  reason, the approval's Dispatch event (`approval_seq`), the event that changed the root's status
+  (`status_changed_seq`), the status the root stood at (`status`), that it queued nothing
+  (`not_queued: true`) and the issue whose `todo` brings the root back (`set_todo`). The update ask
+  names each of its five steps in their order (`push_to`,
   `background_work`, `evidence`, `answer`, `then`), what to do with background work that ends after
   the answer (`late_background_work`), when an answer brings the round's end forward
   (`every_answer_brings_it_forward: when_no_turn_or_background_work`), and that a named service the

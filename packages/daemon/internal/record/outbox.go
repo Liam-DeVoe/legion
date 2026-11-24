@@ -590,7 +590,8 @@ type Notice struct {
 	// its first line opens with where that line goes on with another author's words (the backward
 	// move it states, or that it is the architect's close before the first phase), and that
 	// author's words, or the daemon's whole line, or that the first line is empty. Status is also
-	// the status of a child-status, a status-reasserted and an unslotted notice.
+	// the status of a child-status, a status-reasserted and an unslotted notice, and of the root of
+	// a parked-decision of a refused handover.
 	Refused        string `json:"refused,omitempty"`
 	DispatchAnswer string `json:"dispatch_answer,omitempty"`
 	Length         int    `json:"length,omitempty"`
@@ -676,6 +677,15 @@ type Notice struct {
 	// The answer of an ask and the options it chose (parked-decision).
 	Answer  string   `json:"answer,omitempty"`
 	Options []string `json:"options,omitempty"`
+	// Why a person's approval of a parked root's primary document queued nothing (a parked-decision
+	// of a refused handover, RefusedHandoverNoticeOf): the Dispatch event of the approval, the first
+	// later event that changed the root's status, which Status above names as Dispatch showed it
+	// when the daemon read the approval, that it queued nothing, and the issue whose todo brings the
+	// root back.
+	ApprovalSeq      int64  `json:"approval_seq,omitempty"`
+	StatusChangedSeq int64  `json:"status_changed_seq,omitempty"`
+	NotQueued        bool   `json:"not_queued,omitempty"`
+	SetTodo          string `json:"set_todo,omitempty"`
 	// What holds an update round past its bound (update-stalled).
 	Holds string `json:"holds,omitempty"`
 	// The provider errors of a role (provider-errors).
@@ -733,7 +743,18 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp,
+	// texts.IntakeGaveUpRecord). Only that kind carries either: the controller reads the rest in
+	// the state.
+	Count   int            `json:"count,omitempty"`
+	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
 }
+
+// NoticeGiveUp names one message the intake gave up, in an intake-gave-up notice: its record's id
+// in intake_failures, which a replay or a discard names, the consumer that delivered it and its
+// subject (texts.GiveUp).
+type NoticeGiveUp = texts.GiveUp
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
 // word the site that failed the claim chose, Detail the sentence that site wrote beside the word
@@ -1118,6 +1139,18 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
 // transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
 //
+// An intake-gave-up notice counts the messages the intake gave up while it waited for its
+// publish, and names the first giveUpNoticeNames of them, each by its record's id with its
+// consumer and its subject: the fields of its record (texts.IntakeGaveUpRecord, which GaveUpNotice
+// builds), Count and GiveUps. Its issue is the project key, as a tick's is, and it carries no
+// role; a row an older daemon queued names no issue, and the row's own issue column, the project
+// key, names it. The give-up writes it, and only while a controller is registered
+// (Postgres.GiveUpIntakeMessage, countIntakeGiveUp): the first give-up of a burst opens it, due
+// giveUpNoticeDelay later, each later give-up joins it while no publish has taken it, and one that
+// finds it leased or given back to retry opens the next. Nobody inside a tree is told: the message
+// is the intake's, of no issue an architect runs, and the controller replays or discards it
+// (dispatch://INFRA-1575).
+//
 // Each is the kind of the one list that bears its name (texts/kinds.go), where the list marks it
 // a controller notice.
 const (
@@ -1135,6 +1168,7 @@ const (
 	MemoryGuardKillNotice  NoticeKind = texts.MemoryGuardKill
 	ProjectPausedNotice    NoticeKind = texts.ProjectPaused
 	ProjectResumedNotice   NoticeKind = texts.ProjectResumed
+	IntakeGaveUpNotice     NoticeKind = texts.IntakeGaveUp
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2526,6 +2560,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
+		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
 		}
@@ -2585,6 +2622,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			default:
 				return fmt.Errorf("an architect-stalled notice names the arm %q, which is no arm of the wake", value.Arm)
 			}
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -2874,6 +2914,35 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	}
 	if kind != texts.Held || reason != string(HoldEscalated) {
 		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
+	}
+	return nil
+}
+
+// validateNoticeGiveUps holds a notice's count and named give-ups to the intake-gave-up notice,
+// which counts one give-up or more, names between one and min(Count, giveUpNoticeNames) of them,
+// each by its record's positive id, and carries no role, since it is the controller's alone.
+// Every other kind carries neither. Both arms of the switch above call it, as they call
+// validateNoticeFailure: a Notice can never be of this kind, so there it refuses any count.
+func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps []NoticeGiveUp) error {
+	if kind != IntakeGaveUpNotice {
+		if count != 0 || len(giveUps) > 0 {
+			return fmt.Errorf("a %s notice carries a count or names give-ups; only an intake-gave-up notice does", kind)
+		}
+		return nil
+	}
+	if count < 1 {
+		return fmt.Errorf("an intake-gave-up notice counts one give-up or more, not %d", count)
+	}
+	if most := min(count, giveUpNoticeNames); len(giveUps) < 1 || len(giveUps) > most {
+		return fmt.Errorf("an intake-gave-up notice that counts %d names between 1 and %d of them, not %d", count, most, len(giveUps))
+	}
+	for _, giveUp := range giveUps {
+		if giveUp.ID <= 0 {
+			return fmt.Errorf("an intake-gave-up notice names each give-up by its positive record id, not %d", giveUp.ID)
+		}
+	}
+	if role != "" {
+		return fmt.Errorf("an intake-gave-up notice carries no role, not %q: it is the controller's alone", role)
 	}
 	return nil
 }

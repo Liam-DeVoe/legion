@@ -120,18 +120,36 @@ type AwaitingPersonRecord struct {
 // record.DecisionKind word), the tree's root, the decision's reference, who and when, the version
 // of a spec decision, the reason of a changes request (words), the answer of an ask (words) with
 // the options it chose. Each words field is bounded at OneAct.
+//
+// A person's approval of a parked root's primary document that Legion did not queue as their
+// handover of the root, because the root's status changed after the approval (record's
+// RelayRefusedHandover, workflow's refuseHandover), says so as fields: the Dispatch event of the
+// approval (ApprovalSeq), the first later event that changed the root's status
+// (StatusChangedSeq), the status Dispatch showed the root at when the daemon read the approval,
+// after that change (Status), that the approval queued nothing (NotQueued), and the issue whose
+// todo brings the root back (SetTodo). Main's notice (40b01992) said each in its reason ("the
+// approval, at Dispatch event %d, came before a change of %s's status: its status changed after
+// the approval, by event %d, so Legion did not queue %s as the person's handover; set %s to todo
+// to bring it back"), and R8 of dispatch://INFRA-3686 keeps each as a field; the step of setting
+// the root to todo is the controller's prompt's (roles/controller-root.md), and the status is a
+// fact the daemon read that main's sentence did not name.
 type ParkedDecisionRecord struct {
 	NoticeHead
-	Decision string               `json:"decision,omitempty"`
-	Root     string               `json:"root,omitempty"`
-	Ref      string               `json:"ref,omitempty"`
-	Actor    string               `json:"actor,omitempty"`
-	At       time.Time            `json:"at,omitzero"`
-	Version  int                  `json:"version,omitempty"`
-	Reason   string               `json:"reason,omitempty" texts:"words"`
-	Answer   string               `json:"answer,omitempty" texts:"words"`
-	Options  []string             `json:"options,omitempty"`
-	Words    map[string]WordsMeta `json:"words,omitempty"`
+	Decision         string               `json:"decision,omitempty"`
+	Root             string               `json:"root,omitempty"`
+	Ref              string               `json:"ref,omitempty"`
+	Actor            string               `json:"actor,omitempty"`
+	At               time.Time            `json:"at,omitzero"`
+	Version          int                  `json:"version,omitempty"`
+	ApprovalSeq      int64                `json:"approval_seq,omitempty"`
+	StatusChangedSeq int64                `json:"status_changed_seq,omitempty"`
+	Status           string               `json:"status,omitempty"`
+	NotQueued        bool                 `json:"not_queued,omitempty"`
+	SetTodo          string               `json:"set_todo,omitempty"`
+	Reason           string               `json:"reason,omitempty" texts:"words"`
+	Answer           string               `json:"answer,omitempty" texts:"words"`
+	Options          []string             `json:"options,omitempty"`
+	Words            map[string]WordsMeta `json:"words,omitempty"`
 }
 
 // The words of what holds an update round past its bound (UpdateStalledRecord.Holds). No process
@@ -391,4 +409,31 @@ type ProjectPause struct {
 type PauseActor struct {
 	Kind    string `json:"kind"`
 	Session string `json:"session,omitempty"`
+}
+
+// IntakeGaveUpRecord is the notice that the intake gave up messages whose handling kept failing
+// (record's GaveUpNotice, which Postgres.countIntakeGiveUp opens and joins), whose issue is the
+// project key, as a tick's is: how many it gave up while the notice waited for its publish
+// (Count), and the first of them, at most a hundred (record's giveUpNoticeNames), each by the id
+// of its record, the consumer that delivered it and its subject (GiveUps); the controller reads
+// the rest in the state, which counts each consumer's open give-ups. It names no role: the message
+// is the intake's, of no issue an architect runs, and the controller is the notice's one reader,
+// which replays or discards each give-up (dispatch://INFRA-1575). Main's notice (40b01992) carried
+// its kind, the count and the give-ups under these keys and nothing else, so it gave its reader no
+// sentence and no step; R8 of dispatch://INFRA-3686 keeps each as a field, and the record adds the
+// project key as its issue. Both keys keep main's shape, omitempty, though the outbox refuses a
+// notice of this kind that counts or names none.
+type IntakeGaveUpRecord struct {
+	NoticeHead
+	Count   int      `json:"count,omitempty"`
+	GiveUps []GiveUp `json:"giveUps,omitempty"`
+}
+
+// GiveUp is one message an intake-gave-up notice names (record.NoticeGiveUp is this type): the id
+// of its record in intake_failures, which a replay or a discard names, the consumer that delivered
+// it, and its subject as the store keeps text.
+type GiveUp struct {
+	ID       int64  `json:"id"`
+	Consumer string `json:"consumer"`
+	Subject  string `json:"subject"`
 }

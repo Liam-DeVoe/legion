@@ -616,7 +616,9 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 	b.notice(r, "document", ctl, workflow.AwaitingPersonNotice(r.key(211), record.Awaiting{GateVersion: 3 + r.n}, record.DesignStepSpec),
 		goldenWant("issue", r.key(211), "document", "dispatch://"+r.key(211)+"/spec", "version", 3+r.n))
 
-	// parked-decision: an ask's answer, and a changes request with its reason.
+	// parked-decision: an ask's answer, a changes request with its reason, and a person's approval
+	// of a parked root's spec that a later change of the root's status kept from queuing the root
+	// as their handover (workflow's refuseHandover).
 	{
 		person := "user:" + r.words("parked/person", 6)
 		answer := record.ParkedDecision{Issue: r.key(213), Ref: "dispatch://" + r.key(213) + "/ask/" + r.id("parked/ask"), Decision: record.DecisionAskAnswered,
@@ -631,6 +633,13 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		b.notice(r, "changes", ctl, record.ParkedDecisionNoticeOf(r.key(212), r.key(212), changes, 6+r.n),
 			goldenWant("issue", r.key(212), "decision", string(record.DecisionDesignChangesRequested), "root", r.key(212), "ref", changes.Ref,
 				"version", 6+r.n, "reason", changes.Words.Text, "words.reason.by", person, "words.reason.at", r.at(81)))
+		approval := record.ParkedDecision{Issue: r.key(214), Ref: "dispatch://" + r.key(214) + "/spec", Decision: record.DecisionDesignApproved,
+			Actor: person, At: r.at(82)}
+		refusal := record.HandoverRefusal{ApprovalSeq: int64(1000*r.n + 300), StatusChangedSeq: int64(1000*r.n + 310 + r.n), Status: []string{"backlog", "icebox"}[r.n-1]}
+		b.notice(r, "refused-handover", ctl, record.RefusedHandoverNoticeOf(r.key(214), r.key(214), approval, 3+r.n, refusal),
+			goldenWant("issue", r.key(214), "decision", string(record.DecisionDesignApproved), "root", r.key(214), "ref", approval.Ref, "actor", person,
+				"at", r.at(82), "version", 3+r.n, "approval_seq", refusal.ApprovalSeq, "status_changed_seq", refusal.StatusChangedSeq,
+				"status", refusal.Status, "not_queued", true, "set_todo", r.key(214)))
 	}
 
 	// update-stalled: a round with a new image and 30 changed settings held by two pods, a refused
@@ -779,6 +788,29 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		p.EndedAt, p.EndedBy = r.at(95+r.n), operator
 		b.notice(r, "resumed", ctl, pause.ResumedNotice(p),
 			goldenWant("issue", r.prefix, "pause.id", p.ID, "pause.by.kind", string(store.PauseByOperator), "pause.at", r.at(95+r.n)))
+	}
+
+	// intake-gave-up, under the project key: a burst of 150 give-ups that names its first 100, the
+	// most one notice names, in the first rendering, and a burst of three, one of each consumer, in
+	// the second. Each give-up is named by its record's id, the consumer that delivered it and its
+	// subject.
+	{
+		count := []int{150, 3}[r.n-1]
+		var giveUps []record.NoticeGiveUp
+		for i := range min(count, 100) {
+			consumer, subject := "legion-go-"+r.prefix+"-dispatch", "notifications.dispatch.issue."+r.key(400+i)+".issue.updated"
+			switch i % 3 {
+			case 1:
+				consumer, subject = "legion-go-"+r.prefix+"-github", fmt.Sprintf("notifications.github.%s.pr.%d", strings.ReplaceAll(r.repo, "/", "."), 800+100*r.n+i)
+			case 2:
+				consumer, subject = "legion-go-"+r.prefix+"-wake", "notifications.legion."+r.prefix+".wake"
+			}
+			giveUps = append(giveUps, record.NoticeGiveUp{ID: int64(10000*r.n + 400 + i), Consumer: consumer, Subject: subject})
+		}
+		b.notice(r, "gave-up", ctl, record.GaveUpNotice(r.prefix, count, giveUps),
+			goldenWant("issue", r.prefix, "count", count, "giveUps#", len(giveUps), "giveUps[0].id", giveUps[0].ID,
+				"giveUps[0].consumer", giveUps[0].Consumer, "giveUps[0].subject", giveUps[0].Subject,
+				"giveUps[1].consumer", giveUps[1].Consumer, "giveUps[1].subject", giveUps[1].Subject))
 	}
 }
 

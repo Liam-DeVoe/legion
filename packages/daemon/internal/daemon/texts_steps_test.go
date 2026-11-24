@@ -16,7 +16,7 @@ import (
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
-// 054cd5ca, 74cb6855, 7cb1f229, 7df64124 or f8a5195a for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// 054cd5ca, 74cb6855, 7cb1f229, 7df64124, f8a5195a or 40b01992 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from the one line of the file that holds it.
@@ -619,6 +619,8 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "so any child waiting on that gate starts."},
 	{texts.ParkedDecision, "a human approved %s's spec document at version %d, which opens the gate %s carried", "controller",
 		rolePrompts + "controller-root.md", "`decision: carried-gate-opened` means that a person approved, at `version`, the old root's document that `ref` names, not a document of `issue`"},
+	{texts.ParkedDecision, "; set %s to todo to bring it back", "controller",
+		rolePrompts + "controller-root.md", "to bring the root back, set the issue `set_todo` names to `todo`."},
 	{texts.UpdateStalled, "The bound of the update round is past.", "controller",
 		rolePrompts + "controller-root.md", "An `update-stalled` notice says that the bound of an update round is past"},
 	{texts.UpdateStalled, "The daemon does not replace the pod until the operator resumes each of them.", "controller",

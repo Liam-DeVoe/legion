@@ -10004,6 +10004,56 @@
       }
     },
     {
+      "kind": "parked-decision",
+      "variant": "refused-handover",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1214",
+      "summary": "parked-decision on ALPHA-1214",
+      "payload": {
+        "kind": "parked-decision",
+        "issue": "ALPHA-1214",
+        "version": 4,
+        "actor": "user:ttenpp",
+        "ref": "dispatch://ALPHA-1214/spec",
+        "decision": "design-approved",
+        "root": "ALPHA-1214",
+        "status": "backlog",
+        "at": "2026-11-18T10:52:00Z",
+        "approval_seq": 1300,
+        "status_changed_seq": 1311,
+        "not_queued": true,
+        "set_todo": "ALPHA-1214"
+      }
+    },
+    {
+      "kind": "parked-decision",
+      "variant": "refused-handover",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2214",
+      "summary": "parked-decision on BRAVO-2214",
+      "payload": {
+        "kind": "parked-decision",
+        "issue": "BRAVO-2214",
+        "version": 5,
+        "actor": "user:xeyaa ",
+        "ref": "dispatch://BRAVO-2214/spec",
+        "decision": "design-approved",
+        "root": "BRAVO-2214",
+        "status": "icebox",
+        "at": "2027-04-07T18:07:00Z",
+        "approval_seq": 2300,
+        "status_changed_seq": 2312,
+        "not_queued": true,
+        "set_todo": "BRAVO-2214"
+      }
+    },
+    {
       "kind": "update-stalled",
       "variant": "drift",
       "sample": 1,
@@ -11390,6 +11440,555 @@
           },
           "at": "2027-04-07T18:22:00Z"
         }
+      }
+    },
+    {
+      "kind": "intake-gave-up",
+      "variant": "gave-up",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "intake-gave-up on ALPHA",
+      "payload": {
+        "kind": "intake-gave-up",
+        "issue": "ALPHA",
+        "count": 150,
+        "giveUps": [
+          {
+            "id": 10400,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1400.issue.updated"
+          },
+          {
+            "id": 10401,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.901"
+          },
+          {
+            "id": 10402,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10403,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1403.issue.updated"
+          },
+          {
+            "id": 10404,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.904"
+          },
+          {
+            "id": 10405,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10406,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1406.issue.updated"
+          },
+          {
+            "id": 10407,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.907"
+          },
+          {
+            "id": 10408,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10409,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1409.issue.updated"
+          },
+          {
+            "id": 10410,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.910"
+          },
+          {
+            "id": 10411,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10412,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1412.issue.updated"
+          },
+          {
+            "id": 10413,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.913"
+          },
+          {
+            "id": 10414,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10415,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1415.issue.updated"
+          },
+          {
+            "id": 10416,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.916"
+          },
+          {
+            "id": 10417,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10418,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1418.issue.updated"
+          },
+          {
+            "id": 10419,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.919"
+          },
+          {
+            "id": 10420,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10421,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1421.issue.updated"
+          },
+          {
+            "id": 10422,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.922"
+          },
+          {
+            "id": 10423,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10424,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1424.issue.updated"
+          },
+          {
+            "id": 10425,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.925"
+          },
+          {
+            "id": 10426,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10427,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1427.issue.updated"
+          },
+          {
+            "id": 10428,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.928"
+          },
+          {
+            "id": 10429,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10430,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1430.issue.updated"
+          },
+          {
+            "id": 10431,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.931"
+          },
+          {
+            "id": 10432,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10433,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1433.issue.updated"
+          },
+          {
+            "id": 10434,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.934"
+          },
+          {
+            "id": 10435,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10436,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1436.issue.updated"
+          },
+          {
+            "id": 10437,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.937"
+          },
+          {
+            "id": 10438,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10439,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1439.issue.updated"
+          },
+          {
+            "id": 10440,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.940"
+          },
+          {
+            "id": 10441,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10442,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1442.issue.updated"
+          },
+          {
+            "id": 10443,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.943"
+          },
+          {
+            "id": 10444,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10445,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1445.issue.updated"
+          },
+          {
+            "id": 10446,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.946"
+          },
+          {
+            "id": 10447,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10448,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1448.issue.updated"
+          },
+          {
+            "id": 10449,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.949"
+          },
+          {
+            "id": 10450,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10451,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1451.issue.updated"
+          },
+          {
+            "id": 10452,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.952"
+          },
+          {
+            "id": 10453,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10454,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1454.issue.updated"
+          },
+          {
+            "id": 10455,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.955"
+          },
+          {
+            "id": 10456,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10457,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1457.issue.updated"
+          },
+          {
+            "id": 10458,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.958"
+          },
+          {
+            "id": 10459,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10460,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1460.issue.updated"
+          },
+          {
+            "id": 10461,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.961"
+          },
+          {
+            "id": 10462,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10463,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1463.issue.updated"
+          },
+          {
+            "id": 10464,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.964"
+          },
+          {
+            "id": 10465,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10466,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1466.issue.updated"
+          },
+          {
+            "id": 10467,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.967"
+          },
+          {
+            "id": 10468,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10469,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1469.issue.updated"
+          },
+          {
+            "id": 10470,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.970"
+          },
+          {
+            "id": 10471,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10472,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1472.issue.updated"
+          },
+          {
+            "id": 10473,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.973"
+          },
+          {
+            "id": 10474,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10475,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1475.issue.updated"
+          },
+          {
+            "id": 10476,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.976"
+          },
+          {
+            "id": 10477,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10478,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1478.issue.updated"
+          },
+          {
+            "id": 10479,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.979"
+          },
+          {
+            "id": 10480,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10481,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1481.issue.updated"
+          },
+          {
+            "id": 10482,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.982"
+          },
+          {
+            "id": 10483,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10484,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1484.issue.updated"
+          },
+          {
+            "id": 10485,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.985"
+          },
+          {
+            "id": 10486,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10487,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1487.issue.updated"
+          },
+          {
+            "id": 10488,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.988"
+          },
+          {
+            "id": 10489,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10490,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1490.issue.updated"
+          },
+          {
+            "id": 10491,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.991"
+          },
+          {
+            "id": 10492,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10493,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1493.issue.updated"
+          },
+          {
+            "id": 10494,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.994"
+          },
+          {
+            "id": 10495,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10496,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1496.issue.updated"
+          },
+          {
+            "id": 10497,
+            "consumer": "legion-go-ALPHA-github",
+            "subject": "notifications.github.alpha-works.alpha-tower.pr.997"
+          },
+          {
+            "id": 10498,
+            "consumer": "legion-go-ALPHA-wake",
+            "subject": "notifications.legion.ALPHA.wake"
+          },
+          {
+            "id": 10499,
+            "consumer": "legion-go-ALPHA-dispatch",
+            "subject": "notifications.dispatch.issue.ALPHA-1499.issue.updated"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "intake-gave-up",
+      "variant": "gave-up",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "intake-gave-up on BRAVO",
+      "payload": {
+        "kind": "intake-gave-up",
+        "issue": "BRAVO",
+        "count": 3,
+        "giveUps": [
+          {
+            "id": 20400,
+            "consumer": "legion-go-BRAVO-dispatch",
+            "subject": "notifications.dispatch.issue.BRAVO-2400.issue.updated"
+          },
+          {
+            "id": 20401,
+            "consumer": "legion-go-BRAVO-github",
+            "subject": "notifications.github.bravo-labs.bravo-yard.pr.1001"
+          },
+          {
+            "id": 20402,
+            "consumer": "legion-go-BRAVO-wake",
+            "subject": "notifications.legion.BRAVO.wake"
+          }
+        ]
       }
     },
     {

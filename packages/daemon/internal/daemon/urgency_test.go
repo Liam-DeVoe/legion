@@ -631,6 +631,10 @@ func urgencySample(t *testing.T, kind texts.Kind, v texts.Variant) record.Notice
 		fields["words"] = map[string]any{"pause.reason": map[string]any{"by": record.PauseByOperator, "at": "2026-11-11T09:00:00Z"}}
 	case texts.ProjectResumed:
 		fields["pause"] = map[string]any{"id": 7, "by": map[string]any{"kind": record.PauseByOperator}, "at": "2026-11-11T10:00:00Z"}
+	case texts.IntakeGaveUp:
+		fields["count"] = 1
+		fields["giveUps"] = []any{map[string]any{"id": 41, "consumer": "legion-go-LEGION-dispatch",
+			"subject": "notifications.dispatch.issue." + urgencyIssue + ".issue.updated"}}
 	case texts.VolumeNearFull:
 		fields["volume"] = map[string]any{"podUid": "pod-1", "trimmer": "trim-1", "episode": 1, "raisedBy": "first",
 			"usedBytes": 48 << 30, "freeBytes": 2 << 30, "freedBytes": 1 << 30, "stopReason": "nothing left older than the minimum age",

@@ -356,6 +356,9 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "decision", "root"}, links: []string{"ref"}},
 	{kind: texts.ParkedDecision, variants: []string{"changes"}, from: "record/parked_decision.go:RelayParkedDecision (version, reason)",
 		keys: []string{"version", "reason"}},
+	{kind: texts.ParkedDecision, variants: []string{"refused-handover"}, from: "workflow/gate.go:refuseHandover at 40b01992 (the version approved, " +
+		"the approval at Dispatch event <n>, the change of <KEY>'s status by event <m> after it, Legion did not queue <KEY> as the person's handover, set <KEY> to todo)",
+		keys: []string{"version", "approval_seq", "status_changed_seq", "not_queued", "set_todo"}},
 	{kind: texts.UpdateStalled, from: "daemon/podupdate.go:tellUpdateStalled (the round, the pod)",
 		keys: []string{"issue", "holds", "update.round"}},
 	{kind: texts.UpdateStalled, variants: []string{"drift"}, from: "daemon/podupdate.go:tellUpdateStalled (the round's pod, its drift)",
@@ -389,6 +392,9 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "pause.id", "pause.by.kind", "pause.at", "pause.reason"}},
 	{kind: texts.ProjectResumed, from: "pause/pause.go:resumedNotice at c7e1cbd5 (the pause ended, who resumed, when)",
 		keys: []string{"issue", "pause.id", "pause.by.kind", "pause.at"}},
+	{kind: texts.IntakeGaveUp, from: "record/intake_failures.go:countIntakeGiveUp, record/outbox.go:NoticeGiveUp at 40b01992 (the count of the give-ups, " +
+		"each give-up the notice names by its record's id, its consumer and its subject, under the project key)",
+		keys: []string{"issue", "count", "giveUps#", "giveUps[0].id", "giveUps[0].consumer", "giveUps[0].subject", "giveUps[1].consumer", "giveUps[1].subject"}},
 
 	// Role messages.
 	{kind: texts.CISettled, from: "workflow/review.go:tellChecks, namedConclusions (the pull request, each check)",

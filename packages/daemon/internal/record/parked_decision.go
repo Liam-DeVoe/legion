@@ -73,11 +73,12 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 }
 
 // RelayParkedDecision is the one rule for a decision made where nobody in its tree hears it, which
-// both paths that find one follow: the workflow's answer, resolution or reply on an ask of a tree
-// nobody runs (workflow's ask_mirror.go), and the outbox's spec decision whose notice no architect
-// took (the daemon's parkDecision). issue is where in Dispatch the decision was made, root its
-// tree's root, and nobodyHears says the caller found nobody inside the tree to hear it. The rules,
-// in order:
+// every path that finds one follows: the workflow's answer, resolution or reply on an ask of a tree
+// nobody runs (workflow's ask_mirror.go), the outbox's spec decision whose notice no architect
+// took (the daemon's parkDecision), and the workflow's person's approval of a parked root that a
+// later change of its status kept from queuing the root (RelayRefusedHandover). issue is where in
+// Dispatch the decision was made, root its tree's root, and nobodyHears says the caller found
+// nobody inside the tree to hear it. The rules, in order:
 //
 //   - A root that waits for its slot (WaitsForSlot) keeps a person's decision for the start its
 //     admission will queue, and the controller is told nothing: the tree already runs again.
@@ -109,6 +110,35 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
 	decision ParkedDecision, version int, steps []DesignStep) (RelayOutcome, error) {
+	return relayParkedDecision(ctx, tx, store, issue, root, nobodyHears, decision, version, nil, steps)
+}
+
+// HandoverRefusal is why a person's approval of a parked root's primary document queued nothing
+// as their handover of the root (workflow's refuseHandover): the root's status changed after the
+// approval. ApprovalSeq is the Dispatch event of the approval, StatusChangedSeq the first later
+// event of the root's Dispatch event log that changed its status (intake.DispatchArtifact's
+// StatusChangedSeq), and Status the status Dispatch showed the root at when the daemon read the
+// approval, after that change.
+type HandoverRefusal struct {
+	ApprovalSeq      int64
+	StatusChangedSeq int64
+	Status           string
+}
+
+// RelayRefusedHandover is RelayParkedDecision of a person's approval of the parked root's primary
+// document that a later change of the root's status kept from queuing the root as their handover
+// (refusal): nobody in the parked tree hears it, so the approval is kept for the root's next
+// architect start, and the parked-decision notice the controller is sent names why it queued
+// nothing (RefusedHandoverNoticeOf).
+func RelayRefusedHandover(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue,
+	decision ParkedDecision, version int, refusal HandoverRefusal, steps []DesignStep) (RelayOutcome, error) {
+	return relayParkedDecision(ctx, tx, store, issue, root, true, decision, version, &refusal, steps)
+}
+
+// relayParkedDecision is RelayParkedDecision, whose notice names refusal where it is not nil
+// (RelayRefusedHandover).
+func relayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
+	decision ParkedDecision, version int, refusal *HandoverRefusal, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -134,7 +164,11 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	notice, err := ControllerNoticeOf(ParkedDecisionNoticeOf(issue, root.Key, decision, version))
+	rec := ParkedDecisionNoticeOf(issue, root.Key, decision, version)
+	if refusal != nil {
+		rec = RefusedHandoverNoticeOf(issue, root.Key, decision, version, *refusal)
+	}
+	notice, err := ControllerNoticeOf(rec)
 	if err != nil {
 		return RelayNone, err
 	}
@@ -180,6 +214,18 @@ func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version
 	}
 	by := cmp.Or(words.By, decision.Actor)
 	notice.Words = map[string]texts.WordsMeta{field: {By: by, At: notice.At, Rest: carried.Rest, More: carried.More}}
+	return notice
+}
+
+// RefusedHandoverNoticeOf is the parked-decision notice of decision (ParkedDecisionNoticeOf), a
+// person's approval of issue's primary document, the parked root of its own tree, that refusal
+// kept from queuing the root as their handover: it names the Dispatch event of the approval, the
+// first later event that changed the root's status and the status the root stood at, that the
+// approval queued nothing, and issue as the issue whose todo brings the root back.
+func RefusedHandoverNoticeOf(issue, root string, decision ParkedDecision, version int, refusal HandoverRefusal) texts.ParkedDecisionRecord {
+	notice := ParkedDecisionNoticeOf(issue, root, decision, version)
+	notice.ApprovalSeq, notice.StatusChangedSeq, notice.Status = refusal.ApprovalSeq, refusal.StatusChangedSeq, refusal.Status
+	notice.NotQueued, notice.SetTodo = true, issue
 	return notice
 }
 

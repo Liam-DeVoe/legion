@@ -77,6 +77,7 @@ const (
 	MemoryGuardKill  Kind = "memory-guard-kill"
 	ProjectPaused    Kind = "project-paused"
 	ProjectResumed   Kind = "project-resumed"
+	IntakeGaveUp     Kind = "intake-gave-up"
 )
 
 // The role messages: the messages that the daemon publishes to a role.
@@ -157,6 +158,7 @@ var list = []Entry{
 	{Kind: MemoryGuardKill, Form: ControllerNotice, Record: MemoryGuardKillRecord{}, Readers: toController},
 	{Kind: ProjectPaused, Form: ControllerNotice, Record: ProjectPausedRecord{}, Readers: toController},
 	{Kind: ProjectResumed, Form: ControllerNotice, Record: ProjectResumedRecord{}, Readers: toController},
+	{Kind: IntakeGaveUp, Form: ControllerNotice, Record: IntakeGaveUpRecord{}, Readers: toController},
 
 	{Kind: CISettled, Form: RoleMessage, Record: CISettledRecord{}, Readers: toPodRoles, Urgency: ciSettledUrgency},
 	{Kind: GateMoved, Form: RoleMessage, Record: GateMovedRecord{}, Readers: toPodRoles},

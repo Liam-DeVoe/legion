@@ -138,6 +138,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Words: map[string]texts.WordsMeta{"pause.reason": {By: PauseByOperator, At: now}}})),
 		ControllerNotice(mustNotice(t, texts.ProjectResumedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ProjectResumed, Issue: "LEGION"},
 			Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}})),
+		ControllerNotice(mustNotice(t, GaveUpNotice("LEGION", 3, []NoticeGiveUp{
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
+			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}))),
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, News: true},
@@ -563,6 +566,16 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
+		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
+		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
+		{name: "an intake-gave-up notice naming more than it counts", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(2)}, reason: "names between 1 and 1 of them, not 2"},
+		{name: "an intake-gave-up notice naming a give-up with no id", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{{Consumer: "legion-go-LEGION-dispatch"}}}, reason: "by its positive record id"},
+		{name: "an intake-gave-up notice to a role", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Role: claim.RoleArchitect, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "carries no role"},
+		{name: "give-ups named on a tick", payload: ControllerNotice{Kind: TickNotice, GiveUps: noticeGiveUps(1)}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on a tick", payload: ControllerNotice{Kind: TickNotice, Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on an architect's notice", payload: Notice{Kind: "phase-finished", Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "an intake-gave-up notice for an architect", payload: Notice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "is the controller's alone"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
@@ -1431,10 +1444,11 @@ func TestAnOutboxRowOfAKindOffTheListIsRefused(t *testing.T) {
 // Each row below is the payload main's daemon queued, as its JSON stands in the outbox: a
 // phase-finished notice whose reason holds the move back's prose, a worker-stalled notice, an
 // architect-stalled wake and a memory-guard-kill notice whose facts are a sentence in the reason,
-// a catch-up with the text of the decisions it kept, a held notice with the architect's words,
-// the tick's lists, a role message of no kind with its body, an update ask with its text, a merge
-// forward's ask and its landed, and a start with the decisions it kept. This daemon decodes and
-// validates each, for one release, into the payload main wrote.
+// an intake-gave-up notice that names no issue, a catch-up with the text of the decisions it
+// kept, a held notice with the architect's words, the tick's lists, a role message of no kind with
+// its body, an update ask with its text, a merge forward's ask and its landed, and a start with
+// the decisions it kept. This daemon decodes and validates each, for one release, into the
+// payload main wrote.
 func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	kept := &KeptDecisions{Decisions: []DecisionMark{{Ref: "dispatch://LEGION-208/ask/a1", At: at, Issue: "LEGION-208", Decision: DecisionAskAnswered, Actor: "user:alice"}}}
@@ -1478,6 +1492,10 @@ func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 			"{\"kind\":\"memory-guard-kill\",\"role\":\"controller\",\"reason\":\"The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)\"}",
 			ControllerNotice{Kind: MemoryGuardKillNotice, Role: claim.RoleController,
 				Reason: "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)"}},
+		{"an intake-gave-up notice", OutboxKindControllerNotice,
+			`{"kind":"intake-gave-up","count":3,"giveUps":[{"id":41,"consumer":"legion-go-LEGION-dispatch","subject":"notifications.dispatch.issue.LEGION-208.issue.updated"}]}`,
+			ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
+				{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"}}}},
 		{"an update-stalled notice", OutboxKindControllerNotice,
 			`{"kind":"update-stalled","reason":"the round has waited 4h0m0s","update":{"round":"pod:9d3f0c7a","pod":"9d3f0c7a","reasons":"image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2","waiting":[{"claim":"legion-LEGION-208-implementer","role":"implementer","state":"failed"}]}}`,
 			ControllerNotice{Kind: UpdateStalledNotice, Reason: "the round has waited 4h0m0s", Update: &UpdateStalled{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a",
