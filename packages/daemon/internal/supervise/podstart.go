@@ -596,7 +596,7 @@ func (m *Machine) adoptPodLoad() {
 // the gate first (endPodStartWait), so a claim asks for one start at a time. The phase is read only for
 // a start no request raised, since the order reads it of no other (podQueue.next).
 //
-// A try that waits stops the process its launch let go before it waits (stopPrevious), as a try
+// A try that waits stops the process its launch let go as it begins to wait (stopLetGo), as a try
 // whose start failed stops it: that process is let go and still running (letGo, previous), and
 // what replaces it in the runtime is the grant's start, so a wait that something ends before its
 // grant — a suspension, a retirement, a relaunch — would leave it running with no claim recording
@@ -625,14 +625,14 @@ func (m *Machine) adoptPodLoad() {
 // is, since the gate ends with the daemon, and a grant that reaches the machine after that stop
 // starts nothing (podStartDue).
 //
-// The wake's run is the launch from that grant on while the wake carries the hold, and a fresh try
-// of the same launch, asked of the gate anew, once it carries none: the pause's gate holds the
-// wake in place of its wait where the project is paused at the grant (podStartDue), and its let-out
-// after the pause runs it (letOutHeldLaunch, runWake), without a second token or wake line, since
-// the launch passed the wake gate before it waited (wake.ran). Its again is the launch raised anew
-// from the top, which only that let-out's lifecycle recheck reads (relaunchRefused), as
-// relaunchAtProbe raises it. Its state is the claim's as the wait leaves it, launching, which a
-// request that does not wait restores once the pause's gate holds the wake (dropWakeFor).
+// The wake is a held try's (heldTryWake) that carries the hold of its pod's start
+// (wake.podStartWait): its run is the launch from that grant on while the wake carries the hold,
+// and a fresh try of the same launch, asked of the gate anew, once it carries none: the pause's
+// gate holds the wake in place of its wait where the project is paused at the grant
+// (podStartDue), and its let-out after the pause runs it (letOutHeldLaunch, runWake), without a
+// second token or wake line, since the launch passed the wake gate before it waited (wake.paid,
+// wake.ran). Its state is the claim's as the wait leaves it, launching, which a request that does
+// not wait restores once the pause's gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch waited here stored launching with no process, as it
 // finds one the wake pacing delayed over no process: internal/daemon's supervisor.restore writes
@@ -655,22 +655,13 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	if now {
 		return hold, false
 	}
-	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	waiting := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, podStartWait: hold, again: m.launchFromTop(l)}
-	waiting.run = func(ctx context.Context) error {
-		if waiting.podStartWait == nil {
-			return m.launchTries(ctx, l, nil)
-		}
-		return m.launchTries(ctx, l, &podGrant{token: token, hold: waiting.podStartWait})
-	}
+	waiting := m.heldTryWake(l, token)
+	waiting.podStartWait = hold
 	m.wake, m.podStartWait = waiting, hold
 	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
 		"generation", m.claim.Generation, "pod", m.claim.Issue)
-	if stopped != nil {
-		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for its issue pod's start all the same",
-			"generation", m.claim.Generation, "error", stopped)
-	}
+	m.stopLetGo(ctx, "its issue pod's start")
 	return hold, true
 }
 
