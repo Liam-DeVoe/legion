@@ -181,6 +181,9 @@ test("a reference to a deleted comment says it is deleted and never reads as an 
   );
 
   try {
+    // The link renders once the lazily loaded Markdown engine arrives, which the cold lane holds
+    // back; findByRole waits its 10 s for that, and the 2 s bound is then the reference's own read.
+    await within(view.container).findByRole("link");
     const link = () => view.container.querySelector("a");
     await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
       timeout: 2000,
@@ -207,6 +210,8 @@ test("a reference to a deleted message says it is deleted and never reads as an 
   );
 
   try {
+    // As the comment row above: wait for the lazily loaded link, then for the reference's read.
+    await within(view.container).findByRole("link");
     const link = () => view.container.querySelector("a");
     await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
       timeout: 2000,
