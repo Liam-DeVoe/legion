@@ -1,13 +1,9 @@
-import {
-  type DispatchDelivery,
-  type RenderInboundResult,
-  replyStillRunning,
-} from "@legion/envoy-client/delivery"
-import { type DispatchClient, stillRunningText } from "@legion/envoy-client/dispatch-http"
+import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
+import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
 import { typedInputReply } from "@legion/pi-shared/dispatch-user-turn"
-import type { UserTurnRouter } from "../user-turn-router"
+import { acceptLanded, answerBtw, replyWarning, type UserTurnRouter } from "../user-turn-router"
 import type { UserTurnState } from "../user-turn-state"
 import type { CodexInboxItem } from "./codex-inbox"
 
@@ -24,7 +20,11 @@ import type { CodexInboxItem } from "./codex-inbox"
  * - A `/` message is answered that it was not run: Codex runs no command it did not read from its
  *   own terminal.
  *
- * Everything else keeps the card it renders as.
+ * Everything else keeps the card it renders as. A write Dispatch made and gave no copy of its
+ * answer for (`DispatchWriteLandedError`: an accept, a reply, a BTW answer) is said as made, in
+ * the words `../user-turn-router` says it in (`acceptLanded`, `replyWarning`, `btwAnswerWarning`
+ * through `answerBtw`), and a BTW answer Dispatch is still running when its deadline ends is
+ * left to land, with nothing posted over it (`answerBtw`).
  */
 export interface CodexUserTurnOptions {
   readonly sessionId: () => string
@@ -52,24 +52,11 @@ export const CODEX_COMMAND_REFUSAL =
 export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTurnRouter {
   const { state, warn } = options
 
+  /** A BTW answer Dispatch made and gave no copy of its answer for answered the attempt, so no
+   *  error reply follows it, and the line says it landed; one Dispatch is still running settles
+   *  the attempt when it lands, so no error reply follows it either (`answerBtw`). */
   const runBtw = (delivery: DispatchDelivery): void => {
-    void (async () => {
-      try {
-        await options.reply(delivery, { body: await options.ask(delivery.body) })
-      } catch (error) {
-        // A reply still running on Dispatch, or that may be, settles the attempt when it lands,
-        // so no error is posted over it (`replyStillRunning`, as `../user-turn-router` does).
-        if (replyStillRunning(error)) {
-          warn(
-            `a BTW's reply to message ${delivery.id} ${stillRunningText(error.toldRunning)} on Dispatch under key ${error.key}; nothing more is posted`,
-          )
-          return
-        }
-        await options.reply(delivery, { error: messageFor(error) })
-      }
-    })().catch((error: unknown) => {
-      warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)
-    })
+    answerBtw(delivery, options.ask, options.reply, warn)
   }
 
   return {
@@ -86,6 +73,10 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
         handled: state.handled,
         rendered,
         warn: (refusal) => {
+          if (refusal.reason === "landed") {
+            warn(acceptLanded(refusal.delivery.id, refusal.error))
+            return
+          }
           warn(
             `Dispatch message ${refusal.delivery.id} arrives as a card (${refusal.reason === "failed" ? messageFor(refusal.error) : refusal.reason})`,
           )
@@ -97,7 +88,7 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
         const said = typedInputReply(turn.body, { error: CODEX_COMMAND_REFUSAL })
         if (said !== undefined) {
           void options.reply(delivery, { body: said }).catch((error: unknown) => {
-            warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
+            warn(replyWarning(delivery.id, error))
           })
         }
         return true
