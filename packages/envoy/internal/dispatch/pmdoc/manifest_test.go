@@ -472,6 +472,46 @@ func TestTheAttributeVersionThirteenAddsIsReadAtThirteenAndCreatedFromFourteen(t
 	}
 }
 
+// A test process creates each element its manifest stages for the next version once it is told
+// to (CreateStagedForTest), as Dispatch's test setting DISPATCH_TEST_CREATE_STAGED tells it. Until
+// then a write that puts parent into a document that holds none is refused, and once told the
+// same write is taken. The setting changes what a write may create and nothing a reader is told:
+// SchemaCreatable stays as it was. The store's installer installs the manifest again at each
+// wake, and the setting outlives that reinstall. Its restore makes the process refuse the write
+// again.
+func TestATestProcessCreatesAStagedElementOnlyWhenTold(t *testing.T) {
+	const markdown = ":::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nBody.\n:::\n"
+	const refusal = `this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("a write of parent before the process is told = %v, want ErrSchema saying %q", err, refusal)
+	}
+	creatable := SchemaCreatable()
+
+	restore := CreateStagedForTest()
+	t.Cleanup(restore)
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("a write of parent once the process is told = %v, want it taken", err)
+	}
+	if got := SchemaCreatable(); got != creatable {
+		t.Errorf("SchemaCreatable() once the process is told = %d, want the %d it was", got, creatable)
+	}
+	var reinstalled BlockSchema
+	if err := json.Unmarshal(SchemaJSON(), &reinstalled); err != nil {
+		t.Fatalf("decode the installed manifest: %v", err)
+	}
+	if err := installStoreManifest(t, reinstalled); err != nil {
+		t.Fatalf("install the manifest again, as the store's installer does at a wake: %v", err)
+	}
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("a write of parent after the manifest's reinstall = %v, want it taken", err)
+	}
+
+	restore()
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
+		t.Errorf("a write of parent after the restore = %v, want it refused again", err)
+	}
+}
+
 // storeManifestAhead is the manifest a store one version ahead of this build holds: the
 // embedded one with its version raised by one and change applied to it. The build installs it
 // through Install, which reads it as asOfVersion leaves it, so each case here is a rollback -

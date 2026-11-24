@@ -411,6 +411,11 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
+	// createStaged runs the server with DISPATCH_TEST_HOOKS=1 and DISPATCH_TEST_CREATE_STAGED=1,
+	// so it creates each element its block schema stages for the next version: a write of a plan
+	// whose task blocks name their parent is taken, which a release that only reads parent
+	// refuses.
+	createStaged bool
 }
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
@@ -427,11 +432,13 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
-	port     int
-	base     string
-	command  *exec.Cmd
-	exited   chan error
-	output   *syncBuffer
+	// createStaged is scratchDispatchOptions.createStaged, kept so a restart runs the same server.
+	createStaged bool
+	port         int
+	base         string
+	command      *exec.Cmd
+	exited       chan error
+	output       *syncBuffer
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -452,7 +459,7 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log,
+		log: options.log, createStaged: options.createStaged,
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -513,6 +520,9 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
+	if d.createStaged {
+		command.Env = append(command.Env, "DISPATCH_TEST_HOOKS=1", "DISPATCH_TEST_CREATE_STAGED=1")
+	}
 	command.ExtraFiles = []*os.File{held}
 	output := &syncBuffer{}
 	command.Stdout = output
