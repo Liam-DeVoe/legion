@@ -865,6 +865,29 @@ test("the join adds each file's keys after the table's own, nested as the table 
     unasked: [],
     answers: [],
   });
+
+  // The type of `add` refuses words for a closed table on every path, not only in a fresh
+  // literal. Here a part's default export has no `satisfies PartWords`, and `add` also names an
+  // open table. Then the default export goes into a `WordFile`, as in `WORD_FILES`.
+  const noSatisfies = {
+    add: { CONTROL_LABELS: {}, PRESET_NAMES: { bogus: "Bogus" } },
+    unasked: [],
+    answers: [],
+  } as const;
+  const acceptsWordFile = (_file: WordFile): void => {};
+  acceptsWordFile({
+    file: "page-words-q.ts",
+    // @ts-expect-error `PRESET_NAMES` takes keys only in page-words.ts.
+    module: { default: noSatisfies },
+  });
+  // Here `add` is a const of its own, beside an open table's key.
+  const closedAdd = { CONTROL_LABELS: {}, PRESET_NAMES: { bogus: "Bogus" } } as const;
+  acceptsPartWords({
+    // @ts-expect-error `PRESET_NAMES` takes keys only in page-words.ts.
+    add: closedAdd,
+    unasked: [],
+    answers: [],
+  });
 });
 
 // A part's file that the join does not read fails here. So does a part that has no file.
@@ -892,9 +915,11 @@ test("no key is given by two of the files the page's words are joined from", () 
 });
 
 // A part's file ends its default export with `satisfies PartWords`. Then the type of `add`
-// refuses a key that names no table, and a key for a table of `CLOSED_TABLE_NAMES`. Without the
-// `satisfies`, TypeScript misses such a key if `add` also has a key for a table that takes a
-// part's keys. The join reads each key of `add`. So this case reads `add` as the join reads it.
+// refuses a key that names no table. The type of `add` refuses words for a table of
+// `CLOSED_TABLE_NAMES` on every path. Without the `satisfies`, TypeScript still misses a key
+// that names no table if `add` also has a key for a table that takes a part's keys. The join
+// reads each key of `add`. So this case reads `add` as the join reads it, and refuses both kinds
+// of key.
 test("each key a part's file adds under add names a table that takes a part's keys", () => {
   const tables: readonly string[] = TABLE_NAMES;
   const closed: readonly string[] = CLOSED_TABLE_NAMES;
