@@ -2441,6 +2441,16 @@ type Store interface {
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
 	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// MoveStartQueued says whether the outbox still holds the start of a phase worker that a move
+	// back into phase to queued for issue after row id: a start of to's role that names to, carries
+	// the slot mark workflow.StartOrOwe gives a start of to, and was written after row id, whatever
+	// its lease or its next_at. A lane finishes such a row only once it has given the task to the
+	// worker's claim, so a start still held is one its worker has not been given.
+	MoveStartQueued(ctx context.Context, tx pgx.Tx, issue string, id int64, to phase.Phase) (bool, error)
+	// NewerGateMessage says whether the outbox holds a role message of issue to the role topic
+	// role that marks a move of tree's design gate (RoleMessage.Gate) and was written after row
+	// id, whatever its lease or its next_at: a later move of the same gate told the same holder.
+	NewerGateMessage(ctx context.Context, tx pgx.Tx, issue, role, tree string, id int64) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)

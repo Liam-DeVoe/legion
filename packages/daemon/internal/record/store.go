@@ -3032,6 +3032,54 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 	return queued, nil
 }
 
+// MoveStartQueued says whether the outbox still holds the start of a phase worker that a move
+// back into phase to queued for issue after row id was written — due, running, backing off or
+// held for the issue's admission slot. Such a start names to and its role (phase.RoleFor), carries
+// the slot mark workflow.StartOrOwe gives a start of to (PhaseKeepsSlot), and has a write mark
+// above row id's. A lane finishes the row only once the claim's machine took its task (the
+// daemon's outbox: supervise, then settle, then finish), so a row still held is a start whose
+// worker has not been given its task.
+//
+// The daemon's hook prompt waits on it (outbox.hookPrompt), so the words a move back fired reach
+// its round only once the start that move queued has been given, which a start of a phase that
+// keeps a slot is only while the issue holds one. The move writes the prompt and then the start
+// in one transaction (workflow's transition), and every insert takes a fresh write mark, the start
+// EnqueueStart writes over an owed one included, so that start is written after the prompt. A
+// start queued before the move is no start of the prompt's round. Nor is a start written after it
+// that StartOrOwe did not write, such as the phase's resume task enqueued directly for a ready
+// worker level with its entry (workflow's readyWorkerTask), which carries no slot mark and is
+// claimable at once: it names the same phase and role, and only the mark tells it apart. A later
+// start that StartOrOwe writes for the same phase, a send of the entry the move raised, holds the
+// prompt until it is given in turn.
+func (s *Postgres) MoveStartQueued(ctx context.Context, tx pgx.Tx, issue string, id int64, to phase.Phase) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where `+pendingPhaseStart+`
+		and payload->>'phase' = $3 and payload->>'role' = $4 and coalesce(payload->>'needsSlot', 'false') = $5
+		and write_mark > (select write_mark from outbox where id = $2))`,
+		issue, id, string(to), string(phase.RoleFor(to)), strconv.FormatBool(PhaseKeepsSlot(to))).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the start of %s that a move of %s to %s queued after row %d is still queued: %w",
+			phase.RoleFor(to), issue, to, id, err)
+	}
+	return queued, nil
+}
+
+// NewerGateMessage says whether the outbox holds a role message of issue to role, a role topic's
+// claim token, marked as a move of tree's design gate (RoleMessage.Gate) and written after row
+// id — due, running or backing off. Ids rise with every insert, so such a row is a later move of
+// the same gate told to the same holder, and the earlier row is outrun (the daemon's
+// outbox.gateMoveOutran). The lane runs its rows in next_at and id order, which a row's backoff
+// moves, so this read rather than the lane's order is what keeps the older row from reaching the
+// holder after the newer one.
+func (s *Postgres) NewerGateMessage(ctx context.Context, tx pgx.Tx, issue, role, tree string, id int64) (bool, error) {
+	var newer bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2 and id > $3
+		and payload->>'role' = $4 and payload->'gate'->>'tree' = $5)`,
+		issue, string(OutboxKindRoleMessage), id, role, tree).Scan(&newer); err != nil {
+		return false, fmt.Errorf("read whether a later move of %s's design gate told %s: %w", tree, role, err)
+	}
+	return newer, nil
+}
+
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays

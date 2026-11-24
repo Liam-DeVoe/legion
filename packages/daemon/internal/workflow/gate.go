@@ -996,6 +996,16 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // opening it was told: a later version that changes decision blocks alone then sends that holder
 // nothing (the daemon's settlementOf).
 //
+// The message to a phase holder that is no merger carries the move (record.RoleMessage.Gate,
+// gateMoveMark), so it reaches a holder whose pod an idle release took: its row waits while the
+// holder's claim reads released and wakes nothing, since the holder's phase goes on under the
+// gate, and it is published with keep once the claim has left released, unless a later move of
+// the gate outran it (R4 of dispatch://INFRA-4480, the daemon's outbox.roleMessage). The merger's
+// message and the root architect's carry no mark and end for a released claim as every other role
+// message does: the merger's gate moves are dispatch://INFRA-2040's and dispatch://INFRA-4528's,
+// and the architect's catch-up at each launch states each gated step's version and whether it
+// stands open (catch_up.go).
+//
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
 // telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
@@ -1039,7 +1049,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if !open {
 		body := gateClosedSentence(root.Tree, step, document, version)
 		for _, to := range addressed {
-			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body,
+				Gate: gateMoveMark(to, root.Tree, step, version, false)}); err != nil {
 				return err
 			}
 		}
@@ -1067,7 +1078,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			byNews++
 			continue
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: way.message}); err != nil {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: way.message,
+			Gate: gateMoveMark(to, root.Tree, step, version, true)}); err != nil {
 			return err
 		}
 		messages++
@@ -1093,6 +1105,17 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			"issue", key, "tree", root.Tree, "step", string(step), "version", version, "holders", byNews)
 	}
 	return nil
+}
+
+// gateMoveMark is the move of tree's design gate a message of tellGateMoved to to reports
+// (record.RoleMessage.Gate): open, at version of step's document. It is nil for the root's
+// architect and for a merger, whose messages keep the rule every other role message has for a
+// released claim (tellGateMoved says why).
+func gateMoveMark(to addressedRole, tree string, step record.DesignStep, version int, open bool) *record.GateMove {
+	if role, _ := to.token.Role(); role == claim.RoleArchitect || role == claim.RoleMerger {
+		return nil
+	}
+	return &record.GateMove{Tree: tree, Step: step, Version: version, Open: open}
 }
 
 // settleChildArchitectOpenings settles the gate's opening as owed on the holder row of each member
