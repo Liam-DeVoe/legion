@@ -1081,7 +1081,6 @@ test("a value that arrives after the run's last tool result gets no note, and is
 });
 
 test("a take refused in-turn is ended by a delete, during the run or after its end", async () => {
-  // A delete ends it, during the run or after its end, and nothing is pending.
   const deletedInRun = await refusedInTurnDuringRun();
   expect(deletedInRun.take.pending()).toBe(true);
   deletedInRun.take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
@@ -1254,6 +1253,10 @@ test("a take asked while the host is idle, overtaken by a short run and refused 
   started.take.runStarted();
   expect(started.take.pending()).toBe(false);
   expect(startedCalls).toBe(0);
+  // The drop shows at that run's end: the callback is still not called.
+  started.take.runEnded(false);
+  await started.advance(0);
+  expect(startedCalls).toBe(0);
 });
 
 test("pending() holds a value the take has not asked about, idle before the ready or busy, and lets it go once refused", async () => {
@@ -1377,9 +1380,10 @@ test("pending() is false for a newer revision of the task whose turn is running,
 
 // dispatch://INFRA-4130, risk (b): a stall abort that finds the take pending holds its restart
 // message for the take (`deferUntilSettled`). A take the daemon accepts starts the next run with
-// its own text, so the message is not sent; one the daemon refuses or drops starts nothing, so the
-// message is all that starts the worker's work again, and it goes then, once.
-test("deferUntilSettled calls back once when a pending take is refused or dropped, and not when the take's text starts a run", async () => {
+// its own text, so the message is not sent; one the daemon refuses for another hold, or drops,
+// starts nothing, so the message is all that starts the worker's work again, and it goes then,
+// once. A refusal `in-turn` holds it until the daemon's next write or the bound (the tests above).
+test("deferUntilSettled calls back once when a pending take is refused by another hold or dropped, and not when the take's text starts a run", async () => {
   // Refused by a hold: the value came during the run the abort ends, the run's end asks the take,
   // and the callback runs once the daemon's refusal has answered it, not before.
   const held = rig();

@@ -565,8 +565,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
    *  take stays pending for the daemon's write of it, for at most `IN_TURN_REWRITE_BOUND_MS` from
    *  now. A bound that passes with no newer revision, delete, run that starts, or `close` ends the
    *  refusal, so the reminding and a held restart go on. A held value owed nothing ends the
-   *  refusal at once. It is owed nothing where it names the running task's own number, which that
-   *  run's end finished, or a number that a reading says finished. */
+   *  refusal at once. It is owed nothing where its number is at or below the run-end mark, which
+   *  the end of a run of its task with no provider error raises, or at or below the number a
+   *  reading said finished. */
   const boundInTurnRefusal = (): void => {
     if (!refusedInTurn || !owed(held)) {
       endInTurnRefusal();

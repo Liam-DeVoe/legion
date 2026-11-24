@@ -158,8 +158,8 @@ type bridge struct {
 	// in-turn after the turn has ended. Nothing is then pending, so idle can send a queued Envoy
 	// delivery as a turn ahead of the task. The daemon writes the value again once it reads that
 	// turn's agent_end, and the bridge takes that write at the end of the turn the delivery
-	// started. No reminder reads this state: the Stop hook has already answered, and the timer
-	// comes 5 minutes later.
+	// started. No reminder runs in that window: the turn's Stop hook answered before its result,
+	// and claude-envoy's timer fires no sooner than reminderMs (5 minutes by default) after it.
 	refusedInTurn bool
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
