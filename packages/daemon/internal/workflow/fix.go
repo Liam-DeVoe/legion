@@ -698,6 +698,33 @@ func moveToOf(ctx context.Context) string {
 	return move.moveTo
 }
 
+// copyMoveAfterFix is the head a start of a step of w's task moves the task's working copy to
+// where a fix left that copy behind: the head the task's latest fix ended at, where that fix has
+// ended with commits of its own (its end is not the head it started at) and no step of the task has
+// started since it ended. The fix pushes from a working copy of its own, so until a step starts
+// after it the task's copy stands where the fix started; the first start after it moves the copy,
+// and a later start finds the copy there or past it, where a move could take it back from a commit
+// pushed since. That is every start a fix's end leads to outside the way after it (moveToOf): a
+// restart of the task after a stop ended the fix, the retro after the end hold, a step after a way
+// that left each step its result. It answers "" for every other start, and for each task that has
+// had no fix.
+func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+	if !w.Stored {
+		return "", nil
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.State != record.FixEnded || fix.EndedAt == nil || fix.EndHead == "" || fix.EndHead == fix.Head {
+		return "", err
+	}
+	for place := range w.Steps {
+		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
+		if err != nil || start.StartedAt.After(*fix.EndedAt) {
+			return "", err
+		}
+	}
+	return fix.EndHead, nil
+}
+
 // besideFix takes, in place of the row transition found, a move of a task whose latest fix is open
 // or has ended with its way not taken, and answers whether it took the move; every other move is
 // the row's.
