@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"maps"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -242,9 +245,11 @@ const (
 	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
 	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the sampler recorded it: the view names
-	// that project, a read of its daemon marks it (dirtyLegionBoard), no delivery change touches
-	// it, it judges no freshness, and a project that names no daemon is LEGION_NOT_CONFIGURED.
+	// viewReadsLegion is one project's Legion daemon as the sampler recorded it, and the stored
+	// per-issue facts of the issues its board shows: the view names that project, a read of its
+	// daemon marks it (dirtyLegionBoard), the one delivery change that touches it is the write of
+	// a facts row of its project (touchedBy), it judges no freshness, and a project that names no
+	// daemon is LEGION_NOT_CONFIGURED.
 	viewReadsLegion
 )
 
@@ -276,8 +281,10 @@ type deliveryLiveClasses struct {
 	body reflect.Type
 	// lists are sent item by item, each item by its "id" field.
 	lists []string
-	// maps are sent entry by entry, by key.
-	maps []string
+	// maps are sent entry by entry, by key, an entry whole when its revision changes; each names
+	// the subfields of an entry its revision leaves out (they are still sent, with the rest, when
+	// the entry is).
+	maps map[string][]string
 	// counts are {facet: {value: count}}, sent count by count.
 	counts []string
 	// whole fields are sent whole when their revision changes; each names the subfields its
@@ -307,9 +314,11 @@ type deliveryLiveClasses struct {
 // own computed_at, window and freshness.
 var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	deliveryLiveTimeline: {
-		body:        reflect.TypeFor[deliveryTimelineWithMeasures](),
-		lists:       []string{"prs", "runs", "session_groups"},
-		maps:        []string{"issue_titles", "session_titles", "session_pr_counts", "components"},
+		body:  reflect.TypeFor[deliveryTimelineWithMeasures](),
+		lists: []string{"prs", "runs", "session_groups"},
+		maps: map[string][]string{
+			"issue_titles": nil, "session_titles": nil, "session_pr_counts": nil, "components": nil,
+		},
 		counts:      []string{"facet_counts", "color_counts"},
 		whole:       map[string][]string{"waiting": nil, "measures": {"computed_at", "window", "freshness"}},
 		withChanges: []string{"window"},
@@ -341,12 +350,34 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:  (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at is sent whole: its eleven columns are a fixed order rather than a list a page
-	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
-	// have to be taught), and the header and the settings the daemon reports each move as a
-	// block.
+	// computed_at and its issues is sent whole: its eleven columns are a fixed order rather than
+	// a list a page merges by id (the page's applyDelta sorts each list it knows, which a column
+	// order would have to be taught), and the header and the settings the daemon reports each
+	// move as a block.
+	//
+	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
+	// issue's row per change: a whole field would resend every issue's stored facts whenever one
+	// issue's moved, and a project holds a row for every issue Legion ever worked.
+	//
+	// An entry is sent only when its stored row moved. Each read closes every open row at its own
+	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
+	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
+	// minute among them; the entry's revision leaves out every value the entry's growth names
+	// (legionBoardGrowth's fields, which are the entry's own names for the values it grows) and
+	// their as_of, so a recompute that moved only the clock sends no entry, where it would
+	// otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that comes to
+	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
+	// stored row does: a write of a row whose values moved stamps its updated_at
+	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
+	// the entry carries are kept as stored. An entry whose values grow carries its as_of and its
+	// growth, so a page closes the values it holds at its own clock by the rule the read closes
+	// them by; one whose values stand carries null for both. An entry that is sent goes whole, its
+	// values grown to the moment of the recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
+		maps: map[string][]string{
+			"issues": append(slices.Sorted(maps.Keys(bodyKeysOf(reflect.TypeFor[legionBoardGrowth]()))), "as_of"),
+		},
 		whole: map[string][]string{
 			"project": nil, "header": nil, "columns": nil, "settings": nil,
 		},
@@ -361,6 +392,39 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 // since parseDeliveryLiveView refuses every other one.
 func (spec deliveryLiveSpec) classes() deliveryLiveClasses {
 	return deliveryLiveKinds[spec.kind]
+}
+
+// bodyKeys is the keys a JSON object of one Go struct takes, each spelled exactly as its field's
+// `json` tag spells it, with the keys the value under each takes in turn: nil for a value whose
+// keys are not checked here (a scalar, a map, a time, json.RawMessage). A list's value, and a
+// pointer's, takes the keys of what it holds.
+type bodyKeys map[string]bodyKeys
+
+// bodyKeysOf is the keys a JSON value of shape takes: each exported field's `json` name, or its Go
+// name where its tag names none, with the keys of that field's own type; an embedded struct with
+// no name of its own lends its fields, as encoding/json promotes them. A type that decodes itself
+// (json.Unmarshaler) takes keys of its own making, so it is not checked.
+func bodyKeysOf(shape reflect.Type) bodyKeys {
+	for shape.Kind() == reflect.Pointer || shape.Kind() == reflect.Slice {
+		shape = shape.Elem()
+	}
+	if shape.Kind() != reflect.Struct || reflect.PointerTo(shape).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return nil
+	}
+	keys := bodyKeys{}
+	for field := range shape.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		switch {
+		case name == "-" || (!field.IsExported() && !field.Anonymous):
+		case field.Anonymous && name == "":
+			maps.Copy(keys, bodyKeysOf(field.Type))
+		case name == "":
+			keys[field.Name] = bodyKeysOf(field.Type)
+		default:
+			keys[name] = bodyKeysOf(field.Type)
+		}
+	}
+	return keys
 }
 
 // deliveryLiveRevision is a value's revision: the 64-bit FNV-1a of its JSON encoding, as 16

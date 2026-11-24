@@ -174,15 +174,15 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	}
 }
 
-// The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
-// a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
-// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
-// the sampler after each read of that project's Legion daemon, which is the only thing that moves
-// a Legion board besides Dispatch's own events.
-const (
-	deliveryChangesChannel   = "delivery_changes"
-	deliveryFreshnessChannel = "delivery_freshness"
-)
+// The channels the delivery hub listens on. delivery.ChangesChannel carries no payload and is
+// notified as a delivery_changes row commits (migration 0100), as a pending change row of the
+// change log's outbox commits (20261117100001), whose drain the hub runs before it reads, and as
+// a drain that moved rows commits, and the delivery package declares it beside the row;
+// delivery_freshness carries the settings row's freshness columns as JSON
+// (0100); legion.StateChannel carries a project key and is notified by the sampler after each
+// read of that project's Legion daemon, which is the only thing that moves a Legion board
+// besides Dispatch's own events.
+const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
 // (maxEventReplay), which the relay publishes at once, so a page never overflows an intake that
@@ -254,11 +254,12 @@ type hubGeneration struct {
 	views map[string]*deliveryView // by canonical view key
 	conns map[deliveryLiveConn]map[string]*deliverySub
 
-	// changeSeq and changeAt are the last delivery change read and its at, to tell a reset log;
-	// epoch counts the resets, so a recompute that read across one stores no change position.
-	changeSeq int64
-	changeAt  time.Time
-	epoch     int64
+	// change is where the hub stands in the delivery change log (delivery.ChangeCursor): the last
+	// change read and its at, to tell a reset log, and its ReadAt the hub's last read of the log to
+	// its end, to tell one pruned past changes it never read; epoch counts the resets, so a
+	// recompute that read across one stores no change position.
+	change delivery.ChangeCursor
+	epoch  int64
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
@@ -445,7 +446,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
+		Channels:    []string{delivery.ChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -495,7 +496,7 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 // Legion daemon marks that project's board.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
-	case deliveryChangesChannel:
+	case delivery.ChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
