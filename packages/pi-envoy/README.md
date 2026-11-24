@@ -216,10 +216,13 @@ the session's store holds its entry, on any branch of the session, under SQL ses
 under files (`storeHoldsSession`, `storedCheck`). While it waits for the store, held or handed,
 the extension records the card in the session's transcript (`envoy-stored-card`) and answers its
 frame `done` once that record is written, so the frame holds no place of the relay's frames in
-flight (an edge listener's relay holds at most 16 of a session's frames). The record holds the
-card across a stop or a session change: a restore holds it again until the transcript shows it
-written (`heldStoredCards`). A card whose record cannot be written keeps its claim, and the stream
-keeps its copy, until the store holds it. No host event puts such a card on the agent stream: the
+flight (an edge listener's relay holds at most 16 of a session's frames). Once the session's
+store holds the record, the record holds the card across a stop or a session change: a restore
+holds it again until the transcript shows it written (`heldStoredCards`). Oh My Pi writes a new
+session to its store only from its first assistant message, so before that the record is in
+memory alone, and a stop ends it with the session, which nothing can resume under its id. A card
+whose record cannot be written keeps its claim, and the stream keeps its copy, until the store
+holds it. No host event puts such a card on the agent stream: the
 extension records it there as it hands it over (`handCard`), so Dispatch's live view shows it,
 under either storage, before the turn that reads it. Its `details` carry the hand-over state
 `inert` and its urgency, and no card id, so no wake follows it and no unread count names it.
@@ -231,9 +234,8 @@ during a turn is held, and handed at the first heartbeat that finds the host set
 held, the extension records it in the session's transcript with the same entry, which says the
 card is handed `inert` (`deliver_as`), and answers its frame `done` once that record is written.
 So late BTWs held through a long turn hold no place of the relay's frames in flight. A restore
-holds such a card again and hands it inert, never as a `low` card. A record an earlier build wrote
-names no hand-over and holds a `low` card. A held inert card whose record cannot be written keeps
-its claim, and the stream keeps its copy, until the host writes the card.
+holds such a card again and hands it inert, never as a `low` card. A held inert card whose record
+cannot be written keeps its claim, and the stream keeps its copy, until the host writes the card.
 
 ## Session identity
 

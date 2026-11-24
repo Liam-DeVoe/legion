@@ -2324,7 +2324,7 @@ Run this with the daemon of the project that upgrades stopped, before this relea
 delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
-This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
+This release's own migration runs that delete too, over every project's rows rather than one project's (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
 No daemon of the earlier release can write such a row after the migration has run: every release from `legion-v19.45.0` on names `awaiting_slot_notice_at` among the columns it reads an issue with, so with the column dropped every issue read it makes fails, before it reaches the code that would queue the notice; and that queue and the issue write marking the root are one transaction, so neither is written without the other.
 The step costs an operator one statement with the daemon stopped, and it leaves the outbox clean whatever order the restart takes.
 
@@ -2424,6 +2424,7 @@ commit;
 
 Each deleted `conflict_confirm` row costs one second read: the earlier release reads mergeability its own way and acts on a conflict at its first read.
 Each deleted `merge_forward` row is a message that nobody delivers.
+The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives the same way back over every project's rows, for a database whose every daemon rolls back at once; the statements here take one project's.
 
 The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
 That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
@@ -2847,6 +2848,7 @@ The four statements leave the two keys that the project pause adds to a `start` 
 A rollback that also goes past the project pause, to a release before both, runs these four statements first.
 The first two steps of [Rolling back the project pause](#rolling-back-the-project-pause) come before them, while this release still runs, because this release resumes a paused project as that release does.
 Then stop this release's daemon, run these four statements, run that section's three statements, and pin the earlier image.
+This section moves every daemon of the database together, and the pause's three statements each take `<KEY>`: run them once for each project of the database, with that project's key, since a statement run with one key leaves the other projects' rows, which the earlier release then fails to decode on every attempt.
 The two sets of statements touch no row in common.
 
 **Three costs of a rollback that no statement undoes.**
@@ -3150,7 +3152,7 @@ This release adds fields to the payloads that its outbox queues:
 
 - A memory-guard-kill notice carries `cause`, `process`, `pid`, `size`, `pod_memory` and `limit`, the facts of the kill, and neither `role` nor `reason`.
 
-- A parked-decision notice of a person's approval that a later change of its root's status kept from queuing the root carries `approval_seq`, `status_changed_seq`, `status`, `not_queued` and `set_todo`, the facts of that refusal, and no `reason`.
+- A parked-decision notice of a person's approval that a later change of its root's status kept from queuing the root carries `approval_seq`, `status_change_seq`, `status`, `not_queued` and `set_todo`, the facts of that refusal, and no `reason`.
 
 - A catch-up notice whose `relaunch` names a turn cut off carries `relaunch.in_flight_tool_calls` and `relaunch.turn_background_work`, which say what that turn lost.
   A catch-up notice whose `relaunch` names no report of the process's last turn carries `relaunch.process_background_work`, which says that every subagent and background job of that process is gone, where the process was in no turn or the turn cut off names no work that stopped.
@@ -3636,6 +3638,7 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 The two blocks below drop columns of `phases`, `claims` and `pending_task_deliveries` and the table `architect_stalled_notices`, which every project's daemon of this release reads, delete version rows that every daemon's `Migrate` reads, and their row statements act on the rows of every project.
 So a daemon left on this release while another rolls back fails each read of a dropped column or table, and one that boots on the database again runs the deleted migrations under the daemons that rolled back (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 Stop every daemon of one database, run each block once, and pin the earlier image for all of them in the same change.
+Each statement of another section that this section sends you to and that takes `<PROJECT>` or `<KEY>` (#4115's three, #4464's block and #4573's statement) runs once for each project of the database, with that project's key, since a statement run with one key leaves the other projects' rows, which the earlier release then fails to decode on every attempt.
 
 To roll a release at contract 146 back to contract 87, stop every daemon of the database and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.

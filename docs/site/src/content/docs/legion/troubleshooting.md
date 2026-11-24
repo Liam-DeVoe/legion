@@ -514,8 +514,8 @@ JSON log names the issue and the root on each of these lines:
   queues nothing. `approval_seq` is the Dispatch event of the approval, and `status_change_seq` is
   the later event that changed the status. `controller_told=true` says that the controller also
   got a parked decision that says this in its fields (`not_queued`, `approval_seq`,
-  `status_changed_seq`, `set_todo`). For a root the daemon does not record, `controller_told` is
-  `false` and the warning is the only notice. Set the root to `todo` to run it.
+  `status_change_seq`, `status`, `set_todo`). For a root the daemon does not record,
+  `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
