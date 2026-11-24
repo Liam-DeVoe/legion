@@ -430,9 +430,11 @@
  * directories the first message names and under the working directory, each part capped); when
  * every task of its answer is dropped as `written-missing-path`, it is asked once more with those
  * paths named absent (`<absent>`), and the summary records the retry (`retry`); a
- * `--written-answer` is not asked again. A context session
- * whose work the reader finds is on the skill's own text is passed over as `skill-as-material`
- * (`chooseContext`). The context
+ * `--written-answer` is not asked again. A context session whose recorded system prompt, role's
+ * prompt or first user message names by an absolute path outside its checkout's root a file it
+ * reads itself (a `read` call, or `cat`, `head`, `tail` or `sed -n` in a `bash` call), a skill's
+ * file aside, is passed over as `outside-material` before the reader is asked, and one whose work
+ * the reader finds is on the skill's own text as `skill-as-material` (`chooseContext`). The context
  * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
  * is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first read of
  * the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://` read, or
@@ -644,7 +646,7 @@ import {
   textLines,
   URL_TARGET,
 } from "./cases";
-import { messagesRunJj } from "./checkout";
+import { bashFileReads, messagesRunJj } from "./checkout";
 import {
   commandRetries,
   configFrom,
@@ -875,6 +877,8 @@ export const DROP_REASONS = {
   "no-step": "the case reader found no step the skill governs",
   "skill-as-material":
     "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it; in build-cases --written, the written-case reader finds so of the context session's first message, and the session is passed over",
+  "outside-material":
+    "in build-cases --written, the context session's recorded system prompt, its role's prompt or its first user message names by an absolute path outside its checkout's root a file the session itself reads (by a read call, or with cat, head, tail or sed -n in a bash call), other than a skill file; a written case's run answers no read of it from the checkout, so the session is passed over",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -7876,6 +7880,85 @@ async function writtenContext(
   };
 }
 
+/** An absolute path a prompt or a message names: a `/`, not `//`, at the start or after a blank, a
+ *  quote, an opening mark or `=`, then what holds no blank, quote or closing mark. */
+const NAMED_PATH = /(?:^|[\s"'`(<[{=])(\/(?!\/)[^\s"'`)<>\]}]*)/g;
+
+/** Why the written build passes the context session `made` over as `outside-material`
+ *  (DROP_REASONS), or undefined: the first file it reads, by a successful `read` call or with
+ *  `cat`, `head`, `tail` or `sed -n` in a `bash` call (checkout.ts's `bashFileReads`), whose
+ *  absolute path, outside its checkout's root, its recorded system prompt, its role's prompt or its
+ *  first user message names (a final `.`, `,`, `;`, `:`, `!` or `?` taken off); a skill's file (a
+ *  `skill://` read, a file a read shows as a skill file, or one under the installed directory of
+ *  the case's skill or of a skill whose SKILL.md a read shows) is none. A session whose checkout
+ *  the build does not know (`checkout` undefined) is not judged by it. */
+function outsideMaterial(made: WrittenContext): string | undefined {
+  const checkout = made.checkout;
+  if (checkout === undefined) return undefined;
+  const firstUser = made.t.items.findIndex((item) => item.slim.role === "user");
+  const role = made.profiled.profile.appendSystemPrompt;
+  const texts: (readonly [string, string])[] = [
+    ...(made.init?.systemPrompt ?? []).map(
+      (block) => ["its recorded system prompt", block] as const
+    ),
+    ...(role === undefined ? [] : [["its role's prompt", role] as const]),
+    ...(firstUser < 0
+      ? []
+      : [["its first user message", messageText(made.t.message(firstUser))] as const]),
+  ];
+  const named = new Map<string, string>();
+  for (const [where, text] of texts) {
+    for (const match of text.matchAll(NAMED_PATH)) {
+      const full = path.posix.normalize((match[1] ?? "").replace(/[.,;:!?]+$/, ""));
+      if (insideRoot(checkout.root, full) === undefined && !named.has(full)) named.set(full, where);
+    }
+  }
+  if (named.size === 0) return undefined;
+  const all = made.t.items.map((item) => item.slim);
+  // The results by call, and the skills' files: each a read shows as one, and each under a skill's
+  // installed directory.
+  const results = new Map<string, SessionMessage>();
+  const shownFiles = new Set<string>();
+  const skillDirs = [made.installedDir];
+  for (const message of all) {
+    if (message.role !== "toolResult") continue;
+    results.set(message.toolCallId ?? "", message);
+    const header = skillHeaderPath(message.content?.[0]?.text ?? "");
+    if (header === undefined) continue;
+    shownFiles.add(path.posix.normalize(header));
+    if (header.endsWith("/SKILL.md")) skillDirs.push(path.posix.dirname(header));
+  }
+  for (const [index, message] of all.entries()) {
+    for (const block of message.content ?? []) {
+      if (block.type !== "toolCall") continue;
+      let files: string[] = [];
+      let how = "";
+      if (block.name === "read" && results.get(block.id ?? "")?.isError !== true) {
+        const target = Reflect.get(Object(block.arguments), "path");
+        if (typeof target !== "string" || target.startsWith("skill://")) continue;
+        const full = resolvedReadPath(target.replace(READ_SELECTOR, ""), { cwd: checkout.cwd });
+        files = full === undefined ? [] : [path.posix.normalize(full)];
+        how = `a read of ${target}`;
+      } else if (block.name === "bash") {
+        const call = made.t
+          .message(index)
+          .content?.find((each) => each.type === "toolCall" && each.id === block.id);
+        const command = Reflect.get(Object(call?.arguments), "command");
+        if (typeof command !== "string") continue;
+        files = bashFileReads(command, checkout.cwd);
+        how = `the bash command ${JSON.stringify(command)}`;
+      }
+      for (const file of files) {
+        const where = named.get(file);
+        if (where === undefined || shownFiles.has(file)) continue;
+        if (skillDirs.some((dir) => file.startsWith(`${dir}/`))) continue;
+        return `${where} names ${file}, outside its checkout's root ${checkout.root}, and message ${index} reads it (${how})`;
+      }
+    }
+  }
+  return undefined;
+}
+
 /** A session passed over as the context of written cases, and why. */
 interface PassedSession {
   readonly store: string;
@@ -7895,15 +7978,16 @@ interface ChosenContext {
 /**
  * The context session of a written build, the written-case reader's tasks for it (`ask`), how it
  * was chosen, and the sessions passed over before it: the one `given` names (`--context-session`),
- * refused (thrown, naming why) where `ask` says its work is on the skill's own text; else the first
- * session of `order` (the build's seeded order of `--sessions`) that gives written cases
- * (`writtenContext`) on a model the gateway serves and whose answer is tasks, one whose answer is
- * `material` passed over as `skill-as-material` with the reader's why; else, when none does, the
- * first that gives them on any model and whose answer is tasks, each such session asked in its
- * turn (the first one's context kept, each later one's pulled again). `paths` gives the path of a
- * candidate whose line names none. Each candidate is pulled into a spool of its own under
- * `spools`, removed once it is passed over. Throws, naming why, when no session gives one; rejects
- * as `ask` does (BudgetSpent).
+ * refused (thrown, naming why) where it reads material outside its checkout (`outsideMaterial`) or
+ * `ask` says its work is on the skill's own text; else the first session of `order` (the build's
+ * seeded order of `--sessions`) that gives written cases (`writtenContext`) on a model the gateway
+ * serves and whose answer is tasks, one that reads material outside its checkout passed over,
+ * before it is asked, as `outside-material`, and one whose answer is `material` as
+ * `skill-as-material` with the reader's why; else, when none does, the first that gives them on
+ * any model and whose answer is tasks, each such session asked in its turn (the first one's
+ * context kept, each later one's pulled again). `paths` gives the path of a candidate whose line
+ * names none. Each candidate is pulled into a spool of its own under `spools`, removed once it is
+ * passed over. Throws, naming why, when no session gives one; rejects as `ask` does (BudgetSpent).
  */
 async function chooseContext(
   run: CaseRun,
@@ -7915,6 +7999,7 @@ async function chooseContext(
   ask: (context: WrittenContext) => Promise<WrittenCaseAnswer>
 ): Promise<ChosenContext> {
   const material: DropReason = "skill-as-material";
+  const outside: DropReason = "outside-material";
   if (given !== undefined) {
     const named = `--context-session ${given.store}:${given.hash}`;
     const { paths: found } = await resolvePaths(run.config.psqlCommand, given.store, [given.hash]);
@@ -7925,6 +8010,8 @@ async function chooseContext(
     const spool = path.join(spools, "context.jsonl");
     const made = await writtenContext(run, store, given.hash, filePath, spool);
     if ("drop" in made) throw new Error(`${named}: ${made.drop}: ${made.detail}`);
+    const reads = outsideMaterial(made);
+    if (reads !== undefined) throw new Error(`${named}: ${outside}: ${reads}`);
     const answer = await ask(made);
     if ("material" in answer) throw new Error(`${named}: ${material}: ${answer.material.why}`);
     return { chosen: made, tasks: answer.tasks, how: "--context-session", passed: [] };
@@ -7957,12 +8044,18 @@ async function chooseContext(
         : await writtenContext(run, store, candidate.hash, filePath, spool);
     const place = `place ${position + 1} of ${order.length}`;
     if (!("drop" in made) && made.served) {
+      const reads = outsideMaterial(made);
+      if (reads !== undefined) {
+        passOver(store.name, candidate.hash, `${outside}: ${reads}`, place);
+        rmSync(spool, { force: true });
+        continue;
+      }
       const answer = await ask(made);
       if (!("material" in answer)) {
         return {
           chosen: made,
           tasks: answer.tasks,
-          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill and whose work is not on the skill's own text: ${place}`,
+          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout and whose work is not on the skill's own text: ${place}`,
           passed,
         };
       }
@@ -8005,12 +8098,20 @@ async function chooseContext(
       };
       continue;
     }
+    const reads = outsideMaterial(made);
+    if (reads !== undefined) {
+      const why = `${outside}: ${reads}`;
+      passed[each.at] = { store: each.store.name, hash: each.hash, why };
+      sayPassed(each.place, each.store.name, each.hash, why);
+      rmSync(each.spool, { force: true });
+      continue;
+    }
     const answer = await ask(made);
     if (!("material" in answer)) {
       return {
         chosen: made,
         tasks: answer.tasks,
-        how: `no reading session on a served model has a rebuilt profile that installs the skill and work that is not on the skill's own text, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
+        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout and works on what is not the skill's own text, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
         passed: passed.slice(0, each.at),
       };
     }

@@ -402,37 +402,71 @@ a line before and three after, then `[<n> more lines in file. Use :<next> to con
 lines alone where the pin widens a code file's range to its brackets), and a range that starts
 past the file's end with the pin's notice alone, no error (`Line <n> is beyond end of file
 (<lines> lines total). Use :1 to read from the start, or :<lines> to read the last line.`; so is
-such a range of the cut's own copy read by path, in every arm); `grep` and
-`glob` in their tools' forms (one line of context before a match, three after; `glob`'s paths in
-path order, since a checkout keeps no times of change; `.git` and `.jj` left out of both). A
-`glob` path with no glob character is a directory, every file and directory under which matches,
-or a file, which answers itself; a path that is a list joined by `;` (outside braces) answers each
-of its patterns, a pattern whose directory is not there noted after the paths (`Skipped missing
-paths: <patterns>`), and a limit above 200 is noted as clamped (`Requested limit <n> clamped to the
-max of 200`); a list joined by commas or blanks, a single pattern (or every pattern of a list)
-whose base is not there, and a file under a glob are not answered (the pin's error is not
-rebuilt). `bash` runs in the checkout's sandbox (below), its working directory and the checkout's
-root mapped between the session's paths and the sandbox's (`/mnt/checkout`), its output as Oh My
-Pi's bash tool gives it, within 30 s and 50 KB (a line of at most 768 characters; its wall time
-counted from when its sandbox is made). Every path an answer shows is the session's: the copy's
-path in the sandbox, and its own, as given and as its real path, become the session's checkout root
-in every output, so `pwd` gives the session's working directory, `git rev-parse --show-toplevel`,
-`git worktree list` and `jj root` its checkout root, and an error message the session's path; a
-test holds that no answer of a fixture run shows the copy's path. The calls are the model's, run on
-the runner's machine, so none may read a file outside the checkout: with no link out of it left,
-`cat` of a link, `grep -R`, `rg --follow`, `find -L` and a `read` follow no link out, and no option
-that follows links is refused. Beside that, a `read`, `grep` or `glob` whose target resolves
-outside the copy is not answered, nor is a `bash` command a word of which may lead outside it: a
-word whose expansion the runner cannot place inside the checkout (it follows a variable the
-command assigned, `$PWD`, `$(pwd)`, `$(git rev-parse --show-toplevel)` and, in a colocated copy,
-`$(jj root)`; not one assigned only in a branch of `||` or `&&`, or from another substitution), a
-brace expansion, a path under `~`, a word naming `.git`, an absolute path off the checkout's root,
-a relative one that leaves the root from any directory a `cd` before it may have moved to, an
-option's attached path that does, or a path that leaves the copy as the kernel walks it there,
-through a link that stays inside followed by `..` (`l/../x` through a link `l` to the root: each
-part's links are followed, one part at a time, before the `..` after it); nor a `cd` that names no
-directory, which goes to `$HOME`; nor one that expands `$HOME` or `$PATH`, whose value would be the
-runner's.
+such a range of the cut's own copy read by path, in every arm); a read of a directory with Oh My
+Pi's listing (`.`, then each entry to two levels below it, hidden ones too and `.DS_Store` left
+out, `- <name>` or `- <name>/` indented two blanks a level; a directory under it of more than 12
+entries shows 11 of them, `- … <n> more` and its last; `(empty directory)` for none): Oh My Pi
+orders each directory's entries by their time of change and shows each one's age, which a
+checkout does not keep, so every entry is taken as changed at one time, by name, each line its name
+alone, as Oh My Pi shows an entry with no age; a listing that would show `.git` or `.jj`, or a
+ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
+forms (`glob`'s paths in path order, since a checkout keeps no times of change; `.git` and `.jj`
+left out of both). A `grep` path may be a list joined by `;` (outside braces): its parts that
+start with `!` and name no path of the checkout are exclusions (one with no `/`, or that starts
+with `**`, matches at any depth; another is anchored where it resolves), and the rest are
+searched, each on its own in their order, or as the one directory that holds the others, a part
+the checkout lacks noted after the matches (`Skipped missing paths: <paths>`). A directory's
+files are searched in path order, `node_modules` not entered; each match with one line of context
+before it and three after, each line's trailing whitespace taken off, and a line past 512 bytes
+cut as Oh My Pi's native search cuts it (a context line to its first 509 bytes and `...`, a match
+line to a window around its first match marked `...` on each cut side, then ` [col <n>]`), with
+`[Some lines truncated to 512 bytes]` after the matches where a match line was cut. A search of a
+directory or a list keeps 20 matches of a file and shows 20 files a page, the next page by `skip`,
+and a search of one file keeps 200, each with Oh My Pi's notices (`Showing files <a>-<b> of <n>.
+Use skip=<b> for the next page, or narrow paths/pattern.`, `More than 20 matches in <files>; grep
+keeps the first 20 per file when searching several. Search one file alone for up to 200.`, `More
+than 200 matches; grep keeps the first 200 in a file. …`, `No more results (<n> files total;
+skip=<k> is past the end)`). A `glob` path with no glob character is a directory, every file and
+directory under which matches, or a file, which answers itself; a path that is a list joined by
+`;` (outside braces) answers each of its patterns, a pattern whose directory is not there noted
+after the paths (`Skipped missing paths: <patterns>`), and a limit above 200 is noted as clamped
+(`Requested limit <n> clamped to the max of 200`). A `grep` or `glob` list joined by commas or
+blanks, a `glob` pattern (or every pattern of a list) whose base is not there, a file under a
+glob, a `grep` path (or every path of a list) the checkout lacks, and a `grep` exclusion of a
+form the runner does not read (a class, an escape, a nested group) are not answered (the pin's
+error is not rebuilt). `bash` runs in the checkout's sandbox (below), its working directory and
+the checkout's root mapped between the session's paths and the sandbox's (`/mnt/checkout`), its
+output as Oh My Pi's bash tool gives it, within 30 s (its wall time counted from when its sandbox is
+made). An output past 50 KB, one with a line past 768 bytes, and one of 1,000 characters or more
+that Oh My Pi's minimizer may rewrite (a command whose top level is simple commands joined by
+`&&`, `;` or `||`, one of which, unpiped, runs `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`,
+`stat`, `git` or `jj`; not one in a group or a subshell) are not answered: Oh My Pi shows each
+with a notice that names the artifact the session saves the whole output to, whose id is the
+session's own count of its artifacts, which a checkout cannot know. Every path an answer shows is
+the session's: the copy's path in the sandbox, and its own, as given and as its real path, become
+the session's checkout root in every output, so `pwd` gives the session's working directory,
+`git rev-parse --show-toplevel`, `git worktree list` and `jj root` its checkout root, and an
+error message the session's path; a test holds that no answer of a fixture run shows the copy's
+path. The calls are the model's, run on the runner's machine, so none may read a file outside the
+checkout: with no link out of it left, `cat` of a link, `grep -R`, `rg --follow`, `find -L` and a
+`read` follow no link out, and no option that follows links is refused. Beside that, a `read`,
+`grep` or `glob` whose target resolves outside the copy is not answered, nor is a `bash` command a
+word of which may lead outside it: a word whose expansion the runner cannot place inside the
+checkout (it follows a variable the command assigned, `$PWD`, `$(pwd)`, `$(git rev-parse
+--show-toplevel)` and, in a colocated copy, `$(jj root)`; not one assigned only in a branch of
+`||` or `&&`, or from another substitution), a brace expansion or a `~` in a word's unquoted text,
+a word naming `.git`, an absolute path off the checkout's root, a relative one that leaves the
+root from any directory the shell may be in there, an option's attached path that does, or a path
+that leaves the copy as the kernel walks it there, through a link that stays inside followed by
+`..` (`l/../x` through a link `l` to the root: each part's links are followed, one part at a
+time, before the `..` after it); nor a `cd` that names no directory, which goes to `$HOME`; nor
+one that expands `$HOME` or `$PATH`, whose value would be the runner's. A quoted word is a literal
+(a single-quoted one, or a double-quoted one whose every `$` is escaped and that holds no
+backtick), whatever `$`, `?`, `*`, braces or `~` it holds. A `cd` to a literal directory the
+checkout holds, inside its root, succeeds, so where it surely runs (no `&&` or `||` before it in
+its list) every later command of the call, until another `cd`, runs from there alone, and a
+relative path is read from there (`cd <root>/pkg/src && …; cat ../package.json` reads
+`pkg/package.json`); after any other `cd`, the shell may still be where it was.
 
 The read-only rule decides which calls are answered; it does not make running them safe. So each
 answered `bash` command, and each jj command of a checkout's colocation, runs in a sandbox
@@ -459,10 +493,11 @@ rule had let each through: the key is in no answer, the home lists empty, `env` 
 credential, no fsmonitor runs, the copy is read-only and there is no network; and `curl` is
 refused and never run.
 
-A reply one of whose read-only calls the copy answers in no form (a read with another selector or
-of a directory, a path outside the checkout or under `~`, a git or jj command where the copy is the
-tarball, a jj command where its colocation failed, a command whose sandbox cannot be made, an output
-Oh My Pi's minimizer would rewrite, a `find` or `ls` tool, a run past its time) gets no
+A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
+path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj
+command where its colocation failed, a command whose sandbox cannot be made, an output whose
+notice would name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may
+rewrite), a `find` or `ls` tool, a run past its time) gets no
 verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
 why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
 an arm that cannot finish for such runs and those that read past round 5 drops its case as
@@ -2044,10 +2079,17 @@ start, its first prompt build, and its listing measured against the earliest sub
 spawned under that build; a subagent's at its root's last prompt build before its start. The
 summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
-detail, `model-not-served` for a session on a model the gateway does not serve, or
-`skill-as-material: <why>` for a session whose work, by the written-case reader's answer, is on
-the skill's own text: such a session is passed over, as the session form drops it, and the next
-candidate taken; a `--context-session` of one is refused, exit 1). A case's
+detail, `model-not-served` for a session on a model the gateway does not serve,
+`outside-material: <detail>` for a session whose recorded system prompt, role's prompt or first
+user message names by an absolute path outside its checkout's root a file the session itself
+reads, by a `read` call or with `cat`, `head`, `tail` or `sed -n` in a `bash` call (a skill's
+file, read by `skill://`, shown as a skill file or under a skill's installed directory, is none;
+the detail names the path, where it is named and the message that reads it), whose runs would ask
+for material the checkout copy answers no read of, or `skill-as-material: <why>` for a session
+whose work, by the written-case reader's answer, is on the skill's own text: such a session is
+passed over, an `outside-material` one before the reader is asked, as the session form drops a
+`skill-as-material` one, and the next candidate taken; a `--context-session` of one is refused,
+exit 1). A case's
 `model` is the context session's when the gateway serves it; else the served model with the most
 reading sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
 else the served model with the most reading sessions summed over the `--model-pool` files (each a

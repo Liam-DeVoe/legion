@@ -59,10 +59,11 @@ export function testedSource(
 
 /** Which of `skills` are copies of the source of the tested skill `name`: the repository and path
  *  (at any commit, under any namespace) of the copy listed under `name` itself (`testedSource`).
- *  An arm gives each of them its own text (`none` leaves each out); a copy of another source that
- *  shares the name stays as the profile has it in every arm but `none`, which lists one such copy
- *  under the bare name where no copy left holds that name bare (arms.ts's `Arm.relisted`). With
- *  no copy listed under `name`, none is. */
+ *  An arm gives each of them its own text (`none`, and the arm of ours, which installs ours in
+ *  their place, leave each out); a copy of another source that shares the name stays as the
+ *  profile has it in every arm but those two, each of which lists one such copy under the bare
+ *  name where no copy left holds that name bare (arms.ts's `Arm.relisted`; the arm of ours not
+ *  where ours holds that name itself). With no copy listed under `name`, none is. */
 export function testedCopy(
   skills: readonly ProfileSkill[],
   name: string
@@ -93,10 +94,10 @@ const CheckoutDir = z
  * context, the role prompt that goes to `--append-system-prompt`. A subagent's
  * session records its own system prompt and tools (its `session_init` line), so its case carries
  * them: `systemPrompt`, the recorded blocks the capture sends in place of a rebuilt prompt, with
- * only the case skill's line of their skill listing changed per arm (and, in a `none` that lists
- * a copy of another source under its bare name, that copy's `<namespace>/<name>` line left out:
- * arms.ts's `Arm.relisted`), and `tools`, the recorded tool names the capture restricts Oh My
- * Pi's tools to. */
+ * only the case skill's line of their skill listing changed per arm (and, in a `none` or an arm
+ * of ours that lists a copy of another source under its bare name, that copy's
+ * `<namespace>/<name>` line left out: arms.ts's `Arm.relisted`), and `tools`, the recorded tool
+ * names the capture restricts Oh My Pi's tools to. */
 export const Profile = z.strictObject({
   skills: z.array(ProfileSkill),
   plugins: z.array(z.strictObject({ ...RepoPath, name: z.string().min(1) })),

@@ -916,3 +916,374 @@ test("the negative control: cat of a key file, ls of the runner's home, env, and
     }
   }
 }, 60_000);
+
+// The rows below are the shapes of the read-only calls a run of written cases answered in no form,
+// so that each such run was made again and its cases dropped as reads-past-last-round: a grep path
+// joined by `;` with `!` exclusions, a line past the 512 bytes grep shows, more matches in a file
+// or more files than grep keeps, a read of a directory, a bash line past 768 bytes, an output the
+// minimizer may rewrite, a quoted word that holds `$`, `?` or `*`, and a relative path after a `cd`.
+
+/** A copy of a made-up checkout under `name` that holds `files` (each path to its text). */
+function filesCopy(name: string, files: Record<string, string>): CheckoutCopy {
+  const dir = path.join(scratch, name);
+  writeFiles(dir, files);
+  return { dir, root: ROOT, cwd: ROOT, git: false };
+}
+
+/** The made-up checkout's files of the grep list and listing rows: a package with tests, a test
+ *  directory, a generated directory of 14 files, an app, and an installed dependency. */
+const LISTED: Record<string, string> = {
+  "apps/web/e.ts": "export const kind = 'web';\n",
+  "packages/ed/package.json": '{ "name": "ed" }\n',
+  "packages/ed/src/a.ts": "const one = 1;\nconst kind = 'a';\n",
+  "packages/ed/src/a.test.ts": "it('kind');\n",
+  "packages/ed/src/tests/c.ts": "// kind\n",
+  "packages/ed/src/.eslintrc": "{}\n",
+  "packages/ed/src/.DS_Store": "",
+  "packages/ed/node_modules/dep/index.js": "const kind = 'dep';\n",
+  ...Object.fromEntries(
+    Array.from({ length: 14 }, (_, n) => [
+      `packages/ed/src/gen/g${String(n + 1).padStart(2, "0")}.ts`,
+      "export {};\n",
+    ])
+  ),
+};
+
+/** The text of the `grep` answer of `copy` to `input`, in a session whose rows are numbered; the
+ *  answer when it is none. */
+async function grepText(
+  copy: CheckoutCopy,
+  input: Record<string, unknown>
+): Promise<string | { why: string }> {
+  const answer = await answerCall(copy, "grep", input, "numbered");
+  return "why" in answer ? answer : answer.text;
+}
+
+// Catches: a grep path that is a list joined by `;`, with `!` exclusions or of files, left
+// unanswered (34 of the dropped runs' calls), or answered with another order of its paths, its
+// exclusions not applied, or without the pin's note of a missing path.
+test("a grep path joined by ; is searched path by path in its order, a missing one noted after the matches; its ! parts leave out what they match below each path, an anchored one only inside it; node_modules is not entered", async () => {
+  const copy = filesCopy("grep-lists", LISTED);
+  const packages = [
+    "# packages/ed/src/",
+    "## a.test.ts",
+    "*1|it('kind');",
+    "## a.ts",
+    " 1|const one = 1;",
+    "*2|const kind = 'a';",
+    "",
+    "## tests/",
+    "### c.ts",
+    "*1|// kind",
+  ];
+  const apps = ["# apps/web/", "## e.ts", "*1|export const kind = 'web';"];
+  for (const [given, lines] of [
+    ["packages;apps", [...packages, "", ...apps]],
+    ["packages/proj-not;apps", [...apps, "", "Skipped missing paths: packages/proj-not"]],
+    [".;!**/node_modules/**", [...apps, "", ...packages]],
+    [`${ROOT}/packages;!**/node_modules/**`, packages],
+    [
+      "packages/ed/src;!**/*.test.ts;!**/tests/**",
+      packages.slice(0, 1).concat(packages.slice(3, 6)),
+    ],
+    ["packages;!packages/ed/src/tests", packages.slice(0, 6)],
+    ["apps;!packages/ed", apps],
+    [
+      "packages/ed/src/a.ts;apps/web/e.ts;packages/ed/src/missing.ts",
+      [
+        "# packages/ed/src/",
+        "## a.ts",
+        ...packages.slice(4, 6),
+        "",
+        ...apps,
+        "",
+        "Skipped missing paths: packages/ed/src/missing.ts",
+      ],
+    ],
+    ["packages/ed/src/a.ts; gone", [...packages.slice(4, 6), "", "Skipped missing paths: gone"]],
+  ] as const) {
+    expect({ given, answer: await grepText(copy, { pattern: "kind", path: given }) }).toEqual({
+      given,
+      answer: lines.join("\n"),
+    });
+  }
+  // In a hashline session each file's header holds its snapshot tag.
+  const hashline = await answerCall(
+    copy,
+    "grep",
+    { pattern: "kind", path: "packages/ed/src/a.ts;apps/web/e.ts" },
+    "hashline"
+  );
+  expect(hashline).toEqual({
+    text: [
+      "# packages/ed/src/",
+      `## a.ts#${snapshotTag(LISTED["packages/ed/src/a.ts"] ?? "")}`,
+      " 1:const one = 1;",
+      "*2:const kind = 'a';",
+      "",
+      "# apps/web/",
+      `## e.ts#${snapshotTag(LISTED["apps/web/e.ts"] ?? "")}`,
+      "*1:export const kind = 'web';",
+    ].join("\n"),
+    isError: false,
+  });
+  expect(await grepText(copy, { pattern: "absent", path: "packages;gone" })).toBe(
+    "No matches found\nSkipped missing paths: gone"
+  );
+  for (const [given, why] of [
+    ["missing;gone", "are not in the checkout"],
+    ["packages;!**/[ab].ts", "a glob of a form the runner does not read"],
+    ["packages;/etc", "outside the session's checkout"],
+    ["packages,apps", "a list of commas or blanks"],
+    ["packages;packages", "names one path twice"],
+  ] as const) {
+    expect({ given, answer: await grepText(copy, { pattern: "kind", path: given }) }).toEqual({
+      given,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+});
+
+// Catches: a grep whose shown line passes the 512 bytes grep shows left unanswered (16 of the
+// dropped runs' calls), or answered with the line whole, cut elsewhere than the pin's window
+// around its first match, without its column, or without the pin's notice of cut lines.
+test("a grep line past 512 bytes is cut as grep's native search cuts it: a context line to 509 bytes and ..., a match line around its first match with its column, trailing whitespace taken off, and the notice of cut lines after the matches", async () => {
+  const copy = filesCopy("grep-wide", {
+    "packages/fixtures/long.json": [
+      "{",
+      `  "note": "${"x".repeat(600)}kind${"y".repeat(100)}",`,
+      `  "other": "${"z".repeat(600)}"`,
+      `  "kind": "${"w".repeat(600)}"`,
+      "}",
+      "",
+    ].join("\n"),
+    "packages/fixtures/mid.txt": `${"é".repeat(300)}\n${"a".repeat(1000)}kind${"b".repeat(1000)}   \n`,
+  });
+  expect(await grepText(copy, { pattern: "kind", path: "packages" })).toBe(
+    [
+      "# packages/fixtures/",
+      "## long.json",
+      " 1|{",
+      `*2|...${"x".repeat(403)}kind${"y".repeat(100)}", [col 612]`,
+      ` 3|  "other": "${"z".repeat(497)}...`,
+      `*4|  "kind": "${"w".repeat(498)}... [col 4]`,
+      " 5|}",
+      "## mid.txt",
+      ` 1|${"é".repeat(254)}...`,
+      `*2|...${"a".repeat(251)}kind${"b".repeat(251)}... [col 1001]`,
+      "",
+      "[Some lines truncated to 512 bytes]",
+    ].join("\n")
+  );
+  // A cut context line alone brings no notice: the pin notes only cut match lines.
+  expect(await grepText(copy, { pattern: "^\\}", path: "packages/fixtures/long.json" })).toBe(
+    [` 4|  "kind": "${"w".repeat(498)}...`, "*5|}"].join("\n")
+  );
+});
+
+// Catches: a grep with more matches in a file than grep keeps (20 of several files, 200 of one),
+// or matches in more files than one page shows (20), left unanswered (11 of the dropped runs'
+// calls), answered whole, or without the pin's notices and its next page by `skip`.
+test("a grep keeps 20 matches a file of several and 200 of one, with grep's notice, and 20 files a page, with its notice of the next page, which skip answers; a total past the native search's 2000 matches is shown as at least", async () => {
+  const many = Array.from({ length: 25 }, (_, n) => `const kind${n + 1} = ${n + 1};\n`).join("");
+  const files: Record<string, string> = {
+    "big/many.ts": many,
+    "solo/huge.ts": Array.from({ length: 205 }, (_, n) => `kind ${n + 1}\n`).join(""),
+  };
+  for (let n = 1; n <= 22; n++) files[`big/pages/f${String(n).padStart(2, "0")}.ts`] = "kind\n";
+  for (let n = 1; n <= 100; n++) files[`cap/f${String(n).padStart(3, "0")}.ts`] = many;
+  const copy = filesCopy("grep-caps", files);
+  const page = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, n) => [
+      `### f${String(from + n).padStart(2, "0")}.ts`,
+      "*1|kind",
+    ]).flat();
+  expect(await grepText(copy, { pattern: "kind", path: "big" })).toBe(
+    [
+      "# big/",
+      "## many.ts",
+      ...Array.from({ length: 20 }, (_, n) => `*${n + 1}|const kind${n + 1} = ${n + 1};`),
+      "",
+      "## pages/",
+      ...page(1, 19),
+      "",
+      "Showing files 1-20 of 23. Use skip=20 for the next page, or narrow paths/pattern.",
+      "",
+      "More than 20 matches in big/many.ts; grep keeps the first 20 per file when searching several. Search one file alone for up to 200.",
+    ].join("\n")
+  );
+  expect(await grepText(copy, { pattern: "kind", path: "big", skip: 20 })).toBe(
+    ["# big/pages/", ...page(20, 22).map((line) => line.replace(/^###/, "##"))].join("\n")
+  );
+  expect(await grepText(copy, { pattern: "kind", path: "big", skip: 30 })).toBe(
+    "No more results (23 files total; skip=30 is past the end)"
+  );
+  expect(await grepText(copy, { pattern: "kind", path: "solo/huge.ts" })).toBe(
+    [
+      ...Array.from({ length: 200 }, (_, n) => `*${n + 1}|kind ${n + 1}`),
+      "",
+      "More than 200 matches; grep keeps the first 200 in a file. Add a line range (`path:N-M`) or narrow the pattern for the rest.",
+    ].join("\n")
+  );
+  // 95 files of 21 fetched matches and 5 of the 96th fill the native search's 2000.
+  expect(await grepText(copy, { pattern: "kind", path: "cap" })).toEqual(
+    expect.stringMatching(
+      /\n\nShowing files 1-20 of 96\+\. Use skip=20 for the next page, or narrow paths\/pattern\.\n\nMore than 20 matches in cap\/f001\.ts, cap\/f002\.ts, cap\/f003\.ts, cap\/f004\.ts, cap\/f005\.ts and 15 more files; grep keeps the first 20 per file when searching several\. Search one file alone for up to 200\.$/
+    )
+  );
+});
+
+// Catches: a read of a directory left unanswered, or answered with entries the pin leaves out
+// (`.DS_Store`), past its depth, or past its cap of a directory under it; or a listing answered
+// that would show the copy's own `.git`.
+test("a read of a directory is answered with the pin's listing: entries two levels down by name, a directory under it capped at 12 with the count of the rest, .DS_Store left out; an empty one says so; a listing that shows .git, or a ranged read of a directory, is not answered", async () => {
+  const copy = filesCopy("listing", LISTED);
+  mkdirSync(path.join(copy.dir, "empty"), { recursive: true });
+  const listing = [
+    ".",
+    "  - .eslintrc",
+    "  - a.test.ts",
+    "  - a.ts",
+    "  - gen/",
+    ...Array.from({ length: 11 }, (_, n) => `    - g${String(n + 1).padStart(2, "0")}.ts`),
+    "    - … 2 more",
+    "    - g14.ts",
+    "  - tests/",
+    "    - c.ts",
+  ].join("\n");
+  const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
+  for (const target of ["packages/ed/src", "packages/ed/src/", `${ROOT}/packages/ed/src`]) {
+    expect({ target, answer: await read(target) }).toEqual({
+      target,
+      answer: { text: listing, isError: false },
+    });
+  }
+  expect(await read("packages")).toEqual({
+    text: [".", "  - ed/", "    - node_modules/", "    - package.json", "    - src/"].join("\n"),
+    isError: false,
+  });
+  expect(await read("empty")).toEqual({ text: "(empty directory)", isError: false });
+  mkdirSync(path.join(copy.dir, ".git"), { recursive: true });
+  for (const [target, why] of [
+    [".", "shows .git"],
+    ["packages/ed/src:1-3", "a ranged read of a directory"],
+  ] as const) {
+    expect({ target, answer: await read(target) }).toEqual({
+      target,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+});
+
+// Catches: a bash output line past 768 bytes but not 768 characters answered whole where the pin
+// cuts it; an output the minimizer may rewrite answered as it is (a chain whose `cat` is not piped
+// though another part is, a jj command's), or one it keeps as it is (in a subshell, or piped) not
+// answered; and either refusal not saying that the pin's notice names an artifact the copy cannot
+// know.
+test("a bash line past 768 bytes, and an output of 1000 characters or more of an unpiped command the minimizer reads in a chain of && and ;, are not answered, each naming the artifact the pin's notice names; a subshell's or a piped command's is answered", async () => {
+  const big = Array.from(
+    { length: 60 },
+    (_, n) => `export const line${String(n + 1).padStart(2, "0")} = "${"v".repeat(20)}";\n`
+  ).join("");
+  const copy = filesCopy("bash-wide", {
+    "wide.txt": `${"é".repeat(400)}\n`,
+    "pkg.json": '{ "name": "acme" }\n',
+    "big.ts": big,
+  });
+  for (const [command, why] of [
+    ["cat wide.txt | head -5", "passes the 768 bytes Oh My Pi shows"],
+    [`cd ${ROOT} && cat pkg.json && sed -n 1,60p big.ts`, "minimizer may rewrite"],
+    ["cat big.ts; ls | head", "minimizer may rewrite"],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: {
+        why: expect.stringMatching(
+          new RegExp(`${why}.*the artifact .*whose id the copy cannot know`)
+        ),
+      },
+    });
+  }
+  expect(await bashText(copy, "(cat big.ts)")).toBe(big);
+  expect(await bashText(copy, "cat big.ts | head -80")).toBe(big);
+  const colocated = {
+    dir: gitCopy("minimized-jj", { "big.ts": big }),
+    root: ROOT,
+    cwd: ROOT,
+    git: true,
+  };
+  expect(await colocateJj(colocated.dir)).toBe(true);
+  const jj = { ...colocated, jj: true as const };
+  expect(await bashText(jj, "jj file show big.ts")).toEqual({
+    why: expect.stringContaining("minimizer may rewrite"),
+  });
+  expect(await bashText(jj, "jj file show big.ts | head -80")).toBe(big);
+}, 60_000);
+
+// Catches: a quoted word that holds `$`, `?`, `*`, `{…,…}` or `~` (a pattern) refused as though the
+// shell expanded it, or an unquoted one that the shell does expand answered.
+test("a quoted word is a literal: a single-quoted one, or a double-quoted one whose $ is escaped, is answered whatever it holds; an unquoted brace expansion or ~, or a $ that expands, is still refused", async () => {
+  const copy = {
+    dir: gitCopy("quoted", { "biome.json": "{}\n", "docs/notes.md": "Use ~/bin and x{2}\n" }),
+    root: ROOT,
+    cwd: ROOT,
+    git: true,
+  };
+  for (const [command, text] of [
+    ["git ls-files | grep -E '(^|/)biome\\.jsonc?$'", "biome.json\n"],
+    [
+      String.raw`git grep -n -I -E "keymap\(|\\\$useKeymap|Run" -- ':!**/node_modules/**' ':!**/*.py'`,
+      "docs/guide.md:3:Run the app.\n",
+    ],
+    ["grep -nE 'x{2}|~/bin' docs/notes.md", "1:Use ~/bin and x{2}\n"],
+    [
+      String.raw`grep -n "x\$\|bin{1,2}" docs/notes.md`,
+      "(no output)\n\nCommand exited with code 1",
+    ],
+    ["grep -c '~/bin' docs/notes.md", "1\n"],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  for (const [command, why] of [
+    ["cat docs/{guide,notes}.md", "expands, and the runner does not check"],
+    ["cat ~/notes.md", "is under ~"],
+    ['grep -n "$HOME" docs/notes.md', "expands $HOME"],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+}, 60_000);
+
+// Catches: a relative path after a `cd` to a directory of the checkout refused because it leaves
+// the root from the directory the session started in, which the command is no longer in; or one
+// answered after a `cd` that may fail, or may not run.
+test("a cd to a literal directory the copy holds, that surely runs, moves every later command there, so a relative path is read from there alone; a cd that may fail or not run keeps both directories", async () => {
+  const copy = filesCopy("cd-moves", LISTED);
+  for (const [command, text] of [
+    [
+      `cd ${ROOT}/packages/ed/src && wc -l a.ts; cat ../package.json | head -60`,
+      '2 a.ts\n{ "name": "ed" }\n',
+    ],
+    [
+      `cd ${ROOT}/packages/ed && cat package.json; ls ../../node_modules/prosemirror-state 2>&1 | head -3`,
+      `{ "name": "ed" }\nls: cannot access '../../node_modules/prosemirror-state': No such file or directory\n`,
+    ],
+    ["cd packages/ed/src || pwd; cat ../package.json", '{ "name": "ed" }\n'],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  for (const command of [
+    "cd packages/ed/missing && cat ../package.json",
+    "cd packages/ed/package.json && cat ../package.json",
+    "pwd && cd packages/ed/src && cat ../package.json",
+    'cd "$PWD/packages/ed/src" && cat ../package.json',
+    "cd packages/ed/src packages && cat ../package.json",
+  ]) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: "../package.json is outside the session's checkout /work/acme/proj" },
+    });
+  }
+}, 60_000);

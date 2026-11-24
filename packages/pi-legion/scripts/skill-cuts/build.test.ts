@@ -5228,6 +5228,110 @@ test("build-cases --written passes over a context session the written-case reade
   expect(refused.join("")).toContain(`--context-session ${context}: skill-as-material: `);
 }, 120_000);
 
+/** A change of F1 for a session in a checkout of acme/proj whose first message is `request` and
+ *  that runs `command` in a bash call after it. */
+function readsInProj(request: string, command: string) {
+  return (lines: Record<string, unknown>[]) => {
+    workingDirectory("/home/dev/src/proj")(lines);
+    setText(lines, 0, () => request);
+    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
+    const call = {
+      type: "message",
+      id: "0d0d0001",
+      timestamp: "2026-11-20T01:59:45.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "toolu_cat", name: "bash", arguments: { command } }],
+      },
+    };
+    const result = {
+      type: "message",
+      id: "0d0d0002",
+      timestamp: "2026-11-20T01:59:45.100Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "toolu_cat",
+        toolName: "bash",
+        isError: false,
+        content: [{ type: "text", text: "diff --git a/x b/x" }],
+      },
+    };
+    insertAfter(lines, prompt, call);
+    insertAfter(lines, call, result);
+  };
+}
+
+// Catches: written tasks taken from a session whose work reads material outside its checkout (a
+// subagent's task naming a diff in a scratch directory), whose runs ask to read that material,
+// which the checkout copy answers no read of, so each run is dropped as reads-past-last-round.
+test("build-cases --written passes over, before asking the written-case reader, a context session whose first message names a file outside its checkout that it reads, as outside-material, takes the next one, and refuses a --context-session of it; a skill's file named and read, or an outside file named and not read, is no reason", async () => {
+  const diff = "/home/dev/scratch/review/delta.diff";
+  const outsideFile = "/sessions/outside-read.jsonl";
+  const skillFile = "/sessions/outside-skill.jsonl";
+  const store = changedStore("written-outside", (files) => {
+    const held = files.store_a ?? {};
+    held[outsideFile] = sessionText(
+      "outside-read",
+      readsInProj(`Review the change in ${diff}.`, `cd /home/dev/scratch/review && cat delta.diff`)
+    );
+    held[skillFile] = sessionText(
+      "outside-skill",
+      readsInProj(
+        `Follow ${F1_SKILLS}/alpha/references/x.md; the old notes in ${diff} need no read.`,
+        `cat ${F1_SKILLS}/alpha/references/x.md`
+      )
+    );
+  });
+  const candidates = [outsideFile, "/sessions/good.jsonl"].map((file) => ({
+    store: "store_a",
+    hash: fileHash(file),
+    path: file,
+  }));
+  const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+    (each) => blindOrder(candidates, each)[0]?.item.path === outsideFile
+  );
+  expect(seed).toBeDefined();
+  const sessions = path.join(setupDir, "written-outside.jsonl");
+  writeFileSync(sessions, candidates.map((each) => `${JSON.stringify(each)}\n`).join(""));
+  const why = `outside-material: its first user message names ${diff}, outside its checkout's root /home/dev/src/proj, and message 1 reads it (the bash command "cd /home/dev/scratch/review && cat delta.diff")`;
+  const out = path.join(scratch, "written-outside", "cases.jsonl");
+  const args = writtenArgs(out, "--sessions", sessions, "--seed", seed ?? "");
+  args[args.indexOf("--config") + 1] = store;
+  const from = recorder.requests.length;
+  const printed: string[] = [];
+  expect(await main(args, io(printed))).toBe(EXIT.ok);
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.contextSession.hash).toBe(fileHash("/sessions/good.jsonl"));
+  expect(summary.contextSession.passed).toEqual([
+    { store: "store_a", hash: fileHash(outsideFile), why },
+  ]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${fileHash(outsideFile)}: passed over (${why})\n`
+  );
+  const asked = usersOf(recorder.requests.slice(from), WRITTEN_PROMPT);
+  expect(asked.length).toBe(1);
+  expect(asked[0]).not.toContain(diff);
+  // A --context-session of it is refused; one that reads only a skill's file it names is not.
+  const refused: string[] = [];
+  const named = writtenArgs(
+    path.join(scratch, "written-outside-named", "cases.jsonl"),
+    "--context-session",
+    `store_a:${fileHash(outsideFile)}`
+  );
+  named[named.indexOf("--config") + 1] = store;
+  expect(await main(named, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("")).toContain(`--context-session store_a:${fileHash(outsideFile)}: ${why}`);
+  const skill = writtenArgs(
+    path.join(scratch, "written-outside-skill", "cases.jsonl"),
+    "--context-session",
+    `store_a:${fileHash(skillFile)}`,
+    "--written-answer",
+    writtenAnswerFile("written-outside-skill", [WRITTEN_TASK])
+  );
+  skill[skill.indexOf("--config") + 1] = store;
+  expect(await main(skill, io([]))).toBe(EXIT.ok);
+}, 120_000);
+
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
   // not-served runs on a model no route serves; other-copy read acme/other's alpha, so its profile
   // installs no alpha of the cut's repository; good and openai are on served models, and list it.
