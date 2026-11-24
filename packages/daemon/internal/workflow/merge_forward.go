@@ -201,7 +201,8 @@ func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project str
 		case record.MergeForwardCovers(messages[i].Step, send.step):
 			messages[i].Covers = send.step
 		default:
-			message.Covers, messages[i] = messages[i].Step, message
+			message.Covers = messages[i].Step
+			messages[i] = message
 		}
 	}
 	return messages, nil
