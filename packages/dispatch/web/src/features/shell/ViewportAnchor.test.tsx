@@ -14,6 +14,7 @@ import {
 
 import { disarm } from "../../__tests__/armed-press";
 import { nextFrame } from "../../__tests__/frames";
+import { ControlRow } from "../../components/ControlRow";
 import { CONTROL } from "../../components/control-names";
 import { ARM_ON_PRESS } from "../../components/focus-place";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
@@ -1095,6 +1096,87 @@ test("a press in a control row outside the box the rows scroll in leaves that bo
     expect(scroller.scrollTop).toBe(100 + 3 * ROW_HEIGHT);
     expect(window.scrollY).toBe(0);
   } finally {
+    disarm();
+    view.unmount();
+  }
+});
+
+/** The page's own control row (`components/ControlRow.tsx`) above the list: its Filter trigger,
+ *  and the one chip of the narrowing to the rows from r4 on, which the reader's press takes off,
+ *  drawing r1 to r3 again at the list's head in the same commit, as `Narrowed` does. */
+function NarrowedByControlRow(): ReactNode {
+  const [narrowed, setNarrowed] = useState(true);
+  return (
+    <>
+      <ControlRow
+        chips={
+          narrowed ? (
+            <button key="type" onClick={() => setNarrowed(false)} type="button">
+              Remove Type: question filter
+            </button>
+          ) : undefined
+        }
+        trigger={
+          <button data-control={CONTROL.panelTrigger} type="button">
+            Filter
+          </button>
+        }
+      />
+      <List rows={narrowed ? ids(9, 4) : ids(12)} />
+    </>
+  );
+}
+
+// The reader takes the list's only narrowing off from the keyboard with the window scrolled so the
+// control row's Filter trigger, 44 px tall, stands 20 px above the window's top. The row hands the
+// focus to Filter, and lands it as every component hand-off lands its control: no scroll of the
+// engine's own, and a control partly cut scrolled to its nearest edge. The anchor then puts the
+// row back where the commit found it, which leaves Filter as cut as before, so the landing shows
+// it whole again once the commit is done. A plain `focus()` scrolled it in Chromium and Firefox
+// only to have the anchor undo that scroll.
+test("the control row's chips hand-off shows its landing whole again after the anchor puts the row back where the commit found it", async () => {
+  const user = userEvent.setup();
+  const view = render(<NarrowedByControlRow />);
+  // Every scroll into view and every scroll of the window, in order: a scroll into view moves the
+  // window the least that shows the element whole, as `{ block: "nearest" }` does.
+  const moves: unknown[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions
+  ) {
+    moves.push({ of: this.textContent, options, scroll: "into view" });
+    const box = this.getBoundingClientRect();
+    if (box.top < 0) setScrollY(window.scrollY + box.top);
+    else if (box.bottom > VIEWPORT_HEIGHT)
+      setScrollY(window.scrollY + box.bottom - VIEWPORT_HEIGHT);
+  });
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    moves.push({ by: typeof x === "number" ? y : x.top, scroll: "window" });
+    scrollBy(x as number, y as number);
+  }) as typeof window.scrollBy;
+  try {
+    // The control row stands 60 px down the page, its Filter on its first line; the window is
+    // scrolled to 80 px.
+    const row = document.querySelector(`[data-control="${CONTROL.controlRow}"]`);
+    const filter = screen.getByRole("button", { name: "Filter" });
+    if (row === null) throw new Error("no control row is drawn");
+    row.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 104);
+    filter.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 44);
+    setScrollY(80);
+    screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
+
+    await user.keyboard("{Enter}");
+    expect(filter).toHaveFocus();
+    expect(moves).toEqual([
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+      // The anchor puts the row back where the commit found it, 20 px above the window's top.
+      { by: 20, scroll: "window" },
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+    ]);
+    expect(filter.getBoundingClientRect().top).toBe(0);
+  } finally {
+    scrolls.mockRestore();
     disarm();
     view.unmount();
   }

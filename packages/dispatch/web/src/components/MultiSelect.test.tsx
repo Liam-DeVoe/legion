@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 // fireEvent also gives one row's press below a click with no pointer press before it, which
 // user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
@@ -184,10 +184,10 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
  * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot to
- * its bottom while it is drawn; each option is 44 px tall, under the text box in the list's
- * order, moved up by the panel's `scrollTop`, which stops at both ends of the scroll, as a
- * browser's does. `trigger` stands above the panel, so the panel does not close as one hanging
- * off nothing (`AnchoredPanel`). Answers the panel.
+ * its bottom while it is drawn; each option is 44 px tall, under the text box at its place among
+ * the options the list draws when it is measured, moved up by the panel's `scrollTop`, which stops
+ * at both ends of the scroll, as a browser's does. `trigger` stands above the panel, so the panel
+ * does not close as one hanging off nothing (`AnchoredPanel`). Answers the panel.
  */
 function layOutList(trigger: HTMLElement): HTMLElement {
   const listbox = screen.getByRole("listbox");
@@ -195,9 +195,8 @@ function layOutList(trigger: HTMLElement): HTMLElement {
   const head = screen.getByRole("combobox").parentElement;
   if (box === null || head === null) throw new Error("the list is drawn outside its panel");
   const foot = screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
-  const options = within(listbox).getAllByRole("option");
+  const drawn = () => [...listbox.querySelectorAll('[role="option"]')];
   const shown = 286;
-  const end = 61 + options.length * 44 + (foot === null ? 0 : 61) - shown;
   let scrolled = 0;
   Object.defineProperties(box, {
     clientHeight: { configurable: true, get: () => shown },
@@ -206,6 +205,7 @@ function layOutList(trigger: HTMLElement): HTMLElement {
       configurable: true,
       get: () => scrolled,
       set: (value: number) => {
+        const end = 61 + drawn().length * 44 + (foot === null ? 0 : 61) - shown;
         scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
       },
     },
@@ -214,8 +214,9 @@ function layOutList(trigger: HTMLElement): HTMLElement {
   box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 288);
   head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
   if (foot !== null) foot.getBoundingClientRect = () => new DOMRect(1, 101 + shown - 61, 254, 61);
-  for (const [index, option] of options.entries()) {
-    option.getBoundingClientRect = () => new DOMRect(1, 162 + 44 * index - scrolled, 254, 44);
+  for (const option of drawn()) {
+    option.getBoundingClientRect = () =>
+      new DOMRect(1, 162 + 44 * drawn().indexOf(option) - scrolled, 254, 44);
   }
   return box;
 }
@@ -226,21 +227,23 @@ function activeName(search: HTMLElement): string {
   return option?.textContent?.replace("✓", "") ?? "no option";
 }
 
+/** The issue header's Status list's eight statuses, in its order. */
+const STATUSES = [
+  "Triage",
+  "Backlog",
+  "Todo",
+  "In progress",
+  "Blocked",
+  "Testing",
+  "Needs review",
+  "Retro",
+];
+
 // The issue header's Status list in a browser: eight statuses under the text box of a box that
 // shows five, where the arrows marked Testing, Needs review and Retro active out of sight.
 test("ArrowDown and ArrowUp scroll the list the least that shows the option they mark active whole below its text box, and scroll nothing else", async () => {
   const user = userEvent.setup();
-  const statuses = [
-    "Triage",
-    "Backlog",
-    "Todo",
-    "In progress",
-    "Blocked",
-    "Testing",
-    "Needs review",
-    "Retro",
-  ];
-  const view = render(<SingleHost initial="Triage" options={statuses} />);
+  const view = render(<SingleHost initial="Triage" options={STATUSES} />);
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
   try {
     const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
@@ -309,6 +312,85 @@ test("the arrows scroll a multi-select's list the least that shows the option th
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
     scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+/**
+ * Lays each list an open draws out as `layOutList` does, the moment anything first measures it:
+ * the open measures its list in the commit that draws it, before a case could lay it out after the
+ * open. Answers the box the last list scrolls in, and what puts the measurements back.
+ */
+function layOutListsAsOpened(trigger: HTMLElement): {
+  box: () => HTMLElement | null;
+  restore: () => void;
+} {
+  let listbox: Element | null = null;
+  let box: HTMLElement | null = null;
+  const measure = Element.prototype.getBoundingClientRect;
+  const spy = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const drawn = document.querySelector('[role="listbox"]');
+    if (drawn !== null && drawn !== listbox) {
+      listbox = drawn;
+      box = layOutList(trigger);
+      // The element measured may be one the layout has just given a box of its own.
+      if (Object.hasOwn(this, "getBoundingClientRect")) return this.getBoundingClientRect();
+    }
+    return measure.call(this);
+  });
+  return { box: () => box, restore: () => spy.mockRestore() };
+}
+
+// The same Status list on an issue in Testing, Needs review or Retro opened with that status
+// active below the five rows its box shows, and Enter took it unseen. However the list opens - a
+// click, Enter or ArrowDown on its trigger - it opens with the option its value picks shown whole
+// below its text box, the list's own box alone scrolled, in the commit that draws it. A list that
+// closed on a search opens on every option again, and shows the picked one whole among them, not
+// at the place it held among the options that search left.
+test("a single pick opens with its picked option shown whole below its text box, however it opens, and scrolls nothing else", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="Testing" options={STATUSES} />);
+  const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    // The option each open marks active, and how far the list has scrolled then: the box shows
+    // 61-286 px of its content, and the sixth option, Testing, stands at 281-325.
+    const opened: [string, string, number | undefined][] = [];
+    const shown = (way: string) =>
+      opened.push([
+        way,
+        activeName(screen.getByRole("combobox", { name: "Search epics" })),
+        lists.box()?.scrollTop,
+      ]);
+    const opens: Readonly<Record<string, () => Promise<void>>> = {
+      "a click": () => user.click(trigger),
+      ArrowDown: () => user.keyboard("{ArrowDown}"),
+      Enter: () => user.keyboard("{Enter}"),
+    };
+    for (const [way, open] of Object.entries(opens)) {
+      await open();
+      shown(way);
+      // Escape closes the list and puts the focus back on its trigger, for the next open.
+      await user.keyboard("{Escape}");
+    }
+    // A search leaves Testing alone in the list, and Enter picks it, which closes the list.
+    await user.click(trigger);
+    await user.keyboard("test{Enter}");
+    await user.click(trigger);
+    shown("a click after a search");
+    expect(opened).toEqual([
+      ["a click", "Testing", 39],
+      ["ArrowDown", "Testing", 39],
+      ["Enter", "Testing", 39],
+      ["a click after a search", "Testing", 39],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
     view.unmount();
   }
 });

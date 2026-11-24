@@ -17,7 +17,7 @@ import { card, focusVisibleRing, textSecondaryOnCanvas } from "../theme/classes"
 import { AnchoredPanel } from "./AnchoredPanel";
 import { Chip } from "./Chip";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
-import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, landWhole, useFocusPlace } from "./focus-place";
 import { PANEL_FRAME } from "./PanelTrigger";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
@@ -335,16 +335,20 @@ export interface ControlRowProps {
  * chip's box, such as the agent's live link beside the Inbox's agent chip. The hand-off waits for
  * the removal to commit, whatever holds the focus meanwhile (a pointer's click in Safari focuses
  * no button, so the focus stays on the body), and then moves the focus only if it is on the
- * page's body, so a reader who moved it elsewhere while the chip was going keeps it there.
+ * page's body, so a reader who moved it elsewhere while the chip was going keeps it there. It
+ * lands the control as every component hand-off does (`landWhole`): with no scroll of the
+ * engine's own, and a control the reader can see a part of shown whole at its nearest edge, at
+ * once and again once the commit is done, since the Inbox list's anchor puts this row back where
+ * the commit found it after the hand-off has run (`ViewportAnchor`'s `keepPressedRow`).
  *
  * Any other focused control the reader's own press takes out of a slot of the first line while
  * the row stays - a page's own control that removes itself, as the Inbox's **Mark all read** does
  * once nothing is left unread - hands the focus on too: to the control now at its place in that
  * slot, else to the nearest one before it, passing over every control that takes typed text,
  * else to the trigger, each only while the reader can see it, else to the own stop of the region
- * the row is in - the search bar's dialog, else the main content - with no scroll. With nothing
- * left before it in the slot and no trigger, the focus walks back from the slot's place in that
- * region instead, since the search box takes typed text (`useFocusPlace`).
+ * the row is in - the search bar's dialog or the Inbox drawer, else the main content - with no
+ * scroll. With nothing left before it in the slot and no trigger, the focus walks back from the
+ * slot's place in that region instead, since the search box takes typed text (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits. A control of a dialog, a
  * panel or a selection bar a page draws in a slot - the Delivery page's Session groups dialog - is
  * that region's and none of the row's, so the row hands its focus nowhere, and never to a control
@@ -436,7 +440,7 @@ export function ControlRow({
     const at = panelPlace ?? pending.index;
     const chip = at === -1 ? undefined : (among[at] ?? among[at - 1]);
     const next = chip === undefined ? triggerOf(root) : focusableOf(chip);
-    next?.focus();
+    if (next !== null) landWhole(next);
   });
   // A focused control a commit takes out of a slot of the first line hands the focus on too. Its
   // check runs after the chips' hand-off above, so that one's rule for Clear filters wins.

@@ -20,8 +20,11 @@ export interface InboxThreadRows {
   readonly asOf: string | undefined;
   /** Whether `rows` are the answer of the read they come from: false while that read is out, was
    *  refused with no answer before it, or is not asked (until the sign-in read says the reader is
-   *  a person), so nothing counted over them stands for a list not read yet. A list narrowed to
-   *  asks lists no thread whatever the read says, so its none is the answer. */
+   *  a person), so nothing counted over them stands for a list not read yet. A count over them is
+   *  drawn only once that read has answered. In the Dismissed view the read is the pages read so
+   *  far, which are the rows the list holds and a filter narrows: it has answered once its first
+   *  page is in, and a count counts those pages while **Show more** has more to read. A list
+   *  narrowed to asks lists no thread whatever the read says, so its none is the answer. */
   readonly answered: boolean;
   readonly rows: readonly InboxListRow[];
   /** Reads the next page of the Dismissed view, or undefined where there is none to read: the

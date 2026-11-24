@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for; nor has it one for a key marked as an input method's, at keyCode 229.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
 import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
@@ -647,10 +647,12 @@ test("a component's hand-off for a control taken away with a control before it l
  *  checkbox where `box` asks for one - the Agents page's select-all while no row matches - and
  *  the line itself only while `shown` (by default). With `list`, a list one of its buttons opened
  *  is drawn as well, outside the line in a portal on the page's body, holding the text box named
- *  Search, as the shared list draws its own (`MultiSelect`). */
+ *  Search, as the shared list draws its own (`MultiSelect`). `fallback` names the control the line
+ *  falls back to (`useFocusPlace`), else none. */
 interface ArmedLineProps {
   readonly box?: boolean;
   readonly disabled?: readonly string[];
+  readonly fallback?: () => HTMLElement | null;
   readonly held?: readonly string[];
   readonly labels: readonly string[];
   readonly list?: boolean;
@@ -664,7 +666,7 @@ function ArmedLine(props: ArmedLineProps): ReactNode {
   const line = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     (element) => (line.current?.contains(element) ? line.current : null),
-    () => null
+    () => props.fallback?.() ?? null
   );
   const { box = false, disabled = [], held = [], labels, list = false, shown = true } = props;
   const buttons = labels.map((label) =>
@@ -1411,4 +1413,112 @@ test("a double click on a control the press's write holds, in a root inside the 
     "a double click on the held Start next": "After",
     "nothing after the press": "After",
   });
+});
+
+// (du) Armed, and the press's commit takes away the line with its control - its container gone,
+// as a slot of the search bar's control row goes with its only control - inside a dialog, while
+// the line's fallback stands out of the reader's sight. The focus goes, with no scroll, to the own
+// stop of the region the control stood in as it took the focus: the dialog. A container that has
+// left the page has no dialog or main content around it to say its region, and the page's main
+// content behind the dialog is not where the reader was.
+test("an armed press whose commit takes away its container in a dialog, with the fallback out of sight, lands on the dialog's own stop, not the page's main content", async () => {
+  const main = mainOf();
+  main.setAttribute("aria-label", "Main content");
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-label", "Search bar");
+  document.body.append(dialog);
+  try {
+    // The fallback stands 500 px above the window's top, out of the reader's sight.
+    const trigger = windowSelectIn(dialog, -500);
+    const fallback = () => trigger;
+    const line = armedLineIn(dialog, { fallback, labels: ["Mark all read"] });
+    try {
+      clickPress(line.button("Mark all read"));
+      const recorded = recordMoves();
+      try {
+        line.redraw({ fallback, labels: [], shown: false });
+      } finally {
+        recorded.restore();
+      }
+      expect({ landed: landing(), moves: recorded.moves }).toEqual({
+        landed: "Search bar",
+        moves: [{ move: "focus", of: "Search bar", options: { preventScroll: true } }],
+      });
+    } finally {
+      line.remove();
+    }
+  } finally {
+    disarm();
+    dialog.remove();
+    main.remove();
+  }
+});
+
+/** The two Enters a text field can be sent: the reader's own, and the one that ends an input
+ *  method's composition, which Safari sends after the composition's end, unmarked - `isComposing`
+ *  false - with keyCode 229 (`inputMethodKey`). */
+const ENTERS = {
+  "a plain Enter": { key: "Enter" },
+  "an input method's Enter": { isComposing: false, key: "Enter", keyCode: 229 },
+} as const;
+
+// (dv) Armed, and an input method's Enter comes in a text field while the press is live. It
+// commits what the reader was composing and acts on nothing of the page's, so it is no act of the
+// reader's (`isPress`): the press stays live, and its commit that takes the control away hands the
+// focus to the control now at its place. A plain Enter in the same field is the reader's next act:
+// it ends the press, and the loss leaves the focus on the page.
+test("an input method's Enter in a text field, at keyCode 229, leaves an armed press live, where a plain Enter ends it", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const [named, enter] of Object.entries(ENTERS)) {
+    landed[named] = await inMain([], async (main) => {
+      const field = controlOf("text");
+      field.setAttribute("aria-label", "Title");
+      main.append(field);
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        // user-event has no form for this key: it cannot mark a key as an input method's.
+        fireEvent.keyDown(field, enter);
+        line.redraw({ labels: ["One", "Three"] });
+        return landing();
+      } finally {
+        line.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({ "a plain Enter": "the page", "an input method's Enter": "Three" });
+});
+
+// (dw) An input method's Enter in a text box at a component's root arms nothing (`armOnPress`):
+// it commits what the reader was composing into the box and presses nothing. A plain Enter there
+// arms the hand-off, as a list's text box picks its active row at it (`MultiSelect`).
+test("an input method's Enter at keyCode 229 arms a component's hand-off at its root nowhere, where a plain Enter arms it", async () => {
+  const armed: Record<string, boolean> = {};
+  await inMain([], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const view = render(
+      createElement(
+        "div",
+        { onKeyDownCapture: armOnPress },
+        createElement("input", { "aria-label": "Name", type: "text" })
+      ),
+      { container: host }
+    );
+    try {
+      const name = view.getByRole("textbox", { name: "Name" });
+      for (const [named, enter] of Object.entries(ENTERS)) {
+        disarm();
+        name.focus();
+        // user-event has no form for this key: it cannot mark a key as an input method's.
+        fireEvent.keyDown(name, enter);
+        armed[named] = causedByReader(name);
+      }
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(armed).toEqual({ "a plain Enter": true, "an input method's Enter": false });
 });

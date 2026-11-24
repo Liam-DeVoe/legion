@@ -2038,12 +2038,14 @@ function InboxBody({
             (row) => matchesOtherFields(row, field),
             viewer
           );
-          // A count is drawn only once every read whose rows it counts has answered, never as a
-          // count of the rows read so far. A Type value names the one read its rows come from: an
-          // ask kind's, the Inbox's own read, which answered before this panel was drawn; a thread
-          // kind's, the thread read. Every other field counts asks and threads together. So while
-          // the thread read is out or refused (`threads.answered`), the ask kinds keep their count
-          // and every other value is offered with no count, never a 0 or an asks-only count.
+          // A count is drawn only once the read of the rows it counts has answered. In the
+          // Dismissed view those rows are the pages read so far, the rows the list holds and a
+          // filter narrows, so a count there counts those pages while **Show more** has more to
+          // read. A Type value names the one read its rows come from: an ask kind's, the Inbox's
+          // own read, which answered before this panel was drawn; a thread kind's, the thread read.
+          // Every other field counts asks and threads together. So while the thread read is out or
+          // refused (`threads.answered`), the ask kinds keep their count and every other value is
+          // offered with no count, never a 0 or an asks-only count.
           const counted = (value: string) =>
             threads.answered ||
             (field === "type" && !(INBOX_THREAD_KINDS as readonly string[]).includes(value));

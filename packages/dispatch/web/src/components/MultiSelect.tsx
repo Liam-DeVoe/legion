@@ -1,4 +1,12 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { inputMethodKey } from "../lib/input-method";
 import {
@@ -272,6 +280,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const opensOn = useRef<string | undefined>(undefined);
   // What the next open puts in the text box: the character typed on the closed trigger, if any.
   const opensWith = useRef("");
+  // What an open is to show whole once it has drawn the rows it opens on - the option it starts
+  // on, under the search it starts with - from the open until the commit that draws that search.
+  const opening = useRef<{ readonly query: string; readonly value: string | undefined } | null>(
+    null
+  );
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -339,22 +352,26 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
 
   // Opening starts a fresh search on the value a single pick holds, with the character typed on
-  // the closed trigger in the text box, if one opened it; the panel hands the focus to the search
-  // unless the host hands it in itself (`focusOnOpen`). Closing returns the focus to the trigger
-  // when the close left it nowhere - the list that held it is gone - and leaves a focus that is
-  // somewhere. A focus still on the text box the close took away is nowhere (`focusLost`): an
-  // engine that moves the focus off a removed element only at its next rendering update still
-  // names the box focused when this effect runs, before that update, and a Tab out of the box
-  // would otherwise leave the focus there, to fall onto the page, rather than on the trigger. A
-  // press outside moves the focus after this runs, so the focus ends where that press put it.
-  useEffect(() => {
-    if (open) {
-      setQuery(opensWith.current);
-      setActiveValue(opensOn.current);
-    } else if (wasOpen.current && focusLost()) {
-      triggerRef.current?.focus();
-    }
+  // the closed trigger in the text box, if one opened it, before the open paints: the search the
+  // list last closed on would otherwise narrow the rows its first frame draws. The option it
+  // starts on is then shown whole (`opening`), and the panel hands the focus to the search unless
+  // the host hands it in itself (`focusOnOpen`).
+  useLayoutEffect(() => {
+    if (!open) return;
+    setQuery(opensWith.current);
+    setActiveValue(opensOn.current);
+    opening.current = { query: opensWith.current, value: opensOn.current };
     opensWith.current = "";
+  }, [open]);
+  // Closing returns the focus to the trigger when the close left it nowhere - the list that held
+  // it is gone - and leaves a focus that is somewhere. A focus still on the text box the close
+  // took away is nowhere (`focusLost`): an engine that moves the focus off a removed element only
+  // at its next rendering update still names the box focused when this effect runs, before that
+  // update, and a Tab out of the box would otherwise leave the focus there, to fall onto the page,
+  // rather than on the trigger. A press outside moves the focus after this runs, so the focus ends
+  // where that press put it.
+  useEffect(() => {
+    if (!open && wasOpen.current && focusLost()) triggerRef.current?.focus();
     wasOpen.current = open;
   }, [open]);
 
@@ -422,12 +439,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // drawn: the rows scroll under both.
   const headRef = useRef<HTMLDivElement>(null);
   const footRef = useRef<HTMLDivElement>(null);
-  // ArrowDown and ArrowUp scroll the list the least that shows the option they mark active whole,
-  // between the text box and the Clear foot, so an option already whole scrolls nothing. Only the
-  // list's own box scrolls (`scrollToShow`), and its own bottom is measured only where no foot is
-  // drawn.
-  const markActive = (value: string) => {
-    setActiveValue(value);
+  // Scrolls the list the least that shows option `value` whole, between the text box and the
+  // Clear foot, so an option already whole scrolls nothing. Only the list's own box scrolls
+  // (`scrollToShow`), and its own bottom is measured only where no foot is drawn.
+  const showOption = (value: string) => {
     const head = headRef.current;
     const box = head?.parentElement ?? null;
     const option = document.getElementById(optionId(value));
@@ -436,6 +451,24 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     const bottom = footRef.current?.getBoundingClientRect().top ?? shownSpan(box).bottom;
     scrollToShow(box, option.getBoundingClientRect(), { bottom, top });
   };
+  // ArrowDown and ArrowUp show the option they mark active whole.
+  const markActive = (value: string) => {
+    setActiveValue(value);
+    showOption(value);
+  };
+  // The list opens with the option it starts on shown whole (`opening`), a single pick's picked
+  // value, as a `<select>` opens on it: the issue header's Status list on an issue in Testing,
+  // Needs review or Retro opened with that status below the five rows its box shows, and Enter
+  // took it unseen. A layout effect, in the commit that draws the rows of the open's own search:
+  // the open's own commit where the list last closed on that search, else the one its setting of
+  // the search makes right after it, before anything paints. So the first frame that paints those
+  // rows already shows the option whole.
+  useLayoutEffect(() => {
+    const opened = opening.current;
+    if (opened === null || opened.query !== query) return;
+    opening.current = null;
+    if (opened.value !== undefined && rows.includes(opened.value)) showOption(opened.value);
+  });
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
