@@ -44,8 +44,6 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/logging"
@@ -1145,11 +1143,10 @@ func main() {
 	// the delivery reconcile and the delivery intakes - obeys and records the rate limits every
 	// process shares (github_rate_limits) on the background pool: it reads them before every
 	// request it sends (githubapp.Client.send), so the routes' client, whose limits are on the
-	// request pool, would take a request connection for each of a loop's GitHub calls.
-	backgroundGitHub, err := githubapp.New(appCfg, boot.GitHubAPIBase, githubapp.WithLimits(ratelimit.New(background)))
-	if err != nil {
-		fatal("dispatch: open the background loops' GitHub App client", "error", err)
-	}
+	// request pool, would take a request connection for each of a loop's GitHub calls. It is the
+	// one the routes' architecture importer calls GitHub through (api.Deps.BackgroundGitHub), so the
+	// loops and a route's import share one installation-token cache.
+	backgroundGitHub := appCtx.BackgroundGitHub()
 
 	// The ticker's importer is the routes' one on the background pool, with the background loops'
 	// GitHub client: it shares their flights, so a Refresh and a tick of one source make one set of

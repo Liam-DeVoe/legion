@@ -2013,6 +2013,61 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 	}
 }
 
+// An importer on the background pool (NewImporterOnBackground, the one a server's routes sync
+// through) is handed the request pool's store, and every statement it makes runs on that pool's
+// background pool, opened as it runs: a project's sync - its list of the sources and each source's
+// flight - and the list of enabled sources take no connection of the request pool, and take the
+// background pool's. Once the background pool cannot open, each of them fails with the open's
+// error, a flight before it asks GitHub anything, and none of them runs on the request pool
+// instead.
+func TestAnImporterOnTheBackgroundPoolRunsEveryStatementThereAndNowhereElse(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeSource{t: t, files: validFiles()}
+	fixture, database := newImporterFixture(t, fake)
+	importer := NewImporterOnBackground(database, fixture.github, events.NewBroker())
+	t.Cleanup(importer.Close)
+	background, err := database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+
+	requests, backgrounds := database.Pool.Stat().AcquireCount(), background.Stat().AcquireCount()
+	results, err := importer.SyncProject(ctx, "CORE")
+	if err != nil || len(results) != 1 || results[0].Err != nil || results[0].Source.LastCommit == nil || *results[0].Source.LastCommit != commitOne {
+		t.Fatalf("sync CORE = %+v, err %v; want legion/arch imported at %s", results, err, commitOne)
+	}
+	if sources, err := importer.ListEnabled(ctx); err != nil || len(sources) != 1 {
+		t.Fatalf("list enabled = %+v, err %v; want legion/arch", sources, err)
+	}
+	if got := database.Pool.Stat().AcquireCount() - requests; got != 0 {
+		t.Errorf("the sync and the list took %d request-pool connections, want none", got)
+	}
+	if background.Stat().AcquireCount() == backgrounds {
+		t.Errorf("the sync and the list took no background-pool connection, want their statements there")
+	}
+
+	refused := errors.New("test: the background pool cannot open")
+	database.Pool.SetOpenFailureForTest(store.BackgroundPool, refused)
+	requests = database.Pool.Stat().AcquireCount()
+	installations, heads := fake.lookups()
+	if source, err := importer.Sync(ctx, "CORE", archRepo); !errors.Is(err, refused) || source.Project != "" {
+		t.Errorf("a sync with the background pool refused = %+v, err %v; want no row and the open's error", source, err)
+	}
+	if _, err := importer.SyncProject(ctx, "CORE"); !errors.Is(err, refused) {
+		t.Errorf("a project's sync with the background pool refused: %v, want the open's error", err)
+	}
+	if _, err := importer.ListEnabled(ctx); !errors.Is(err, refused) {
+		t.Errorf("the list of enabled sources with the background pool refused: %v, want the open's error", err)
+	}
+	if got := database.Pool.Stat().AcquireCount() - requests; got != 0 {
+		t.Errorf("with the background pool refused the syncs and the list took %d request-pool connections, want none", got)
+	}
+	if gotInstallations, gotHeads := fake.lookups(); gotInstallations != installations || gotHeads != heads {
+		t.Errorf("with the background pool refused the syncs asked GitHub for %d installations and %d heads, want none",
+			gotInstallations-installations, gotHeads-heads)
+	}
+}
+
 // movingBranch is archRepo's main branch as a GitHub the test pushes to while a sync is in
 // flight: the head is whatever the test last moved it to, each commit answers its own files
 // (the subtree sha derived from them, the blob shas naming their commit), and one read can be

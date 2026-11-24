@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -281,18 +280,16 @@ func (s *server) readAgentsRoster(ctx context.Context) (routeRoster, error) {
 // bound, and a request that ends first, leave the roster unanswered with an err that says which,
 // and the fetch runs on to store its answer for every process.
 func (s *server) awaitFirstRouteRoster(ctx context.Context) (routeRoster, error) {
-	bound := cmp.Or(s.rosters.timeout, routeRosterTimeout)
+	bound := s.rosters.fetchBound()
 	fetch := s.rosters.ask()
 	var roster routeRoster
 	if back := awayOnNetwork(ctx, func(ctx context.Context) error {
-		timer := time.NewTimer(bound)
-		defer timer.Stop()
 		select {
 		case <-fetch.done:
 			roster = fetch.roster
 		case <-ctx.Done():
 			roster = routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}
-		case <-timer.C:
+		case <-time.After(bound):
 			roster = routeRoster{reason: model.RouteReasonUnreachable,
 				err: fmt.Errorf("%w: the listener did not answer Dispatch's first read of its sessions within %s", envoy.ErrUnavailable, bound)}
 		}
@@ -306,18 +303,22 @@ func (s *server) awaitFirstRouteRoster(ctx context.Context) (routeRoster, error)
 // ask answers the fetch a cold agents list waits on: the loop's in flight, or else a new one the
 // loop is woken to run at once (wake).
 func (c *rosterCache) ask() *rosterFetch {
-	c.mu.Lock()
-	fetch := c.fetch
-	if fetch == nil {
-		fetch = &rosterFetch{done: make(chan struct{})}
-		c.fetch = fetch
-	}
-	c.mu.Unlock()
+	fetch := c.pending()
 	select {
 	case c.wake <- struct{}{}:
 	default:
 	}
 	return fetch
+}
+
+// pending answers the fetch a cold agents list waits on, making one where there is none.
+func (c *rosterCache) pending() *rosterFetch {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fetch == nil {
+		c.fetch = &rosterFetch{done: make(chan struct{})}
+	}
+	return c.fetch
 }
 
 // asked is whether a cold agents list waits on a fetch the loop has yet to run.
@@ -327,9 +328,9 @@ func (c *rosterCache) asked() bool {
 	return c.fetch != nil
 }
 
-// settle hands roster to a cold agents list waiting on a fetch the loop has not run, and clears
-// that fetch: a stored answer within its bound another process stored, or the shutdown's silence
-// once the loop has ended.
+// settle hands roster to a cold agents list waiting on the loop's fetch, and clears that fetch:
+// the answer a fetch stored (fetchRouteRoster), a stored answer within its bound another process
+// stored, or the shutdown's silence once the loop has ended.
 func (c *rosterCache) settle(roster routeRoster) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -349,12 +350,18 @@ func (c *rosterCache) ttlOf(answered bool) time.Duration {
 	return c.silenceTTL
 }
 
+// fetchBound is how long one listener read of the refresh loop may take (routeRosterTimeout unless
+// the cache sets another).
+func (c *rosterCache) fetchBound() time.Duration {
+	return cmp.Or(c.timeout, routeRosterTimeout)
+}
+
 // refreshLead is how long before a stored answer of that kind expires the loop asks the listener
 // again: the fetch bound, so a fetch that answers within it replaces the answer before any read
 // finds it past its TTL, capped at half the TTL, so a TTL shorter than the bound (a test's) is
 // still refreshed ahead of its expiry with the loop sleeping between fetches.
 func (c *rosterCache) refreshLead(answered bool) time.Duration {
-	return min(cmp.Or(c.timeout, routeRosterTimeout), c.ttlOf(answered)/2)
+	return min(c.fetchBound(), c.ttlOf(answered)/2)
 }
 
 // startRouteRosterRefresh starts this process's refresh loop (refreshRouteRosters) on the server's
@@ -422,7 +429,7 @@ func (s *server) refreshRouteRosterTurn(ctx context.Context) time.Duration {
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: read the stored listener answer to refresh it; the refresh tries again after the fetch bound", "error", err)
 		}
-		return cmp.Or(cache.timeout, routeRosterTimeout)
+		return cache.fetchBound()
 	}
 	if !row.sent.IsZero() {
 		lead := cache.refreshLead(row.answered)
@@ -454,14 +461,12 @@ func (s *server) refreshRouteRosterTurn(ctx context.Context) time.Duration {
 // reason is the listener's own unreachable: an unanswered roster always names one (reach), and a
 // stored answer this process cannot read is the listener's answer out of reach, whatever put it
 // there. A read refused the unit it gave back to ask the listener (ListenerRosterUncached,
-// listRouteRosterAway) is not read on: as a caller's resolution refused its take-back does
-// (stopOnRefusedTakeBack), it stops the request's run, and admitted answers the refusal.
+// listRouteRosterAway) is not read on: it stops the request's run (stopOnRefusedTakeBack), and
+// admitted answers the refusal.
 func (s *server) routeRosterOrUnknown(ctx context.Context) routeRoster {
 	roster, err := s.readRouteRoster(ctx)
 	if err != nil {
-		if admission.TicketFrom(ctx).RefusedTakeBack() != nil {
-			panic(errRefusedTakeBack)
-		}
+		stopOnRefusedTakeBack(ctx)
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: routes read unknown", "error", err)
 		}
@@ -604,24 +609,14 @@ func (c *rosterCache) keep(sent time.Time, roster routeRoster) {
 // counts.
 func (s *server) fetchRouteRoster(ctx context.Context, background *store.Pool, sent time.Time) routeRoster {
 	cache := &s.rosters
-	cache.mu.Lock()
-	fetch := cache.fetch
-	if fetch == nil {
-		fetch = &rosterFetch{done: make(chan struct{})}
-		cache.fetch = fetch
-	}
-	cache.mu.Unlock()
+	// A cold agents list that asks while the listener answers waits on this fetch (ask).
+	cache.pending()
 	started := time.Now()
 	own := s.listRouteRoster(ctx)
 	if took := time.Since(started); took > slowRouteRosterFetch {
 		logSlowRouteRosterFetch(ctx, took, own)
 	}
-	stored := s.storeRouteRoster(ctx, background, sent, own)
-	cache.mu.Lock()
-	fetch.roster = stored
-	cache.fetch = nil
-	cache.mu.Unlock()
-	close(fetch.done)
+	cache.settle(s.storeRouteRoster(ctx, background, sent, own))
 	return own
 }
 
@@ -699,7 +694,7 @@ func (s *server) storeRouteRoster(ctx context.Context, pool *store.Pool, sent ti
 // listRouteRoster asks the listener who is running, within routeRosterTimeout, and answers its
 // roster, unanswered with the listener client's error when it did not answer.
 func (s *server) listRouteRoster(ctx context.Context) routeRoster {
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(s.rosters.timeout, routeRosterTimeout))
+	ctx, cancel := context.WithTimeout(ctx, s.rosters.fetchBound())
 	defer cancel()
 	sessions, err := s.deps.Envoy.Sessions(ctx)
 	var refilling *envoy.RefillingError

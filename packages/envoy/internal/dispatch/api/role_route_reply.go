@@ -79,10 +79,8 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 	if err != nil || parsed.Kind != "role" || s.deps.Envoy == nil || (attemptSession != nil && *attemptSession == actor.ID) {
 		return verdict, nil
 	}
-	var holder dispatchenvoy.Session
-	err = awayOnNetwork(ctx, func(ctx context.Context) (err error) {
-		holder, err = s.deps.Envoy.Role(ctx, parsed.ID)
-		return err
+	holder, err := awayOnNetworkFor(ctx, func(ctx context.Context) (dispatchenvoy.Session, error) {
+		return s.deps.Envoy.Role(ctx, parsed.ID)
 	})
 	if refused := refusedTakeBack(ctx); refused != nil {
 		return verdict, refused

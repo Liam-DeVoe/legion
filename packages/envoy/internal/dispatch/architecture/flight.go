@@ -206,6 +206,18 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 		return flight, i.owner.Err()
 	}
 	defer i.running.done()
+	// The flight's statements run on the importer's store, and an importer on the background pool
+	// (NewImporterOnBackground, the routes') opens that pool here, as the flight starts: a pool
+	// that cannot open is this flight's error, and none of its statements runs on the request pool
+	// instead. run is the importer on the store the flight runs on.
+	run := i
+	if i.onBackground {
+		database, err := i.database()
+		if err != nil {
+			return flight, err
+		}
+		run = i.On(database, i.github)
+	}
 	// The starter is one of several callers and may leave before the others,
 	// so its cancellation is dropped: one hang-up fails nobody else's sync. So
 	// is its admission ticket: a route that starts a flight gives its unit back
@@ -213,14 +225,14 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	// park or resume a request's ticket off that request's goroutine.
 	detached := admission.WithTicket(context.WithoutCancel(ctx), nil)
 	// A sync opens its own transactions on its store's pool - the background pool, for a route's
-	// sync as for the ticker's (api's NewDeps builds the routes' importer on it) - so it is marked
-	// like an API request: a read it makes while one is open must come from that transaction,
-	// never from a second connection (store.ErrNestedAcquire). The mark has to be the flight's
-	// own and a fresh one (store.ForConcurrentWorker), because WithoutCancel keeps the starter's
-	// values: sharing an HTTP request's mark would make SyncProject's next Sync a nested acquire,
-	// and a mark split from it (store.ForConcurrentRead) would carry the request's refusal
-	// (store.RefuseRequest) into a flight every caller of the source shares, failing all of them
-	// for one request refused its unit back.
+	// sync as for the ticker's - so it is marked like an API request: a read it makes while one is
+	// open must come from that transaction, never from a second connection
+	// (store.ErrNestedAcquire). The mark has to be the flight's own and a fresh one
+	// (store.ForConcurrentWorker), because WithoutCancel keeps the starter's values: sharing an
+	// HTTP request's mark would make SyncProject's next Sync a nested acquire, and a mark split
+	// from it (store.ForConcurrentRead) would carry the request's refusal (store.RefuseRequest)
+	// into a flight every caller of the source shares, failing all of them for one request refused
+	// its unit back.
 	marked := store.ForConcurrentWorker(detached)
 	base, abandon := context.WithCancel(marked)
 	defer abandon()
@@ -247,7 +259,7 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	var standing *githubreads.Held
 	for {
 		try, held := githubreads.Hold(syncCtx)
-		source, err := i.syncOnce(try, base, project, repo, flight)
+		source, err := run.syncOnce(try, base, project, repo, flight)
 		if held.Reached() {
 			standing.Drop()
 			standing = held

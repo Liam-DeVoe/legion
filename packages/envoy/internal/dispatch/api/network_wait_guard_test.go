@@ -20,12 +20,13 @@ import (
 
 // networkWaitHelpers are the functions that run the function they are handed holding no
 // admission unit of the request (network_wait.go): awayOnNetwork and awayOnNetworkNeverRefused
-// give the unit back for it and take it back after, awayOnNetworkForGood gives it back for good,
+// give the unit back for it and take it back after, as awayOnNetworkFor does through
+// awayOnNetwork for a wait that answers a value, awayOnNetworkForGood gives it back for good,
 // givenBackAlready runs it inside a wait that has given the unit back already, and
 // delivery.onGitHub runs it through the wait the request's context carries
 // (delivery.WithGitHubWait), or on its own context where the caller holds no hook.
 var networkWaitHelpers = []string{
-	"api.awayOnNetwork", "api.awayOnNetworkNeverRefused", "api.awayOnNetworkForGood",
+	"api.awayOnNetwork", "api.awayOnNetworkFor", "api.awayOnNetworkNeverRefused", "api.awayOnNetworkForGood",
 	"api.givenBackAlready", "delivery.onGitHub",
 }
 
@@ -68,6 +69,8 @@ var outboundLocal = map[string]string{
 	// DevClient, and RateLimitedEmbedder, which asks its inner one).
 	"embed.Embedder.Identity": "names the model and place the embedder was built for, a field it holds",
 	"embed.Embedder.Limits":   "reports the batch limits the embedder was built with, a field it holds",
+	"cipher.Client.DeviceGrantKnown": "answers the broker's metadata read the client remembers, a field it holds, " +
+		"and reads nothing of the broker",
 }
 
 // networkWaitGuardAllowed are the functions a route's handler reaches whose outbound calls hold no
@@ -86,11 +89,10 @@ type outboundSet map[*types.Func]string
 // admission unit: the route, the functions from the handler to the one that makes the call, and
 // the call.
 type networkWaitOffence struct {
-	route    string
-	path     []string
-	function string
-	at       string
-	calls    string
+	route string
+	path  []string
+	at    string
+	calls string
 }
 
 func (o networkWaitOffence) String() string {
@@ -103,14 +105,6 @@ type networkWaitStep struct {
 	route string
 	from  *lockFunction
 	at    string
-}
-
-// handedValue is one expression the module hands a function-typed variable, field or parameter:
-// assigned to it, written into it in a struct literal, or passed for it at a call; fn is the
-// function the expression is written in, nil at package level.
-type handedValue struct {
-	fn   *lockFunction
-	expr ast.Expr
 }
 
 // waitCarrier is what the guard has read of a variable: whether every value handed it is a
@@ -136,8 +130,9 @@ type networkWaitGuard struct {
 	// network wait read as an ordinary call.
 	honourWaits bool
 
-	// handed is every value the module hands each function-typed variable, field and parameter.
-	handed map[*types.Var][]handedValue
+	// handed is every value the module hands each function-typed variable, field and parameter:
+	// assigned to it, written into it in a struct literal, or passed for it at a call.
+	handed map[*types.Var][]ast.Expr
 	// carriers is what the guard has read of each such variable that a call runs through.
 	carriers map[*types.Var]*waitCarrier
 	// returning marks the functions whose returned waits are being read, against a cycle.
@@ -235,7 +230,7 @@ func newNetworkWaitGuard(t *testing.T, graph *lockGraph, outbound outboundSet, a
 		graph: graph, keyed: &keyedWriteGuard{graph: graph}, outbound: outbound,
 		outboundBodies: map[*lockFunction]string{}, helpers: map[*lockFunction]bool{},
 		inPlace: map[*lockFunction]bool{}, allowed: allowed, honourWaits: true,
-		handed: map[*types.Var][]handedValue{}, carriers: map[*types.Var]*waitCarrier{},
+		handed: map[*types.Var][]ast.Expr{}, carriers: map[*types.Var]*waitCarrier{},
 		returning: map[*lockFunction]bool{}, detachedVars: map[types.Object]bool{},
 	}
 	guard.restart()
@@ -296,38 +291,24 @@ func (g *networkWaitGuard) restart() {
 // index records every value the module hands a function-typed variable, field or parameter, and
 // every variable assigned a context detachedFromRequest made.
 func (g *networkWaitGuard) index() {
-	hand := func(fn *lockFunction, target types.Object, value ast.Expr) {
+	hand := func(target types.Object, value ast.Expr) {
 		variable, ok := target.(*types.Var)
 		if !ok {
 			return
 		}
 		if _, function := variable.Type().Underlying().(*types.Signature); function {
 			variable = variable.Origin()
-			g.handed[variable] = append(g.handed[variable], handedValue{fn, value})
+			g.handed[variable] = append(g.handed[variable], value)
 		}
 	}
-	target := func(expression ast.Expr) types.Object {
-		switch target := ast.Unparen(expression).(type) {
-		case *ast.Ident:
-			if object := g.graph.info.Defs[target]; object != nil {
-				return object
-			}
-			return g.graph.info.Uses[target]
-		case *ast.SelectorExpr:
-			if selection, ok := g.graph.info.Selections[target]; ok {
-				return selection.Obj()
-			}
-			return g.graph.info.Uses[target.Sel]
-		}
-		return nil
-	}
+	target := g.graph.objectOf
 	// detached marks a variable, not a field, assigned a context detachedFromRequest made.
 	detached := func(object types.Object) {
 		if variable, ok := object.(*types.Var); ok && !variable.IsField() {
 			g.detachedVars[variable] = true
 		}
 	}
-	read := func(fn *lockFunction, node ast.Node) {
+	read := func(node ast.Node) {
 		ast.Inspect(node, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.FuncLit:
@@ -336,7 +317,7 @@ func (g *networkWaitGuard) index() {
 			case *ast.AssignStmt:
 				for index, value := range n.Rhs {
 					if len(n.Lhs) == len(n.Rhs) {
-						hand(fn, target(n.Lhs[index]), value)
+						hand(target(n.Lhs[index]), value)
 					}
 					if g.makesDetached(value) {
 						if len(n.Lhs) == len(n.Rhs) {
@@ -349,7 +330,7 @@ func (g *networkWaitGuard) index() {
 			case *ast.ValueSpec:
 				for index, value := range n.Values {
 					if index < len(n.Names) {
-						hand(fn, g.graph.info.Defs[n.Names[index]], value)
+						hand(g.graph.info.Defs[n.Names[index]], value)
 						if g.makesDetached(value) {
 							detached(g.graph.info.Defs[n.Names[index]])
 						}
@@ -357,10 +338,10 @@ func (g *networkWaitGuard) index() {
 				}
 			case *ast.KeyValueExpr:
 				if key, ok := n.Key.(*ast.Ident); ok {
-					hand(fn, g.graph.info.Uses[key], n.Value)
+					hand(g.graph.info.Uses[key], n.Value)
 				}
 			case *ast.CompositeLit:
-				g.handPositional(fn, n, hand)
+				g.handPositional(n, hand)
 			case *ast.CallExpr:
 				callee, _ := g.callee(n).(*types.Func)
 				if callee == nil {
@@ -369,7 +350,7 @@ func (g *networkWaitGuard) index() {
 				parameters := callee.Signature().Params()
 				for index, argument := range n.Args {
 					if index < parameters.Len() && !(callee.Signature().Variadic() && index >= parameters.Len()-1) {
-						hand(fn, parameters.At(index), argument)
+						hand(parameters.At(index), argument)
 					}
 				}
 			}
@@ -378,20 +359,20 @@ func (g *networkWaitGuard) index() {
 	}
 	files := map[*ast.File]bool{}
 	for _, fn := range g.graph.functions {
-		read(fn, fn.body)
+		read(fn.body)
 		files[fn.source.file] = true
 	}
 	for file := range files {
 		for _, declared := range file.Decls {
 			if general, ok := declared.(*ast.GenDecl); ok {
-				read(nil, general)
+				read(general)
 			}
 		}
 	}
 }
 
 // handPositional hands each value of a struct literal written without field names to its field.
-func (g *networkWaitGuard) handPositional(fn *lockFunction, literal *ast.CompositeLit, hand func(*lockFunction, types.Object, ast.Expr)) {
+func (g *networkWaitGuard) handPositional(literal *ast.CompositeLit, hand func(types.Object, ast.Expr)) {
 	if literal.Type == nil || len(literal.Elts) == 0 {
 		return
 	}
@@ -415,7 +396,7 @@ func (g *networkWaitGuard) handPositional(fn *lockFunction, literal *ast.Composi
 	}
 	for index, value := range literal.Elts {
 		if index < fields.NumFields() {
-			hand(fn, fields.Field(index), value)
+			hand(fields.Field(index), value)
 		}
 	}
 }
@@ -435,18 +416,7 @@ func (g *networkWaitGuard) callee(call *ast.CallExpr) types.Object {
 
 // valueObject is the function or variable expression names, at its origin.
 func (g *networkWaitGuard) valueObject(expression ast.Expr) types.Object {
-	var object types.Object
-	switch e := ast.Unparen(expression).(type) {
-	case *ast.Ident:
-		object = g.graph.info.Uses[e]
-	case *ast.SelectorExpr:
-		if selection, ok := g.graph.info.Selections[e]; ok {
-			object = selection.Obj()
-		} else {
-			object = g.graph.info.Uses[e.Sel]
-		}
-	}
-	switch o := object.(type) {
+	switch o := g.graph.objectOf(expression).(type) {
 	case *types.Func:
 		return o.Origin()
 	case *types.Var:
@@ -519,7 +489,7 @@ func (g *networkWaitGuard) carrier(variable *types.Var) (bool, []*lockFunction) 
 		if !read.waits {
 			break
 		}
-		waits, bodies := g.waiterValue(value.fn, value.expr)
+		waits, bodies := g.waiterValue(value)
 		read.waits = waits
 		read.bodies = append(read.bodies, bodies...)
 	}
@@ -537,11 +507,11 @@ func waitShaped(signature *types.Signature) bool {
 	return callback
 }
 
-// waiterValue reports whether expression, written in fn, is a network wait: nil, a helper, a
-// variable, field or parameter every value of which is one, a call of a function every return
-// of which is one, or a function that hands its callback (its second parameter) on to a network
-// wait and runs it nowhere else (handsOnly).
-func (g *networkWaitGuard) waiterValue(fn *lockFunction, expression ast.Expr) (bool, []*lockFunction) {
+// waiterValue reports whether expression is a network wait: nil, a helper, a variable, field or
+// parameter every value of which is one, a call of a function every return of which is one, or a
+// function that hands its callback (its second parameter) on to a network wait and runs it
+// nowhere else (handsOnly).
+func (g *networkWaitGuard) waiterValue(expression ast.Expr) (bool, []*lockFunction) {
 	switch e := ast.Unparen(expression).(type) {
 	case *ast.Ident:
 		if _, isNil := g.graph.info.Uses[e].(*types.Nil); isNil {
@@ -583,7 +553,7 @@ func (g *networkWaitGuard) waiterValue(fn *lockFunction, expression ast.Expr) (b
 					waits = false
 					return false
 				}
-				returned, more := g.waiterValue(body, n.Results[0])
+				returned, more := g.waiterValue(n.Results[0])
 				waits = waits && returned
 				bodies = append(bodies, more...)
 			}
@@ -661,7 +631,7 @@ func (g *networkWaitGuard) outboundCall(call *ast.CallExpr) string {
 }
 
 // walkTable walks every route of the table from its handler, in the table's order, and answers
-// how many it read.
+// the routes it read, each as `METHOD pattern`.
 func (g *networkWaitGuard) walkTable(t *testing.T) []string {
 	t.Helper()
 	var routes []string
@@ -915,20 +885,7 @@ func (g *networkWaitGuard) commChannel(comm ast.Stmt) types.Object {
 
 // channelOf is the variable or field expression names where it is a channel, nil otherwise.
 func (g *networkWaitGuard) channelOf(expression ast.Expr) types.Object {
-	var object types.Object
-	switch e := ast.Unparen(expression).(type) {
-	case *ast.Ident:
-		if object = g.graph.info.Uses[e]; object == nil {
-			object = g.graph.info.Defs[e]
-		}
-	case *ast.SelectorExpr:
-		if selection, ok := g.graph.info.Selections[e]; ok {
-			object = selection.Obj()
-		} else {
-			object = g.graph.info.Uses[e.Sel]
-		}
-	}
-	variable, ok := object.(*types.Var)
+	variable, ok := g.graph.objectOf(expression).(*types.Var)
 	if !ok {
 		return nil
 	}
@@ -988,7 +945,7 @@ func (g *networkWaitGuard) offend(fn *lockFunction, at, label string) {
 		f = step.from
 	}
 	slices.Reverse(path)
-	g.offences = append(g.offences, networkWaitOffence{route: route, path: path, function: fn.name, at: at, calls: label})
+	g.offences = append(g.offences, networkWaitOffence{route: route, path: path, at: at, calls: label})
 }
 
 // report is every offence, one line each, sorted.
@@ -1078,11 +1035,11 @@ func TestNoRequestHoldsItsAdmissionUnitAcrossAnOutboundCall(t *testing.T) {
 
 // networkWaitFixedSites are functions whose outbound calls run inside a network wait: walked alone
 // they reach none while their request holds its unit, and walked alone with every wait read as an
-// ordinary call they reach one. One for each server the round's fixes wait on and each kind of
-// wait: awayOnNetwork on a read, on a write before its transaction, around an errgroup's lookups
-// and around a function a caller hands in; delivery.onGitHub through the hook a request's results
-// read and a result's read-through set; awayOnNetworkNeverRefused after a side effect, and as a
-// take-over loop's carrier; a related-item check's embedding, a goroutine beside its keyword
+// ordinary call they reach one. One for each server a route's network wait waits on, and each kind
+// of wait: awayOnNetwork on a read, on a write before its transaction, around an errgroup's
+// lookups and around a function a caller hands in; delivery.onGitHub through the hook a request's
+// results read and a result's read-through set; awayOnNetworkNeverRefused after a side effect, and
+// as a take-over loop's carrier; a related-item check's embedding, a goroutine beside its keyword
 // stage that the check waits on alone only through embedAway (awaitedAway); and
 // awayOnNetworkForGood.
 var networkWaitFixedSites = []string{
@@ -1107,9 +1064,9 @@ var networkWaitFixedSites = []string{
 
 // TestTheNetworkWaitGuardSeesWhatItGuards holds the guard to what it must see, so it cannot pass
 // by seeing nothing: every route of the table, an outbound method of each client, the outbound
-// calls the round put inside network waits (which it names when it reads a wait as an ordinary
-// call), and a planted package of handlers whose offences it must name with their paths and
-// whose waits it must pass, with an allowlist it must refuse.
+// calls of networkWaitFixedSites, each inside a network wait (which it names when it reads a wait
+// as an ordinary call), and a planted package of handlers whose offences it must name with their
+// paths and whose waits it must pass, with an allowlist it must refuse.
 func TestTheNetworkWaitGuardSeesWhatItGuards(t *testing.T) {
 	t.Parallel()
 	graph := copyLockGraph(t)

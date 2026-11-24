@@ -601,11 +601,15 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// requests, a repository's default branch, a commit's branch - is a wait on another server, so
 	// the request holds no admission unit and no pinned connection across it
 	// (delivery.WithGitHubWait, awayOnNetwork). The reader reads a stretch that failed as no
-	// answer, so a take-back refused is read here, once it is done, and is the answer.
+	// answer, so a take-back refused is read here, after learn and before each check is answered,
+	// and is the answer at once: every statement and stretch after it would fail on the refusal.
 	reading := delivery.WithGitHubWait(r.Context(), awayOnNetwork)
 	reader := newComparisonReader(s, at)
 	reader.learn(reading, checks)
 	for index := range checks {
+		if refusedTakeBack(r.Context()) != nil {
+			break
+		}
 		reader.answer(reading, &checks[index])
 	}
 	if refused := refusedTakeBack(r.Context()); refused != nil {

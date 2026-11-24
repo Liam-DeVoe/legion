@@ -185,10 +185,8 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// The reads hold no admission unit: the request gives its unit back before their workers
 	// start and takes it back once every one has answered, on its own goroutine (awayOnNetwork),
 	// and a take-back refused is the answer, 429 OVERLOADED, before anything was written.
-	var sessions map[string]dispatchenvoy.Session
-	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		sessions, err = s.resolveBroadcastSessions(ctx, requested)
-		return err
+	sessions, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (map[string]dispatchenvoy.Session, error) {
+		return s.resolveBroadcastSessions(ctx, requested)
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)

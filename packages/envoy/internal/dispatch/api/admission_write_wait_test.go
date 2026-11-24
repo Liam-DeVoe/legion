@@ -34,17 +34,14 @@ import (
 // serve on a goroutine of its own (serveTimed).
 func writeRequestAs(t *testing.T, method, target, login string, body any) *http.Request {
 	t.Helper()
-	var reader io.Reader = http.NoBody
+	request := testRequestAs(t, method, target, login)
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encode the request body: %v", err)
 		}
-		reader = bytes.NewReader(data)
+		request.Body, request.ContentLength = io.NopCloser(bytes.NewReader(data)), int64(len(data))
 	}
-	request := httptest.NewRequest(method, target, reader)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", login)
 	return request
 }
 
@@ -101,7 +98,7 @@ func requireWritesServed(t *testing.T, handler http.Handler, prefix string) {
 // after.
 func requireWritesHoldNoUnitOnService(t *testing.T, service string, handler http.Handler, limiter *admission.Limiter,
 	requests []*http.Request, calls func() int32, release func(), want int,
-) []timedAnswer {
+) {
 	t.Helper()
 	waiters := startWaiters(handler, requests)
 	t.Cleanup(func() {
@@ -111,8 +108,7 @@ func requireWritesHoldNoUnitOnService(t *testing.T, service string, handler http
 	requireWaitersHoldNoWriteUnit(t, limiter, calls, len(requests))
 	requireWritesServed(t, handler, "WAIT")
 	release()
-	answers := waiters.collect(t, len(requests), 15*time.Second)
-	for _, answer := range answers {
+	for _, answer := range waiters.collect(t, len(requests), 15*time.Second) {
 		if answer.status != want {
 			t.Errorf("a write waiting on %s: status=%d after %v body=%s, want %d once it answered",
 				service, answer.status, answer.elapsed, strings.TrimSpace(answer.body), want)
@@ -121,7 +117,6 @@ func requireWritesHoldNoUnitOnService(t *testing.T, service string, handler http
 	if stats := limiter.Stats()[admission.Write]; stats.InFlight != 0 {
 		t.Errorf("once every write waiting on %s was answered the write class holds %d units, want none", service, stats.InFlight)
 	}
-	return answers
 }
 
 // A lookup before a write: a claim of an issue another session holds asks the listener whether
@@ -165,9 +160,7 @@ func newSendListener(t *testing.T) (*httptest.Server, *sendListener) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
-			id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
-			fmt.Fprintf(w, `{"session_id":%q,"title":"worker %s","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"state":"live","last_seen":%d}`,
-				id, id, time.Now().UnixMilli())
+			serveLiveRegistrySession(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
@@ -179,6 +172,14 @@ func newSendListener(t *testing.T) (*httptest.Server, *sendListener) {
 	}))
 	t.Cleanup(server.Close)
 	return server, state
+}
+
+// serveLiveRegistrySession answers a stand-in listener's registry read of the session its path
+// names as a live session advertising every mode: aside, btw and steer.
+func serveLiveRegistrySession(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
+	fmt.Fprintf(w, `{"session_id":%q,"title":"worker %s","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"state":"live","last_seen":%d}`,
+		id, id, time.Now().UnixMilli())
 }
 
 // isListenerSend is a request of the listener's send route.
@@ -282,14 +283,16 @@ type heldAnswer struct {
 	answering chan struct{}
 	gate      chan struct{}
 	begun     sync.Once
-	released  sync.Once
+	release   func()
 	mu        sync.Mutex
 	code      int
 	body      bytes.Buffer
 }
 
 func newHeldAnswer() *heldAnswer {
-	return &heldAnswer{header: http.Header{}, answering: make(chan struct{}), gate: make(chan struct{})}
+	held := &heldAnswer{header: http.Header{}, answering: make(chan struct{}), gate: make(chan struct{})}
+	held.release = sync.OnceFunc(func() { close(held.gate) })
+	return held
 }
 
 func (h *heldAnswer) Header() http.Header { return h.header }
@@ -310,8 +313,6 @@ func (h *heldAnswer) Write(p []byte) (int, error) {
 	defer h.mu.Unlock()
 	return h.body.Write(p)
 }
-
-func (h *heldAnswer) release() { h.released.Do(func() { close(h.gate) }) }
 
 func (h *heldAnswer) status() int {
 	h.mu.Lock()
@@ -573,9 +574,7 @@ func TestASendThroughAListenerTakeOverHoldsNoWriteUnitAcrossItsBackoffs(t *testi
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
-			id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
-			fmt.Fprintf(w, `{"session_id":%q,"title":"worker %s","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"state":"live","last_seen":%d}`,
-				id, id, time.Now().UnixMilli())
+			serveLiveRegistrySession(w, r)
 		case isListenerSend(r) && takingOver.Load():
 			refused.Add(1)
 			w.WriteHeader(http.StatusServiceUnavailable)

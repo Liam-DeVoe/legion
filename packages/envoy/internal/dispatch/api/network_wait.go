@@ -51,15 +51,17 @@ func awayOnNetwork(ctx context.Context, wait func(context.Context) error) error 
 	if refused := refusedTakeBack(ctx); refused != nil {
 		return refused
 	}
-	away := admission.GiveBack(ctx)
-	waiting, err := store.ForConcurrentRead(ctx)
-	if err == nil {
-		err = wait(waiting)
-	}
-	if back := away.TakeBack(ctx); back != nil {
-		return back
-	}
-	return err
+	return awayThen(ctx, wait, admission.Away.TakeBack)
+}
+
+// awayOnNetworkFor is awayOnNetwork for a wait that answers a value beside its error.
+func awayOnNetworkFor[T any](ctx context.Context, wait func(context.Context) (T, error)) (T, error) {
+	var value T
+	err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
+		value, err = wait(ctx)
+		return err
+	})
+	return value, err
 }
 
 // awayOnNetworkNeverRefused is awayOnNetwork for a wait after which the request must not be
@@ -78,16 +80,27 @@ func awayOnNetwork(ctx context.Context, wait func(context.Context) error) error 
 // already - a stretch of a take-over loop (takeoverRetry.retry) around a send or a resolution that
 // makes its own pair - it gives nothing back and takes nothing.
 func awayOnNetworkNeverRefused(ctx context.Context, wait func(context.Context) error) error {
+	return awayThen(ctx, wait, admission.Away.TakeBackNeverRefused)
+}
+
+// awayThen is the body of awayOnNetwork and awayOnNetworkNeverRefused: it gives ctx's request's
+// unit back, runs wait on a context of its own connection mark, and takes the unit back with
+// takeBack, answering takeBack's error ahead of wait's.
+func awayThen(ctx context.Context, wait func(context.Context) error, takeBack func(admission.Away, context.Context) error) error {
 	away := admission.GiveBack(ctx)
 	waiting, err := store.ForConcurrentRead(ctx)
 	if err == nil {
 		err = wait(waiting)
 	}
-	if back := away.TakeBackNeverRefused(ctx); back != nil {
+	if back := takeBack(away, ctx); back != nil {
 		return back
 	}
 	return err
 }
+
+// networkWait is the shape of a network wait a caller hands on: awayOnNetwork,
+// awayOnNetworkNeverRefused, givenBackAlready, or a function that hands its wait on to one.
+type networkWait func(ctx context.Context, wait func(context.Context) error) error
 
 // awayOnNetworkForGood runs call, a request's last work: a call that changes another server's
 // state - the secrets broker's approve, deny, dismissal or revoke - after which the request reads

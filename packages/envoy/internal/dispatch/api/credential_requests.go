@@ -92,11 +92,7 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 // and no pinned connection across it (awayOnNetwork), and a take-back refused after it is answered
 // as admission refuses a request rather than as a broker that could not be reached.
 func (s *server) relayBrokerRead(w http.ResponseWriter, r *http.Request, read func(context.Context) (json.RawMessage, error)) {
-	var body json.RawMessage
-	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		body, err = read(ctx)
-		return err
-	})
+	body, err := awayOnNetworkFor(r.Context(), read)
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)
 		return
@@ -425,22 +421,28 @@ type credentialCapabilities struct {
 // getCredentialCapabilities answers that one fact. Unlike every other route here it answers for
 // a Dispatch with no broker rather than 404 FEATURE_OFF, because the question it answers is
 // exactly "what can this deployment do": a 404 would leave the page unable to tell a Dispatch
-// with no broker from a route it failed to reach. A read of the broker's metadata is a wait on
-// another server, so the request holds no admission unit and no pinned connection across it
-// (awayOnNetwork), and a take-back refused after it is the answer.
+// with no broker from a route it failed to reach. The fact comes from memory while the client's
+// last read of the broker's metadata is fresh (cipher.Client.DeviceGrantKnown), holding the unit
+// as any read from memory does; otherwise its read is a wait on another server, so the request
+// holds no admission unit and no pinned connection across it (awayOnNetwork), and a take-back
+// refused after it is the answer.
 func (s *server) getCredentialCapabilities(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	capabilities := credentialCapabilities{}
-	if s.deps.AgentSecrets != nil {
-		if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
-			capabilities.MachineCodePage = s.deps.AgentSecrets.ServesDeviceGrant(ctx)
-			return nil
-		}); err != nil {
-			s.writeHandlerError(w, r, err)
-			return
+	if secrets := s.deps.AgentSecrets; secrets != nil {
+		served, fresh := secrets.DeviceGrantKnown()
+		if !fresh {
+			if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+				served = secrets.ServesDeviceGrant(ctx)
+				return nil
+			}); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
 		}
+		capabilities.MachineCodePage = served
 	}
 	WriteJSON(w, http.StatusOK, capabilities)
 }

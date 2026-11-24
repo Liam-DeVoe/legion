@@ -316,6 +316,14 @@ func (ctx *AppContext) GitHub() *githubapp.Client {
 	return ctx.apiDeps.GitHub
 }
 
+// BackgroundGitHub is the same App's client on the background pool, whose shared rate limits it
+// reads and records there (api.Deps.BackgroundGitHub): the routes' architecture importer calls
+// GitHub through it, and the background loops cmd/dispatch runs share it rather than building a
+// second client with an installation-token cache of its own.
+func (ctx *AppContext) BackgroundGitHub() *githubapp.Client {
+	return ctx.apiDeps.BackgroundGitHub
+}
+
 // oauthStateTTL is how long a sign-in may take between /auth/start and the issuer's callback.
 const oauthStateTTL = oauthStateMaxAge * time.Second
 

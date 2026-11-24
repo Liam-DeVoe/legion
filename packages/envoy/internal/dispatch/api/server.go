@@ -118,6 +118,13 @@ type Deps struct {
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
+	// BackgroundGitHub is the same App's client with its shared rate limits read and recorded on
+	// the background pool, which it opens at each read and write rather than when it is built
+	// (ratelimit.OnBackground), so a call through it takes no request-pool connection. The routes'
+	// architecture importer calls GitHub through it, and cmd/dispatch's background loops (the
+	// architecture ticker, the delivery reconcile, the intakes) share it, so they and a route's
+	// import use one installation-token cache. It is GitHub where Deps holds no store.
+	BackgroundGitHub *githubapp.Client
 	// Architecture imports a project's architecture model from its configured
 	// sources; the ticker, the Refresh route, and the sync tool share it, so this process never
 	// fetches one project twice at once. The source row, not this sharing, orders every process's
@@ -392,22 +399,25 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
-	// A route's architecture sync imports on the background pool, with a GitHub client whose
-	// rate-limit ledger is read and recorded there: the route gives its admission unit back while
-	// it waits on the import's flight (syncArchitectureSource), which waits on GitHub for up to its
-	// sync bound, so none of the flight's statements may run where admission counts the requests'
-	// connections. cmd/dispatch derives the ticker's importer from this one (Importer.On), so a
-	// Refresh and a tick of one source still share one flight.
-	architectureStore, architectureGitHub := input.Store, github
+	// A route's architecture sync imports on the background pool, with the GitHub client whose
+	// rate-limit ledger is read and recorded there (Deps.BackgroundGitHub): the route gives its
+	// admission unit back while it waits on the import's flight (syncArchitectureSource), which
+	// waits on GitHub for up to its sync bound, so none of the flight's statements may run where
+	// admission counts the requests' connections. Both open the background pool where they use it,
+	// never here (architecture.NewImporterOnBackground, ratelimit.OnBackground): NewDeps opens no
+	// pool, so a store whose pool is closed still builds, and a background pool that cannot open
+	// fails the import or the ledger read that needed it, as it fails every other background user.
+	// cmd/dispatch derives the ticker's importer from this one (Importer.On) with the same client,
+	// so a Refresh and a tick of one source still share one flight.
+	var architectureImporter *architecture.Importer
+	backgroundGitHub := github
 	if input.Store != nil && input.Store.Pool != nil {
-		background, err := input.Store.Pool.Background()
-		if err != nil {
-			return Deps{}, fmt.Errorf("open the background pool for the architecture import: %w", err)
-		}
-		architectureStore = &store.Store{Pool: background}
-		if architectureGitHub, err = githubapp.New(input.App, input.GitHubAPIBase, githubapp.WithLimits(ratelimit.New(background))); err != nil {
+		if backgroundGitHub, err = githubapp.New(input.App, input.GitHubAPIBase, githubapp.WithLimits(ratelimit.OnBackground(input.Store.Pool))); err != nil {
 			return Deps{}, err
 		}
+		architectureImporter = architecture.NewImporterOnBackground(input.Store, backgroundGitHub, input.Events)
+	} else {
+		architectureImporter = architecture.NewImporter(input.Store, github, input.Events)
 	}
 	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
@@ -430,7 +440,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
-		Architecture:           architecture.NewImporter(architectureStore, architectureGitHub, input.Events),
+		BackgroundGitHub:       backgroundGitHub,
+		Architecture:           architectureImporter,
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
@@ -1156,14 +1167,18 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // so this cancellation is never the 499 of a client that went away. Only a request whose body went
 // through the drain makes it.
 //
-// The other take-back a request may be refused - its caller's resolution gives its units back while
-// it waits on an issuer and asks for them again after (admission.GiveBack, admission.Away.TakeBack)
-// - is answered here too, at the response, whatever the layers between do with the error: the
-// ticket records the refusal (admission.Ticket.RefusedTakeBack), the resolution that met it stops
-// the request's run where it stands (optionalActor, stopOnRefusedTakeBack), and this layer answers
-// it 429 OVERLOADED with Retry-After: 1 (answerRefusedTakeBack). A layer that reads the
-// resolution's error as no caller and goes on (refuseChangedLogin, callerHoldsScope, a project's
-// scope) so never reaches its next layer, its handler or a write of its own.
+// A take-back of the request's own waits on other servers may be refused too (admission.GiveBack,
+// admission.Away.TakeBack). Where the layer that met the refusal cannot answer it itself - a
+// caller's resolution, which gives its units back while it waits on an issuer and asks for them
+// again after, and an issue read's roster around its listener call (routeRosterOrUnknown) - it is
+// answered here, at the response, whatever the layers between do with the error: the ticket
+// records the refusal (admission.Ticket.RefusedTakeBack), the layer that met it stops the
+// request's run where it stands (optionalActor, routeRosterOrUnknown, stopOnRefusedTakeBack), and
+// this layer answers it 429 OVERLOADED with Retry-After: 1 (answerRefusedTakeBack). A layer that
+// reads the resolution's error as no caller and goes on (refuseChangedLogin, callerHoldsScope, a
+// project's scope) so never reaches its next layer, its handler or a write of its own. Every other
+// network wait (awayOnNetwork) answers the refusal itself: its handler writes it through
+// writeHandlerError.
 //
 // A request whose client went away while it waited is answered nothing, since nobody is left to
 // read it, and its line carries 499 rather than the 200 of a handler that wrote nothing: under
@@ -1241,19 +1256,22 @@ func (handler contextHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	handler(r.Context(), w, r)
 }
 
-// errRefusedTakeBack is what a resolution whose request was refused the units it gave back for a
-// wait on an issuer stops the request's run with (stopOnRefusedTakeBack), and admitted answers.
-var errRefusedTakeBack = errors.New("the request was refused the admission units it gave back for its caller's wait on an issuer")
+// errRefusedTakeBack is what a request refused the units it gave back for a wait on another server
+// stops its run with, where the layer that met the refusal cannot answer it itself: a caller's
+// resolution around an issuer (optionalActor) and an issue read's roster (routeRosterOrUnknown).
+// admitted answers it (stopOnRefusedTakeBack). It is never written to a client.
+var errRefusedTakeBack = errors.New("the request was refused the admission units it gave back for a wait on another server")
 
-// stopOnRefusedTakeBack stops r's run where r's caller's resolution failed because its ticket was
-// refused the units it gave back for the issuer's wait (admission.Ticket.RefusedTakeBack): it
-// panics with errRefusedTakeBack, so no layer between the resolution and admitted - one that reads
-// the error as no caller and goes on, its handler, a write of its own - runs another line of the
-// request, and admitted answers it (answerRefusedTakeBack). Every resolution an admitted route
-// makes goes through optionalActor, on the request's own goroutine, so admitted's recovery is the
+// stopOnRefusedTakeBack stops the run of ctx's request where a layer that cannot answer a refusal
+// itself - a caller's resolution around an issuer (optionalActor), an issue read's roster
+// (routeRosterOrUnknown) - failed because its ticket was refused the units it gave back for that
+// wait (admission.Ticket.RefusedTakeBack): it panics with errRefusedTakeBack, so no layer between
+// it and admitted - one that reads the error as no caller or an unknown route and goes on, its
+// handler, a write of its own - runs another line of the request, and admitted answers it
+// (answerRefusedTakeBack). Both run on the request's own goroutine, so admitted's recovery is the
 // one that meets it; a request admission did not count holds no ticket, and nothing is stopped.
-func stopOnRefusedTakeBack(r *http.Request) {
-	if admission.TicketFrom(r.Context()).RefusedTakeBack() != nil {
+func stopOnRefusedTakeBack(ctx context.Context) {
+	if refusedTakeBack(ctx) != nil {
 		panic(errRefusedTakeBack)
 	}
 }
@@ -1261,9 +1279,9 @@ func stopOnRefusedTakeBack(r *http.Request) {
 // answerRefusedTakeBack is admitted's answer to a request whose take-back was refused
 // (stopOnRefusedTakeBack): it recovers the stop and answers the ticket's refusal 429 OVERLOADED
 // with Retry-After: 1 (admission.WriteRefused), as admission answers a request it had no room for
-// before it ran; nothing else of the request was written, since a caller's resolution comes before
-// every answer. A request whose ticket recorded no refusal costs it one load and recovers nothing,
-// so every other panic goes on as it was raised, its stack whole.
+// before it ran; nothing else of the request was written, since each stop comes before the
+// request's answer. A request whose ticket recorded no refusal costs it one load and recovers
+// nothing, so every other panic goes on as it was raised, its stack whole.
 func answerRefusedTakeBack(w http.ResponseWriter, ticket *admission.Ticket) {
 	refusal := ticket.RefusedTakeBack()
 	if refusal == nil {
@@ -1841,7 +1859,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	case serviceTokenCredential:
 		actor, human, err := s.serviceTokenActor(r, token)
 		if err != nil {
-			stopOnRefusedTakeBack(r)
+			stopOnRefusedTakeBack(r.Context())
 		}
 		return actor, human, err
 	case personalTokenCredential:
@@ -1860,7 +1878,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	login, err := s.deps.Identity.Login(r)
 	if err != nil {
-		stopOnRefusedTakeBack(r)
+		stopOnRefusedTakeBack(r.Context())
 		return model.Actor{}, false, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)

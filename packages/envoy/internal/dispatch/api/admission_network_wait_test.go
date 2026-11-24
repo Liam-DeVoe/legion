@@ -587,8 +587,7 @@ func heldService(t *testing.T, upstream http.Handler, hold func(*http.Request) b
 		defer serial.Unlock()
 		upstream.ServeHTTP(w, r)
 	}))
-	var once sync.Once
-	release = func() { once.Do(func() { close(gate) }) }
+	release = sync.OnceFunc(func() { close(gate) })
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(front.Close)
 	t.Cleanup(release)
@@ -607,11 +606,12 @@ func proxyTo(t *testing.T, address string) http.Handler {
 
 // requireReadsHoldNoUnitOnService sets the reads of requests waiting on service, which the row
 // holds until release, and requires them to hold no read unit and queue none while they wait
-// (calls counts the ones that reached it), a project list, which waits on nothing, answered 200
-// at normal latency meanwhile, and every waiter answered 200 once service answers, the read class
+// (calls counts the ones that reached it), then runs meanwhile (nil for nothing), a row's own
+// check of what the waiting reads did, a project list, which waits on nothing, answered 200 at
+// normal latency meanwhile, and every waiter answered 200 once service answers, the read class
 // holding nothing after.
 func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.Handler, limiter *admission.Limiter,
-	requests []*http.Request, calls func() int32, release func(),
+	requests []*http.Request, calls func() int32, release, meanwhile func(),
 ) {
 	t.Helper()
 	waiters := startWaiters(handler, requests)
@@ -622,6 +622,9 @@ func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.
 		waiters.working.Wait()
 	})
 	requireWaitersHoldNoReadUnit(t, limiter, calls, func() bool { return true })
+	if meanwhile != nil {
+		meanwhile()
+	}
 	requireCachedCallersServed(t, handler, map[string]func() *http.Request{
 		"a project list": func() *http.Request { return testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice") },
 	})
@@ -665,7 +668,7 @@ func TestAReadWaitingOnTheListenerHoldsNoReadUnit(t *testing.T) {
 		}
 		requests = append(requests, testRequestAs(t, http.MethodGet, target, "alice"))
 	}
-	requireReadsHoldNoUnitOnService(t, "the listener", handler, limiter, requests, calls.Load, release)
+	requireReadsHoldNoUnitOnService(t, "the listener", handler, limiter, requests, calls.Load, release, nil)
 }
 
 // GitHub: each read asks whether the App is installed on a repository of its own
@@ -689,7 +692,7 @@ func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
 	for index := range networkWaiters {
 		requests = append(requests, testRequestAs(t, http.MethodGet, fmt.Sprintf("/api/v1/github/app-installation/acme-%d/widgets", index), "alice"))
 	}
-	requireReadsHoldNoUnitOnService(t, "GitHub", handler, limiter, requests, calls.Load, release)
+	requireReadsHoldNoUnitOnService(t, "GitHub", handler, limiter, requests, calls.Load, release, nil)
 }
 
 // heldEmbedder is the search tests' fake embedder with query embeddings held: each one whose text
@@ -698,10 +701,16 @@ func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
 // ends it, before the fake answers it.
 type heldEmbedder struct {
 	*fakeEmbedder
-	holds string
-	calls atomic.Int32
-	gate  chan struct{}
-	once  sync.Once
+	holds   string
+	calls   atomic.Int32
+	gate    chan struct{}
+	release func()
+}
+
+func newHeldEmbedder(holds string) *heldEmbedder {
+	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, holds: holds, gate: make(chan struct{})}
+	embedder.release = sync.OnceFunc(func() { close(embedder.gate) })
+	return embedder
 }
 
 func (h *heldEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
@@ -718,12 +727,10 @@ func (h *heldEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 	return h.fakeEmbedder.Embed(ctx, texts, inputType)
 }
 
-func (h *heldEmbedder) release() { h.once.Do(func() { close(h.gate) }) }
-
 // The embedder: each read is a search, which embeds its query (runSearch), and the embedder holds
 // it. The search lane is as wide as the waiters, so the read class is what would hold them.
 func TestAReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
-	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, gate: make(chan struct{})}
+	embedder := newHeldEmbedder("")
 	t.Cleanup(embedder.release)
 	limiter := admission.New(admission.Limits{Read: networkWaitReads, Write: networkWaitReads, HeavyReadLane: networkWaiters})
 	handler, _, _ := newTestServer(t, testServerOptions{embedder: embedder, admission: limiter})
@@ -732,7 +739,7 @@ func TestAReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
 	for range networkWaiters {
 		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/search?q=wibble", "alice"))
 	}
-	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release)
+	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release, nil)
 }
 
 // relatedHeldWord is the word the related-item rows' reads carry and their seeds do not, so
@@ -767,7 +774,7 @@ func relatedHoldRead(t *testing.T, project string) *http.Request {
 // route reads with two units at once (concurrentReads), so the read class holds two of its
 // checks, and the six waiters would need twelve units.
 func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
-	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, holds: relatedHeldWord, gate: make(chan struct{})}
+	embedder := newHeldEmbedder(relatedHeldWord)
 	t.Cleanup(embedder.release)
 	limiter := admission.New(admission.Limits{Read: concurrentReadWeight * networkWaitReads, Write: networkWaitReads})
 	handler, served, _ := relatedHoldServer(t, "RHOLD", embedder, limiter)
@@ -778,29 +785,12 @@ func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
 	for range networkWaiters {
 		requests = append(requests, relatedHoldRead(t, "RHOLD"))
 	}
-	waiters := startWaiters(handler, requests)
-	t.Cleanup(func() {
-		embedder.release()
-		waiters.working.Wait()
-	})
-	requireWaitersHoldNoReadUnit(t, limiter, embedder.calls.Load, func() bool { return true })
-	if searched := keywordSearches.Load(); searched != networkWaiters {
-		t.Errorf("with %d checks' embeddings held, %d keyword searches ran, want every check's: the keyword stage runs beside the embedding, not after it",
-			networkWaiters, searched)
-	}
-	requireCachedCallersServed(t, handler, map[string]func() *http.Request{
-		"a project list": func() *http.Request { return testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice") },
-	})
-	embedder.release()
-	for _, answer := range waiters.collect(t, networkWaiters, 10*time.Second) {
-		if answer.status != http.StatusOK {
-			t.Errorf("a related-item read waiting on the embedder: status=%d after %v body=%s, want 200 once it answered",
-				answer.status, answer.elapsed, strings.TrimSpace(answer.body))
+	requireReadsHoldNoUnitOnService(t, "the embedder", handler, limiter, requests, embedder.calls.Load, embedder.release, func() {
+		if searched := keywordSearches.Load(); searched != networkWaiters {
+			t.Errorf("with %d checks' embeddings held, %d keyword searches ran, want every check's: the keyword stage runs beside the embedding, not after it",
+				networkWaiters, searched)
 		}
-	}
-	if stats := limiter.Stats()[admission.Read]; stats.InFlight != 0 {
-		t.Errorf("once every related-item read was answered the read class holds %d units, want none", stats.InFlight)
-	}
+	})
 }
 
 // A related-item read's keyword stage keeps its whole share of the check's allowance while the
@@ -812,7 +802,7 @@ func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
 // answered within the meaning allowance, where a check that embedded first was not made, for
 // time.
 func TestARelatedItemReadsKeywordStageKeepsItsShareBesideAHeldEmbedding(t *testing.T) {
-	embedder := &heldEmbedder{fakeEmbedder: &fakeEmbedder{}, holds: relatedHeldWord, gate: make(chan struct{})}
+	embedder := newHeldEmbedder(relatedHeldWord)
 	t.Cleanup(embedder.release)
 	handler, served, key := relatedHoldServer(t, "RSHARE", embedder, nil)
 	keywordHold := relatedCheckAllowance - relatedMeaningAllowance + 500*time.Millisecond
@@ -941,5 +931,5 @@ func TestAReadWaitingOnTheSecretsBrokerHoldsNoReadUnit(t *testing.T) {
 	for range networkWaiters {
 		requests = append(requests, testRequestAs(t, http.MethodGet, "/api/v1/credential-requests?approver=me", "alice"))
 	}
-	requireReadsHoldNoUnitOnService(t, "the secrets broker", handler, limiter, requests, calls.Load, release)
+	requireReadsHoldNoUnitOnService(t, "the secrets broker", handler, limiter, requests, calls.Load, release, nil)
 }

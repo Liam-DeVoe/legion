@@ -208,9 +208,7 @@ func markHeadNotStored(err error) error {
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
-	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
-	records := broker != nil && head.AttributionComplete
-	if !seedsBranch && !records {
+	if !head.seedsBranch() && !(broker != nil && head.AttributionComplete) {
 		_, err := upsertHeadRow(ctx, pool, head)
 		return err
 	}
@@ -218,34 +216,18 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 	if err != nil {
 		return fmt.Errorf("%w: open the write of the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
-	// The rollback runs on a context of its own, not the caller's: the caller's is cancelled
-	// exactly when the rollback matters — a webhook consumer shutting down mid-write, a results
-	// read whose browser went away — and pgx answers a rollback on a cancelled context by
-	// destroying the connection instead of returning it to the pool, which leaves a backend on
-	// the database for as long as the process lives (api/duplicates.go makes the same argument
-	// for its own read). A commit that already ran absorbs this one (store.Pool's trackedTx).
-	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
-		defer cancel()
-		_ = tx.Rollback(rollback)
-	}()
-	var left *string
-	if records {
-		if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
-			return err
-		}
-	}
-	applied, err := upsertHeadRow(ctx, tx, head)
+	defer rollbackHeadWrite(ctx, tx)
+	move, err := upsertHeadMoving(ctx, tx, broker, head)
 	if err != nil {
 		return err
 	}
 	var moved []model.Event
-	if records && applied && !sameIssue(left, head.IssueKey) {
-		if moved, err = appendAttributionChange(ctx, tx, broker, head, left); err != nil {
+	if move != nil {
+		if moved, err = appendAttributionChange(ctx, tx, broker, move.head, move.left); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
 	}
-	if seedsBranch {
+	if head.seedsBranch() {
 		if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
@@ -257,6 +239,47 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 		broker.Publish(event)
 	}
 	return nil
+}
+
+// seedsBranch is whether head's write seeds its base branch with its merge commit
+// (writeBranchCommit): a merge whose base branch and merge commit were read.
+func (h PullRequestHead) seedsBranch() bool {
+	return h.State == "merged" && h.BaseRef != "" && h.MergeCommitSHA != ""
+}
+
+// rollbackHeadWrite rolls tx, a head write's transaction, back on a context of its own, not the
+// caller's: the caller's is cancelled exactly when the rollback matters - a webhook consumer
+// shutting down mid-write, a results read whose browser went away - and pgx answers a rollback on
+// a cancelled context by destroying the connection instead of returning it to the pool, which
+// leaves a backend on the database for as long as the process lives (api/duplicates.go makes the
+// same argument for its own read). A commit that already ran absorbs this one (store.Pool's
+// trackedTx).
+func rollbackHeadWrite(ctx context.Context, tx pgx.Tx) {
+	rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+	defer cancel()
+	_ = tx.Rollback(rollback)
+}
+
+// upsertHeadMoving writes head's row in tx (upsertHeadRow), reading the row's issue under its own
+// lock first where broker records the write's attribution moves (headIssueBefore), and answers the
+// move the write made, nil for none: a write that applied and replaced the row's issue.
+func upsertHeadMoving(ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead) (*attributionMove, error) {
+	records := broker != nil && head.AttributionComplete
+	var left *string
+	if records {
+		var err error
+		if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
+			return nil, err
+		}
+	}
+	applied, err := upsertHeadRow(ctx, tx, head)
+	if err != nil {
+		return nil, err
+	}
+	if records && applied && !sameIssue(left, head.IssueKey) {
+		return &attributionMove{head: head, left: left}, nil
+	}
+	return nil, nil
 }
 
 // AttributionEventType is the event a head write appends when a pull request's issue changes:
@@ -483,11 +506,17 @@ func upsertHeadUnderCanonicalName(
 	if strings.EqualFold(storedUnder, head.Repo) {
 		return nil
 	}
+	return dropHeadStoredUnder(ctx, pool, storedUnder, head)
+}
+
+// dropHeadStoredUnder deletes the row head's pull request is stored under as storedUnder, another
+// name of its repository, in a bounded wait, through db: the pool or a transaction.
+func dropHeadStoredUnder(ctx context.Context, db store.BatchSender, storedUnder string, head PullRequestHead) error {
 	var drop store.WriteBatch
 	drop.QueueWithinBound("", `
 		delete from pull_request_heads where repo = $1 and number = $2
 	`, storedUnder, head.Number)
-	if err := drop.Send(ctx, pool); err != nil {
+	if err := drop.Send(ctx, db); err != nil {
 		return fmt.Errorf("drop the head of %s#%d, now %s#%d: %w", storedUnder, head.Number, head.Repo, head.Number, err)
 	}
 	return nil
@@ -1212,40 +1241,24 @@ func writeReadThroughHeads(ctx context.Context, pool *store.Pool, broker *events
 	if err != nil {
 		return fmt.Errorf("%w: open the write of the heads of %s: %w", ErrHeadNotStored, heads[0].Repo, err)
 	}
-	// On a context of its own, as UpsertPullRequestHead's rollback runs, and for its reason.
-	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
-		defer cancel()
-		_ = tx.Rollback(rollback)
-	}()
+	defer rollbackHeadWrite(ctx, tx)
 	var moves []attributionMove
 	for _, head := range heads {
-		records := broker != nil && head.AttributionComplete
-		var left *string
-		if records {
-			if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
-				return err
-			}
-		}
-		applied, err := upsertHeadRow(ctx, tx, head)
+		move, err := upsertHeadMoving(ctx, tx, broker, head)
 		if err != nil {
 			return err
 		}
-		if records && applied && !sameIssue(left, head.IssueKey) {
-			moves = append(moves, attributionMove{head: head, left: left})
+		if move != nil {
+			moves = append(moves, *move)
 		}
-		if head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != "" {
+		if head.seedsBranch() {
 			if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
 				return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 			}
 		}
 		if !strings.EqualFold(storedUnder, head.Repo) {
-			var drop store.WriteBatch
-			drop.QueueWithinBound("", `
-				delete from pull_request_heads where repo = $1 and number = $2
-			`, storedUnder, head.Number)
-			if err := drop.Send(ctx, tx); err != nil {
-				return fmt.Errorf("%w: drop the head of %s#%d, now %s#%d: %w", ErrHeadNotStored, storedUnder, head.Number, head.Repo, head.Number, err)
+			if err := dropHeadStoredUnder(ctx, tx, storedUnder, head); err != nil {
+				return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 			}
 		}
 	}

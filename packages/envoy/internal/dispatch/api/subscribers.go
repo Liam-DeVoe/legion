@@ -375,10 +375,8 @@ func (s *server) unsubscribeSession(
 	// The interest is read before the transaction, holding no unit while the listener answers
 	// (awayOnNetwork); a take-back refused after it is the answer, 429 OVERLOADED, since nothing
 	// of the removal has been written yet.
-	var interest listenerwire.InterestRow
-	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		interest, err = s.deps.Envoy.Interest(ctx, sessionID)
-		return err
+	interest, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (listenerwire.InterestRow, error) {
+		return s.deps.Envoy.Interest(ctx, sessionID)
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)

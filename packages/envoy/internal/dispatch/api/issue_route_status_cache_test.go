@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // detailReach reads one issue's detail and answers its reach as reachText writes it.
@@ -66,17 +67,14 @@ func readAgents(t *testing.T, served *server, ctx context.Context) routeRoster {
 // with this. Its first read starts the loop.
 func awaitRoster(t *testing.T, served *server) routeRoster {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		roster := readRoster(t, served, context.Background())
-		if !errors.Is(roster.err, errRouteRosterPastBound) {
-			return roster
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the refresh loop stored no listener answer within its bound in 10 s")
-		}
-		time.Sleep(5 * time.Millisecond)
+	var roster routeRoster
+	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
+		roster = readRoster(t, served, context.Background())
+		return !errors.Is(roster.err, errRouteRosterPastBound)
+	}) {
+		t.Fatal("the refresh loop stored no listener answer within its bound in 10 s")
 	}
+	return roster
 }
 
 // storeRosterSentAgo stores, as the refresh loop does, an answer listing ses-sre holding sre
@@ -294,15 +292,12 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 	roster.down.Store(false)
 	roster.set("ses-sre", "sre")
 	back := time.Now()
-	for {
-		got := detailReach(t, handler, key)
-		if got == "live ses-sre" {
-			break
-		}
-		if time.Since(back) > 5*time.Second {
-			t.Fatalf("reads %v after the listener came back, a hundred 50 ms silence windows, still read %s, want live ses-sre", time.Since(back), got)
-		}
-		time.Sleep(5 * time.Millisecond)
+	var got string
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
+		got = detailReach(t, handler, key)
+		return got == "live ses-sre"
+	}) {
+		t.Fatalf("reads %v after the listener came back, a hundred 50 ms silence windows, still read %s, want live ses-sre", time.Since(back), got)
 	}
 	if calls := roster.lookups.Load() - before; calls < 2 {
 		t.Fatalf("reads a silence window apart saw %d listener calls, want the listener asked again", calls)

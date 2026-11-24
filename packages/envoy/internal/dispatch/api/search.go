@@ -1233,10 +1233,8 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 		// The embedding is a wait on the model service, so the request holds no admission unit and
 		// no pinned connection across it (awayOnNetwork). A failed embedding answers by keywords
 		// alone; a take-back refused after it is the search's answer.
-		var vector []float32
-		err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
-			vector, err = s.embedQuery(ctx, parameters.text)
-			return err
+		vector, err := awayOnNetworkFor(ctx, func(ctx context.Context) ([]float32, error) {
+			return s.embedQuery(ctx, parameters.text)
 		})
 		if refused := refusedTakeBack(ctx); refused != nil {
 			return model.SearchResponse{}, refused

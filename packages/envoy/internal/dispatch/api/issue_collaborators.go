@@ -242,10 +242,8 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerw
 	if s.deps.Envoy == nil {
 		return nil, legionRegistryUnavailable, nil
 	}
-	var entries []listenerwire.LegionAgentAnswer
-	err := awayOnNetwork(ctx, func(ctx context.Context) (err error) {
-		entries, err = s.deps.Envoy.IssueAgents(ctx, key)
-		return err
+	entries, err := awayOnNetworkFor(ctx, func(ctx context.Context) ([]listenerwire.LegionAgentAnswer, error) {
+		return s.deps.Envoy.IssueAgents(ctx, key)
 	})
 	if refused := refusedTakeBack(ctx); refused != nil {
 		return nil, "", refused

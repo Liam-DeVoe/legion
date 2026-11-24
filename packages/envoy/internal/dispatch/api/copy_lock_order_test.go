@@ -473,20 +473,7 @@ func (g *lockGraph) addStored(source moduleSource) {
 				break
 			}
 			for index, value := range n.Rhs {
-				switch target := ast.Unparen(n.Lhs[index]).(type) {
-				case *ast.Ident:
-					if object := g.info.Defs[target]; object != nil {
-						store(object, value)
-					} else {
-						store(g.info.Uses[target], value)
-					}
-				case *ast.SelectorExpr:
-					if selection, ok := g.info.Selections[target]; ok {
-						store(selection.Obj(), value)
-					} else {
-						store(g.info.Uses[target.Sel], value)
-					}
-				}
+				store(g.objectOf(n.Lhs[index]), value)
 			}
 		case *ast.ValueSpec:
 			for index, value := range n.Values {
@@ -501,6 +488,24 @@ func (g *lockGraph) addStored(source moduleSource) {
 		}
 		return true
 	})
+}
+
+// objectOf is the object an identifier or a selector names: the one it defines or uses, or the
+// field or method a selector selects.
+func (g *lockGraph) objectOf(expression ast.Expr) types.Object {
+	switch e := ast.Unparen(expression).(type) {
+	case *ast.Ident:
+		if object := g.info.Defs[e]; object != nil {
+			return object
+		}
+		return g.info.Uses[e]
+	case *ast.SelectorExpr:
+		if selection, ok := g.info.Selections[e]; ok {
+			return selection.Obj()
+		}
+		return g.info.Uses[e.Sel]
+	}
+	return nil
 }
 
 // functionValue is what calling value would run: a function literal, or a function or method

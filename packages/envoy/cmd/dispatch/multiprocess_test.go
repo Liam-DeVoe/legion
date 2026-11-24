@@ -8268,16 +8268,12 @@ func (p *dispatchProcess) issueReach(t *testing.T, key string) string {
 // refresh of the stored answer lands: no read waits on the listener (api/issue_route_status.go).
 func (p *dispatchProcess) awaitIssueReach(t *testing.T, key, want string, within time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		got := p.issueReach(t, key)
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s reads %s within %v, want %s:\n%s", key, got, within, want, p.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
+	var got string
+	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+		got = p.issueReach(t, key)
+		return got == want
+	}) {
+		t.Fatalf("%s reads %s within %v, want %s:\n%s", key, got, within, want, p.Output.String())
 	}
 }
 

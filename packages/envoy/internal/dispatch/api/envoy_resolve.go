@@ -329,12 +329,14 @@ type takeoverTries struct {
 // that makes it: each stretch of them - a try's call, the backoff after a take-over's failure
 // (again, up to the take-over window), and the next try's resolution - in one wait, since nothing
 // of Dispatch's own runs between them. Only ready and record, which read and write Dispatch's
-// tables, run between stretches, under the unit taken back; a loop with neither runs whole in one
-// wait. A sender's own deliveries pass awayOnNetworkNeverRefused, since each runs after a commit of
-// its own (the attempt's claim, the message); a loop whose caller already holds no unit for it
-// passes givenBackAlready. away's own error - the request's end while it asked for its unit back,
-// or a refusal - ends the tries with that error.
-func (r *takeoverRetry) retry(ctx context.Context, away func(context.Context, func(context.Context) error) error, tries takeoverTries) error {
+// tables, run between stretches, under the unit taken back. A loop with neither still makes one
+// wait for each try: the one such loop, a comment's lookups (resolveThroughTakeover), passes
+// givenBackAlready, so its tries make no pair at all. A sender's own deliveries pass
+// awayOnNetworkNeverRefused, since each runs after a commit of its own (the attempt's claim, the
+// message); a loop whose caller already holds no unit for it passes givenBackAlready. away's own
+// error - the request's end while it asked for its unit back, or a refusal - ends the tries with
+// that error.
+func (r *takeoverRetry) retry(ctx context.Context, away networkWait, tries takeoverTries) error {
 	for {
 		if tries.ready != nil && tries.ready() != "" {
 			return nil

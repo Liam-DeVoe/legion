@@ -37,10 +37,8 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	var installed bool
-	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		installed, err = s.deps.GitHub.Installed(ctx, owner, name)
-		return err
+	installed, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (bool, error) {
+		return s.deps.GitHub.Installed(ctx, owner, name)
 	})
 	switch refused := refusedTakeBack(r.Context()); {
 	case refused != nil:

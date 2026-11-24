@@ -201,6 +201,7 @@ func (s *server) decisionBlockChecks(
 	defer cancel()
 	checks := make([]decisionBlockCheck, len(blocks))
 	var overflow []relatedCheckRecord
+	embedAway := embedAfterWrite(ctx)
 	for index, block := range blocks {
 		source := suggestionSource{kind: "decision_block", blockID: block.ID, actor: actor}
 		if artifact.IssueKey != nil {
@@ -210,7 +211,7 @@ func (s *server) decisionBlockChecks(
 		}
 		input := relatedInput{
 			project: artifact.Project, text: block.Question, title: block.Question,
-			source: source, question: true, record: true, embedAway: embedAfterWrite(ctx),
+			source: source, question: true, record: true, embedAway: embedAway,
 		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
 		if index >= decisionBlockCheckLimit {
@@ -301,7 +302,7 @@ type relatedInput struct {
 	// stage 1 has answered and the embedding has not; it takes it back before the meaning query.
 	// An embedding that answers before stage 1 does, which is a healthy embedder's, has nothing
 	// given back.
-	embedAway func(ctx context.Context, wait func(context.Context) error) error
+	embedAway networkWait
 	// trees is the display tree reader of the request that runs the check, made from its
 	// `Dispatch-Trees` header (readDisplayTrees of wantsDisplayTrees), and nil where the caller
 	// asked for no tree - which is every caller that is not a browser, and every check run from
@@ -912,7 +913,7 @@ type relatedEmbedAnswer struct {
 // run theirs under the edit's one allowance (decisionBlockChecks), whose end must not leave the
 // request running without its unit. The embedding itself keeps the check's bounds, the meaning
 // allowance from the check's start (runRelatedCheck).
-func embedAfterWrite(request context.Context) func(context.Context, func(context.Context) error) error {
+func embedAfterWrite(request context.Context) networkWait {
 	return func(_ context.Context, wait func(context.Context) error) error {
 		return awayOnNetworkNeverRefused(request, wait)
 	}

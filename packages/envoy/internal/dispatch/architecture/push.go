@@ -81,7 +81,12 @@ func (i *Importer) Pushed(ctx context.Context, repo, branch string) error {
 		slog.Warn(pushAfterCloseMessage, "repo", githubapp.ShownBody(repo), "branch", githubapp.ShownBody(branch))
 		return nil
 	}
-	rows, err := i.store.Pool.Query(ctx, `
+	database, err := i.database()
+	if err != nil {
+		return fmt.Errorf("read the architecture sources on %s at branch %s: %w",
+			githubapp.ShownBody(repo), githubapp.ShownBody(branch), err)
+	}
+	rows, err := database.Pool.Query(ctx, `
 		select project_key, repo from architecture_sources
 		where enabled and lower(repo) = lower($1) and branch = $2
 		order by project_key, id

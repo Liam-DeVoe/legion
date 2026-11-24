@@ -99,6 +99,9 @@ type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
 	events *events.Broker
+	// onBackground is that store is the request pool's and every statement of this importer runs
+	// on that pool's background pool instead, opened as it runs (NewImporterOnBackground, database).
+	onBackground bool
 
 	// GitHubReads records each pass of the running import (the pass syncAllLeased runs under its
 	// lease) as the newest attempt of githubreads.ArchitectureImport, which GET /healthz answers:
@@ -172,17 +175,48 @@ func NewImporter(database *store.Store, github *githubapp.Client, broker *events
 	}
 }
 
-// On is this importer reading and writing through database, and calling GitHub through github,
-// instead of its own: the same event broker, flights and push workers, so a sync of one source on
-// either importer joins the other's instead of making its own set of GitHub calls, and one Close
-// ends both. cmd/dispatch runs the ticker and the imports a push starts on the background pool's
-// store this way, with a GitHub client whose shared rate limits are read and recorded on that pool
-// too. The routes' importer is built on the background pool as well, with a client of its own
-// (api's NewDeps): a sync route waits on its flight holding no admission unit, so none of the
-// flight's statements may take a request-pool connection.
+// NewImporterOnBackground is NewImporter for the importer a server's routes sync through: database
+// is the request pool's store, and every statement the importer makes runs on that pool's
+// background pool, opened as it runs (store.Pool.Background), as every other background user of
+// the pool opens it. A flight opens it as it starts and runs all of its statements there, and a
+// read outside a flight - SyncProject's list of the project's sources, ListEnabled's, Pushed's -
+// opens it as the read runs. A sync route waits on its flight holding no admission unit, so none
+// of the flight's statements may take a request-pool connection. Building the importer opens
+// nothing, so a store whose pool is closed still builds one, and a background pool that cannot
+// open fails the flight or the read that needed it with the open's error: nothing runs on the
+// request pool instead.
+func NewImporterOnBackground(database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
+	importer := NewImporter(database, github, broker)
+	importer.onBackground = true
+	return importer
+}
+
+// database is the store a statement of the importer runs on: for an importer on the background
+// pool (NewImporterOnBackground) that pool, opened now, and the importer's own store otherwise.
+func (i *Importer) database() (*store.Store, error) {
+	if !i.onBackground {
+		return i.store, nil
+	}
+	background, err := i.store.Pool.Background()
+	if err != nil {
+		return nil, fmt.Errorf("open the background pool for the architecture import: %w", err)
+	}
+	return &store.Store{Pool: background}, nil
+}
+
+// On is this importer reading and writing through database as it is given, and calling GitHub
+// through github, instead of its own: the same event broker, flights and push workers, so a sync
+// of one source on either importer joins the other's instead of making its own set of GitHub
+// calls, and one Close ends both. cmd/dispatch runs the ticker and the imports a push starts on
+// the background pool's store this way, with a GitHub client whose shared rate limits are read
+// and recorded on that pool too. It derives that importer from the routes' one, which is on the
+// background pool as well (api's NewDeps, NewImporterOnBackground) and calls GitHub through that
+// same client (Deps.BackgroundGitHub): a sync route waits on its flight holding no admission unit,
+// so none of the flight's statements may take a request-pool connection.
 func (i *Importer) On(database *store.Store, github *githubapp.Client) *Importer {
 	derived := *i
 	derived.store = database
+	derived.onBackground = false
 	derived.github = github
 	return &derived
 }
@@ -217,7 +251,11 @@ type EnabledSource struct {
 // ListEnabled names every enabled architecture source, ordered by project and
 // then by the source's id: the ticker's work list.
 func (i *Importer) ListEnabled(ctx context.Context) ([]EnabledSource, error) {
-	rows, err := i.store.Pool.Query(ctx, `
+	database, err := i.database()
+	if err != nil {
+		return nil, fmt.Errorf("list enabled architecture sources: %w", err)
+	}
+	rows, err := database.Pool.Query(ctx, `
 		select project_key, repo from architecture_sources where enabled order by project_key, id
 	`)
 	if err != nil {
@@ -251,7 +289,11 @@ type SyncResult struct {
 // order. A source deleted while the call runs is left out. A project with no
 // source is ErrNoSource.
 func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResult, error) {
-	rows, err := i.store.Pool.Query(ctx,
+	database, err := i.database()
+	if err != nil {
+		return nil, fmt.Errorf("list architecture sources of %s: %w", project, err)
+	}
+	rows, err := database.Pool.Query(ctx,
 		`select repo from architecture_sources where project_key = $1 order by id`, project)
 	if err != nil {
 		return nil, fmt.Errorf("list architecture sources of %s: %w", project, err)

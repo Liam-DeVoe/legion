@@ -135,10 +135,8 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
 	// stored source untouched. Its GitHub calls hold no admission unit (awayOnNetwork), and a
 	// take-back refused after them is the answer, 429 OVERLOADED, as nothing was written yet.
-	var installationID int64
-	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		installationID, err = s.checkArchitectureSource(ctx, owner, name, branch)
-		return err
+	installationID, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (int64, error) {
+		return s.checkArchitectureSource(ctx, owner, name, branch)
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)
@@ -317,10 +315,8 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	repo := owner + "/" + name
-	var source model.ArchitectureSource
-	err = awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		source, err = s.deps.Architecture.Sync(ctx, key, repo)
-		return err
+	source, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (model.ArchitectureSource, error) {
+		return s.deps.Architecture.Sync(ctx, key, repo)
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)
@@ -393,10 +389,8 @@ func (s *server) syncSingularArchitectureSource(w http.ResponseWriter, r *http.R
 // holds no admission unit while it waits on them, as syncArchitectureSource's.
 func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]model.ArchitectureSource, bool) {
 	key := r.PathValue("key")
-	var results []architecture.SyncResult
-	err := awayOnNetwork(r.Context(), func(ctx context.Context) (err error) {
-		results, err = s.deps.Architecture.SyncProject(ctx, key)
-		return err
+	results, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) ([]architecture.SyncResult, error) {
+		return s.deps.Architecture.SyncProject(ctx, key)
 	})
 	if refused := refusedTakeBack(r.Context()); refused != nil {
 		s.writeHandlerError(w, r, refused)

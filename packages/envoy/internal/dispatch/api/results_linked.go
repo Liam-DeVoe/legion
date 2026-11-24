@@ -114,9 +114,11 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	// Each GitHub read here holds no admission unit (awayOnNetwork), and the linked list read
-	// between them runs under the unit taken back. A take-back refused is the record's answer,
-	// 429 OVERLOADED, before anything is written; the read's own error stays the read's.
+	// Each stretch of GitHub reads here holds no admission unit (awayOnNetwork): the read of repo,
+	// and then every linked read in one wait, since nothing of Dispatch's own runs between them;
+	// the linked list read between the two runs under the unit taken back. A take-back refused is
+	// the record's answer, 429 OVERLOADED, before anything is written; a read's own error stays the
+	// read's.
 	var held bool
 	var err error
 	if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
@@ -145,22 +147,30 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	var failed error
 	var failedRepo string
 	reads := linkedReads{left: linkedPullRequestReads}
-	for _, link := range links {
-		counts, held, err, stop := s.linkedRepositoryHolds(ctx, link, sha, &reads)
-		switch {
-		case stop != nil:
-			return nil, stop
-		case err != nil:
-			slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
-				"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
-			if failed == nil {
-				failed, failedRepo = err, link.repo
+	var linked *string
+	if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+		for _, link := range links {
+			counts, held, err := s.linkedRepositoryHolds(ctx, link, sha, &reads)
+			switch {
+			case err != nil:
+				slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
+					"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
+				if failed == nil {
+					failed, failedRepo = err, link.repo
+				}
+			case held:
+				linked = &link.repo
+				return nil
+			case counts:
+				checked = append(checked, link.repo)
 			}
-		case held:
-			return &link.repo, nil
-		case counts:
-			checked = append(checked, link.repo)
 		}
+		return nil
+	}); stop != nil {
+		return nil, stop
+	}
+	if linked != nil {
+		return linked, nil
 	}
 	switch {
 	case failed != nil:
@@ -394,31 +404,24 @@ func (s *server) linkedRepositories(ctx context.Context, q refs.Queryer, issueKe
 //
 // The error is a read that did not answer — a rate limit, a 5xx, a transport failure — about the
 // commit, or about a pull request's state where no other pull request of the repository is open
-// or merged, which refuseUnknownCommit refuses the record for, to be made again. Each read holds no
-// admission unit (awayOnNetwork), and stop is a take-back refused after one, or the request's end:
-// the record's answer, with nothing else read.
-func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err, stop error) {
+// or merged, which refuseUnknownCommit refuses the record for, to be made again. Its reads run on
+// ctx as it is handed: the caller's one wait for every linked repository holds no admission unit
+// across them (awayOnNetwork).
+func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err error) {
 	for index, number := range link.numbers {
 		if reads.left == 0 {
 			reads.unread += len(link.numbers) - index
-			return false, false, err, nil
+			return false, false, err
 		}
 		reads.left--
-		var open bool
-		var readErr error
-		if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
-			open, readErr = delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
-			return nil
-		}); stop != nil {
-			return false, false, nil, stop
-		}
+		open, readErr := delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
 		switch {
 		case errors.Is(readErr, refs.ErrNotGitHubRepo):
 			reads.misnamedRepository(link)
-			return false, false, nil, nil
+			return false, false, nil
 		case delivery.RepositoryUnreadable(readErr):
 			reads.cannotRead(link)
-			return false, false, nil, nil
+			return false, false, nil
 		case errors.Is(readErr, delivery.ErrPullRequestNotFound):
 			// No such pull request: it counts for nothing, and the next one is read.
 		case readErr != nil:
@@ -426,20 +429,15 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 				err = readErr
 			}
 		case open:
-			if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
-				held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
-				return nil
-			}); stop != nil {
-				return false, false, nil, stop
-			}
+			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
 			if delivery.RepositoryUnreadable(err) {
 				reads.cannotReadCommit(link, number)
-				return false, false, nil, nil
+				return false, false, nil
 			}
-			return true, held, err, nil
+			return true, held, err
 		}
 	}
-	return false, false, err, nil
+	return false, false, err
 }
 
 // commitRepository is whose a result's commit is taken to be, as commitRepositoryOf answers it:
