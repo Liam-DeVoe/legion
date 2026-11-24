@@ -10,22 +10,24 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unkeyedTrustDigest is the hex digits a plain SHA-256 of the trust would give the directory name:
-// the bundle the command's clients read, a zero byte, and the inherited wgetrc lines, as
-// proxyTrustDirName hashes them but with no key. All of it but the wgetrc lines is public or
+// what proxyTrustDirName hashes (writeProxyTrustDirInput: the bundle the command's clients read
+// and the inherited wgetrc lines), but with no key. All of it but the wgetrc lines is public or
 // printed beside the name, so a name holding these digits would let a reader test guesses of a
 // password in those lines.
 func unkeyedTrustDigest(environ []string, caPEM string) string {
 	h := sha256.New()
-	h.Write(trustBundle(environ, caPEM))
-	h.Write([]byte{0})
-	h.Write(commandWgetrcLines(environ))
+	writeProxyTrustDirInput(h, trustBundle(environ, caPEM), commandWgetrcLines(environ))
 	return hex.EncodeToString(h.Sum(nil))[:proxyTrustDirHashLen]
 }
 
@@ -67,11 +69,34 @@ func TestProxyTrustDirNameLetsNoPrintedNameTestAPasswordGuess(t *testing.T) {
 	}
 }
 
-// TestPrepareAirlockNamesWithTheKeyItsRootHolds: a run reads the key its root holds, each run in a
+// TestProxyTrustDirNameTellsTheBundleFromTheWgetrc: the name is of two inputs, the bundle and the
+// wgetrc lines, and a trust file a command names can hold any byte, a zero among them. So the
+// bundle's length is part of what is hashed: a bundle that runs on into what is another command's
+// wgetrc is other trust, and gets another name. One pair of rows splits the same bytes at another
+// point, which no framing at all tells apart; the other puts a zero byte where a separator would
+// go, which a zero byte between the two inputs does not tell apart. The control: the same pair
+// takes the same name.
+func TestProxyTrustDirNameTellsTheBundleFromTheWgetrc(t *testing.T) {
+	key := bytes.Repeat([]byte{0x5a}, proxyTrustKeyLen)
+	for _, pair := range [][2][2]string{
+		{{"ab", "c"}, {"a", "bc"}},
+		{{"a", "b\x00c"}, {"a\x00b", "c"}},
+	} {
+		first := proxyTrustDirName(key, "grant-one", []byte(pair[0][0]), []byte(pair[0][1]))
+		if other := proxyTrustDirName(key, "grant-one", []byte(pair[1][0]), []byte(pair[1][1])); other == first {
+			t.Errorf("the bundle %q with the wgetrc %q and the bundle %q with the wgetrc %q both take %s", pair[0][0], pair[0][1], pair[1][0], pair[1][1], first)
+		}
+		if again := proxyTrustDirName(key, "grant-one", []byte(pair[0][0]), []byte(pair[0][1])); again != first {
+			t.Errorf("the same trust took %s and then %s", first, again)
+		}
+	}
+}
+
+// TestProxyTrustDirKeyIsTheKeyItsRootHolds: a run reads the key its root holds, each run in a
 // process of its own, so two runs of one trust share one directory and the key stays as it was. A
 // root with no key gets one this user alone can read, which names the same trust otherwise than
 // another root's key does: the name follows the key, not the trust alone.
-func TestPrepareAirlockNamesWithTheKeyItsRootHolds(t *testing.T) {
+func TestProxyTrustDirKeyIsTheKeyItsRootHolds(t *testing.T) {
 	release := testRelease("AIRLOCK_ME", nil, nil)
 	planted := bytes.Repeat([]byte{0x5a}, proxyTrustKeyLen)
 	runtimeDir := t.TempDir()
@@ -123,12 +148,12 @@ func TestPrepareAirlockNamesWithTheKeyItsRootHolds(t *testing.T) {
 	}
 }
 
-// TestPrepareAirlockRefusesAKeyItDidNotWrite: a key file this CLI did not write - one its group or
+// TestProxyTrustDirKeyRefusesAKeyItDidNotWrite: a key file this CLI did not write - one its group or
 // others can read, one of another length, a directory, or a symbolic link - is refused with its
 // path, and nothing is built on it: no grant directory is made and the file stays as it is. The
 // rule is checkAirlockRoot's, so the controls, a 32-byte file of mode 0600 and one of mode 0400,
 // are used.
-func TestPrepareAirlockRefusesAKeyItDidNotWrite(t *testing.T) {
+func TestProxyTrustDirKeyRefusesAKeyItDidNotWrite(t *testing.T) {
 	good := bytes.Repeat([]byte{0x5a}, proxyTrustKeyLen)
 	elsewhere := writeLoginFile(t, "key", string(good))
 	for _, row := range []struct {
@@ -198,6 +223,127 @@ func writeKey(data []byte, perm os.FileMode) func(t *testing.T, path string) {
 		}
 		if err := os.Chmod(path, perm); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// TestProxyTrustDirKeyRefusesAKeyAnotherUserOwns: the root is this user's alone, so a key file
+// another user owns is one this CLI did not write, and it is refused with its path and its owner;
+// the control, the same file owned by this user, is used. The owner is one a test cannot make,
+// so fileOwner stands it in for the key file alone.
+func TestProxyTrustDirKeyRefusesAKeyAnotherUserOwns(t *testing.T) {
+	stranger := os.Getuid() + 4242
+	for _, row := range []struct {
+		name    string
+		owner   int
+		refused bool
+	}{
+		{"owned by another user", stranger, true},
+		{"control: owned by this user", os.Getuid(), false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			runtimeDir := t.TempDir()
+			root := filepath.Join(runtimeDir, "agent-secrets", "airlock")
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, proxyTrustKeyFile)
+			writeKey(bytes.Repeat([]byte{0x5a}, proxyTrustKeyLen), 0o600)(t, path)
+			original := fileOwner
+			fileOwner = func(info os.FileInfo) (int, bool) {
+				if info.Name() == proxyTrustKeyFile {
+					return row.owner, true
+				}
+				return original(info)
+			}
+			t.Cleanup(func() { fileOwner = original })
+
+			_, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + runtimeDir}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+			if !row.refused {
+				if err != nil {
+					t.Fatalf("prepareAirlock refused a key this user owns: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("prepareAirlock used a key another user owns")
+			}
+			if want := fmt.Sprintf("uid %d", stranger); !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name the key %s and its owner (%s)", err, path, want)
+			}
+		})
+	}
+}
+
+// TestProxyTrustDirKeyNamesTheReasonWhereTheRootTakesNoHardLink: the key is put in place with a hard
+// link, which never replaces a key another run put there first. A root on a file system that takes
+// no hard link (some FUSE mounts answer EPERM or ENOTSUP) gets a refusal that names the root, the
+// reason and the way out, and leaves no key, no temporary key and no grant directory behind.
+// proxyTrustKeyLink stands the file system in.
+func TestProxyTrustDirKeyNamesTheReasonWhereTheRootTakesNoHardLink(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		err  error
+	}{
+		{"not supported", errors.ErrUnsupported},
+		{"not permitted", fs.ErrPermission},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			original := proxyTrustKeyLink
+			proxyTrustKeyLink = func(oldname, newname string) error {
+				return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: row.err}
+			}
+			t.Cleanup(func() { proxyTrustKeyLink = original })
+			runtimeDir := t.TempDir()
+			root := filepath.Join(runtimeDir, "agent-secrets", "airlock")
+
+			_, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + runtimeDir}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+			if err == nil {
+				t.Fatal("prepareAirlock answered files with no key in place")
+			}
+			for _, want := range []string{root, "hard link", "XDG_RUNTIME_DIR", "TMPDIR"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not name %q", err, want)
+				}
+			}
+			entries, _ := os.ReadDir(root)
+			for _, entry := range entries {
+				t.Errorf("the refused run left %s in the root", entry.Name())
+			}
+		})
+	}
+}
+
+// TestTidyAirlockDirsSweepsAKeyLeftOverByAKilledRun: a run killed between writing its temporary
+// key and linking it leaves that file in the root. The tidy removes one that has stood longer than
+// a build can take, as it does a build directory, and leaves a young one, which may be a run in
+// flight, the key itself, and a file it does not recognize.
+func TestTidyAirlockDirsSweepsAKeyLeftOverByAKilledRun(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	long := now.Add(-2 * airlockBuildLifetime)
+	plant := func(name string, at time.Time) string {
+		t.Helper()
+		path := filepath.Join(root, name)
+		writeKey(bytes.Repeat([]byte{0x5a}, proxyTrustKeyLen), 0o600)(t, path)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	left := plant(proxyTrustKeyTempPrefix+"123", long)
+	young := plant(proxyTrustKeyTempPrefix+"456", now)
+	key := plant(proxyTrustKeyFile, long)
+	other := plant("something-else", long)
+
+	tidyAirlockDirs(root, "grant-one", now)
+
+	if _, err := os.Lstat(left); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the temporary key a killed run left is still there (stat error %v)", err)
+	}
+	for _, path := range []string{young, key, other} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Errorf("%s is gone, want it kept: %v", filepath.Base(path), err)
 		}
 	}
 }

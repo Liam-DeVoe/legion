@@ -36,6 +36,12 @@ func testRelease(name string, hosts []string, slots map[string]string) *AirlockR
 	}
 }
 
+// prepareAirlock is prepareProxyFilesFor with one environment as both agent-secrets' own and the
+// command's, as a test that releases no value into the command's environment has.
+func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
+	return prepareProxyFilesFor(environ, environ, release, grantID, expiresAt)
+}
+
 // childEnvMap is buildChildEnv's answer as a map, for a test that asks after single variables.
 func childEnvMap(t *testing.T, environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) map[string]string {
 	t.Helper()

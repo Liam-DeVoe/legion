@@ -3,7 +3,7 @@
 // The skip decision: whether a command reaches the broker's proxy with the trust it already has,
 // so that agent-secrets writes no bundle and sets no trust variable for it (proxyRootsTrusted),
 // and the bounded reads it makes to answer that (readRegularFile, certDirTrustsEvery).
-// prepareAirlock in airlock.go asks it first.
+// prepareProxyFilesFor in airlock.go asks it first.
 package main
 
 import (

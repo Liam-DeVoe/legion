@@ -15,10 +15,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net/url"
 	"os"
@@ -217,10 +219,13 @@ const airlockBuildPrefix = ".building-"
 // outlive their run, and how long a grant lasts is in the expires file.
 const airlockBuildLifetime = time.Hour
 
-// prepareAirlock writes the grant's directory for this trust — the trust bundle, the wgetrc and
-// the expires file that says how long they are worth keeping — and answers the two paths the
-// child's environment names. Nothing of this CLI runs once the command starts, so each run first
-// tidies away what earlier runs left (tidyAirlockDirs).
+// prepareProxyFilesFor writes the grant's directory for this trust — the trust bundle, the wgetrc
+// and the expires file that says how long they are worth keeping — and answers the two paths the
+// child's environment names. It reads two environments: own, agent-secrets' own, which places the
+// airlock root (makeAirlockRoot), and command, the one the command will run with
+// (prepareProxyTrustForCommand), which the decision and the files are made from. Nothing of this
+// CLI runs once the command starts, so each run first tidies away what earlier runs left
+// (tidyAirlockDirs).
 //
 // A command that reaches the proxy with the trust it already has gets none of this: where the
 // machine's own system trust bundle (systemTrust) trusts every root the release carries, the
@@ -249,13 +254,6 @@ const airlockBuildLifetime = time.Hour
 // are another matter: WGETRC's can hold http_password, so no error names the file WGETRC or a
 // bundle variable names or quotes what it holds - readTrustFile and commandWgetrcLines skip a file
 // they cannot read, and print nothing of it.
-func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
-	return prepareProxyFilesFor(environ, environ, release, grantID, expiresAt)
-}
-
-// prepareProxyFilesFor is prepareAirlock with its two environments apart: own, agent-secrets' own,
-// which places the airlock root (makeAirlockRoot), and command, the one the command will run with,
-// which the decision and the files are made from.
 func prepareProxyFilesFor(own, command []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// First, since a command that needs no bundle has no directory to make, tidy or name.
 	if proxyRootsTrusted(command, release.CACertificate, systemTrust) {
@@ -384,9 +382,10 @@ func expiresText(expiresAt *time.Time) string {
 // that is still running may read its bundle again at any time (Python requests reads the file on
 // each request), and nothing here can tell whether one still runs. So a live grant keeps one
 // directory of about 250 KB per distinct trust its commands named, not per run: a run whose trust
-// matches an earlier one's takes that directory. A grant with no expiry keeps them until its
-// session ends, when XDG_RUNTIME_DIR goes; a command that names other trust on every run, such as a
-// WGETRC made fresh each time, makes a directory each time.
+// matches an earlier one's takes that directory. A grant with no expiry keeps them as long as the
+// root lasts: until its session ends under XDG_RUNTIME_DIR, which goes with the session, and until
+// that directory is cleaned under TMPDIR or the system's temporary directory. A command that names
+// other trust on every run, such as a WGETRC made fresh each time, makes a directory each time.
 //
 // Tidying is not the run: nothing here is logged, nothing is refused and no error is answered,
 // because a command must still run when the runtime directory is read-only, is shared with
@@ -398,6 +397,15 @@ func tidyAirlockDirs(root, keep string, now time.Time) {
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			// A key a run wrote under its own name and was killed before it linked into place
+			// (writeProxyTrustDirKey): taken once it has stood longer than a build can take, as a
+			// build directory is, since a young one is a run in flight. The key itself and any
+			// other file are left.
+			if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), proxyTrustKeyTempPrefix) {
+				if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > airlockBuildLifetime {
+					_ = os.Remove(filepath.Join(root, entry.Name()))
+				}
+			}
 			continue
 		}
 		if grant, ok := proxyTrustDirGrant(entry.Name()); ok && grant == keep {
@@ -488,18 +496,19 @@ func trustBundle(environ []string, caPEM string) []byte {
 
 // proxyTrustDirName is the name of the directory one run's files go in: the grant's id, a dot, and
 // 16 hex digits of the HMAC-SHA-256, keyed with key (proxyTrustDirKey), of what the command's clients
-// will read from it. That is the bundle's bytes as written (every trust file read for it, the
-// system bundle standing behind an SSL_CERT_FILE that names none, and the proxy's roots) and the
-// inherited wgetrc's lines as read, with a zero byte between the two; the path of the bundle the
-// wgetrc then names is the one part left out, since it is this very name. It is of contents read,
-// not of the settings, so another path holding the same bytes is the same trust and the same path
-// holding other bytes is other trust.
+// will read from it (writeProxyTrustDirInput). That is the bundle's bytes as written (every trust
+// file read for it, the system bundle standing behind an SSL_CERT_FILE that names none, and the
+// proxy's roots) and the inherited wgetrc's lines as read; the path of the bundle the wgetrc then
+// names is the one part left out, since it is this very name. It is of contents read, not of the
+// settings, so another path holding the same bytes is the same trust and the same path holding
+// other bytes is other trust.
 //
 // agent-secrets reuses a live grant across the commands of a session, so two runs of one grant
 // can name different trust: before this name, both took the grant's id alone, the second run
 // found the first's directory under it and answered that (the rename's collision in
-// prepareAirlock), and the second command got the first command's bundle. Runs of one grant and
-// one trust still take one name, and so one directory, which the rename hands over finished.
+// prepareProxyFilesFor), and the second command got the first command's bundle. Runs of one
+// grant and one trust still take one name, and so one directory, which the rename hands over
+// finished.
 //
 // Keyed, because the name leaves the root, in the child's environment, the argv of a command that
 // passes the bundle's path on, and an error that names the directory, while the wgetrc lines can
@@ -507,18 +516,34 @@ func trustBundle(environ []string, caPEM string) []byte {
 // the name test password guesses against it offline.
 func proxyTrustDirName(key []byte, grantID string, bundle, wgetrcLines []byte) string {
 	h := hmac.New(sha256.New, key)
-	h.Write(bundle)
-	h.Write([]byte{0})
-	h.Write(wgetrcLines)
+	writeProxyTrustDirInput(h, bundle, wgetrcLines)
 	return grantID + "." + hex.EncodeToString(h.Sum(nil))[:proxyTrustDirHashLen]
 }
 
+// writeProxyTrustDirInput writes what a directory is named for to w: the bundle's length as eight
+// bytes, big-endian, then the bundle, then the wgetrc lines. A trust file can hold any byte, so the
+// length, not a separator, is what tells where the bundle ends: without it, a bundle that runs on
+// into what is another command's wgetrc would hash as that command's trust, and get its directory.
+func writeProxyTrustDirInput(w io.Writer, bundle, wgetrcLines []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(bundle)))
+	w.Write(length[:])
+	w.Write(bundle)
+	w.Write(wgetrcLines)
+}
+
 // proxyTrustKeyFile and proxyTrustKeyLen are the file in the airlock root that holds
-// proxyTrustDirName's key, and how many bytes the key is.
+// proxyTrustDirName's key, and how many bytes the key is; proxyTrustKeyTempPrefix begins the name
+// a run writes the key under before it links it into place.
 const (
-	proxyTrustKeyFile = "dir-name.key"
-	proxyTrustKeyLen  = 32
+	proxyTrustKeyFile       = "dir-name.key"
+	proxyTrustKeyLen        = 32
+	proxyTrustKeyTempPrefix = ".key-"
 )
+
+// proxyTrustKeyLink puts the key in place (os.Link). It is a variable so a test stands in a file
+// system that takes no hard link.
+var proxyTrustKeyLink = os.Link
 
 // proxyTrustDirKey is the key proxyTrustDirName is keyed with: 32 random bytes in the airlock
 // root's proxyTrustKeyFile, made by the first run and read back by every later one, so runs of one
@@ -527,14 +552,15 @@ const (
 // inherited lines in clear, so whoever can read it can read those lines anyway; it is never put in
 // an environment, an argv or any output.
 //
-// A first run writes the key under a name of its own (mode 0600, created exclusively) and links it
-// to proxyTrustKeyFile, which a link never replaces, then reads proxyTrustKeyFile back: two first
-// runs that race both end with the key the link that won put in place. A key file that is not a
-// regular file holding exactly proxyTrustKeyLen bytes, or that its group or others can read or
-// write (the rule checkAirlockRoot holds the root to, so the two agree on every platform), is
-// refused, not used: it is not one this CLI wrote. It is read without waiting (readRegularFile),
-// so a named pipe put in its place is refused rather than waited on. The tidy passes it over,
-// since it removes directories alone (tidyAirlockDirs).
+// A first run writes the key under a name of its own (proxyTrustKeyTempPrefix, mode 0600, created
+// exclusively) and links it to proxyTrustKeyFile, which a link never replaces, then reads
+// proxyTrustKeyFile back: two first runs that race both end with the key the link that won put in
+// place. A key file that is not a regular file holding exactly proxyTrustKeyLen bytes, that its
+// group or others can read or write (the rule checkAirlockRoot holds the root to, so the two agree
+// on every platform), or that another user owns, is refused, not used: it is not one this CLI
+// wrote. It is read without waiting (readRegularFile), so a named pipe put in its place is refused
+// rather than waited on. The tidy passes the key over, and takes a temporary key a killed run left
+// once it has stood longer than a build can take (tidyAirlockDirs).
 func proxyTrustDirKey(root string) ([]byte, error) {
 	path := filepath.Join(root, proxyTrustKeyFile)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
@@ -545,6 +571,11 @@ func proxyTrustDirKey(root string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read the airlock key %s: %w", path, err)
+	}
+	// fileOwner, not the fileowner.Of checkAirlockRoot reads: the same uid, from a variable a test
+	// can name another owner through.
+	if uid, ok := fileOwner(info); ok && uid != os.Getuid() {
+		return nil, fmt.Errorf("the airlock key %s is owned by uid %d, not this user (uid %d); remove it and run again", path, uid, os.Getuid())
 	}
 	refused := fmt.Errorf("the airlock key %s is not a %d-byte regular file that only this user can read; remove it and run again", path, proxyTrustKeyLen)
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() != proxyTrustKeyLen {
@@ -561,13 +592,17 @@ func proxyTrustDirKey(root string) ([]byte, error) {
 }
 
 // writeProxyTrustDirKey puts a new key at path, unless another run's link got there first, which is
-// no error: proxyTrustDirKey reads back whichever key the link put in place.
+// no error: proxyTrustDirKey reads back whichever key the link put in place. The key is synced to
+// disk before the link, so a root on a disk (TMPDIR, or the system's temporary directory) never
+// shows a linked key with no bytes in it after a power loss. A root on a file system that takes no
+// hard link (some FUSE mounts) is refused with that reason: a key put in place any other way could
+// replace another run's, or be read before it is whole.
 func writeProxyTrustDirKey(root, path string) error {
 	key := make([]byte, proxyTrustKeyLen)
 	if _, err := rand.Read(key); err != nil {
 		return fmt.Errorf("make the airlock key: %w", err)
 	}
-	temp, err := os.CreateTemp(root, ".key-")
+	temp, err := os.CreateTemp(root, proxyTrustKeyTempPrefix)
 	if err != nil {
 		return fmt.Errorf("write the airlock key: %w", err)
 	}
@@ -580,13 +615,22 @@ func writeProxyTrustDirKey(root, path string) error {
 		temp.Close()
 		return fmt.Errorf("write the airlock key: %w", err)
 	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return fmt.Errorf("write the airlock key: %w", err)
+	}
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("write the airlock key: %w", err)
 	}
-	if err := os.Link(temp.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+	err = proxyTrustKeyLink(temp.Name(), path)
+	switch {
+	case err == nil || errors.Is(err, os.ErrExist):
+		return nil
+	case errors.Is(err, errors.ErrUnsupported) || errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("put the airlock key in place: %w: the file system of %s takes no hard link, which the key is put in place with so that no run replaces another's; point XDG_RUNTIME_DIR or TMPDIR at a directory on another file system", err, root)
+	default:
 		return fmt.Errorf("put the airlock key in place: %w", err)
 	}
-	return nil
 }
 
 // proxyTrustDirHashLen is how many hex digits of the HMAC proxyTrustDirName keeps: 64 bits, so two
@@ -608,9 +652,10 @@ func proxyTrustDirGrant(name string) (string, bool) {
 	return name[:i], true
 }
 
-// prepareProxyTrustForCommand is prepareAirlock for the exec form's command. The trust it decides and
-// builds on is the command's: the inherited environment with the released values after it
-// (buildChildEnv), so a released trust setting, HOME or SSL_CERT_DIR counts as the command's own.
+// prepareProxyTrustForCommand is prepareProxyFilesFor for the exec form's command. The trust it
+// decides and builds on is the command's: the inherited environment with the released values
+// after it (buildChildEnv), so a released trust setting, HOME or SSL_CERT_DIR counts as the
+// command's own.
 // Where the airlock root goes is agent-secrets' own choice (airlockRootParts), made from the
 // inherited environment alone, so a released value named XDG_RUNTIME_DIR or TMPDIR, which the
 // broker answers and agent-secrets does not choose, does not move where it writes and tidies.
@@ -669,8 +714,8 @@ func relativeTrustSettings(environ []string) []string {
 // SSL_CERT_FILE=/dev/null adds nothing, not the system bundle.
 //
 // In a run whose broker URL is https, SSL_CERT_FILE reaches here second: agent-secrets' own
-// connection to the broker reads it first, before prepareAirlock runs, for the roots of Go's TLS
-// client (crypto/x509's root.go reads it with os.ReadFile). So, as before readTrustSource, a pipe
+// connection to the broker reads it first, before prepareProxyFilesFor runs, for the roots of Go's
+// TLS client (crypto/x509's root.go reads it with os.ReadFile). So, as before readTrustSource, a pipe
 // it names arrives here drained and adds nothing, a named pipe with no writer stalls that
 // connection until its timeout, and a device that never ends is read there with no bound. With a
 // plain-http broker, such as the local stack's loopback one, no TLS handshake reads it, so it
@@ -720,7 +765,7 @@ func wgetrcFor(inherited []byte, bundle string) []byte {
 // reads its own. Every one of them takes a file holding a concatenation of PEM certificates. All
 // but NODE_EXTRA_CA_CERTS replace their client's own roots rather than add to them, and each is
 // read the same way: what an inherited one names joins the one bundle (trustBundle), and, where
-// prepareAirlock writes the bundle, every one of them names it in the command's environment.
+// prepareProxyFilesFor writes the bundle, every one of them names it in the command's environment.
 var airlockBundleVars = []string{
 	"SSL_CERT_FILE",                      // OpenSSL, and everything that links it; httpx reads it too
 	"CURL_CA_BUNDLE",                     // curl
@@ -738,7 +783,7 @@ var airlockBundleVars = []string{
 // airlockVars are the environment variables an airlock release adds to the command's
 // environment: one per name held back, the AWS pair's own three when a name has them, and then
 // the grant's own — the proxy, the NO_PROXY the proxy needs, Node's switch for reading them, and,
-// where prepareAirlock wrote one, the bundle every client family reads.
+// where prepareProxyFilesFor wrote one, the bundle every client family reads.
 //
 // It refuses a grant that holds two names with AWS slots: one environment has one
 // AWS_ACCESS_KEY_ID, so one of the two pairs would silently win. Nobody has that configuration
@@ -775,7 +820,7 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 	vars["NODE_USE_ENV_PROXY"] = "1"
 	noProxy := airlockNoProxy(environ, release)
 	vars["NO_PROXY"], vars["no_proxy"] = noProxy, noProxy
-	// No bundle was written where the command needs none (prepareAirlock), and then the command
+	// No bundle was written where the command needs none (prepareProxyFilesFor), and then the command
 	// keeps each trust variable and the WGETRC it has.
 	if files.bundle != "" {
 		for _, key := range airlockBundleVars {

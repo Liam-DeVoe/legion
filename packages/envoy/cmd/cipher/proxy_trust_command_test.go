@@ -8,7 +8,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -63,6 +62,44 @@ func TestPrepareProxyTrustForCommandDecidesOnTheReleasedValues(t *testing.T) {
 			}
 			if got := files.bundle != ""; got != row.wantBundle {
 				t.Errorf("prepareProxyTrustForCommand wrote a bundle: %v, want %v", got, row.wantBundle)
+			}
+		})
+	}
+}
+
+// TestPrepareProxyTrustForCommandPlacesTheRootFromItsOwnEnvironment: the broker's released values
+// reach the command's environment, and a released XDG_RUNTIME_DIR or TMPDIR is the broker's text,
+// not agent-secrets' choice. So the root, where agent-secrets writes and tidies, comes from the
+// environment agent-secrets inherited alone: the bundle goes under the inherited directory, and
+// the released ones stay empty.
+func TestPrepareProxyTrustForCommandPlacesTheRootFromItsOwnEnvironment(t *testing.T) {
+	for _, row := range []struct {
+		name      string
+		inherited func(dir string) (environ []string, root string)
+	}{
+		{"an inherited XDG_RUNTIME_DIR", func(dir string) ([]string, string) {
+			return []string{"XDG_RUNTIME_DIR=" + dir}, filepath.Join(dir, "agent-secrets", "airlock")
+		}},
+		{"an inherited TMPDIR and no XDG_RUNTIME_DIR", func(dir string) ([]string, string) {
+			return []string{"TMPDIR=" + dir}, filepath.Join(dir, "agent-secrets", "airlock")
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			environ, root := row.inherited(t.TempDir())
+			releasedRuntime, releasedTemp := t.TempDir(), t.TempDir()
+			released := map[string]string{"XDG_RUNTIME_DIR": releasedRuntime, "TMPDIR": releasedTemp}
+			var stderr strings.Builder
+			files, err := prepareProxyTrustForCommand(environ, released, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil, &stderr)
+			if err != nil {
+				t.Fatalf("prepareProxyTrustForCommand: %v", err)
+			}
+			if files.bundle == "" || filepath.Dir(filepath.Dir(files.bundle)) != root {
+				t.Errorf("the bundle is %q, want it in a grant directory under the inherited root %s", files.bundle, root)
+			}
+			for _, dir := range []string{releasedRuntime, releasedTemp} {
+				if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+					t.Errorf("the released directory %s holds %d entries (read error %v), want none", dir, len(entries), err)
+				}
 			}
 		})
 	}
@@ -248,7 +285,8 @@ func TestPrepareAirlockRunsOfOneTrustShareOneFinishedDirectory(t *testing.T) {
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		answers := make([]airlockFiles, runs)
-		complaints := make(chan string, 2*runs)
+		// Each worker reports with t.Errorf, which may be called from any goroutine, so no failure
+		// waits on a reader: a run that answers nothing fails here rather than stalling the test.
 		for i := range runs {
 			wg.Add(1)
 			go func() {
@@ -256,26 +294,22 @@ func TestPrepareAirlockRunsOfOneTrustShareOneFinishedDirectory(t *testing.T) {
 				<-start
 				files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", &expires)
 				if err != nil {
-					complaints <- fmt.Sprintf("round %d run %d: %v", round, i, err)
+					t.Errorf("round %d run %d: %v", round, i, err)
 					return
 				}
 				answers[i] = files
 				for _, path := range []string{files.bundle, files.wgetrc, filepath.Join(filepath.Dir(files.bundle), "expires")} {
 					if _, err := os.Stat(path); err != nil {
-						complaints <- fmt.Sprintf("round %d run %d answered a directory without %s: %v", round, i, filepath.Base(path), err)
+						t.Errorf("round %d run %d answered a directory without %s: %v", round, i, filepath.Base(path), err)
 					}
 				}
 				if data, err := os.ReadFile(files.bundle); err != nil || !strings.Contains(string(data), testAirlockCertificate) {
-					complaints <- fmt.Sprintf("round %d run %d answered a bundle without the proxy's certificate (read error %v)", round, i, err)
+					t.Errorf("round %d run %d answered a bundle without the proxy's certificate (read error %v)", round, i, err)
 				}
 			}()
 		}
 		close(start)
 		wg.Wait()
-		close(complaints)
-		for complaint := range complaints {
-			t.Error(complaint)
-		}
 		for i, files := range answers {
 			if files.bundle != answers[0].bundle || files.wgetrc != answers[0].wgetrc {
 				t.Errorf("round %d run %d answered %q and %q, want the one directory %q", round, i, files.bundle, files.wgetrc, filepath.Dir(answers[0].bundle))

@@ -1549,7 +1549,8 @@ client family read that store, as a pod image and a launcher session set them (`
 `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `AWS_CA_BUNDLE` and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`, each
 an absolute path to a file that holds every root, and `UV_SYSTEM_CERTS` set to a value uv reads as
 true, such as `1`); the last `ca_directory` of wget's startup files, when there is one, holds every
-root; every `WGETRC`, `SYSTEM_WGETRC`, `HOME` and `ca_directory` that is set is an absolute path,
+root; the wget startup files read are named by absolute paths (`SYSTEM_WGETRC` when set, `WGETRC`
+when set, and otherwise the `HOME` wget reads `.wgetrc` from), and so is that last `ca_directory`,
 since the command may resolve a relative one from another directory; and the command has no
 `SSL_CERT_DIR` at all. `NODE_USE_SYSTEM_CA` does not count, since a Node before v24.6.0 or
 v22.19.0 does not read it. Any other command, such as one from a shell started before those
