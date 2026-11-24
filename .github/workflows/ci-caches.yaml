@@ -221,7 +221,7 @@ jobs:
       # which no entry carries any more, and that key and a `-`. The key's own prefix match can
       # still reach an entry of a Go whose version starts with this one's (go1.27.30 for go1.27.3);
       # Go keys each object on the toolchain that built it, so that entry costs only its download.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-daemon
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -302,7 +302,7 @@ jobs:
 
       # The newest entry of the family, which the script below builds on, found as the daemon
       # job's restore finds its own.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-notices
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -376,7 +376,7 @@ jobs:
           cache: false
 
       # The newest entry of the family, found as the daemon job's restore finds its own.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-envoy
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -419,7 +419,7 @@ jobs:
         run: chmod -R u+w ~/go/pkg/mod
 
       # The newest entry of the family, found as the daemon job's restore finds its own.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -487,7 +487,7 @@ jobs:
           cache: false
 
       # The module cache the vet reads, from go-envoy's newest entry, as envoy-go-build has it.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -497,6 +497,7 @@ jobs:
           restore-keys: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
       # The newest entry of the family, found as the daemon job's restore finds its own.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-envoy-darwin-vet
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -711,7 +712,6 @@ jobs:
           token: ''
           cache: false
 
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
       - id: go-envoy-infra
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

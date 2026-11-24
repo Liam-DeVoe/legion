@@ -3615,7 +3615,7 @@ GATES = [
          f"{at('envoy-go-build', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
          f"{at('envoy-go-build', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
+         ".github/actions/architecture-check/action.yml:70, :136 and :162 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-build', './.github/actions/architecture-check')} judges the action's default path "
          "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
@@ -3624,7 +3624,7 @@ GATES = [
          f"{at('envoy-go-build', './.github/actions/spec-check')} runs the action it defines"),
         (".github/actions/spec-check/check.sh",
          f"{at('envoy-go-build', './.github/actions/spec-check')}: "
-         ".github/actions/spec-check/action.yml:90 and :115 run it"),
+         ".github/actions/spec-check/action.yml:93 and :118 run it"),
         (".github/scripts/build-envoy-command.sh",
          f"{at('envoy-go-build', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-build', './.github/actions/spec-check')}: "

@@ -146,7 +146,7 @@ jobs:
       # that can run go: the NATS floor test below runs `go build`, whose modules are read-only
       # files tar cannot replace, so a restore after it logged 1,139 `Cannot open: File exists`
       # lines and `Cache not found` (job 138186405808). That build now reads this entry too.
-      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
