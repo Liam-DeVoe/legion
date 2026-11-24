@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
-import { listOf, listTrigger, pickFilterOption, pickFromList } from "./filters";
+import { controlRow, listOf, listTrigger, pickFilterOption, pickFromList } from "./filters";
 import { nextFrames } from "./frames";
 import {
   expectReadWhileHeld,
@@ -986,8 +986,10 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
     await expect(page.getByRole("button", { name: "Filters · 1", exact: true })).toBeVisible();
 
-    // Removing the chip on the Board shows every card again.
-    await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
+    // Removing the chip on the Board shows every card again. The chip is the bar's own: its
+    // Filters panel, which the Board opens by itself while a narrowing is on, lists it again at
+    // its top (R8).
+    await controlRow(page).getByRole("button", { name: "Remove Label: frontend filter" }).click();
     await expect(board.getByRole("article")).toHaveCount(3);
     await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
@@ -1037,8 +1039,8 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Delta/, /Charlie/]);
 
     // Lifting the filter shows the hidden card interleaved among the moved ones - no alert,
-    // Alpha still first and Charlie still last.
-    await page.getByRole("button", { name: "Remove Label: keep filter" }).click();
+    // Alpha still first and Charlie still last. The chip is the bar's own, as above.
+    await controlRow(page).getByRole("button", { name: "Remove Label: keep filter" }).click();
     await expect(todo.getByRole("article")).toHaveCount(4);
     await expect(todo.getByRole("article").first()).toHaveText(/Alpha/);
     await expect(todo.getByRole("article").last()).toHaveText(/Charlie/);

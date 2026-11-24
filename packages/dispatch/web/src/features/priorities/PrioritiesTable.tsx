@@ -13,7 +13,7 @@ import { useAddressUpdate, useTableAddress } from "../../lib/page-address";
 import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { ALL_ROWS, PAGE_SIZES } from "../project/issues-table-model";
-import { NewPriority } from "./NewPriority";
+import { useNewPriority } from "./NewPriority";
 import { usePriorityColumns } from "./priorities-columns";
 import {
   buildPriorityItems,
@@ -99,6 +99,7 @@ export function PrioritiesTable({
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
   const { canWrite, patch } = usePriorityWrites();
+  const newPriority = useNewPriority();
 
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
@@ -235,12 +236,13 @@ export function PrioritiesTable({
     <section aria-label="Priorities" className="space-y-3">
       <div className="space-y-3" ref={attachAbove}>
         <TableToolbar
+          actions={newPriority.action === undefined ? undefined : [newPriority.action]}
           searchLabel="Search priorities"
-          searchPlaceholder="Search priorities: title, owner"
+          searchPlaceholder="Search priorities"
           table={table}
-        >
-          <NewPriority />
-        </TableToolbar>
+        />
+        {/* What New priority opens stands under the bar, outside it. */}
+        {newPriority.form}
       </div>
 
       <DataTable

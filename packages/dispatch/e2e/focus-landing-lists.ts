@@ -19,6 +19,7 @@ import {
   writeFromOtherDevice,
 } from "./focus-landing-cases";
 import { nextFrames, settledScrollTop } from "./frames";
+import { expandedState } from "./settled";
 import { openIssuesTab, openSurface, seedSurfaces, setBoardLanes } from "./table-controls";
 import { expect, type Page } from "./test";
 
@@ -286,26 +287,70 @@ async function chipsFor(
   };
 }
 
-/** An issue of the case's own carrying every label, and the List open on all twenty: more chips
- *  than the line holds at either width. Hands back how many chips the line holds then. */
-async function lineHolds(context: CaseContext): Promise<number> {
+/** An issue of the case's own carrying every label, and the List open, its bar drawn. */
+async function listWithEveryLabel(context: CaseContext): Promise<Locator> {
   const { n, page } = context;
   const key = await freshIssue(`Chips ${n}`);
   await patchIssue(key, { labels: CHIP_LABELS });
   await openIssuesTab(page, "CORE", "List");
-  const { line, more } = await chipsFor(page, CHIP_LABELS);
+  return controlRow(page.getByTestId("main-content"));
+}
+
+/** That issue, and the List open on all twenty: more chips than the line holds at 1440. Hands
+ *  back how many chips the line holds then. */
+async function lineHolds(context: CaseContext): Promise<number> {
+  await listWithEveryLabel(context);
+  const { line, more } = await chipsFor(context.page, CHIP_LABELS);
   await expect(more).toBeVisible();
   // One read of the line: it has drawn and measured itself, and nothing narrows the List now.
   return line.count();
 }
 
-/** The last chip the line draws, taken off by Enter: a chip of the panel may move into its place. */
+/** The bar's own width under which it takes its narrow layout (`components/ControlRow.tsx`). */
+const NARROW_BELOW = 640;
+
+/** Whether `row`, a control bar on the slots, stands in its narrow layout, where no chip stands in
+ *  its line and no `+N more`: its chips are listed at the top of its Filters panel (R8). */
+async function narrowBar(row: Locator): Promise<boolean> {
+  return (await row.evaluate((node) => node.getBoundingClientRect().width)) < NARROW_BELOW;
+}
+
+/** The chips at the top of the Filters panel `row`'s trigger opens, which the keyboard opens unless
+ *  it is open already: each a chip's remove control, in their order. */
+async function panelChips(page: Page, row: Locator): Promise<{ chips: Locator; panel: Locator }> {
+  const trigger = control(row, CONTROL.panelTrigger);
+  if ((await expandedState("the bar's Filters", trigger)) === "shut") {
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+  }
+  const panel = page.getByRole("dialog", { name: "Filters" });
+  await expect(panel).toBeVisible();
+  return { chips: panel.getByRole("button", { name: /^Remove .+ filter$/ }), panel };
+}
+
+/** The last chip the line draws, taken off by Enter: a chip of the panel may move into its place.
+ *  Below 640 px of the bar's width no chip stands in the line (R8), so the chip is the last of the
+ *  Filters panel's top list, which stays open. */
 const chipLineLast: Arrange = async (context) => {
   const { page } = context;
-  await lineHolds(context);
-  const { line } = await chipsFor(page, CHIP_LABELS);
-  // One read of the chip's name: the line has drawn and measured itself with `+N more` after it.
-  const name = (await line.last().getAttribute("aria-label")) ?? "";
+  const row = await listWithEveryLabel(context);
+  let name: string;
+  if (await narrowBar(row)) {
+    await page.goto(
+      `/projects/CORE/issues?${CHIP_LABELS.map((label) => `label=${label}`).join("&")}`
+    );
+    await expect(control(row, CONTROL.panelTrigger)).toHaveAccessibleName(
+      `Filters · ${CHIP_LABELS.length}`
+    );
+    const { chips } = await panelChips(page, row);
+    await expect(chips).toHaveCount(CHIP_LABELS.length);
+    name = (await chips.last().getAttribute("aria-label")) ?? "";
+  } else {
+    const { line, more } = await chipsFor(page, CHIP_LABELS);
+    await expect(more).toBeVisible();
+    // One read of the chip's name: the line has drawn and measured itself with `+N more` after it.
+    name = (await line.last().getAttribute("aria-label")) ?? "";
+  }
   const chip = page.getByRole("button", { exact: true, name });
   await chip.focus();
   return {
@@ -388,7 +433,13 @@ export const LIST_SCENE: Scene = {
       what: "the reader taking a chip off the line or off its +N more panel",
       cases: {
         "chip-line-last": { arrange: chipLineLast },
-        "chip-panel-last": { arrange: chipPanelLast },
+        "chip-panel-last": {
+          arrange: chipPanelLast,
+          only: {
+            width: 1440,
+            none: "below 640 px of the bar's width the List's bar draws no `+N more` (R8): its chips are listed at the top of its Filters panel, where chip-line-last takes the last one off",
+          },
+        },
         "chip-panel-fits": {
           none: "a chip taken off in the panel frees the line only the one digit `+N more` may lose, a few pixels, so a panel chip moves into the line only where the line's slack is already that small, and nothing a case sets decides the chips' widths in each engine",
         },
@@ -422,12 +473,31 @@ export const BOARD_SCENE: Scene = {
       what: "a press, a live update or another device",
       cases: {
         // Every seeded issue holds an open ask and none is claimed, so both narrowings keep every
-        // seeded card and draw a chip each.
+        // seeded card and draw a chip each: in the bar's line from 640 px of its width, and below
+        // it at the top of its Filters panel, where the reader takes one off (R8).
         press: {
           arrange: async ({ page, scene }) => {
             const { row } = await openSurface(page, "project Board", scene);
             await page.goto(`/projects/${scene.project}/issues?needs-you=1&unclaimed=1`);
-            return chipCase(page, row);
+            if (!(await narrowBar(row))) return chipCase(page, row);
+            const { chips, panel } = await panelChips(page, row);
+            await expect(chips).toHaveCount(2);
+            const names = await chips.evaluateAll((all) =>
+              all.map((chip) => chip.getAttribute("aria-label") ?? "")
+            );
+            const first = panel.getByRole("button", { exact: true, name: names[0] ?? "" });
+            const next = names[1] ?? "";
+            await first.focus();
+            return {
+              answered: () => expect(chips).toHaveCount(1),
+              cause: pressEnter(page),
+              caused: true,
+              control: first,
+              named: {
+                at: panel.getByRole("button", { exact: true, name: next }),
+                name: `button "${next}"`,
+              },
+            };
           },
         },
         // A done issue's card is drawn in the Done column, which the Board draws folded.

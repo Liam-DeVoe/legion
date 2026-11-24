@@ -1094,13 +1094,22 @@ function LocationSearch(): ReactNode {
   return <output data-testid="location-search">{useLocation().search}</output>;
 }
 
-/** Opens the row's filter panel if it is closed. */
+/** Opens the row's filter panel if it is closed. In the bar's look the trigger says its count
+ *  only while a narrowing is on. */
 async function openFilters(): Promise<void> {
   const user = userEvent.setup();
-  const disclosure = await screen.findByRole("button", { name: /^Filters · \d+$/ });
+  const disclosure = await screen.findByRole("button", { name: /^Filters( · \d+)?$/ });
   if (disclosure.getAttribute("aria-expanded") === "false") {
     await user.click(disclosure);
   }
+}
+
+/** The Board's control bar itself: a chip is drawn there and, while the filter panel is open,
+ *  again at the panel's top, which is portalled outside the bar. */
+function bar(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
+  if (found === null) throw new Error("the Board draws no control bar");
+  return found;
 }
 
 /** Opens the `Labels` picker inside the filter panel if it is closed and toggles one option. */
@@ -1155,7 +1164,7 @@ test("Needs you keeps only issues with open asks and lives in the URL", async ()
     expect(screen.getByText("Answer me")).toBeTruthy();
     expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
     expect(screen.getByTestId("location-search").textContent).toBe("?needs-you=1");
-    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
+    await user.click(within(bar()).getByRole("button", { name: "Remove Needs you filter" }));
     expect(screen.getByTestId("location-search").textContent).toBe("");
     expect(await screen.findByText("Quiet")).toBeTruthy();
   } finally {
@@ -1280,7 +1289,7 @@ test("a search restored from ?q= narrows the list before anyone types", async ()
   try {
     await screen.findByText("Guidance");
     expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Search: guid filter" })).toBeTruthy();
+    expect(within(bar()).getByRole("button", { name: "Remove Search: guid filter" })).toBeTruthy();
   } finally {
     view.unmount();
     getMyState.mockRestore();
@@ -1341,7 +1350,7 @@ test("collapses filter controls by default and retains the disclosure preference
 
   try {
     await screen.findByText("Core work");
-    const disclosure = screen.getByRole("button", { name: "Filters · 0" });
+    const disclosure = screen.getByRole("button", { name: "Filters" });
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
 
@@ -1354,7 +1363,7 @@ test("collapses filter controls by default and retains the disclosure preference
 
     await user.click(screen.getByRole("button", { name: "Filters · 1" }));
     await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
-    expect(screen.getByRole("button", { name: "Filters · 0" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filters" })).toBeTruthy();
     expect(
       window.localStorage.getItem(userPreferenceStorageKey("alice", "project.issue-filters"))
     ).toBe("collapsed");
@@ -1376,7 +1385,7 @@ test("collapses a saved filter disclosure when no filters are active", async () 
   try {
     await screen.findByText("Core work");
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Filters · 0" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "Filters" })).toHaveAttribute(
         "aria-expanded",
         "false"
       )
@@ -1436,7 +1445,7 @@ test("a ?status= in the URL is neither counted nor chipped by the control row", 
     expect(
       screen.queryByRole("button", { name: "Remove Status: Done filter" })
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Label: x filter" })).toBeTruthy();
+    expect(within(bar()).getByRole("button", { name: "Remove Label: x filter" })).toBeTruthy();
   } finally {
     view.unmount();
     getMyState.mockRestore();
@@ -1470,14 +1479,15 @@ test("a panel the stored choice opens as the Board loads takes no focus, and a p
     expect(document.activeElement).toBe(document.body);
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
 
-    // The reader's own press closes it, and their next one opens it with the focus in it.
+    // The reader's own press closes it, and their next one opens it with the focus in it, on its
+    // first control: the chip of the narrowing that is on, which the panel lists at its top.
     await user.click(trigger);
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
     await user.click(trigger);
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
     expect(
       within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
-        name: "Labels · 1",
+        name: "Remove Label: bug filter",
       })
     ).toHaveFocus();
   } finally {
@@ -1495,7 +1505,7 @@ test("the trigger's press either way, Escape and a press outside that closes the
 
   try {
     await screen.findByText("Core work");
-    const trigger = screen.getByRole("button", { name: "Filters · 0" });
+    const trigger = screen.getByRole("button", { name: "Filters" });
     await user.click(trigger);
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
     await user.click(trigger);

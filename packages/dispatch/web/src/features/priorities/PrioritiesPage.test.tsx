@@ -468,18 +468,38 @@ test("opening a row lists the work advancing that priority, over every project",
   expect(listing).toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
 });
 
-test("a person who may write adds a priority", async () => {
+// R8: New priority is an action of the priorities table's control bar, drawn by the bar
+// (`data-control="bar-action"`) rather than a control the page draws into it, and the form it
+// opens stands under the bar, outside it, above the table. The bar's search box names what it
+// searches in the words of its name.
+test("a person who may write adds a priority from the bar's New priority, whose form stands under the bar", async () => {
   const user = userEvent.setup();
   const { create } = page(FIFTEEN);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  await user.click(screen.getByRole("button", { name: "New priority" }));
+  const bar = screen
+    .getByRole("region", { name: "Priorities" })
+    .querySelector<HTMLElement>('[data-control="control-row"]');
+  if (bar === null) throw new Error("the priorities table draws no control bar");
+  expect(within(bar).getByRole("searchbox", { name: "Search priorities" })).toHaveAttribute(
+    "placeholder",
+    "Search priorities"
+  );
+  const action = within(bar).getByRole("button", { name: "New priority" });
+  expect(action).toHaveAttribute("data-control", "bar-action");
+  await user.click(action);
+  const form = screen.getByRole("form", { name: "New priority" });
+  expect(bar.contains(form)).toBe(false);
+  expect(bar.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await user.type(
-    screen.getByRole("textbox", { name: "Title of the new priority" }),
+    within(form).getByRole("textbox", { name: "Title of the new priority" }),
     "Spend ruthlessly"
   );
-  await user.click(screen.getByRole("button", { name: "Add priority" }));
+  await user.click(within(form).getByRole("button", { name: "Add priority" }));
   await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "Spend ruthlessly" });
+  // The form closes as the write goes out, and the action stays in the bar.
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(within(bar).getByRole("button", { name: "New priority" })).toBeDefined();
 });
 
 test("a title is renamed where it is read, with no edit mode and no Save button", async () => {

@@ -496,8 +496,13 @@ test("List table and Board control row share the URL's status, labels and search
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
     expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
+    // Read in the Board's bar: its Filters panel, open while a narrowing is on, lists the same
+    // chips again at its top.
+    const drawn = page.view.container.querySelector<HTMLElement>('[data-control="control-row"]');
+    if (drawn === null) throw new Error("the Board draws no control bar");
+    const bar = within(drawn);
+    expect(bar.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
+    expect(bar.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));
     expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
     expect(screen.getByTestId("location").textContent).toContain("status=todo");

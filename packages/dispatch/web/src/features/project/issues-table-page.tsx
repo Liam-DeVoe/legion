@@ -2,18 +2,13 @@ import type { Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useState } from "react";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
-import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
-import { DisplayMenu } from "../../components/DisplayMenu";
 import {
   columnFilterChip,
   columnFilterPicks,
   type FilterChip,
-  filterChips,
 } from "../../components/filter-chips";
 import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
-import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
@@ -106,17 +101,22 @@ export function IssueTableStatus({
   );
 }
 
-/** Which of the row's own panels stands open, so the List keeps one at a time rather than a
- *  row of them: the filter panel behind the trigger, or the display menu at the right end. */
+/** Which of the bar's own panels stands open, so the List keeps one at a time rather than a
+ *  row of them: the filter panel behind the trigger, or the display menu at the bar's end. */
 type ToolbarPanel = "flags" | "view";
 
 /**
- * The one row the List's controls sit in: the search box, the trigger over the three flags that
- * narrow no column of the table, the chips of every narrowing that is on - the issues a link
- * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
- * draws), the columns menu, and the display menu carrying the grouping.
- * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
- * is drawn here as well, so a column the reader hid keeps its narrowing in sight.
+ * The control bar the List's controls sit in (`ControlRow`), handed each control as its props:
+ * the search box, **Filters** over the three flags that narrow no column of the table, with
+ * **Clear filters** beside it, the chips of every narrowing that is on - the issues a link names
+ * (`only=`), the flags, and every column's filter - the columns menu, and the display menu
+ * carrying the grouping. The trigger's panel lists those chips at its top, the column filters
+ * among them. A column's filter is set on that column's header, where `ColumnFilter` draws it,
+ * and its chip is drawn here as well, so a column the reader hid keeps its narrowing in sight.
+ *
+ * The placeholder is the box's name, `Search issues`, which still says what it searches where
+ * the bar gives the box its least room: beside a priority's margin, and at the phone's width
+ * (the measurement of 2026-11-24, INFRA-4948's `r8-bar-measurement-md`).
  */
 export function IssueTableToolbar({
   searchRef,
@@ -207,12 +207,16 @@ export function IssueTableToolbar({
     return picks.length === 0 ? [] : [columnFilterChip(column, picks)];
   });
   // Exactly the scope it has always had: the table's own filters and search, and the two flags
-  // the write below takes out of the address.
-  const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
-  const chips = filterChips(
-    [...(selection === undefined ? [] : [selection]), ...flagged, ...columned],
-    "compact"
-  );
+  // the write below takes out of the address. It is offered while one of those differs from the
+  // view the table opens with, so the open statuses alone, which it goes back to, offer nothing.
+  const ownFilters =
+    filters.length === 1 && filters[0]?.id === "status" && isDefaultStatus(filters[0].value);
+  const narrowed = !ownFilters || search !== "" || flags.needsYou || flags.unread;
+  const chips: FilterChip[] = [
+    ...(selection === undefined ? [] : [selection]),
+    ...flagged,
+    ...columned,
+  ];
   const clearFilters = () =>
     update((current) => {
       const next = writeUrl(
@@ -234,70 +238,58 @@ export function IssueTableToolbar({
     <>
       <ControlRow
         chips={chips}
-        display={
-          <DisplayMenu
-            label="View"
-            onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
-            open={openPanel === "view"}
-            sections={[
-              {
-                id: "group",
-                label: "Group by",
-                onChange: (next) => {
-                  setGrouping(next ? [next] : []);
-                  setExpanded(true);
-                },
-                options: [
-                  { label: "Nothing", value: "" },
-                  ...table
-                    .getAllLeafColumns()
-                    .filter((column) => column.getCanGroup())
-                    .map((column) => ({
-                      label: String(column.columnDef.header),
-                      value: column.id,
-                    })),
-                ],
-                value: grouping[0] ?? "",
+        clear={narrowed ? clearFilters : undefined}
+        columns={{ columns: table.getAllLeafColumns() }}
+        display={{
+          label: "View",
+          onOpenChange: (open) => setOpenPanel(open ? "view" : undefined),
+          open: openPanel === "view",
+          sections: [
+            {
+              id: "group",
+              label: "Group by",
+              onChange: (next) => {
+                setGrouping(next ? [next] : []);
+                setExpanded(true);
               },
-            ]}
-            size="compact"
-          />
-        }
-        onClear={narrowed ? clearFilters : undefined}
-        search={
-          <SearchBox
-            className="w-full"
-            label="Search issues"
-            onChange={(value) => setSearch(value)}
-            placeholder="Search issues: key, title, epic, assignee, author, labels"
-            ref={searchRef}
-            size="compact"
-            value={search}
-          />
-        }
+              options: [
+                { label: "Nothing", value: "" },
+                ...table
+                  .getAllLeafColumns()
+                  .filter((column) => column.getCanGroup())
+                  .map((column) => ({
+                    label: String(column.columnDef.header),
+                    value: column.id,
+                  })),
+              ],
+              value: grouping[0] ?? "",
+            },
+          ],
+        }}
+        search={{
+          label: "Search issues",
+          onChange: (value) => setSearch(value),
+          placeholder: "Search issues",
+          ref: searchRef,
+          value: search,
+        }}
         size="compact"
-        trigger={
-          <PanelTrigger
-            count={flagged.length + columned.length}
-            label="Filters"
-            onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
-            open={openPanel === "flags"}
-            size="compact"
-            stacked
-          >
-            {() => (
-              <>
-                <IssueFlagChips size="compact" />
-                <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed} size="compact">
-                  Unclaimed
-                </Chip>
-              </>
-            )}
-          </PanelTrigger>
-        }
-      >
-        <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
-      </ControlRow>
+        trigger={{
+          children: () => (
+            <>
+              <IssueFlagChips size="compact" />
+              <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed} size="compact">
+                Unclaimed
+              </Chip>
+            </>
+          ),
+          count: flagged.length + columned.length,
+          label: "Filters",
+          onOpenChange: (open) => setOpenPanel(open ? "flags" : undefined),
+          open: openPanel === "flags",
+          stacked: true,
+        }}
+      />
       <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>
   );

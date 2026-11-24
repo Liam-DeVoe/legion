@@ -22,12 +22,9 @@ import { AttentionBadge } from "../../components/Badge";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { EmptyState } from "../../components/EmptyState";
-import { filterChips } from "../../components/filter-chips";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
-import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
 import {
@@ -723,56 +720,52 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
-  // One row holds the Board's search and filtering, above whatever the board itself is showing
-  // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
-  // controls that did it. Nothing they can press here makes the header taller:
-  // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
-  // part of the row that may take a second line.
+  // One bar holds the Board's search and filtering (`ControlRow`), above whatever the board
+  // itself is showing - its cards, the skeleton or a refusal - so a reader who has narrowed the
+  // list keeps the controls that did it: the search box, **Filters** over the labels and the
+  // three flags, and the chips, which the trigger's panel lists at its top too. Nothing they can
+  // press here makes the header taller: the bar is one line that never wraps, the chips stand in
+  // it, and the filter panel is portalled over the page (`AnchoredPanel`). Show Icebox & Done and
+  // Show lanes stay in the project's header.
   const controls = (
     <>
       <ControlRow
-        chips={filterChips(activeFilters)}
+        chips={activeFilters}
         className="mb-4"
-        search={
-          <SearchBox
-            className="w-full"
-            label="Search issues"
-            onChange={filters.setSearch}
-            placeholder="Issue key or title"
-            value={filters.search}
-          />
-        }
-        trigger={
-          <PanelTrigger
-            count={activeFilterCount}
-            focusOnOpen={pressedOpen}
-            label="Filters"
-            onOpenChange={openFilterPanel}
-            open={filtersExpanded}
-            stacked
-          >
-            {() => (
-              <>
-                <MultiSelect
-                  {...filterPanel("labels")}
-                  emptyMessage="No labels yet."
-                  label="Labels"
-                  onChange={setLabels}
-                  options={availableLabels}
-                  searchLabel="Search labels"
-                  selected={labels}
-                />
-                <IssueFlagChips />
-                <Chip
-                  onClick={() => filters.setUnclaimed(!filters.unclaimed)}
-                  selected={filters.unclaimed}
-                >
-                  Unclaimed
-                </Chip>
-              </>
-            )}
-          </PanelTrigger>
-        }
+        search={{
+          label: "Search issues",
+          onChange: filters.setSearch,
+          placeholder: "Issue key or title",
+          value: filters.search,
+        }}
+        trigger={{
+          children: () => (
+            <>
+              <MultiSelect
+                {...filterPanel("labels")}
+                emptyMessage="No labels yet."
+                label="Labels"
+                onChange={setLabels}
+                options={availableLabels}
+                searchLabel="Search labels"
+                selected={labels}
+              />
+              <IssueFlagChips />
+              <Chip
+                onClick={() => filters.setUnclaimed(!filters.unclaimed)}
+                selected={filters.unclaimed}
+              >
+                Unclaimed
+              </Chip>
+            </>
+          ),
+          count: activeFilterCount,
+          focusOnOpen: pressedOpen,
+          label: "Filters",
+          onOpenChange: openFilterPanel,
+          open: filtersExpanded,
+          stacked: true,
+        }}
       />
       <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
     </>

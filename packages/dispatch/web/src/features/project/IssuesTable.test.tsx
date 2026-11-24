@@ -215,6 +215,14 @@ async function groupRowsBy(user: UserEvent, option: string) {
   await user.click(screen.getByRole("radio", { name: option }));
 }
 
+/** The List's control bar itself: a chip is drawn there and, while the Filters panel is open,
+ *  again at the panel's top, which is portalled outside the bar. */
+function listBar(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
+  if (found === null) throw new Error("the List draws no control bar");
+  return found;
+}
+
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {
   table([
     issue("CORE-1", {
@@ -557,12 +565,32 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
     screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
   ).toBe("Filter Claimed by");
   // The flags are behind the row's one filter trigger now, so the reader opens it to read them.
-  await user.click(screen.getByRole("button", { name: /^Filters · \d+$/ }));
+  // It says no count once nothing is on.
+  await user.click(screen.getByRole("button", { name: "Filters" }));
   for (const name of ["Needs you", "Unread", "Unclaimed"]) {
     await waitFor(() =>
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
     );
   }
+});
+
+// R8 with D24: the List's Clear filters keeps its scope - the table's filters, its search and
+// the two flags - and the bar offers it only while one of those differs from the view the table
+// opens with: the open statuses alone offer none, and a search typed alone offers it, though the
+// trigger counts no search. The box's placeholder is its name, which fits its least room.
+test("the List's bar offers Clear filters only while something it sets back differs from the open view", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { title: "Rank the queue" })]);
+  await screen.findByRole("row", { name: "CORE-1 Rank the queue" });
+  const search = within(listBar()).getByRole("searchbox", { name: "Search issues" });
+  expect(search).toHaveAttribute("placeholder", "Search issues");
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
+  await user.type(search, "rank");
+  const clear = await within(listBar()).findByRole("button", { name: "Clear filters" });
+  expect(within(listBar()).getByRole("button", { name: "Filters" })).toBeDefined();
+  await user.click(clear);
+  await waitFor(() => expect(search).toHaveValue(""));
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
 });
 
 // R2: each control takes its size from the page, comfortable or compact, as a value the page
@@ -574,7 +602,7 @@ test("R2: the Filters panel's chips and the bar's Move to epic draw the List's c
   table([issue("CORE-1"), issue("CORE-2")]);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   const moveTo = screen.getByRole("button", { name: pickNamed("Move to epic") });
-  await user.click(screen.getByRole("button", { name: /^Filters · \d+$/ }));
+  await user.click(screen.getByRole("button", { name: "Filters" }));
   const chip = (name: string) => drawnSize(screen.getByRole("button", { name }));
   expect({
     moveTo: drawnSize(moveTo),
@@ -1583,14 +1611,14 @@ test("the row's filter panel turns Unclaimed on and the table narrows to it", as
   };
   table([issue("CORE-1", { claim: held }), issue("CORE-2")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.click(screen.getByRole("button", { name: "Filters · 0" }));
+  await user.click(screen.getByRole("button", { name: "Filters" }));
   await user.click(screen.getByRole("button", { name: "Unclaimed" }));
   await waitFor(() =>
     expect(screen.getByTestId("route-search").textContent).toContain("unclaimed=1")
   );
   await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull());
   expect(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
-  expect(screen.getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
+  expect(within(listBar()).getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
 });
 
 test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
@@ -2465,8 +2493,8 @@ test("Clear filters restores the default view rather than loading every closed i
 // The List draws its toolbar while it reads issues it has not loaded, as the Board draws its
 // controls: a press in the toolbar that starts that read leaves the toolbar where it was, with
 // the keyboard focus in it, and the skeleton stands in for the table alone. **Clear filters**
-// takes every chip off with it, so it moves from the chips line into the first line and hands
-// its focus to the row's filter trigger, which is the rule for it on every page
+// sets every narrowing back, and goes with them, since nothing it sets back differs any more; it
+// hands its focus to the bar's filter trigger beside it, which is the rule for it on every page
 // (`components/ControlRow.tsx`); what must not happen is the focus dropping to the page's body.
 test("a press in the toolbar that sends the List off to read its issues keeps the toolbar, and the focus in it", async () => {
   const user = userEvent.setup();
@@ -2481,8 +2509,8 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
-  expect(screen.getByRole("button", { name: "Clear filters" })).toBeDefined();
-  const trigger = screen.getByRole("button", { name: /^Filters · \d+$/ });
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
+  const trigger = screen.getByRole("button", { name: "Filters" });
   // Not the page's body, from which a keyboard reader would start again at its first link.
   expect(trigger).toHaveFocus();
   open.resolve([issue("CORE-1")]);
@@ -2494,9 +2522,9 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
 // issues. The pick is the pointer's, whose option keeps the focus in the list's text box, and the
 // List stands in the shell's main content with the page's focus rescue mounted: the press inside
 // the list's panel is the reader's own, so the rescue answers it inside the main content, from
-// the place the panel was opened from. Its walk back passes over the search box, which takes
-// typed text, to the toolbar's Clear filters, and never sends the focus out of the main content
-// to the shell's navigation.
+// the place the panel was opened from. Its walk back reaches the control bar above the table, whose
+// last control is the display menu, and never sends the focus out of the main content to the
+// shell's navigation, nor to the search box.
 test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
   const user = userEvent.setup();
   // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
@@ -2515,12 +2543,12 @@ test("a column filter press that sends the List off to read its issues leaves th
   await afterRescue();
   // Not the page's body, from which a keyboard reader would start again at its first link, nor
   // that link itself, outside the main content, nor the search box.
-  const clear = screen.getByRole("button", { name: "Clear filters" });
-  expect(clear).toHaveFocus();
+  const view = within(listBar()).getByRole("button", { name: "View" });
+  expect(view).toHaveFocus();
   expect(screen.getByRole("link", { name: "Inbox" })).not.toHaveFocus();
   open.resolve([issue("CORE-1")]);
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(clear).toHaveFocus();
+  expect(view).toHaveFocus();
 });
 
 // A row's own Start next is held (`aria-disabled`, `heldPress`) from its press until the list
@@ -3204,7 +3232,7 @@ test("a column filter is a chip of the row, counted by the trigger, while its co
   await user.click(chip());
   await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
   expect(screen.getByTestId("route-search").textContent).not.toContain("label=");
-  expect(screen.getByRole("button", { name: "Filters · 0" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Filters" })).toBeDefined();
 });
 
 // The statuses the List opens with are no narrowing of the reader's: a link leaves them out and

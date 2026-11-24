@@ -282,6 +282,35 @@ function triggerOf(root: Element): HTMLElement | null {
   return controlIn(root, CONTROL.panelTrigger) ?? controlIn(root, CONTROL.searchBox);
 }
 
+/**
+ * The chips at the top of the trigger's panel, each with its remove control. The list is a focus
+ * place of its own (`useFocusPlace`), as the bar's line is: a chip taken off hands the focus to the
+ * chip now at its place, else to the one before it, rather than to the panel's next field, which
+ * `PanelTrigger`'s own hand-off, counting the whole panel, would land on (D26). Its check runs
+ * before the panel's, a child's effect before its parent's, so it lands first. The list goes with
+ * its last chip, and the panel's hand-off then lands on the control now at its place, the panel's
+ * first field.
+ */
+function PanelChips({
+  chips,
+  size,
+}: {
+  chips: readonly FilterChip[];
+  size: ControlSize;
+}): ReactNode {
+  const list = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    () => list.current,
+    () => null
+  );
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which chip of the list took the focus, for the hand-off when a commit takes that chip away (`useFocusPlace`), so the list needs no role of its own.
+    <div className="flex w-full flex-col items-start gap-2" onFocus={noteFocus} ref={list}>
+      {filterChips(chips, size)}
+    </div>
+  );
+}
+
 /** The bar's own width, read as it is laid out and whenever it changes size: the window
  *  resized, the drawer opened. 0 where the page lays it out nowhere, a test DOM. */
 function useOwnWidth(ref: RefObject<HTMLElement | null>): number {
@@ -461,8 +490,10 @@ export interface ControlRowProps<TData = unknown> {
  * such as a chip's link. The hand-off waits for the removal to commit, whatever holds the focus
  * meanwhile (a pointer's click in Safari focuses no button, so the focus stays on the body), and
  * then moves the focus only if it is on the page's body, so a reader who moved it elsewhere while
- * the chip was going keeps it there. A chip taken off in the trigger's panel is the panel's own,
- * and `PanelTrigger` hands its focus on inside the panel.
+ * the chip was going keeps it there. A chip taken off in the trigger's panel hands it to the
+ * panel's chip now at its place, else to the one before it, as the line's chips do: the panel's
+ * list of chips is a focus place of its own (`PanelChips`). Its last chip takes the list with it,
+ * and `PanelTrigger` then hands the focus on inside the panel, to its first field.
  *
  * Any other focused control a commit takes out of a slot while the bar stays hands the focus the
  * same way (`useFocusPlace`): to the control now at its place in that slot, else to the nearest
@@ -844,9 +875,7 @@ export function ControlRow<TData = unknown>({
           {(close) => (
             <>
               {barChips === undefined || barChips.length === 0 ? null : (
-                <div className="flex w-full flex-col items-start gap-2">
-                  {filterChips(barChips, size)}
-                </div>
+                <PanelChips chips={barChips} size={size} />
               )}
               {fields(close)}
             </>

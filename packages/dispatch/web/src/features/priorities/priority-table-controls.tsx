@@ -1,29 +1,31 @@
 import type { Table } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
-import { ColumnsMenu } from "../../components/ColumnsMenu";
+import type { BarActionProps } from "../../components/BarAction";
 import { ControlRow } from "../../components/ControlRow";
-import { DisplayMenu } from "../../components/DisplayMenu";
-import { columnFilterChips, filterChips } from "../../components/filter-chips";
-import { SearchBox } from "../../components/SearchBox";
+import { columnFilterChips } from "../../components/filter-chips";
+
+const NO_ACTIONS: readonly BarActionProps[] = [];
 
 /**
- * The one row a table of these pages draws its controls in, as the project List draws its own
- * (`features/project/issues-table-page.tsx`): the search box at the head of the row, the page's
- * own controls beside it with the columns menu, the display menu at the right end carrying the
- * grouping, and the chips of the column filters that are on. The table has no narrowing that is
- * not one of its columns, so the row draws no filter trigger: every column's filter is set on
- * its own header (`ColumnFilter`). Its chip is drawn here as well, whether the column is shown
- * or hidden, so a column the reader hid with the columns menu keeps its narrowing in sight, and
- * the chip's press takes it off.
+ * The control bar a table of these pages draws its controls in (`ControlRow`), handed each
+ * control as its props, as the project List hands its own (`features/project/issues-table-page.tsx`):
+ * the search box first, the chips of the column filters that are on, the page's actions, the
+ * columns menu, and the display menu at the bar's end carrying the grouping. The table has no
+ * narrowing that is not one of its columns, so the bar draws no filter trigger: every column's
+ * filter is set on its own header (`ColumnFilter`). Its chip is drawn here as well, whether the
+ * column is shown or hidden, so a column the reader hid with the columns menu keeps its narrowing
+ * in sight, and the chip's press takes it off; below 640 px of the bar's width the chips stand
+ * behind one **+N more** in the bar's line, which lists them. What an action opens - the
+ * priorities table's **New priority** form - the page draws under the bar, outside it.
  */
 export function TableToolbar<Row>({
-  children,
+  actions = NO_ACTIONS,
   searchLabel,
   searchPlaceholder,
   table,
 }: {
-  /** The page's own controls, such as the priorities table's **New priority**. */
-  children?: ReactNode;
+  /** The page's own actions, such as the priorities table's **New priority**. */
+  actions?: readonly BarActionProps[];
   searchLabel: string;
   searchPlaceholder: string;
   table: Table<Row>;
@@ -32,47 +34,39 @@ export function TableToolbar<Row>({
   const { globalFilter: search, grouping } = table.getState();
   return (
     <ControlRow
-      chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "compact")}
-      display={
-        <DisplayMenu
-          label="View"
-          onOpenChange={setViewOpen}
-          open={viewOpen}
-          sections={[
-            {
-              id: "group",
-              label: "Group by",
-              onChange: (next) => {
-                table.setGrouping(next ? [next] : []);
-                table.setExpanded(true);
-              },
-              options: [
-                { label: "Nothing", value: "" },
-                ...table
-                  .getAllLeafColumns()
-                  .filter((column) => column.getCanGroup())
-                  .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
-              ],
-              value: grouping[0] ?? "",
+      actions={actions}
+      chips={columnFilterChips(table.getAllLeafColumns())}
+      columns={{ columns: table.getAllLeafColumns() }}
+      display={{
+        label: "View",
+        onOpenChange: setViewOpen,
+        open: viewOpen,
+        sections: [
+          {
+            id: "group",
+            label: "Group by",
+            onChange: (next) => {
+              table.setGrouping(next ? [next] : []);
+              table.setExpanded(true);
             },
-          ]}
-          size="compact"
-        />
-      }
-      search={
-        <SearchBox
-          className="w-full"
-          label={searchLabel}
-          onChange={(value) => table.setGlobalFilter(value)}
-          placeholder={searchPlaceholder}
-          size="compact"
-          value={search}
-        />
-      }
+            options: [
+              { label: "Nothing", value: "" },
+              ...table
+                .getAllLeafColumns()
+                .filter((column) => column.getCanGroup())
+                .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
+            ],
+            value: grouping[0] ?? "",
+          },
+        ],
+      }}
+      search={{
+        label: searchLabel,
+        onChange: (value) => table.setGlobalFilter(value),
+        placeholder: searchPlaceholder,
+        value: search,
+      }}
       size="compact"
-    >
-      {children}
-      <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
-    </ControlRow>
+    />
   );
 }

@@ -178,9 +178,12 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
       "data-moved",
       "true"
     );
-    // The shared label parameter remains readable by the Board strip.
+    // The shared label parameter remains readable by the Board strip. The chip is read in the
+    // Board's bar: its Filters panel, open by itself while a narrowing is on, lists it again (R8).
     await page.getByRole("button", { name: "Board", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Remove Label: frontend filter" })).toBeVisible();
+    await expect(
+      controlRow(page).getByRole("button", { name: "Remove Label: frontend filter" })
+    ).toBeVisible();
     await page.getByRole("button", { name: "List", exact: true }).click();
     await expect(filterPicker(page, "Labels")).toHaveAttribute(
       "aria-label",
@@ -471,9 +474,9 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       .getByRole("checkbox", { name: "Updated", exact: true })
       .check();
     await page.keyboard.press("Escape");
-    // Below `sm` the row wraps, so the search box takes a line of its own: at 390 px it is as
-    // wide as the row itself, which is the box a reader had before the controls moved into one
-    // row. The three controls beside it sit on the line under it.
+    // The List's bar is one line at every width (R8): at 390 px the search box, Filters, the
+    // columns menu and the display menu stand side by side in the bar, the box first, and the bar
+    // is as tall as its tallest control.
     await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
     // The search box was waited for on the line above, and a drawn element has a box.
     const search = await page.getByRole("searchbox", { name: "Search issues" }).boundingBox();
@@ -482,10 +485,13 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     // `ControlRow` draws the trigger in the one commit that draws the search box waited for.
     const trigger = await page.getByRole("button", { name: /^Filters/ }).boundingBox();
     if (!search || !row || !trigger) throw new Error("The control row could not be measured");
-    expect(search.width).toBeGreaterThan(300);
     expect(search.x).toBeCloseTo(row.x, 0);
-    expect(search.width).toBeGreaterThan(row.width - 1);
-    expect(trigger.y).toBeGreaterThanOrEqual(search.y + search.height);
+    expect(trigger.x).toBeGreaterThanOrEqual(search.x + search.width);
+    expect(trigger.x + trigger.width).toBeLessThanOrEqual(row.x + row.width + 1);
+    expect(
+      Math.abs(trigger.y + trigger.height / 2 - (search.y + search.height / 2))
+    ).toBeLessThanOrEqual(1);
+    expect(row.height).toBeLessThanOrEqual(Math.max(search.height, trigger.height) + 1);
     const keyHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Key", exact: true }) });

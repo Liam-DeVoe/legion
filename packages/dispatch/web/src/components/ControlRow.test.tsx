@@ -961,6 +961,47 @@ test("the trigger's panel lists each chip at its top, at every width, each with 
   }
 });
 
+// D26 in the trigger's panel: its list of chips is a focus place of its own, as the bar's line
+// is, so a chip taken off there hands the focus to the chip now at its place, else to the one
+// before it - never past the list to the panel's own field after it while a chip is left. The
+// list's last chip takes the list with it, and the panel hands the focus to that field.
+test("a chip taken off in the trigger's panel hands the focus to the next chip, else the one before", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <Bar
+      narrowings={["Alpha", "Beta", "Gamma"]}
+      trigger={{
+        children: () => <button type="button">First field</button>,
+        label: "Filter",
+        onOpenChange: () => undefined,
+        open: true,
+        stacked: true,
+      }}
+    />
+  );
+  try {
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    const chip = (name: string) =>
+      within(panel).getByRole("button", { name: `Remove ${name} filter` });
+    const take = async (name: string) => {
+      const taken = chip(name);
+      act(() => taken.focus());
+      await user.keyboard("{Enter}");
+      expect(taken.isConnected).toBe(false);
+    };
+    await take("Alpha");
+    expect(chip("Beta")).toHaveFocus();
+    // The list's last chip, with the panel's field after it: the one before it takes the focus.
+    await take("Gamma");
+    expect(chip("Beta")).toHaveFocus();
+    await take("Beta");
+    expect(within(panel).queryAllByRole("button", { name: /^Remove / })).toEqual([]);
+    expect(within(panel).getByRole("button", { name: "First field" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 // --- The bar's line, rewritten from the row's rules ---------------------------------------------
 
 test("the slots are drawn in the bar's own order, whatever order the page names them in", () => {

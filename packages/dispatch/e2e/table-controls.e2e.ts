@@ -80,6 +80,7 @@ import {
   listOf,
   listTrigger,
   openFilterPanel,
+  pickFilterOption,
   pickFromList,
 } from "./filters";
 import { focusHolder } from "./focus";
@@ -473,7 +474,10 @@ test("however many narrowings are on, their chips take at most one more line of 
 const BOARD_LABELS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"];
 
 // SLOW(>=2s): four seeded issues, read at three widths with and without nine narrowings.
-test("however many narrowings are on, their chips take at most one more line of the Board's row, at every width", async ({
+// R8: the chips stand in the bar's one line, which never grows. From 640 px of the bar's width
+// the line draws the chips that fit and one `+N more` for the rest; below it no chip stands in
+// the line, **Filters**' badge says their number, and its panel lists every one.
+test("however many narrowings are on, the Board's bar stays one line at every width, its chips behind +N more or, below 640 px, in its Filters panel", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -486,6 +490,7 @@ test("however many narrowings are on, their chips take at most one more line of 
   }
   const main = page.getByTestId("main-content");
   const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
   const firstCard = page.locator("[data-board-card]").first();
   // Seven labels, the search text and the needs-you flag: nine chips, and every issue kept.
   const nine = `/projects/CORE/issues?${BOARD_LABELS.map((label) => `label=${label}`).join("&")}&q=Rollout&needs-you=1`;
@@ -498,6 +503,7 @@ test("however many narrowings are on, their chips take at most one more line of 
     { height: 664, width: 390 },
   ]) {
     await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
     // The Board is the stored view from here on, so the address below opens on it too.
     await openSurface(page, "project Board", { issue: first, project: "CORE" });
     await resetScroll(page, firstCard);
@@ -507,39 +513,55 @@ test("however many narrowings are on, their chips take at most one more line of 
     await page.goto(nine);
     await expect(firstCard).toBeVisible();
     // The Board opens its Filter panel by itself while a narrowing is on, unless the reader shut
-    // it before (`project.issue-filters`). That panel lies over the chips line and takes the
-    // pointer, so it is shut first by its trigger, as a reader shuts it, and the chips are read
-    // with no panel over the row. The panel is drawn over the page, so the layout stays the same.
+    // it before (`project.issue-filters`). That panel lies over the page and takes the pointer, so
+    // it is shut first by its trigger, as a reader shuts it, and the chips are read with no panel
+    // open. The panel is drawn over the page, so the layout stays the same.
     await closeControlPanel(main);
     await expect(
       page.getByRole("dialog", { name: "Filters" }),
-      `${size.width}x${size.height}: the Board's Filter panel stayed open over the row`
+      `${at}: the Board's Filter panel stayed open over the row`
     ).toHaveCount(0);
-    // One chip per narrowing, so nine chips: the ones the chips line has room for, each whole,
-    // and the rest in the panel its `+N more` opens.
-    const chips = await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
+    await expect(trigger, `${at}: Filters does not count nine`).toHaveAccessibleName("Filters · 9");
+    const width = await row.evaluate((node) => node.getBoundingClientRect().width);
+    let split: string;
+    if (width >= 640) {
+      // One chip per narrowing, so nine chips: the ones the line has room for, each whole, and
+      // the rest in the panel its `+N more` opens.
+      const chips = await chipsInLineAndPanel(row, 9, at);
+      split = `${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`;
+    } else {
+      // Below 640 px of the bar's width no chip stands in the line: the badge says their number,
+      // and the panel lists every one with its remove control.
+      await expect(trigger, `${at}: Filters' badge`).toHaveText("9");
+      await expect(
+        control(row, CONTROL.chip),
+        `${at}: chips stand in the narrow bar's line`
+      ).toHaveCount(0);
+      const panel = await openFilterPanel(page, main);
+      await expect(
+        panel.getByRole("button", { name: /^Remove .+ filter$/ }),
+        `${at}: the Filters panel does not list the nine narrowings`
+      ).toHaveCount(9);
+      await closeControlPanel(main);
+      split = "no chip in the line, nine in the Filters panel";
+    }
     // Nothing in the row scrolls sideways. The chips were read above from a settled line, so
     // the boxes read here are the narrowed row's.
     const scrolling = await row.evaluate(sidewaysScrollers);
-    sideways.push(...scrolling.map((box) => `${size.width}x${size.height}: ${box}`));
+    sideways.push(...scrolling.map((box) => `${at}: ${box}`));
     await resetScroll(page, firstCard);
-    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
+    // The nine narrowings were read and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstCard);
-    const where = `${size.width}x${size.height}: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
-    readings.push(
-      `${where}, with ${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`
-    );
-    if (narrowed - plain > CHIP_LINE) over.push(where);
+    const where = `${at}, a ${Math.round(width)}px bar: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px`;
+    readings.push(`${where}, with ${split}`);
+    if (Math.abs(narrowed - plain) > 1) over.push(where);
   }
   await test.info().attach("first card with and without nine narrowings", {
     body: readings.join("\n"),
     contentType: "text/plain",
   });
-  // R1's bound is on every page of R2, so the Board's chips are held to it as the Inbox's are.
-  expect(
-    over,
-    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
-  ).toEqual([]);
+  // R8: the bar never grows, so no narrowing moves the first card, within 1 px.
+  expect(over, over.join("; ")).toEqual([]);
   // Nothing in the row scrolls sideways, at any width: a chip the line has no room for is listed
   // behind its `+N more`, never scrolled to.
   expect(sideways, `${sideways.join("; ")} scroll sideways in the Board's row`).toEqual([]);
@@ -973,6 +995,76 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       // The List is the stored view from here on, so its address below opens on it.
       if (surface.name === "project List") await openSurface(page, "project List", scene);
       await page.goto(surface.path);
+      // Below 640 px of the List's bar its chips leave the line and no Clear filters is drawn
+      // (R8): each narrowing is taken off at the top of the Filters panel, which stays open. That
+      // list hands the focus on as the line does (D26): to the chip now at the taken chip's place,
+      // else to the one before it, and once no chip is left to the panel's first field - never onto
+      // the page. The turns: the list's last chip by Enter, then its first by Space, then its first
+      // by Enter until none is left. The Inbox's row is not on the bar's slots yet.
+      const barWidth = await row.evaluate((node) => node.getBoundingClientRect().width);
+      if (surface.name === "project List" && barWidth < 640) {
+        const trigger = control(row, CONTROL.panelTrigger);
+        await expect(
+          trigger,
+          `${where}: Filters does not count the narrowings`
+        ).toHaveAccessibleName(`Filters · ${surface.chips}`);
+        await expect(chips, `${where}: chips stand in the narrow bar's line`).toHaveCount(0);
+        await expect(
+          row.getByRole("button", { exact: true, name: "Clear filters" }),
+          `${where}: Clear filters stands in the narrow bar`
+        ).toHaveCount(0);
+        await trigger.focus();
+        await page.keyboard.press("Enter");
+        const filters = page.getByRole("dialog", { name: "Filters" });
+        const listed = filters.getByRole("button", { name: /^Remove .+ filter$/ });
+        await expect(
+          listed,
+          `${where}: the Filters panel does not list every narrowing`
+        ).toHaveCount(surface.chips);
+        let order = await listed.evaluateAll((all) =>
+          all.map((chip) => chip.getAttribute("aria-label") ?? "")
+        );
+        for (let turn = 0; order.length > 0; turn++) {
+          const key = turn === 1 ? "Space" : "Enter";
+          const index = turn === 0 ? order.length - 1 : 0;
+          const taken = order[index] ?? "";
+          const chip = filters.getByRole("button", { exact: true, name: taken });
+          await chip.focus();
+          await page.keyboard.press(key);
+          await expect(
+            chip,
+            `${where}: ${key} on "${taken}" in the Filters panel took it not off`
+          ).toHaveCount(0);
+          order = order.filter((name) => name !== taken);
+          const next = order[index] ?? order[index - 1];
+          const landed = () =>
+            page.evaluate(() => {
+              const focused = document.activeElement;
+              return {
+                label: (focused?.getAttribute("aria-label") ?? focused?.textContent ?? "").trim(),
+                panel: focused?.closest('[role="dialog"]')?.getAttribute("aria-label") ?? "",
+              };
+            });
+          const right = (focus: { label: string; panel: string }) =>
+            focus.panel === "Filters" &&
+            (next === undefined ? !/^Remove .+ filter$/.test(focus.label) : focus.label === next);
+          const settled = await expect
+            .poll(async () => right(await landed()), { timeout: 2_000 })
+            .toBe(true)
+            .then(() => true)
+            .catch(() => false);
+          if (!settled) {
+            const focus = await landed();
+            wrong.push(
+              `${where}: after ${key} took "${taken}" off in the Filters panel the focus is on "${focus.label}"${focus.panel === "Filters" ? "" : ", outside the panel"}, not on ${next === undefined ? "the panel's first field" : `"${next}"`}`
+            );
+          }
+        }
+        await expect(filters, `${where}: the Filters panel shut as its chips went`).toHaveCount(1);
+        await page.keyboard.press("Escape");
+        await expect(filters).toHaveCount(0);
+        continue;
+      }
       // Every chip the address's narrowings draw, in their order: the chips line's, then the
       // ones its `+N more` lists in its panel.
       const drawn = await chipsInLineAndPanel(row, surface.chips, where);
@@ -2213,8 +2305,15 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   expect(address.searchParams.get("show"), "Clear filters took the view").toBe("dismissed");
 });
 
-// SLOW(>=2s): the List's whole layout worked and then read back after a reload.
-test("the project List keeps its grouping, columns, pager and layout, and the Board its disclosure", async ({
+// SLOW(>=2s): the List's whole layout worked and then read back after a reload, and the Board's
+// two disclosures each read back after a reload.
+// k-keep on the project List and the Board, both on the bar's slots: the List's grouping, its
+// column reorder, resize and visibility, its pager, its virtual rows, its bar of status counts
+// and the layout it stores at `dispatch.project-table.<project>`; the Board's filters opened, its
+// last chip cleared and the disclosure it stores at `project.issue-filters` found as it was left;
+// each list's own keys (`list-*` in `IssuesTable.tsx`, the Board's `o`), and `g p`, the global
+// binding that opens a project's page.
+test("k-keep: the project List keeps its grouping, columns, pager, layout and keys, and the Board its filters' disclosure and its keys", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1600 });
@@ -2223,6 +2322,20 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
     const issue = await createIssue({ project: "CORE", title: `Listed work ${index}` });
     await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
   }
+  // `g p`, the global binding that opens a project's page: the one bar, where the project is a
+  // row the reader types their way to. The keys wait for the Inbox's heading, since pressed as
+  // the page loads they can open nothing.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await page.keyboard.press("p");
+  await page.getByRole("combobox", { name: "Search" }).fill("Core");
+  await expect(
+    page.getByRole("dialog", { name: "Search" }).getByRole("group", { name: "Projects" })
+  ).toBeVisible();
+  await page.getByRole("combobox", { name: "Search" }).press("Enter");
+  await expect(page).toHaveURL(/\/projects\/CORE\/issues/);
   await openIssuesTab(page, "CORE", "List");
   const table = page.getByRole("table", { name: "Project issues table" });
   await expect(table).toBeVisible();
@@ -2333,23 +2446,198 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
     "the stored column widths are not as they were left"
   ).toEqual(widths);
 
-  // The Board: the filters open, the last chip cleared, and the disclosure as it was left.
+  // The List's own keys: `j` takes the first row in hand, `x` marks it and marks it off again,
+  // and `o` opens its issue.
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(control(main, CONTROL.selectionBar), "j then x marked no row").toBeVisible();
+  await page.keyboard.press("x");
+  await expect(control(main, CONTROL.selectionBar), "x again left the row marked").toHaveCount(0);
+  await page.keyboard.press("o");
+  await expect(page, "o opened no issue from the List").toHaveURL(/\/issues\/CORE-\d+/);
+  await page.goBack();
+  await expect(table).toBeVisible();
+
+  // The Board: the filters opened by the reader, the last chip taken off at the top of their
+  // panel, which stays open, and the panel's disclosure, which the Board stores at
+  // `project.issue-filters`, found as it was left after a reload - open, and then shut.
   const board = page.getByRole("button", { exact: true, name: "Board" });
   await board.click();
   await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
   await page.goto("/projects/CORE/issues?needs-you=1&unread=1");
   const boardChips = control(controlRow(main), CONTROL.chip);
+  const boardTrigger = control(controlRow(main), CONTROL.panelTrigger);
   await expect(boardChips).toHaveCount(2);
-  await boardChips.last().click();
+  // The Board opens the panel by itself while a narrowing is on and nothing is stored; shut first,
+  // so the open below is the reader's own, which is what the Board stores.
+  await closeControlPanel(main);
+  const filters = await openFilterPanel(page, main);
+  await filters
+    .getByRole("button", { name: /^Remove .+ filter$/ })
+    .last()
+    .click();
   await expect(boardChips).toHaveCount(1);
+  await expect(boardTrigger, "the last chip's removal shut the panel").toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  await page.reload();
+  await expect(
+    boardTrigger,
+    "the Board's filter panel, left open, is not open after a reload"
+  ).toHaveAttribute("aria-expanded", "true");
+  await closeControlPanel(main);
+  await page.reload();
+  await expect(boardChips).toHaveCount(1);
+  await expect(
+    boardTrigger,
+    "the Board's filter panel, left shut, is not shut after a reload"
+  ).toHaveAttribute("aria-expanded", "false");
+  // The Board's other disclosure, Icebox & Done in the project header.
   const edges = page.getByRole("button", { name: /Icebox & Done$/ });
   const edgesLabel = await edges.textContent();
   await edges.click();
   await page.reload();
   await expect(
     page.getByRole("button", { name: /Icebox & Done$/ }),
-    "the Board's disclosure is not as it was left"
+    "the Board's Icebox & Done is not as it was left"
   ).not.toHaveText(edgesLabel ?? "");
+  // The Board's own `o` opens the issue of the card in hand.
+  await page.goto("/projects/CORE/issues");
+  const card = page.locator("[data-board-card]").first();
+  await card.focus();
+  await page.keyboard.press("o");
+  await expect(page, "o opened no issue from the Board").toHaveURL(/\/issues\/CORE-\d+/);
+});
+
+// k-keep on the priorities page and a priority's own page. What each offered before R8, paths
+// under `web/src/features/priorities/`: the priorities table's search box, the filter on each of
+// its column headers with a chip each in its bar, its grouping in the display menu, its columns
+// menu and New priority (`priority-table-controls.tsx`, `PrioritiesTable.tsx`), and its `j`, `k`,
+// `o` and Enter (`PrioritiesTable.tsx`, `NAMES`); a priority's own page draws the project List's
+// bar above its issues table, with the List's `j`, `k`, `x`, `o` and Enter. No global binding opens
+// either page: the rail's Priorities link does.
+// SLOW(>=2s): three priorities and their work seeded, and both pages worked through.
+test("k-keep: the priorities page keeps its search, column filter and chip, grouping, columns, New priority and keys, and a priority's own page its issues table's", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "BOOKS", name: "Books" });
+  const ids: string[] = [];
+  for (const [owner, title] of [
+    ["alice", "Keep the books whole"],
+    ["bob", "Ship the ledger"],
+    ["alice", "Close the quarter"],
+  ] as const) {
+    ids.push((await createPriority({ owner, title })).id);
+  }
+  for (const title of ["Audit the books", "Reconcile the books"]) {
+    const issue = await createIssue({ project: "BOOKS", title });
+    await patchIssue(issue.key, { advances: [ids[0] ?? ""], status: "in_progress" });
+  }
+  const main = page.getByTestId("main-content");
+  await page.goto("/priorities");
+  const table = main.getByRole("region", { exact: true, name: "Priorities" });
+  const bar = controlRow(table);
+  const rows = table.locator("tr[data-priority-row]");
+  await expect(rows).toHaveCount(3);
+
+  // The search.
+  await control(bar, CONTROL.searchBox).fill("ledger");
+  await expect(rows, "the search left another number of priorities").toHaveCount(1);
+  await control(bar, CONTROL.searchBox).fill("");
+  await expect(rows).toHaveCount(3);
+
+  // A column filter from its header, and its chip in the bar, whose press takes it off.
+  await table.getByRole("button", { name: /^Filter Owner/ }).click();
+  await page.getByRole("option", { name: /^bob\b/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(rows, "the Owner filter left another number of priorities").toHaveCount(1);
+  const chip = bar.getByRole("button", { exact: true, name: "Remove Owner: bob filter" });
+  await expect(chip, "the Owner filter has no chip in the bar").toBeVisible();
+  await chip.click();
+  await expect(rows).toHaveCount(3);
+
+  // The grouping, from the display menu.
+  const menu = await openDisplay(page, table);
+  await menu.getByRole("group", { name: "Group by" }).locator('input[value="owner"]').click();
+  await expect(page).toHaveURL(/[?&]p\.group=owner/);
+  await page.keyboard.press("Escape");
+  await expect(
+    table.getByRole("button", { name: /^Collapse .+, \d+ priorit(y|ies)$/ }),
+    "no group per owner"
+  ).toHaveCount(2);
+
+  // The columns menu.
+  await control(bar, CONTROL.columnsMenu).click();
+  await page
+    .getByRole("dialog", { name: "Columns" })
+    .getByRole("checkbox", { exact: true, name: "Waiting" })
+    .uncheck();
+  await page.keyboard.press("Escape");
+  await expect(
+    table
+      .getByRole("columnheader")
+      .filter({ has: page.getByRole("button", { exact: true, name: /^Waiting/ }) }),
+    "the columns menu left Waiting shown"
+  ).toHaveCount(0);
+
+  // New priority: the bar's action opens its form under the bar, which writes the priority.
+  await bar.getByRole("button", { exact: true, name: "New priority" }).click();
+  const form = table.locator('form[aria-label="New priority"]');
+  await form.getByLabel("Title of the new priority").fill("Retire the old ledger");
+  await form.getByRole("button", { name: "Add priority" }).click();
+  await expect(form).toHaveCount(0);
+  await expect(table.getByRole("row", { name: /Retire the old ledger$/ })).toHaveCount(1);
+
+  // The table's own keys: `j` takes a priority in hand and `o` opens its page.
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  await page.keyboard.press("o");
+  await expect(page, "j then o opened no priority's page").toHaveURL(/\/priorities\/[^/?]+/);
+
+  // A priority's own page: the project List's bar above its issues table.
+  await page.goto(`/priorities/${ids[0]}`);
+  const work = controlRow(main);
+  const issueRows = main.locator("[data-issue-row]");
+  await expect(issueRows).toHaveCount(2);
+  await control(work, CONTROL.searchBox).fill("Audit");
+  await expect(issueRows, "the search left another number of issues").toHaveCount(1);
+  await control(work, CONTROL.searchBox).fill("");
+  await expect(issueRows).toHaveCount(2);
+  // A column filter from its header: Todo taken out of the open statuses it opens with, which is
+  // a narrowing of the reader's, so its chip stands in the bar and its press puts them back.
+  await pickFilterOption(page, "Status", "Todo");
+  const statusChip = control(work, CONTROL.chip);
+  await expect(statusChip, "the Status filter has no chip in the bar").toHaveCount(1);
+  await expect(issueRows).toHaveCount(2);
+  await statusChip.click();
+  await expect(statusChip).toHaveCount(0);
+  const workMenu = await openDisplay(page, main);
+  await workMenu.getByRole("group", { name: "Group by" }).locator('input[value="status"]').click();
+  await expect(page).toHaveURL(/[?&]w\.group=status/);
+  await page.keyboard.press("Escape");
+  await control(work, CONTROL.columnsMenu).click();
+  await page
+    .getByRole("dialog", { name: "Columns" })
+    .getByRole("checkbox", { exact: true, name: "Updated" })
+    .check();
+  await page.keyboard.press("Escape");
+  await expect(
+    main
+      .getByRole("columnheader")
+      .filter({ has: page.getByRole("button", { exact: true, name: /^Updated/ }) }),
+    "the columns menu left Updated hidden"
+  ).toHaveCount(1);
+  // Its table's own keys: `j` takes the first issue in hand and `x` marks it and marks it off.
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(control(main, CONTROL.selectionBar), "j then x marked no issue").toBeVisible();
+  await page.keyboard.press("x");
+  await expect(control(main, CONTROL.selectionBar), "x again left it marked").toHaveCount(0);
 });
 
 test("the Delivery list still answers the keyboard and stays windowed, and each page's own bindings still run", async ({
@@ -5490,7 +5778,8 @@ test("a column filter is visible and removable from the row even while its colum
   await chip.click();
   await expect(rows).toHaveCount(2);
   await expect(page).not.toHaveURL(/[?&]label=/);
-  await expect(trigger).toHaveText("Filters · 0");
+  // In the bar's look the trigger says its count only while a narrowing is on (R8).
+  await expect(trigger).toHaveText("Filters");
   await expect(chip).toHaveCount(0);
 });
 
@@ -8023,7 +8312,20 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
     const plain = await topOf(firstRow);
     await page.goto(narrowed);
     await expect(firstRow).toBeVisible();
-    await expect(control(row, CONTROL.chip).first()).toBeVisible();
+    if (name === "project List") {
+      // The List's bar is on the slots (R8): below 640 px of its width no chip stands in its line,
+      // and Filters' badge stands for the nine. The Inbox's row still draws its chips.
+      await expect(
+        control(row, CONTROL.panelTrigger),
+        `${at}: Filters does not count the nine narrowings`
+      ).toHaveAccessibleName("Filters · 9");
+      await expect(
+        control(row, CONTROL.chip),
+        `${at}: chips stand in the narrow bar's line`
+      ).toHaveCount(0);
+    } else {
+      await expect(control(row, CONTROL.chip).first()).toBeVisible();
+    }
     await resetScroll(page, firstRow);
     await nextFrames(page);
     // One read is the measure: the chips are drawn and the list scrolled to its top.
@@ -8031,6 +8333,11 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
     if (top - plain > CHIP_LINE) {
       wrong.push(
         `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, more than the one line of chips (${CHIP_LINE} px) R1 allows`
+      );
+    } else if (name === "project List" && Math.abs(top - plain) > 1) {
+      // R8: the List's bar never grows, so its first row stays where it was, within 1 px.
+      wrong.push(
+        `${at}: the first row moved from ${Math.round(plain)} px to ${Math.round(top)} px, though the List's bar never grows`
       );
     }
     // One read is the answer: the chips are drawn, and nothing redraws the row now.
