@@ -654,7 +654,11 @@
           "approvedVersion": null,
           "status": "unregistered"
         }
-      ]
+      ],
+      "why": {
+        "state": "unlisted",
+        "reason": "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."
+      }
     },
     "LEGION-218": {
       "key": "LEGION-218",

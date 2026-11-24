@@ -857,6 +857,13 @@ func populatedState(t *testing.T) State {
 				// Nothing hands it to the daemon, so no architect of it has registered its spec:
 				// its one gated step carries no document, as LEGION-210's does.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				// It stands in none of `active`, `waiting` and `blocked` and no stranded claim names
+				// it, so its one rendered answer is `unlisted`, with the sentence of its held word,
+				// `label_off` (`why`, api.WhyUnlisted).
+				Why: &WhyView{
+					State:  WhyUnlisted,
+					Reason: "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon.",
+				},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -1330,8 +1337,10 @@ func TestStateGolden(t *testing.T) {
 // deployment gates, `settings.gates.design`), and an issue that is no root carries none. Every
 // issue the record holds in the workflow that `strandedClaims` names reads `why` claim_stopped,
 // with the sentence naming its phase and that claim, and no other issue reads it (projection's
-// whyStates reads that very list first). A golden that breaks any of these rules shows every
-// reader of state.json a state the daemon never serves.
+// whyStates reads that very list first). Every other issue in the workflow that stands in none
+// of `active`, `waiting` and `blocked` reads `unlisted`, unless its work runs past its review,
+// and no other issue reads it. A golden that breaks any of these rules shows every reader of
+// state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1500,6 +1509,35 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 		}
 		if issue.Why == nil || *issue.Why != (WhyView{State: WhyClaimStopped, Reason: want}) {
 			t.Errorf("%s's %s claim is stranded at %s, and its `why` is %+v, want %s: %q", key, stranded.Role, stranded.State, issue.Why, WhyClaimStopped, want)
+		}
+	}
+	// The unlisted issues: whyStates' last arm. An issue the record holds in the workflow that no
+	// stranded claim names, which stands in none of `active`, `waiting` and `blocked`, reads
+	// `unlisted` with the sentence of its word in `admission.held` (heldSentences, the
+	// unclassified sentence where the table serves none), and no other issue reads that state.
+	// The arm passes over an issue whose work runs past its own review in a tree that runs
+	// (atWorkPastReview); the state does not say which trees run, so such an issue, one standing
+	// in accepting, retro or merging and not held, may read `unlisted` or nothing.
+	lined, blocked := map[string]bool{}, map[string]bool{}
+	for _, key := range admission.Waiting {
+		lined[key] = true
+	}
+	for _, row := range admission.Blocked {
+		blocked[row.Issue] = true
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		_, stranded := stopped[key]
+		unlisted := inWorkflow(issue) && !stranded && !active[key] && !lined[key] && !blocked[key]
+		reads := issue.Why != nil && issue.Why.State == WhyUnlisted
+		if unlisted && issue.Phase != phase.Held && record.PastReview(record.Issue{Phase: issue.Phase}) {
+			continue
+		}
+		switch {
+		case unlisted && (!reads || issue.Why.Reason == ""):
+			t.Errorf("%s stands in the workflow at %s, in none of `active`, `waiting` and `blocked`, no stranded claim names it, and its `why` is %+v, want %s with a sentence", key, issue.Phase, issue.Why, WhyUnlisted)
+		case !unlisted && reads:
+			t.Errorf("%s reads %s (%q), and it is not an issue in the workflow standing in none of `active`, `waiting` and `blocked` that no stranded claim names", key, WhyUnlisted, issue.Why.Reason)
 		}
 	}
 }
