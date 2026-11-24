@@ -317,10 +317,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// told what it lost: a caller one contract below the highest row, dispatchCredentialContract,
 	// which states that contract in its header as every plugin from shapedAnswersContract on
 	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// intakeGiveUpsContract, so it stands below that row alone and the log holds that row's line
-	// and nothing else. The state carries `dispatchCredential` (populatedState), so the body shows
-	// the strip. The band below it, the intake's give-ups, is intake_giveups_test.go's. This
-	// subtest does not catch a strip applied beside the loop, because it reads both its
+	// 232 (dispatch://INFRA-4508's), so it stands below that row alone and the log holds that
+	// row's line and nothing else. The state carries `dispatchCredential` (populatedState), so the
+	// body shows the strip. The band below it, the intake's give-ups, is intake_giveups_test.go's.
+	// This subtest does not catch a strip applied beside the loop, because it reads both its
 	// expectation and its answer from stateNarrowings; the subtests below, which name their lines
 	// as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
