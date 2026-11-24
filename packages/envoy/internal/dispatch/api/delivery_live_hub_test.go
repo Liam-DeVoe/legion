@@ -1339,6 +1339,13 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 // TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead: a view's first read finishes before an
 // issue it shows is retitled, and the retitle's event reaches the hub while that recompute still
 // holds no issue of the view's. The view is recomputed once more and its page gets the new title.
+//
+// The relay's feed stands before the view subscribes. The feed starts at the event log's newest id
+// as the relay's start read finds it (firstRelayCursor), and that read runs on a goroutine of the
+// hub's own (seedEvents), which nothing orders before the test's next write: a start read that a
+// loaded machine schedules after the retitle starts the feed at the retitle, which then never
+// arrives on it, and the view's second recompute is the feed's (applyFeed marks every view dirty)
+// rather than the one the event heard during the read asks for (recheckHeardLocked).
 func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	t.Parallel()
 	reading := make(chan struct{})
@@ -1349,8 +1356,8 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 		observe := hub.observe
 		hub.observe = func(note deliveryHubNote) {
 			observe(note)
-			if note.what == "recompute read" && held.CompareAndSwap(false, true) {
-				// Hold the view's first recompute between its read and its answer.
+			if note.what == "recompute read" && strings.HasPrefix(note.view, deliveryLiveTimeline) && held.CompareAndSwap(false, true) {
+				// Hold the timeline view's first recompute between its read and its answer.
 				close(reading)
 				<-release
 			}
@@ -1361,9 +1368,16 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	// A measures view starts the generation, and settle waits for its feed ("events seeded") and
+	// for the hub to owe nothing, so the retitle below stands above the feed's head.
+	warm := newFakeLiveConn()
+	rig.hub.Subscribe(warm, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
+	warm.snapshot(t, "m")
+	rig.settle(t)
+
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	testwait.Receive(t, "the view's first recompute, held between its read and its answer", reading)
+	testwait.Receive(t, "the timeline view's first recompute, held between its read and its answer", reading)
 
 	start := rig.mark()
 	patchHubIssue(t, rig.handler, key, map[string]any{"title": "Ship the widgets"})
@@ -1386,6 +1400,9 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if got := read.IssueTitles[key]; got != "Ship widgets" {
 		t.Fatalf("the snapshot, read before the retitle, titles %s %q, want %q", key, got, "Ship widgets")
 	}
+	// The hub tells a sub the verdict it knows right after its first answer (Subscribe), which
+	// the measures view's read set before this view subscribed.
+	conn.freshness(t, "the verdict after the timeline's first snapshot")
 	delta := conn.delta(t, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled", got, key)
