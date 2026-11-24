@@ -12,8 +12,7 @@
  * 408 Request Timeout (section 15.5.9: the server did not receive the whole request in time, and
  * the client may repeat it) and a 429 Too Many Requests (RFC 6585 section 4: try later). Every
  * other status is the server's answer, which asking again repeats. A reader whose own contract
- * says otherwise for one of them says so where it reads it: the Envoy client sends no 429 again,
- * since the listener's 429 is `sender_rate_limited`, whose sentence the agent reads.
+ * says otherwise for one of them says so where it reads it.
  */
 export function outage(status: number): boolean {
   return status >= 500 || status === 408 || status === 429;

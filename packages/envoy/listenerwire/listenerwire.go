@@ -54,8 +54,7 @@ const FaultStatus = http.StatusInternalServerError
 // something in front of the listener, since the listener, a Go server, answers no 408 and neither
 // 501 nor 505 on the routes its Go clients call, and its 429s reach no caller that presents its
 // bearer token (they answer a DPoP token presented too often, an agent's sending and the relay
-// socket). The daemon's role lookup and Dispatch's client are such callers, and read a listener
-// status by this rule.
+// socket).
 func Outage(status int) bool {
 	return httpoutage.Is(status) && status != FaultStatus
 }
