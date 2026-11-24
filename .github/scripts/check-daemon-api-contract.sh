@@ -72,7 +72,7 @@
 # it; its own lines reach the step's log as they happen, and gh's words reach the refusal.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts-held job.
 set -euo pipefail
 
 # gh-read.sh beside this script's own file, resolved before the cd: a test fixture links only

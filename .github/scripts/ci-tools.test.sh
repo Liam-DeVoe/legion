@@ -67,7 +67,7 @@
 # in that case and in every other, is the real mktemp.
 #
 # Run from anywhere: .github/scripts/ci-tools.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 # Each digest and each payload below is read inside a command substitution, and bash does not
 # carry errexit into one on its own: without this, a value that failed to build would be written

@@ -4,7 +4,6 @@ labels and one set of paths-filter verdicts, read as GitHub Actions evaluates an
 harness, ci-router-outputs.test.sh, holds the outputs' label terms to what they promise: `full-ci`
 turns on every held job, a lane label turns on the one held job whose output names it, and a label
 that names no held job turns on nothing.
-legion: tool - reads ci.yaml's changes outputs and .github/ci-areas.yaml; ci-router-outputs.test.sh runs it to judge the label terms
 # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request
 
 It reads the expressions themselves rather than a copy of them, so a change to an output's text

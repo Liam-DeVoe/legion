@@ -9,7 +9,7 @@
 # job gives it the actionlint image's.
 #
 # Run from anywhere: .github/scripts/check-action-shell.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

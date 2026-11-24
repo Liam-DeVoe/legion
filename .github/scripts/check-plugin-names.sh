@@ -22,7 +22,7 @@
 #
 # Run from anywhere: .github/scripts/check-plugin-names.sh
 # CI runs it over the repository in ci.yaml's lint job, beside that job's private-names leg,
-# and its tests (check-plugin-names.test.sh) in ci.yaml's scripts job.
+# and its tests (check-plugin-names.test.sh) in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

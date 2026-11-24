@@ -19,7 +19,7 @@
 # starts when the case does. The last case reads the real one, on a GitHub runner only.
 #
 # Run from anywhere: .github/scripts/gh-read.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -900,7 +900,7 @@ check "and prints nothing for the closed socket" "$(is "$(<"$work/drop-err")" ''
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
-  # This harness's step runs inside ci.yaml's test job, whose limit is 30 minutes, so a job still
+  # This harness's step runs inside ci.yaml's scripts-held job, whose limit is 30 minutes, so a job still
   # running started less than 30 minutes ago and no later than now.
   now=$(date +%s)
   if deadline=$(JOB_TIMEOUT_MINUTES=30 bash -c 'source "$1"; _gh_read_deadline' _ "$script_dir/gh-read.sh"); then

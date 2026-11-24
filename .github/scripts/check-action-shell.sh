@@ -3,7 +3,7 @@
 # each `run:` body of a composite action under .github/actions/ whose shell is bash or sh, and each
 # script of .github/scripts/ but the test harnesses (`*.test.sh`, `*test-lib.sh`). actionlint gives
 # each inline run: body of a workflow file to shellcheck and reads no action and no script, so the
-# step text R9 moved out of the workflows into actions and scripts would otherwise lose that check.
+# step text the CI layout moved out of the workflows into actions and scripts would otherwise lose that check.
 #
 # A body's `${{ … }}` expressions are replaced by underscores of the same length before shellcheck
 # reads it, as actionlint replaces them, and the three findings actionlint leaves out of a run:
@@ -15,7 +15,7 @@
 # check fails when any body or script has one.
 #
 # Run from anywhere: .github/scripts/check-action-shell.sh
-# CI runs it in ci.yaml's lint job (.github/actions/lint/lint), and its test in the scripts job.
+# CI runs it in ci.yaml's lint job (.github/actions/lint/lint), and its test in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

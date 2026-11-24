@@ -62,7 +62,7 @@
 # Run from anywhere: .github/scripts/mirror-ci-images.sh
 # CI runs it in ci.yaml's ci-images job, before the package mode of
 # .github/scripts/check-ci-images.sh reads the package in that same job. That job is the one
-# copy path. Its tests are in ci.yaml's scripts job.
+# copy path. Its tests are in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

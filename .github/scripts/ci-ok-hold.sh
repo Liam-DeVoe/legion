@@ -85,7 +85,7 @@
 #
 # Run from anywhere: GH_TOKEN=... BASE_SHA=... BASE_REF=... HEAD_SHA=... HEAD_REF=... \
 #   CI_OK_HOLD_AGE_SECONDS=... CI_OK_HOLD_RUN_SECONDS=... .github/scripts/ci-ok-hold.sh
-# Its tests are in ci-ok-report.test.sh, which ci.yaml's test job runs.
+# Its tests are in ci-ok-report.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

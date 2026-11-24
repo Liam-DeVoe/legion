@@ -13,7 +13,7 @@
 # over that captured log.
 #
 # Run from anywhere: .github/scripts/check-private-names.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 # No tracing: a traced run would print the placeholder terms the library sets.

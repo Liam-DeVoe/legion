@@ -191,7 +191,7 @@
 # read green locally.
 #
 # Run from anywhere: .github/scripts/check-image-trigger-paths.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -603,7 +603,7 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         ".github/scripts/ci_images.py's recipe_sha256 — and the term is false only where the "
         "two are equal, that is, only where the package already serves, under the digest every "
         "consumer pins, an image built from this very recipe. Every path ci.yaml's "
-        "`browser_image` filter selects that can change the image's bytes is therefore inside "
+        "`browser-image` area of .github/ci-areas.yaml selects that can change the image's bytes is therefore inside "
         "what the term reads: the filter names .github/docker/**, which is the context "
         "directory, and .github/workflows/browser-image.yaml, which holds the build step, its "
         "`labels:`, `outputs:`, `platforms:`, `provenance:` and build-args and the pins of the "

@@ -79,9 +79,11 @@
 # read, a `-skip` or `-run` it cannot read.
 #
 # A required job is one ci.yaml's `ci-ok` needs, and `ci-ok` and `pr-title` themselves; a job of
-# a workflow such a job calls is a part of it. A held-back job (`agent-harness` and `kind` run in
-# the merge queue and under the `full-ci` label) is a required job: ci-ok needs it and the merge
-# queue runs it. A part whose `if:` admits only `schedule` or `workflow_dispatch`, a step whose own
+# a workflow such a job calls is a part of it. A held-back job (go-daemon, go-envoy-held,
+# envoy-held, scripts-held, pi-held, web-cold, agent-harness, airlock-arm and dispatch-browser,
+# which run in the merge queue and under `full-ci` or their lane labels, and kind, which runs in
+# the merge queue alone) is a required job: ci-ok needs it and the merge queue runs it. A part
+# whose `if:` admits only `schedule` or `workflow_dispatch`, a step whose own
 # `if:` does, and a step that carries `continue-on-error`, run no required test.
 #
 # How it reads a step. Each job is read once for each leg of its matrix, with each
@@ -155,7 +157,7 @@
 # tree is a git checkout, and by a walk of the tree otherwise.
 #
 # Run from anywhere: .github/scripts/check-test-reach.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

@@ -17,7 +17,7 @@
 # that takes the oldest record of a name a list holds twice rather than the newest.
 #
 # Needs jq. Run from anywhere: .github/scripts/leg-verdict.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

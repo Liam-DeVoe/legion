@@ -132,7 +132,7 @@
 # (each one's message, author and committer), issue comments, reviews and review comments through
 # check-pr-text.sh (ci.yaml's pr-title job at each push to a pull request that is not a draft, when
 # a draft is marked ready and on the merge queue's group, and pr-title.yaml when the pull request
-# is edited); and in its tests, in ci.yaml's scripts job and its private-names-port job, which run
+# is edited); and in its tests, in ci.yaml's scripts-held job and the scripts job's private-names-port leg, which run
 # with placeholder terms of their own and no secret. Each step that runs it with the secret maps
 # PRIVATE_NAME_TERMS.
 set -euo pipefail

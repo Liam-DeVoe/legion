@@ -121,7 +121,7 @@
 #
 # Run from anywhere: JOB=... JOB_STATUS=... CHANGES=... EVENT=... HEAD_SHA=... \
 #   BASE_SHA=... BASE_REF=... .github/scripts/ci-ok-report.sh
-# Its tests are in ci-ok-report.test.sh, which ci.yaml's scripts job runs.
+# Its tests are in ci-ok-report.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

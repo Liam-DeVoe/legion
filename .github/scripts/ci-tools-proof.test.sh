@@ -28,7 +28,7 @@
 # refuses for the old reason".
 #
 # Run from anywhere: .github/scripts/ci-tools-proof.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

@@ -28,7 +28,7 @@
 #     (https://cybermonklabs.github.io, never https://CyberMonkLabs.github.io).
 #
 # Run from anywhere: .github/scripts/repo-paths.sh [key]
-# CI runs its tests in ci.yaml's scripts job; the workflows and the docs build read it for the paths
+# CI runs its tests in ci.yaml's scripts-held job; the workflows and the docs build read it for the paths
 # above instead of carrying them as literals.
 set -euo pipefail
 

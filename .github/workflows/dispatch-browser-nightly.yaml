@@ -1,12 +1,13 @@
 name: Dispatch browser nightly
 
-# One job on a schedule: the full browser lane. ci.yaml's dispatch-browser job runs the
-# pull-request lane on a pull request that carries no `full-ci` label, the rows a pull request is
-# held to, and the full lane - all eight parallel projects, the three `-alone` ones, the two stub
-# ones, the re-recording of the stubbed rows and the two-process job - on every other run, so the
-# merge group runs it on the tree a change lands as. This run covers a day with no such event,
-# and is what runs the full lane on main's tip (.github/workflows/dispatch-browser.yaml, which
-# holds every step).
+# One job on a schedule: the full browser lane. ci.yaml calls the same workflow from two jobs,
+# each with a fixed lane: dispatch-browser-pr runs the pull-request lane, the rows a pull request
+# is held to, on a pull request, and dispatch-browser runs the full lane - all eight parallel
+# projects, the three `-alone` ones, the two stub ones, the re-recording of the stubbed rows and
+# the two-process job - in the merge group, on the tree a change lands as, and on a pull request
+# with `full-ci` or `lane:dispatch_browser`. This run covers a day with no such event, and is
+# what runs the full lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds
+# every step).
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
@@ -19,9 +20,9 @@ name: Dispatch browser nightly
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's. A change to either is proven
-# before main by ci.yaml's dispatch-browser job: the pull-request lane on the pull request that
-# makes it, and the full lane in the merge group that lands it. It runs here only once it is on
-# main.
+# before main by ci.yaml's two callers: dispatch-browser-pr's pull-request lane on the pull
+# request that makes it, and dispatch-browser's full lane in the merge group that lands it. It
+# runs here only once it is on main.
 
 on:
   schedule:

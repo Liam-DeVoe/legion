@@ -64,7 +64,7 @@
 # of the script whose pinned key GitHub does not hold. Those print a SKIP line
 # and count nothing when the network is missing. A comparison of the pinned
 # keys with `gh api meta` does the same where gh, a sign-in or the network is
-# missing, except on GitHub Actions, where the test job's step gives gh
+# missing, except on GitHub Actions, where the scripts-held job's step gives gh
 # GH_TOKEN and the case fails without an answer instead.
 # The `release`, `release-section` and `push-tag` cases all reach a write the
 # script under test guards with this repository's own private-name rules, so
@@ -109,7 +109,7 @@
 # run with a stub changie that fails if anything reaches it.
 #
 # Run from anywhere: .github/scripts/release-push.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 # Hermetic: the developer's global/system git config (commit.gpgsign,
 # core.hooksPath, rerere, rebase.*) must not reach the seed repos or the script
@@ -1728,7 +1728,7 @@ fi
 echo
 echo "Case: push-tag's pinned host keys are the ones GitHub publishes"
 # A rotation shows up here first. It needs gh signed in and the network: it is skipped without
-# them, and fails without them on GitHub Actions, where the test job's step gives gh GH_TOKEN.
+# them, and fails without them on GitHub Actions, where the scripts-held job's step gives gh GH_TOKEN.
 if command -v gh >/dev/null && published=$(gh api meta --jq '.ssh_keys[]' 2>/dev/null) && [ -n "$published" ]; then
   pinned=$(sed -n 's/^github\.com //p' "$release_push" | sort)
   check "the pinned keys equal gh api meta's ssh_keys" "$(is "$pinned" "$(sort <<<"$published")")"

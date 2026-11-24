@@ -70,7 +70,7 @@ on:
         required: false
         default: ""
   # Pull requests: .github/workflows/ci.yaml calls this workflow (its worker-image job) for every
-  # pull request whose diff its `worker_image` filter matches, on any base, building the head and
+  # pull request whose diff its `worker-image` area of .github/ci-areas.yaml matches, on any base, building the head and
   # publishing :sha-<short> only. A stacked pull request publishes a sha- tag too, which a pin never
   # accepts (docs/kubernetes.md, "Pin by digest, never by tag"). The final `legion probe-image` runs
   # the image's own `legion`, both Oh My Pi plugins and the Claude lane, so a pull request that

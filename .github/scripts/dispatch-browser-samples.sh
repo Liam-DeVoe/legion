@@ -53,7 +53,7 @@
 #
 # Run from anywhere: it reads /proc and writes only inside <dir>.
 # CI runs it in the shard and alone jobs of dispatch-browser.yaml, and its tests in ci.yaml's
-# test job.
+# scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

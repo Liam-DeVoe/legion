@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # edited-migrations-base picks the base the edited-migrations check compares a run's tree with
-# (.github/actions/go-envoy/envoy-go-checks, the step "Check that no migration a database
+# (.github/actions/go-envoy/envoy-go-build, the step "Check that no migration a database
 # may have run is edited without its replaces line"), fetches it into the checkout, and prints
 # its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
 # with git, so the base has to be fetched before the check runs.
@@ -34,7 +34,7 @@
 # fails, a fetch among them, exits with that command's status, so the check fails closed.
 #
 # Run inside the checkout: .github/scripts/edited-migrations-base.sh
-# Its tests are in edited-migrations-base.test.sh, which ci.yaml's scripts job runs.
+# Its tests are in edited-migrations-base.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

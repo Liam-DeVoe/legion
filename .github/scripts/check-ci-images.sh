@@ -203,7 +203,7 @@
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
 # CI runs the tree mode in ci.yaml's lint job, and the package mode in ci.yaml's ci-images job,
-# after that job's copy. Its tests run in ci.yaml's scripts job.
+# after that job's copy. Its tests run in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

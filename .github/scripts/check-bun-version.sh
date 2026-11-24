@@ -62,7 +62,7 @@
 # is printed with its file and line; the only non-zero exit is a named problem.
 #
 # Run from anywhere: .github/scripts/check-bun-version.sh
-# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts job.
+# CI runs it in ci.yaml's lint job, and its tests in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

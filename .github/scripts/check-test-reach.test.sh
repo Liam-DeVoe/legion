@@ -26,7 +26,7 @@
 # (.github/actions/lint/lint, "Check every test reaches a job ci-ok needs").
 #
 # Run from anywhere: .github/scripts/check-test-reach.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and

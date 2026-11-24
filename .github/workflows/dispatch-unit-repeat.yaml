@@ -187,13 +187,13 @@ jobs:
       # The harness rows that need a PostgreSQL run here, as they run in a pod and in the
       # postgres-rows job of .github/workflows/dispatch-browser.yaml, which the dispatch-ui leg
       # leaves them to: on GitHub Actions their gates fail the file rather than skip it
-      # (@legion/test-fixtures/host-tools). e2e/__tests__/psql-session.test.ts and
-      # harness-stacks.test.ts's "psql reads its own stack's database" read LEGION_TEST_PG_DSN.
-      # They need a login role that may create databases: psql-session.test.ts makes a database of
-      # its own and drops it with e2e/psql.ts's dropDatabase, which needs no superuser
-      # (dropDatabase's doc comment says why). They need a database the DSN names:
-      # harness-stacks.test.ts runs `select 1` on it. They need no extension, as
-      # psql-session.test.ts's head says. psql is on the runner already.
+      # (@legion/test-fixtures/host-tools). e2e/__tests__/psql-session-postgres.test.ts and
+      # harness-stacks-postgres.test.ts's "psql reads its own stack's database" read
+      # LEGION_TEST_PG_DSN. They need a login role that may create databases:
+      # psql-session-postgres.test.ts makes a database of its own and drops it with e2e/psql.ts's
+      # dropDatabase, which needs no superuser (dropDatabase's doc comment says why). They need a
+      # database the DSN names: harness-stacks-postgres.test.ts runs `select 1` on it. They need no
+      # extension, as psql-session-postgres.test.ts's head says. psql is on the runner already.
       #
       # The runner's own PostgreSQL. GitHub's runner-images readme for Ubuntu 24.04
       # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "#### PostgreSQL", read on
@@ -281,14 +281,6 @@ jobs:
       # the step reaches its budget, and the bash that runs the step's script passes no signal on
       # to a child it waits for. `timeout` passes it on to `bun run`, and so to the tool.
       # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
-      #
-      # Those harness legs skipped second-global-setup.test.ts, which now runs: its 20 runs in a
-      # leg are not measured yet. One run of the three files that need a PostgreSQL took 26.6 s in
-      # an issue pod
-      # (.github/ci-notes/dispatch-browser.md#the-bun-rows-that-need-a-postgresql-and-why-they-are-a-job-of-this-file),
-      # so until a leg measures it the harness step's budget takes the row's 20 runs one after the
-      # other, after every other row, at that reading: (1,529 + 20 x 26.6) x 1.15 = 2,370 s, 40
-      # minutes.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no

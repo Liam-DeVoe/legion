@@ -35,7 +35,7 @@
 # NO CASE REACHES THE NETWORK OR PLAYWRIGHT: each one is directories, files and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-reading-rows.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and

@@ -195,7 +195,7 @@
 #
 # Run from anywhere: .github/scripts/check-ci-tools.sh
 # CI runs it in ci.yaml's lint job, beside the tree mode of .github/scripts/check-ci-images.sh.
-# Its tests run in ci.yaml's scripts job.
+# Its tests run in ci.yaml's scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

@@ -31,7 +31,7 @@
 # ::error:: line there, which the runner annotates from either stream.
 #
 # Run from anywhere: .github/scripts/find-pr-payload.sh
-# Its tests are in find-pr-payload.test.sh, which ci.yaml's scripts job runs.
+# Its tests are in find-pr-payload.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 # shellcheck source=.github/scripts/gh-read.sh

@@ -73,7 +73,7 @@
 #
 # Run from anywhere: GH_TOKEN=... GITHUB_REPOSITORY=o/r HEAD_SHA=... CHECK_RUN_ID=... \
 #   CONCLUSION=... .github/scripts/ci-ok-reconcile.sh
-# Its tests are in ci-ok-reconcile.test.sh, which ci.yaml's scripts job runs.
+# Its tests are in ci-ok-reconcile.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

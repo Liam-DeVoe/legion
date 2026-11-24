@@ -23,7 +23,7 @@
 # needs a python3 with PyYAML, which the modules import.
 #
 # Run from anywhere: .github/scripts/go-test-step-expansion.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

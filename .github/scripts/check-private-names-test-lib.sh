@@ -22,7 +22,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # Every case's stdout (echoed "case:" lines and `check`'s PASS/FAIL lines) is the harness's own
-# output — the log of ci.yaml's scripts job — so it is also teed to self_log, which finish_self_log,
+# output — the log of the CI job that runs it — so it is also teed to self_log, which finish_self_log,
 # the last case of each harness, scans with the guard itself: a future case that prints an
 # assembled form or a placeholder term turns red there, in the suite, before it ever reaches a
 # real job log. `exec 3>&1 4>&2` keeps the real terminal fds reachable so the redirection can be
@@ -63,7 +63,7 @@ tailnet_example="example-tailnet"
 # standing in for the deployment's own list (PRIVATE_NAME_TERMS, an Actions secret), on a pull
 # request's event. One holds regex characters, to show a term is a fixed string, and one a "/",
 # standing in for an owner/repository form. Whatever list or event the job's own environment
-# holds is replaced, never read: the test job holds no secret.
+# holds is replaced, never read: no job that runs these harnesses holds the secret.
 planted="zephyr-orchard"
 planted_dotted="copper.kettle"
 planted_owner="lanternfish/harbor-map"

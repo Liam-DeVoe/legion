@@ -16,7 +16,7 @@
 # than as naming the files it drops.
 #
 # Needs git, jq and python3 with PyYAML. Run from anywhere: .github/scripts/unnamed-files.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 

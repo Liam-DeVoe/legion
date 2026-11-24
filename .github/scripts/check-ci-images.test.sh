@@ -25,7 +25,7 @@
 # the stand-in for the network never, and the package mode passes a tree the tree mode refuses.
 #
 # Run from anywhere: .github/scripts/check-ci-images.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and
@@ -574,7 +574,7 @@ echo "case: rule 10 — a built row whose image was built by another build workf
 # recipe: the workflow's own `labels:`, `outputs:`, `platforms:`, `provenance:`, build-args and
 # action pin decide the bytes that get pushed, so a change to the build step with the
 # Dockerfile untouched is a change the published image does not carry. ci.yaml's
-# `browser_image` filter selects the build for it, and before this the build read the one
+# `browser-image` area of .github/ci-areas.yaml selects the build for it, and before this the build read the one
 # file's hash, found it unchanged and pushed nothing.
 root=$(fixture built-label-workflow-moved)
 browser_row "$root"

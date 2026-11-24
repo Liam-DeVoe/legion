@@ -23,7 +23,7 @@
 #
 # Needs go (with cgo, for the -race case), gotestsum, jq and python3, and fails naming any that is
 # missing. Run from anywhere: .github/scripts/go-test.test.sh
-# CI runs it in ci.yaml's scripts job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 
