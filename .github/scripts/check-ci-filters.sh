@@ -70,9 +70,10 @@
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), a
 #      RULES source file that is gone, a why citing a step the job no longer has, or a why that
-#      cites through ci_filter_coverage.calls() a line as the one a call is on, where that file is
-#      not in the repository or that line does not call the name, naming the line the call is on:
-#      the check reads the file, the line and the name calls() records, never the why's words. A
+#      starts with ci_filter_coverage.calls()'s citation of the line a call is on,
+#      f"{calls(file, line, name)} ...", where the file, named from the repository's root, is not
+#      in the repository or that line does not call the name, naming the line the call is on: the
+#      check reads the file, the line and the name calls() records, never the words of the why. A
 #      gate's step is looked for in the file that gate names - ci.yaml, or the workflow it calls
 #      that holds that job's steps - and a why's in the file its citation names, so a step that
 #      moved between the two fails here until the table says where it went,

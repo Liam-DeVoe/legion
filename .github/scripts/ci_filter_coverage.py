@@ -276,17 +276,17 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
 
 # Every line of a file a why cites through calls() as the one a call is on, checked to call it so
 # a line added above the call fails here. Each entry is (the file's path from the repository's
-# root, the first line cited, the last, the name the call is to).
+# root, the line, the name the call is to).
 CALLED: list = []
 
 
-def calls(source: str, line: int, name: str, rest: str = "", last: int | None = None) -> str:
-    """A citation of the line of `source` that calls `name`, or with `last` of the lines `line`
-    to `last`, one of which does, followed by `rest`. `source` is the path from the repository's
-    root of the file that makes the call. The check reads what is recorded here, never the why's
-    words, so a why worded another way is held to the same line."""
-    CALLED.append((source, line, line if last is None else last, name))
-    return f"{source}:{line}{'' if last is None else f'-{last}'} calls {name}{rest}"
+def calls(source: str, line: int, name: str) -> str:
+    """A citation of the line of `source` that calls `name`, which the why starts with and says
+    the rest after: f"{calls(source, line, name)} ...". `source` is the path from the
+    repository's root of the file that makes the call. The check reads what is recorded here,
+    never the why's words."""
+    CALLED.append((source, line, name))
+    return f"{source}:{line} calls {name}"
 
 
 # ---------------------------------------------------------------- the workflow documents
@@ -1754,14 +1754,13 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     # A why that cites through calls() the line a call is on names a file of the repository and a
     # line of it that calls the name: ci_job_reads.py's header asks for the line that performs the
     # read, and a line added above the call moves the call while the citation stays where it was.
-    # What is read is the file, the lines and the name calls() recorded, never the why's words. A
+    # What is read is the file, the line and the name calls() recorded, never the why's words. A
     # citation recorded more than once, as a why built for each read of a list is, is read once.
     sources: dict = {}
-    for source, first, last, name in dict.fromkeys(CALLED):
-        span = f"{source}:{first}" + (f"-{last}" if last != first else "")
+    for source, line, name in dict.fromkeys(CALLED):
         if source not in files:
-            problems.append(error(".github/scripts/ci_job_reads.py", f"a why cites {span} as calling {name}, but "
-                                                                      f"{source} is not in the repository; cite the "
+            problems.append(error(".github/scripts/ci_job_reads.py", f"a why cites {source}:{line} as calling {name}, "
+                                                                      f"but {source} is not in the repository; cite the "
                                                                       f"file that makes the call by its path from the "
                                                                       f"repository's root"))
             continue
@@ -1769,12 +1768,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
             sources[source] = read_repository_text(REPO / source).splitlines()
         lines = sources[source]
         call = re.compile(re.escape(name) + r"\s*\(")
-        if any(call.search(lines[n - 1]) for n in range(first, last + 1) if 0 < n <= len(lines)):
+        if 0 < line <= len(lines) and call.search(lines[line - 1]):
             continue
-        on = [str(n) for n, line in enumerate(lines, 1) if call.search(line)]
+        on = [str(n) for n, text in enumerate(lines, 1) if call.search(text)]
         problems.append(error(".github/scripts/ci_job_reads.py",
-                              f"a why cites {span} as calling {name}, which "
-                              + ("that line does not; " if last == first else "none of those lines does; ")
+                              f"a why cites {source}:{line} as calling {name}, which that line does not; "
                               + (f"the call is at :{', :'.join(on)}" if on else f"no line of the file calls {name}")
                               + ", so cite the line the call is on"))
     # A citation names the workflow file that holds the step: ci.yaml, or a workflow one of its
