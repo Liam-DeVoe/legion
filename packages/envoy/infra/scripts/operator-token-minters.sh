@@ -275,7 +275,9 @@
 # Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
 # the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
 # can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
-# change), in the namespace of the Service it calls every way to run or enter a pod that a guarded
+# change), or whose rules can match a cluster-scoped object, which the API server applies no
+# namespaceSelector to (a resource the discovery does not list as namespaced counts as one), in
+# the namespace of the Service it calls every way to run or enter a pod that a guarded
 # namespace is asked (RIGHTS_TABLE's namespaced rows, jobs, cronjobs and replicationcontrollers,
 # exec, attach and ephemeral containers included, and create, update and patch of each custom
 # resource), since a pod there that carries the Service's labels joins it and can mount its TLS

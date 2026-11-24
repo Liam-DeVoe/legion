@@ -362,7 +362,8 @@ named_grants() {
 # fence, as review takes it). A part of the certificate chain so limited (an approval by name, whose
 # name the requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed;
 # the caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming
-# the permission.
+# the permission, and an answer that is not a list (is_list) or that code-rbac.jq cannot read is
+# UNKNOWN naming the roles' list.
 live_named() {
   local what id detail kind ns name policy residual
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
@@ -372,8 +373,8 @@ live_named() {
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
     return 0
   fi
-  if ! named_grants "$5" "$WORK/named.rec" "${6:-}"; then
-    unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.rec.err")"
+  if ! is_list "$WORK/roles.json" "$WORK/named.rec.err" || ! named_grants "$5" "$WORK/named.rec" "${6:-}"; then
+    unknown "$2" "the API server's list of roles could not be read, so a right a role limits by name is not read: $(first_line "$WORK/named.rec.err")"
     return 0
   fi
   ROLES_OK=true
@@ -394,9 +395,9 @@ live_named() {
 # subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
 # system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
 # whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
-# server refused the list or answered no JSON, or when the list lacks the bootstrap cluster-admin
-# ClusterRoleBinding, its witness: every cluster has it, so a list without it is not whole (its
-# subjects are still added).
+# server refused the list or answered no list (is_list), or when the list lacks the bootstrap
+# cluster-admin ClusterRoleBinding, its witness: every cluster has it, so a list without it is not
+# whole (its subjects are still added).
 bound_subjects() {
   local kind ns name label
   local -A held=()
@@ -405,11 +406,11 @@ bound_subjects() {
     BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
     return 1
   fi
-  if ! jq -r "$JQ_REC"'[.items[]? | (.metadata.namespace // "") as $bns | .subjects[]?
+  if ! is_list "$WORK/bindings.json" "$WORK/bindings.err" || ! jq -r "$JQ_REC"'[.items[] | (.metadata.namespace // "") as $bns | .subjects[]?
       | select(.kind == "User" or .kind == "Group" or .kind == "ServiceAccount")
       | [.kind, (if .kind == "ServiceAccount" then (.namespace // $bns) else "" end), .name]] | unique[] | rec' \
     "$WORK/bindings.json" >"$WORK/bindings.rec" 2>"$WORK/bindings.err"; then
-    BOUND_ERROR="the API server's list of bindings is not JSON: $(first_line "$WORK/bindings.err")"
+    BOUND_ERROR="the API server's list of bindings could not be read: $(first_line "$WORK/bindings.err")"
     return 1
   fi
   BINDINGS_OK=true
@@ -548,21 +549,26 @@ settings_verdict() {
 # impersonated user by its own IAM there); bind and escalate on every binding's role, and patch and
 # update on every binding, by name; and update and patch by name on each role bound to a reviewed
 # principal. When the bindings could not be read, it holds impersonate groups system:masters and
-# the IAM holders alone. Returns 1 with NAMED_ERROR when named-rights.jq built no JSON array of
-# rights, which sets NAMED_RIGHTS to none ([]) rather than to what it printed.
+# the IAM holders alone. Returns 1 with NAMED_ERROR when a pipeline that gathers its inputs fails or
+# named-rights.jq built no JSON array of rights, which leaves NAMED_RIGHTS none ([]) rather than
+# what it printed. Its callers run it as `named_rights || unknown`, which turns errexit off inside
+# it, so each pipeline here is checked by its own `||`.
 named_rights() {
   local bindings='{"items": []}' file files=() built
   NAMED_RIGHTS='[]' NAMED_ERROR=""
-  cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json"
+  cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json" ||
+    { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the reviewed principals could not be listed"; return 1; }
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
   for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
     [ ! -s "$file" ] || files+=("$file")
   done
   if [ "${#files[@]}" -gt 0 ]; then
     awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
-      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/iam-users.json"
+      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/iam-users.json" ||
+      { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the IAM holders could not be listed"; return 1; }
   else
-    printf '[]' >"$WORK/iam-users.json"
+    printf '[]' >"$WORK/iam-users.json" ||
+      { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the IAM holders could not be written"; return 1; }
   fi
   if built="$(jq -c -L "$LIB" --slurpfile reviewed "$WORK/reviewed.json" --slurpfile iam_users "$WORK/iam-users.json" \
     -f "$LIB/named-rights.jq" <<<"$bindings" 2>"$WORK/named-rights.err")" && is_rights "$built"; then
@@ -572,16 +578,43 @@ named_rights() {
     return 1
   fi
 }
-# is_rights VALUE: whether VALUE is one JSON array, as rights_json writes rights. An empty VALUE, which
-# a jq program that failed or printed nothing leaves, is none, so a step never reads it as no rights.
-is_rights() { printf '%s' "$1" | jq -e -s 'length == 1 and (.[0] | type) == "array"' >/dev/null 2>&1; }
+# is_rights VALUE: whether VALUE is exactly one JSON array, as rights_json writes rights, by rec.jq's
+# one_array, the one place that rule is written. An empty VALUE, which a jq program that failed or
+# printed nothing leaves, is none, so a step never reads it as no rights.
+is_rights() { printf '%s' "$1" | jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1; }
+# is_list FILE ERR: whether FILE holds one JSON object whose items is an array, as kubectl get -o json
+# writes a list. jq reads an empty answer, which a proxy that drops a response's body sends with
+# exit 0, as no value: a program over it prints nothing and exits 0, so a read that checks only
+# jq's exit status takes it for an empty list. Every list the check reads with kubectl -o json is
+# held to this before any read of it. On failure ERR says why (jq's own error for an answer that is
+# not JSON), for the caller's UNKNOWN.
+is_list() {
+  jq -e -s 'length == 1 and (.[0] | type) == "object" and (.[0].items | type) == "array"' "$1" >/dev/null 2>"$2" && return 0
+  shape_error "$1" "$2" "one object with a list of items"
+}
+# is_object FILE ERR: whether FILE holds one JSON object, as kubectl get -o json writes one object;
+# is_list says why an empty answer is not.
+is_object() {
+  jq -e -s 'length == 1 and (.[0] | type) == "object"' "$1" >/dev/null 2>"$2" && return 0
+  shape_error "$1" "$2" "one object"
+}
+# shape_error FILE ERR WANT: writes to ERR why FILE is not WANT, unless jq's error is there already;
+# returns 1.
+shape_error() {
+  [ -s "$2" ] && return 1
+  if grep -q '[^[:space:]]' "$1" 2>/dev/null; then echo "the answer is JSON, but not $3" >"$2"; else echo "the answer was empty" >"$2"; fi
+  return 1
+}
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
 # where both hold one, RIGHTS's label stays. Both reach jq on its stdin, never its command line. It
-# fails on anything but two JSON arrays, an empty argument included: a jq step before it that failed
-# or printed nothing leaves one, and the review must not go on without the rights that step owed.
+# refuses anything but two JSON arrays (is_rights), an empty argument included, printing why and
+# returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
+# than go on without the rights the argument owed. Every rights value a step joins goes through it;
+# a part that builds rights for an UNKNOWN of its own checks them with is_rights where it builds them.
 with_rights() {
-  printf '%s\n%s\n' "$1" "$2" | jq -c -s '
-    if length != 2 or any(.[]; type != "array") then
-      error("with_rights takes two JSON arrays, and was given \(length) value(s): \(map(type) | join(", "))")
-    else .[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end) end'
+  if ! is_rights "$1" || ! is_rights "$2"; then
+    echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
+    return 1
+  fi
+  printf '%s\n%s\n' "$1" "$2" | jq -c -s '.[0] + .[1] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
 }

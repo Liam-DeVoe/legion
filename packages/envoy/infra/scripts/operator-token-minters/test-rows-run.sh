@@ -53,8 +53,10 @@
 #        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass;
 #   (cs) a cluster whose principals and rights are each more than one argument of a command line
 #        holds is reviewed whole: they reach jq through files and its stdin, never its arguments;
-#   (cv) a part that builds the custom resources' or the name-limited rights and fails, or prints
-#        nothing, reads UNKNOWN naming those rights, and the RBAC step does not pass.
+#   (cv) a part that builds the custom resources' or the name-limited rights and fails, prints
+#        nothing, or has a pipeline that fails, reads UNKNOWN naming those rights, and the RBAC step
+#        does not pass;
+#   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -498,12 +500,10 @@ if row cr; then
   # The Secrets hold their data, so the server's answer carries it, as the comment above says.
   : >"$world/clusters/operator-cluster/token-secret-data"
   run
-  want_status 2 "a list of token Secrets answered without the Table"
   for ns in envoy-operator secrets-broker; do
-    want_line "UNKNOWN live: RBAC on operator-cluster: the API server's list of token Secrets in $ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none" \
+    want_rbac_unknown "the API server's list of token Secrets in $ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none" \
       "the list of $ns's token Secrets answered without the Table"
   done
-  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed on a list of token Secrets answered without the Table"
   responses="$world/clusters/operator-cluster/token-secret-responses"
   if [ ! -e "$responses" ] || ! jq -e -s 'any(.[].items[]?; has("data"))' "$responses" >/dev/null; then
     fail "the world's server sent no token Secret's data, so the row does not hold the case its comment names"
@@ -542,33 +542,81 @@ if row cs; then
   passed "(cs) a cluster whose principals and rights each pass a command line's argument is reviewed whole, and exits 0"
 fi
 
-# --- (cv) A part that builds a step's rights and fails, or prints nothing. A copy of the script
-# whose custom-rights.jq or named-rights.jq is `empty` (it prints nothing and exits 0) or an error
-# reads UNKNOWN naming the rights it could not build, exits 2, and the RBAC step does not pass: the
-# review never goes on without those rights. Run by hand, the control is the script and its parts as
-# at cae4905130, whose with_rights read an empty argument as no rights: each empty item and
-# custom-error pass the RBAC step and exit 0, and named-error stops the run mid-way. ---
-broken_rights_row() {
-  local copy="$temporary_dir/cv-$1" part want
-  case "$1" in
-    custom-*) part=custom-rights.jq want="the rights on the custom resources could not be built, so none is reviewed: " ;;
-    named-*) part=named-rights.jq want="the rights a role limits by name could not be built, so none is reviewed: " ;;
-  esac
-  base_world
+# script_copy NAME: a copy of the script and its parts under the row's temporary directory, for a row
+# that breaks one part; prints the copy's script path.
+script_copy() {
+  local copy="$temporary_dir/copy-$1"
+  rm -rf "$copy"
   mkdir -p "$copy"
   cp "$check" "$copy/operator-token-minters.sh"
   cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  printf '%s' "$copy/operator-token-minters.sh"
+}
+# plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
+# so a plant that missed its line cannot pass as a control.
+plant() {
+  local text
+  text="$(<"$1")"
+  [ "$(grep -cF -- "$2" "$1")" -eq 1 ] || fail "the plant's line is not in $(basename "$1") once: $2"
+  printf '%s\n' "${text/"$2"/"$3"}" >"$1"
+}
+
+# --- (cv) A part that builds a step's rights and fails, or prints nothing. A copy of the script
+# whose custom-rights.jq or named-rights.jq is `empty` (it prints nothing and exits 0) or an error,
+# or whose named_rights has a pipeline that fails (the reviewed principals' list, or the IAM holders'
+# awk, planted as `false`), reads UNKNOWN naming the rights it could not build, exits 2, and the RBAC
+# step does not pass: the review never goes on without those rights. named_rights runs under
+# `named_rights || unknown`, which turns errexit off inside it, so only its own `||` after each
+# pipeline catches one. Run by hand, the control is the script and its parts as at cae4905130, whose
+# with_rights read an empty argument as no rights: each empty item and custom-error pass the RBAC
+# step and exit 0, and named-error stops the run mid-way; and as at bfb6ea5c85 for the two pipeline
+# items, which pass the RBAC step with no UNKNOWN. ---
+broken_rights_row() {
+  local script lib want
+  base_world
+  script="$(script_copy "cv-$1")"
+  lib="$(dirname "$script")/operator-token-minters"
   case "$1" in
-    *-empty) echo 'empty' >"$copy/operator-token-minters/$part" ;;
-    *-error) echo 'error("a part broken by the test")' >"$copy/operator-token-minters/$part" ;;
+    custom-*) want="the rights on the custom resources could not be built, so none is reviewed: " ;;
+    named-*) want="the rights a role limits by name could not be built, so none is reviewed: " ;;
   esac
-  run_script="$copy/operator-token-minters.sh" run
-  want_status 2 "$part broken ($1)"
-  want_text "UNKNOWN live: RBAC on operator-cluster: $want" "$part broken ($1)"
-  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed with $part broken ($1)"
-  ! has_prefix "UNKNOWN run: the run stopped" || fail "the run stopped mid-way with $part broken ($1), where the step should read UNKNOWN"
+  case "$1" in
+    custom-empty) echo 'empty' >"$lib/custom-rights.jq" ;;
+    custom-error) echo 'error("a part broken by the test")' >"$lib/custom-rights.jq" ;;
+    named-empty) echo 'empty' >"$lib/named-rights.jq" ;;
+    named-error) echo 'error("a part broken by the test")' >"$lib/named-rights.jq" ;;
+    named-principals)
+      plant "$lib/reviews.sh" 'cut -d"$US" -f1 "$WORK/principals.rec" | jq' 'false | jq'
+      want+="the reviewed principals could not be listed"
+      ;;
+    named-holders)
+      plant "$lib/reviews.sh" "awk -F\"\$US\" '\$1 == \"row\" || \$1 == \"chain\" { print \$2 }' \"\${files[@]}\" |" 'false |'
+      want+="the IAM holders could not be listed"
+      ;;
+  esac
+  run_script="$script" run
+  want_rbac_unknown "$want" "a broken part of the rights ($1)"
 }
 if row cv; then
-  each broken_rights_row custom-empty custom-error named-empty named-error
-  passed "(cv) a part that builds the custom resources' or the name-limited rights and fails, or prints nothing, reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+  each broken_rights_row custom-empty custom-error named-empty named-error named-principals named-holders
+  passed "(cv) a part that builds the custom resources' or the name-limited rights and fails, prints nothing, or has a pipeline that fails reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+fi
+
+# --- (cx) with_rights' own refusal. Every rights value a step joins goes through with_rights, which
+# refuses anything but two JSON arrays and returns 1, so the step's assignment stops the run under
+# errexit rather than let it go on without the rights the argument owed. A copy whose
+# webhook-backends.jq prints nothing leaves POWER_RIGHTS empty, which the CRD branch hands
+# with_rights: the run stops, printing with_rights' refusal and `UNKNOWN run`, exit 2, and the RBAC
+# step does not pass. Run by hand, the control is reviews.sh's with_rights as at cae4905130, which
+# read the empty argument as no rights: the RBAC step passes and the run exits 0. ---
+if row cx; then
+  base_world
+  script="$(script_copy cx)"
+  echo 'empty' >"$(dirname "$script")/operator-token-minters/webhook-backends.jq"
+  run_script="$script" run
+  want_status 2 "with_rights handed an empty webhook list"
+  want_text "with_rights takes two JSON arrays, and was given: , [" "with_rights handed an empty webhook list"
+  want_text "UNKNOWN run: the run stopped before its end" "with_rights handed an empty webhook list"
+  ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "with_rights handed an empty webhook list: the RBAC step passed"
+  passed "(cx) with_rights handed an empty rights value (a webhook list built as nothing) refuses it and stops the run, UNKNOWN, exit 2"
 fi

@@ -13,7 +13,9 @@
 #        exits 0; a webhook that calls a URL, and a refused list of webhook configurations, read
 #        UNKNOWN; apps/deployer that may update configmaps in hooks (rv17), the injector's template,
 #        exits 1; and a backend Service of type ExternalName, or with no selector, reads UNKNOWN
-#        (P2-4);
+#        (P2-4); a webhook backed in dispatch whose selector names only legion, with a rule that can
+#        match a cluster-scoped object (clusterrolebindings, or `*`), exits 1 naming the webhook, and
+#        with rules on namespaced objects alone exits 0;
 #   (cf) Kyverno's ClusterPolicy and its MutatingPolicy of policies.kyverno.io (rv15), and
 #        Kubewarden's ClusterAdmissionPolicy of policies.kubewarden.io (N1), cluster-scoped:
 #        legion/worker that may create any exits 1 naming it; the CRD with no holder exits 0; a
@@ -28,17 +30,31 @@
 #        allowlistsynchronizers exits 1;
 #   (cm) Backup for GKE installed on a cluster of the pool (a CRD of gkebackup.gke.io) reads UNKNOWN,
 #        on the operator's cluster and another: a restore recreates a backup's workloads and RBAC;
-#   (cu) a list of CRDs, of workload allowlists, or of admission policies and their bindings answered
-#        with a proxy's error page (exit 0) reads UNKNOWN naming the list, exits 2, and the RBAC step
-#        does not pass, though legion/worker holds the right the list would show.
+#   (cu) each list the check reads with kubectl -o json (the webhook configurations, the CRDs, the
+#        workload allowlists, the admission policies and their bindings, the bindings, the
+#        ServiceAccounts) and a webhook's Service, answered with exit 0 but as no List (an error
+#        page, an empty body, `{}`), reads UNKNOWN naming it, exits 2, and the RBAC step does not
+#        pass, though legion/worker holds a right only that answer reveals, which the item names.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
-# or its TLS Secret decides what the webhook does to the operator's next pod. ---
+# or its TLS Secret decides what the webhook does to the operator's next pod. A webhook whose rules
+# can match a cluster-scoped object is judged whatever its namespaceSelector says, since the API
+# server applies none to an object with no namespace: one backed in dispatch whose selector names
+# only legion, with a rule on clusterrolebindings or on `*`, is counted; the same selector with a
+# rule on pods, or on `*` of scope Namespaced, is not. Run by hand, the control for the cluster
+# items is webhook-backends.jq's can_match as at bfb6ea5c85, which read only the selector: each
+# exits 0. ---
+# hook_config SELECTOR CLIENT [RULES]: one MutatingWebhookConfiguration, hook-config, of one webhook,
+# pods.example.com, calling CLIENT; SELECTOR exclude names the guarded namespaces out, legion names
+# legion alone in, and empty sets none; RULES, a JSON array, its rules (none when absent).
 hook_config() {
-  jq -n --arg selector "${1:-}" --argjson client "$2" '[{kind: "MutatingWebhookConfiguration", metadata: {name: "hook-config"},
+  jq -n --arg selector "${1:-}" --argjson client "$2" --argjson rules "${3:-null}" '[{kind: "MutatingWebhookConfiguration", metadata: {name: "hook-config"},
     webhooks: [{name: "pods.example.com", clientConfig: $client}
       + (if $selector == "exclude" then {namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "NotIn",
-          values: ["envoy-operator", "secrets-broker"]}]}} else {} end)]}]'
+          values: ["envoy-operator", "secrets-broker"]}]}}
+         elif $selector == "legion" then {namespaceSelector: {matchLabels: {"kubernetes.io/metadata.name": "legion"}}}
+         else {} end)
+      + (if $rules != null then {rules: $rules} else {} end)]}]'
 }
 backend_row() {
   local service='{"service": {"namespace": "hooks", "name": "hook"}}' want
@@ -87,6 +103,27 @@ backend_row() {
       run
       want_status 0 "a webhook whose selector excludes the guarded namespaces"
       ;;
+    cluster-rule | star-rule | namespaced-rule | star-namespaced)
+      case "$1" in
+        cluster-rule) rules='[{operations: ["CREATE", "UPDATE"], apiGroups: ["rbac.authorization.k8s.io"], apiVersions: ["v1"], resources: ["clusterrolebindings"]}]' ;;
+        star-rule) rules='[{operations: ["*"], apiGroups: ["*"], apiVersions: ["*"], resources: ["*"]}]' ;;
+        namespaced-rule) rules='[{operations: ["CREATE"], apiGroups: [""], apiVersions: ["v1"], resources: ["pods"]}]' ;;
+        star-namespaced) rules='[{operations: ["*"], apiGroups: ["*"], apiVersions: ["*"], resources: ["*"], scope: "Namespaced"}]' ;;
+      esac
+      hook_config legion '{"service": {"namespace": "dispatch", "name": "hook"}}' "$(jq -n -c "$rules")" >"$world/clusters/operator-cluster/webhooks.json"
+      subject_grant operator-cluster "$(sa_subject apps deployer)" patch apps deployments "" dispatch ""
+      run
+      case "$1" in
+        cluster-rule | star-rule)
+          want_status 1 "a webhook backed in dispatch whose selector names only legion, with a rule that can match a cluster-scoped object ($1)"
+          want_line "FINDING system:serviceaccount:apps:deployer: patch deployments.apps in dispatch, backing the webhook MutatingWebhookConfiguration hook-config/pods.example.com" \
+            "a webhook backed in dispatch whose selector names only legion, with a rule that can match a cluster-scoped object ($1)"
+          ;;
+        *)
+          want_status 0 "a webhook backed in dispatch whose selector names only legion, with rules on namespaced objects alone ($1)"
+          ;;
+      esac
+      ;;
     url)
       hook_config "" '{"url": "https://hooks.example.com/mutate"}' >"$world/clusters/operator-cluster/webhooks.json"
       run
@@ -126,8 +163,8 @@ backend_row() {
 }
 if row ce; then
   each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers configmaps other-cluster excluded url \
-    external-name no-selector refused
-  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers, and rv17's configmaps) exits 1 naming the webhook, on the operator's cluster or another; an excluding selector exits 0; a URL webhook, an ExternalName or selector-less Service, and a refused list read UNKNOWN"
+    external-name no-selector refused cluster-rule star-rule namespaced-rule star-namespaced
+  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers, and rv17's configmaps) exits 1 naming the webhook, on the operator's cluster or another, and so does one whose rule can match a cluster-scoped object whatever its selector; an excluding selector exits 0; a URL webhook, an ExternalName or selector-less Service, and a refused list read UNKNOWN"
 fi
 
 # --- (cf) A policy engine's cluster-scoped resources: Kyverno's ClusterPolicy mutates pods. ---
@@ -281,25 +318,52 @@ if row cm; then
   passed "(cm) Backup for GKE installed on the operator's cluster or another reads UNKNOWN"
 fi
 
-# --- (cu) A list jq cannot read, answered with exit 0: the check reads it UNKNOWN, never as a list of
-# nothing. Each world holds what the list would show (Kyverno's ClusterPolicy, an installed workload
-# allowlist, an admission policy's parameter) and legion/worker holds its right, so a run that
-# skipped the list would miss a finding and pass. Run by hand, the control is the script and its
-# parts as at cae4905130, whose with_rights read the CRDs' failed build as no rights and whose loops
-# read the other two lists as empty: each item passes the RBAC step and exits 0. ---
+# --- (cu) A list answered with exit 0 but as no List: a proxy's error page, an empty body (jq reads
+# no value in it, prints nothing and exits 0), or `{}` (jq's .items[]? is nothing there). Each read
+# is held to its shape first (is_list, is_object), so each reads UNKNOWN naming the list, exits 2,
+# runs to its end, and the RBAC step does not pass. Each world holds what the answer would show and
+# legion/worker a right only that answer reveals, which the item names, so a run that took the
+# answer for an empty list would miss it: the webhook's backend Service, the policy engine's
+# resource, the installed allowlist, the admission policy's parameter. The bindings have no planted
+# right (they name the subjects reviewed), and the ServiceAccounts' list keeps its witness
+# (default/default); a garbled ServiceAccounts' list stops the run, which row (al) uses. The roles'
+# list is row (bu)'s. Run by hand, the control is the script and its parts as at bfb6ea5c85: the
+# allowlists and policies items with an empty body or `{}`, the CRDs and webhooks with `{}`, and the
+# Service with an empty body each pass the RBAC step and exit 0, and the webhooks with an empty
+# body stop the run mid-way. ---
 unread_list_row() {
-  local dir="$world/clusters/operator-cluster" want
+  local dir="$world/clusters/operator-cluster" list="${1%-*}" shape="${1##*-}" want why missed
   base_world
-  case "$1" in
+  case "$shape" in
+    garbage) why="" ;;
+    empty) why="the answer was empty" ;;
+    object) why="the answer is JSON, but not one object with a list of items" ;;
+  esac
+  case "$list" in
+    webhooks)
+      hook_config "" '{"service": {"namespace": "hooks", "name": "hook"}}' >"$dir/webhooks.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" update "" services "" hooks hook
+      want="the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: $why"
+      missed="legion/worker's update of the webhook's backend Service hooks/hook"
+      ;;
+    service)
+      hook_config "" '{"service": {"namespace": "hooks", "name": "hook"}}' >"$dir/webhooks.json"
+      jq -n '{"hooks/hook": {spec: {type: "ExternalName", externalName: "hooks.example.com"}}}' >"$dir/services.json"
+      want="the webhook MutatingWebhookConfiguration hook-config/pods.example.com calls the Service hooks/hook, whose answer is not one JSON object ($why"
+      [ -z "$why" ] || want+="), so where it sends admission calls is not read"
+      missed="the backend Service's type ExternalName"
+      ;;
     crds)
       jq -n '[{spec: {group: "kyverno.io", scope: "Cluster", names: {plural: "clusterpolicies", kind: "ClusterPolicy"}}}]' >"$dir/crds.json"
       subject_grant operator-cluster "$(sa_subject legion worker)" create kyverno.io clusterpolicies "" "" ""
-      want="the API server's list of custom resource definitions is not JSON: "
+      want="the API server's list of custom resource definitions could not be read, so a policy engine's cluster-scoped resources are not reviewed: $why"
+      missed="legion/worker's create on clusterpolicies.kyverno.io"
       ;;
     allowlists)
       jq -n '[{spec: {group: "auto.gke.io", scope: "Cluster", names: {plural: "workloadallowlists", kind: "WorkloadAllowlist"}}}]' >"$dir/crds.json"
       echo '["example-node-agent"]' >"$dir/allowlists.json"
-      want="the API server's list of workload allowlists is not JSON, so whether Autopilot admits a privileged pod here is unknown: "
+      want="the API server's list of workload allowlists could not be read, so whether Autopilot admits a privileged pod here is unknown: $why"
+      missed="the installed workload allowlist example-node-agent"
       ;;
     policies)
       printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
@@ -309,17 +373,26 @@ unread_list_row() {
          spec: {policyName: "inject-sidecar", paramRef: {name: "sidecar-params", namespace: "hooks"}}}]' >"$dir/admission-policies.json"
       jq -n '{"/api/v1": {resources: [{name: "configmaps", kind: "ConfigMap", namespaced: true}]}}' >"$dir/raw.json"
       subject_grant operator-cluster "$(sa_subject legion worker)" update "" configmaps "" hooks sidecar-params
-      want="the API server's list of admission policies and their bindings is not JSON, so a policy's parameter objects are not reviewed: "
+      want="the API server's list of admission policies and their bindings could not be read, so a policy's parameter objects are not reviewed: $why"
+      missed="legion/worker's update on configmaps/sidecar-params in hooks"
+      ;;
+    bindings)
+      want="the API server's list of bindings could not be read: $why"
+      missed="the bindings' subjects"
+      ;;
+    serviceaccounts)
+      want="the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
+      missed="the cluster's ServiceAccounts"
       ;;
   esac
-  : >"$dir/garbage-$1"
+  : >"$dir/$shape-$list"
   run
-  want_status 2 "a list of $1 that is not JSON"
-  want_text "UNKNOWN live: RBAC on operator-cluster: $want" "a list of $1 that is not JSON"
-  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed on a list of $1 that is not JSON"
-  ! has_prefix "UNKNOWN run: the run stopped" || fail "the run stopped mid-way on a list of $1 that is not JSON, where the step should read UNKNOWN"
+  want_rbac_unknown "$want" "the list of $list answered as $shape, where $missed would go unseen"
 }
 if row cu; then
-  each unread_list_row crds allowlists policies
-  passed "(cu) a list of CRDs, workload allowlists, or admission policies and their bindings that is not JSON reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+  each unread_list_row webhooks-garbage webhooks-empty webhooks-object service-garbage service-empty \
+    crds-garbage crds-empty crds-object allowlists-garbage allowlists-empty allowlists-object \
+    policies-garbage policies-empty policies-object bindings-garbage bindings-empty bindings-object \
+    serviceaccounts-empty serviceaccounts-object
+  passed "(cu) each list read with kubectl -o json, and a webhook's Service, answered with exit 0 as an error page, an empty body or {} reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
 fi
