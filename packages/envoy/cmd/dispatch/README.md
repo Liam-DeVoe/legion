@@ -1056,6 +1056,8 @@ What the two processes share, and what each keeps to itself:
   The other processes stand by and try for the hold every two seconds, and again the moment a hold they found live lapses.
   A process that stops hands back every message it was delivered and did not handle and releases the hold, so another process takes the durable over at once and is redelivered those messages within seconds;
   a process that dies is replaced within the hold's 15 seconds and one try.
+  That bound holds while Postgres answers: the take-over's hold take and its record of the durable's start are two commits on its way to the durable, which must answer within about two seconds together.
+  A Postgres stall delays the take-over by its length, and a Cloud SQL failover by about a minute; the holder cannot renew its hold meanwhile either, so no process delivers until Postgres answers again.
   A take-over recreates the durable at its ack floor on a fresh deliver subject, which fences the old holder off:
   a subscription its client sends again after a reconnect gets nothing.
   It runs whole under that durable's own Postgres consumer lease, which the reconciliation of the build before holds takes too, so no two processes change one durable at once.

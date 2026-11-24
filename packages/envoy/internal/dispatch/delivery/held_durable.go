@@ -48,24 +48,31 @@ const standbyLogEvery = 30 * time.Second
 // reports itself lost intakeHoldMargin before it lapses, so the holder stops delivering before any
 // standby can take it. A holder that dies was replaced within intakeHoldTTL plus one
 // durableBindInterval in the runs below, a JetStream reply lost with the standby's connection
-// during the take-over included. That bound is measured, and no code holds it: the take-over's
-// read of the durable may take up to intakeHoldRenew (lookupDurable), each of its finishing steps
-// up to takeOverCallTimeout, and the whole finish up to takeOverFinishWithin (finishTakeOver). Its
-// hold lapses intakeHoldTTL after the last renewal that landed -- the whole of
-// intakeHoldTTL after the death when the death comes the instant after one -- and a standby tries
-// for it again at the lapse its last poll read (heldDurable.run), so the take-over starts at the
-// lapse and has durableBindInterval to finish in. At that worst phase, with the standby's poll
-// just before the lapse, twenty runs replaced the holder 15.021 s to 15.041 s after its death, a
-// margin of 1.959 s at least (TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase). A
-// standby that only polls does not keep the bound there: its next poll comes a whole interval
-// after the one before the lapse, so its take-over starts just short of the bound and passes it
-// only by the take-over's own statements and JetStream calls, by milliseconds and not in every
-// run. With no lapse timer (lapse.Reset(left) removed), ten runs of the row took the durable over
-// 21.011 s to 21.019 s after the death, a known time past the bound (worstPhasePoll says why).
-// A reply lost with the standby's connection costs the take-over the reconnect, nats.go's
-// reconnect wait of about 1 s, which the interval holds too
-// (TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheStatedBound):
-// each of the take-over's JetStream calls ends at that connection's loss and is sent again on the
+// during the take-over included. That bound is measured, and no code holds it: the take-over's read
+// of the durable may take up to intakeHoldRenew (lookupDurable), each of its finishing steps up to
+// takeOverCallTimeout, and the whole finish up to takeOverFinishWithin (finishTakeOver). Its hold
+// lapses intakeHoldTTL after the last renewal that landed -- the whole of intakeHoldTTL after the
+// death when the death comes the instant after one -- and a standby tries for it again at the lapse
+// its last poll read (heldDurable.run), so the take-over starts at the lapse and has
+// durableBindInterval to finish in. At that worst phase, with the standby's poll just before the
+// lapse, twenty runs replaced the holder 15.021 s to 15.041 s after its death, a margin of 1.959 s
+// at least (TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase). The bound holds while
+// Postgres answers: two of the take-over's statements commit on its way to the durable, the hold's
+// take (takeHold) and the record of the durable's start before its delete (takeOver), and they must
+// answer within about durableBindInterval together. A Postgres stall delays the take-over by its
+// length: in a builds Job whose Postgres waited on a shared disk to commit, one take of the hold
+// took 2.1 s and the row passed the bound at 17.78 s (dispatch://INFRA-557, round 181). A Cloud SQL
+// failover, about a minute, delays it by that, and the holder cannot renew its hold meanwhile
+// either, so no process delivers until Postgres answers. A standby that only polls does not keep
+// the bound at the worst phase: its next poll comes a whole interval after the one before the
+// lapse, so its take-over starts just short of the bound and passes it only by the take-over's own
+// statements and JetStream calls, by milliseconds and not in every run. With no lapse timer
+// (lapse.Reset(left) removed), the row takes the durable over about 20.9 s after the death (20.918
+// s under the row's hooks; ten runs under its earlier timing took 21.011 s to 21.019 s), a known
+// time past the bound (worstPhasePoll says why). A reply lost with the standby's connection costs
+// the take-over the reconnect, nats.go's reconnect wait of about 1 s, which the interval holds too
+// (TestATakeOverThatLosesAReplyWithItsConnectionReplacesADeadHolderWithinTheStatedBound): each of
+// the take-over's JetStream calls ends at that connection's loss and is sent again on the
 // connection that came back at once (onConnection), rather than at its deadline. The holder checks
 // that the durable still delivers to it on the same interval it renews (heldDurable.check).
 const (
