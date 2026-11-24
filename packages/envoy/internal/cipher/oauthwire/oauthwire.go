@@ -33,11 +33,6 @@ const (
 	// decides it, never the request: the exchange client is registered for Scope alone, so the
 	// library refuses a request that names this one invalid_scope under every entry.
 	ScopeRead = "read"
-	// ScopeApprove is the one OAuth scope of the token the broker mints for a person's approve
-	// grant and spends through its proxy: beside the project scope person it is an approve-only
-	// token, which a resource server that serves one holds to its approve routes and every other
-	// service refuses (ciphertoken). No exchange grants it to a token it hands out.
-	ScopeApprove = "approve"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -130,29 +125,10 @@ const (
 	MembershipHeld = "membership_held"
 )
 
-// The token exchange's answer to a trade the broker grants a capability it mints and holds
-// (requests.MintedKind): a placeholder of Cipher's proxy bound to a grant the broker keeps, never
-// an access token. The caller asks for it under TokenTypeProxyPlaceholder, and the broker's proxy
-// swaps the grant's token in for the placeholder on each request the kind's dpop entry allows.
-const (
-	// TokenTypeProxyPlaceholder is the requested_token_type such a caller asks for and the
-	// issued_token_type it is answered: the placeholder its requests carry through the proxy.
-	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
-	// defines this name, as it defines its subject token types.
-	TokenTypeProxyPlaceholder = "urn:envoy:params:oauth:token-type:proxy-placeholder"
-	// ExtraGrantID is the placeholder answer's field naming the grant: its kind's word, a colon
-	// and its uuid.
-	ExtraGrantID = "grant_id"
-	// ExtraProxy is the placeholder answer's field holding the grant's AirlockRelease: how the
-	// session reaches the proxy that holds the grant's token.
-	ExtraProxy = "proxy"
-)
-
 // AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
 // their requests through, the certificate authority that proxy's certificates are signed by, the
 // password every connection to it opens with, and one entry per name held back. A release of
-// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and the token exchange's
-// placeholder answer under ExtraProxy.
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values).
 type AirlockRelease struct {
 	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
 	ProxyURL string `json:"proxy_url"`

@@ -571,13 +571,6 @@ const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
 
-// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
-// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
-// to a route the approve list does not name, or for its answer of an ask that is not an approval
-// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
-// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
-const DispatchApproveOnlyToken = "APPROVE_ONLY_TOKEN"
-
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }

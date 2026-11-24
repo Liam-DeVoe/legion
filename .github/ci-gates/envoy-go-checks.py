@@ -18,12 +18,4 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
     (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
-    (CONTRACTS_SRC, f"{at('envoy-go-checks', SCAN_TESTS_STEP)}: the envoy-client and cipher-client "
-                    "sources packages/envoy/scripts/approve/session.ts loads import @legion/contracts "
-                    "(contracts exports.bun -> src)"),
-) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
-  # The scan tests of approve-check's session spawn `bun scripts/approve/session.ts`, which
-  # imports envoy-client's broker credential and Dispatch client and cipher-client's DPoP key.
-  + envoy_client_dep(at("envoy-go-checks", SCAN_TESTS_STEP)
-                     + ": packages/envoy/scripts/approve/session.ts imports "
-                     "../../../envoy-client/src/broker-credential.ts and dispatch-http.ts"))
+) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks"))

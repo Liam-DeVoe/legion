@@ -30,8 +30,7 @@ import {
 import { chooseSignIn, type SignInRecord } from "@legion/cipher-client/signins";
 import type { BrokerToken, BrokerTokenClient } from "@legion/cipher-client/token-client";
 import { isFinalRefusal } from "@legion/cipher-client/token-errors";
-import { PROXY_APPROVE_NAME } from "@legion/cipher-client/wire";
-import type { ApproveRoute, RequestCredential } from "./bearer";
+import type { RequestCredential } from "./bearer";
 import { LoggableError } from "./errors";
 
 /**
@@ -443,25 +442,6 @@ export function brokerCredential(
       // Otherwise the session `acting` resolves to now.
       const told = headers === undefined ? undefined : presentedAs.get(headers);
       dropHeld(told?.key ?? keyOf(env, own(acting)), told?.token);
-    },
-    async approveRoute(signal?: AbortSignal): Promise<ApproveRoute | undefined> {
-      // The client the session's own calls trade with, so the placeholder is traded by the
-      // person and the box key whose sign-in that client holds, under the same session name.
-      const { made } = await untilAborted(clientFor(env, own(undefined)), signal);
-      if (made.client === undefined || made.signIn === "") return undefined;
-      const held = await made.client.proxyPlaceholder(signal);
-      const approve = held.names[PROXY_APPROVE_NAME];
-      if (approve === undefined) {
-        throw new LoggableError(
-          `the secrets broker answered a placeholder of Cipher's proxy that holds no ${PROXY_APPROVE_NAME}, so no review was sent`
-        );
-      }
-      return {
-        placeholder: held.placeholder,
-        proxyUrl: held.proxyUrl,
-        caCertificate: held.caCertificate,
-        hosts: approve.hosts,
-      };
     },
     secret: () => presented,
   };

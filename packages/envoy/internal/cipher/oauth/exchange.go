@@ -283,7 +283,7 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeProxyPlaceholder {
+		if name != oauthwire.ActorTokenTypeMachine {
 			names = append(names, name)
 		}
 	}
@@ -302,9 +302,6 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
-		// The proxy placeholder, the one other type a caller may ask for: a person's sign-in
-		// traded for the approve capability (exchangeGrant, grantApprove). It is no subject type.
-		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.Kubernetes.configured() {
 		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
@@ -543,13 +540,6 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		p.writeError(ctx, w, request, err)
 		return
 	}
-	if request.GetRequestForm().Get(formRequestedTokenType) == oauthwire.TokenTypeProxyPlaceholder {
-		// A trade for the approve capability's placeholder (grantApprove): a person's sign-in
-		// alone, on a broker that serves the capability. The library mints nothing for it; the
-		// grant is written, and its session name claimed, in this transaction.
-		p.grantApprove(ctx, txCtx, w, request, session, subjectTokenType, credentialID, &committed)
-		return
-	}
 	resp, err := p.oauth.NewAccessResponse(txCtx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
@@ -571,27 +561,20 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		resp.SetExtra(oauthwire.ExtraCredentialID, credentialID)
 		resp.SetExtra(oauthwire.ExtraCredentialExpiresAt, credential.Expires.UTC().Format(time.RFC3339))
 	}
-	logSessionTaken(session, taken, fixed)
-	p.oauth.WriteAccessResponse(ctx, w, request, resp)
-}
-
-// logSessionTaken writes the warning for a session name claimSession took from another principal
-// (taken, "" for none), once the claim has committed: the two ways a principal loses a name it used
-// within the retention. Both trades call it, the access token's (exchangeGrant) and the approve
-// placeholder's (grantApprove), since both claim the name the same way.
-func logSessionTaken(session *oauthstore.ExchangeSession, taken string, fixed bool) {
 	switch {
 	case taken != "" && fixed:
-		// The configuration now fixes the name for an entry.
+		// Logged once the claim has committed, because it is one of the two ways a principal
+		// loses a name it used within the retention: the configuration now fixes it for an entry.
 		slog.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	case taken != "":
-		// A claim the configuration does not fix takes a live name only from an account paired
-		// with its own (oauthstore.Store.SetSessionPairs), as an operator moving a deployment's
-		// pods to another account does.
+		// The other way: a claim the configuration does not fix takes a live name only from an
+		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
+		// deployment's pods to another account does. Logged once it has committed, as the other.
 		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	}
+	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
 // reserveSessions holds every session name an entry fixes for that entry's principal

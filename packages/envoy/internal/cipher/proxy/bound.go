@@ -325,10 +325,24 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		kind = ""
 	}
 	if kind == proxyrules.KindDPoP {
-		// A minted capability: its own admission, every rule of which is read before any value is
-		// minted or any dial is made (mintedRefusal, dpop.go).
-		if code, why := s.mintedRefusal(r, request, chosen, info.grant.Names[chosen.name].Slots[chosen.slot], holdsPlaceholder); code != "" {
-			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, code, why)
+		// A minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder):
+		// two rules hold every request to its host, each refused before any value is minted or
+		// any dial is made. An upgrade is refused, since the bytes after its answer are no request
+		// the airlock reads; and the request carries the grant's placeholder as its one
+		// Authorization header, which the swap below replaces with the grant's token, so nothing
+		// else a command sends there - its own token, a second header beside the placeholder -
+		// goes on to the service.
+		if len(r.Header.Values("Upgrade")) != 0 {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there")
+			return
+		}
+		authorization := r.Header.Values("Authorization")
+		if !holdsPlaceholder || len(authorization) != 1 || authorization[0] != "DPoP "+info.grant.Names[chosen.name].Slots[chosen.slot] {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoPlaceholder, "a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent")
+			return
+		}
+		if s.dpopKey == nil {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker holds no DPoP key for "+chosen.name+", so no proof can be made for this request and nothing was sent")
 			return
 		}
 	}
@@ -443,8 +457,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
 		// an allowed swap - the commonest request the proxy serves - one decision rather than
 		// two, and leaves the refusal, the order its reasons are reported in and the 403
-		// exactly as they were. A dpop request has taken one decision more already, with no
-		// value, before its values were read (mintedRefusal).
+		// exactly as they were.
 		rewritten := proxyrules.Rewrite(s.rules, grant, value, request)
 		if rewritten == nil {
 			if refused() {

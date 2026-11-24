@@ -283,37 +283,6 @@ func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
 	}
 }
 
-// TestARequestItsEntryRefusesMintsNoToken: a minted grant's token is minted when the proxy reads
-// the grant's values (requests.Machine's mintedValues, on the first allowed call of the grant on
-// this pod), so a request carrying the placeholder that the entry's rules refuse - a write under a
-// route its allow list does not name, a GET of the allowed route - is refused 403
-// REQUEST_NOT_ALLOWED, saying nothing was sent, before that read: the values are never read, so
-// no token is minted, and the service receives nothing. The allowed write after them reads the
-// values once, so the count is one that can see a read.
-func TestARequestItsEntryRefusesMintsNoToken(t *testing.T) {
-	r, _ := newDPoPRig(t)
-	client := r.client(mintedPlaceholder)
-	for _, c := range []struct{ name, method, path string }{
-		{"a write under a route the allow list does not name", http.MethodPost, "/api/v1/issues/ACME-1/comments"},
-		{"a GET of the allowed route", http.MethodGet, mintedPath},
-	} {
-		answer, body := r.do(client, c.method, "https://"+boundHost+c.path, `{"body":"a comment"}`, "Authorization", "DPoP "+mintedPlaceholder)
-		refusedAs(t, c.name, answer, body, codeNotAllowed)
-	}
-	if reads := r.grants.valueReads(mintedGrantID); reads != 0 {
-		t.Fatalf("the grant's values were read %d times for the two refused requests; want none, since that read mints the grant's token", reads)
-	}
-	if seen := r.requests(); len(seen) != 0 {
-		t.Fatalf("the service received %d requests, want none", len(seen))
-	}
-	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK {
-		t.Fatalf("the allowed write = %d %s, want 200", answer.StatusCode, body)
-	}
-	if reads := r.grants.valueReads(mintedGrantID); reads != 1 {
-		t.Fatalf("the grant's values were read %d times after the allowed write; want once", reads)
-	}
-}
-
 // TestAProxyLineNamesTheGrant: the line of a minted grant's request names the grant and no
 // enrollment, and a refusal's line names the grant alone as its caller.
 func TestAProxyLineNamesTheGrant(t *testing.T) {

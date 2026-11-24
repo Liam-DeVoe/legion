@@ -2304,11 +2304,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs. It serves
-// an approve-only token too (ciphertoken.Options.ServesApproveOnly): the scope approve alone,
-// which the broker mints for a person's approve grant and spends through its proxy, never
-// released. Dispatch's approve list (approveScopeRoutes) names the routes such a token may call,
-// and every other route answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2326,11 +2322,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list, the approve list and their gates are Dispatch's own
-		// (internal/dispatch/api), so a read-only token reaches the routes the read list names
-		// and an approve-only token the routes the approve list names, and no other.
-		ServesReadOnly:    true,
-		ServesApproveOnly: true,
+		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the routes that list names and no other.
+		ServesReadOnly: true,
 	})
 }
 

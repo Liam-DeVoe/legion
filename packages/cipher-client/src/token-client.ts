@@ -60,15 +60,11 @@ import {
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
-  FORM_REQUESTED_TOKEN_TYPE,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
-  PLACEHOLDER_PREFIX,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
-  TOKEN_TYPE_NOT_APPLICABLE,
-  TOKEN_TYPE_PROXY_PLACEHOLDER,
 } from "./wire";
 
 /**
@@ -93,24 +89,6 @@ export interface BrokerToken {
   readonly credentialId: string;
   /** When that credential lapses, null where the answer carries none. */
   readonly credentialExpiresAt: Date | null;
-}
-
-/**
- * A placeholder of Cipher's proxy, as a placeholder trade answers it (`proxyPlaceholder`): the
- * string a request carries where a token would be, which the broker's proxy swaps a token of its
- * own in for on each request its rule allows, and how the session reaches the proxy - its URL, the
- * certificate its hosts' certificates are signed by, and each name behind it with the hosts it may
- * reach. The proxy's password is the placeholder itself. The answer's grant id and lifetime are
- * checked (`#readPlaceholder`) and not kept: a caller asks for a placeholder at the moment it sends
- * the one request it is for.
- */
-export interface ProxyPlaceholder {
-  readonly placeholder: string;
-  readonly proxyUrl: string;
-  readonly caCertificate: string;
-  readonly names: Readonly<
-    Record<string, { readonly value: string; readonly hosts: readonly string[] }>
-  >;
 }
 
 /** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
@@ -796,60 +774,20 @@ export class BrokerTokenClient {
   /**
    * One RFC 8693 exchange: `subject`, the actor token where a person is signing in, the session
    * name, whether this trade declines the launcher credential its identity holds, and a DPoP
-   * proof of this client's key, answered as an access token (`#read`).
-   */
-  async #exchange(subject: SubjectToken, signal: AbortSignal | undefined): Promise<BrokerToken> {
-    const { endpoint, answered, raw } = await this.#grant(subject, signal, {});
-    return this.#read(endpoint, answered, raw);
-  }
-
-  /**
-   * A trade of this client's identity for a placeholder of Cipher's proxy: the exchange of
-   * `#exchange` asking for {@link TOKEN_TYPE_PROXY_PLACEHOLDER} rather than an access token. The
-   * broker grants it to a person's sign-in alone, on a broker that serves a capability it mints
-   * and holds (the approve capability), and answers the placeholder, the grant it stands for and
-   * how the session reaches the proxy that holds the grant's token; no token that can act ever
-   * reaches this process. Each call is one trade and one grant, outside the retry loop of
-   * {@link token}: a caller asks for a placeholder at the moment it sends the one request it is
-   * for. A refusal is thrown as `#exchange` throws one; an answer that is not a placeholder is
-   * {@link BrokerTradeFailedError} (`#readPlaceholder`).
-   */
-  async proxyPlaceholder(signal?: AbortSignal): Promise<ProxyPlaceholder> {
-    const trade = async (subject: SubjectToken): Promise<ProxyPlaceholder> => {
-      const { endpoint, answered, raw } = await this.#grant(subject, signal, {
-        [FORM_REQUESTED_TOKEN_TYPE]: TOKEN_TYPE_PROXY_PLACEHOLDER,
-      });
-      return this.#readPlaceholder(endpoint, answered, raw);
-    };
-    const source = this.#subject;
-    if (source.spend !== undefined) return await source.spend(trade, signal);
-    return await trade(await source.read(signal));
-  }
-
-  /**
-   * One RFC 8693 exchange request of `subject`, with the members `asked` adds to its form, and
-   * the answer `openid-client` validated beside the answer's own body. The form is the subject
-   * token, the actor token where a person is signing in, the session name, whether this trade
-   * declines the launcher credential its identity holds; a DPoP proof of this client's key goes
-   * with it.
+   * proof of this client's key.
    *
    * `openid-client` makes the request and reads the answer — the grant type, the client id, the
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
    * fetch it is given, so one signer serves the token endpoint and every later request this
    * process makes with the token it got.
    */
-  async #grant(
-    subject: SubjectToken,
-    signal: AbortSignal | undefined,
-    asked: Readonly<Record<string, string>>
-  ): Promise<{ endpoint: string; answered: TokenEndpointResponse; raw: unknown }> {
+  async #exchange(subject: SubjectToken, signal: AbortSignal | undefined): Promise<BrokerToken> {
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
     // held until an hour past its lapse (`heldUntil`), so a session that trades all its life holds
     // the tokens of its last hours, not every one it ever traded.
     holdSecret(subject.token, heldUntil(subject.token));
     const form: Record<string, string> = {
-      ...asked,
       subject_token: subject.token,
       subject_token_type: subject.tokenType,
     };
@@ -899,7 +837,7 @@ export class BrokerTokenClient {
       });
     }
     // Named as every text of a trade names the broker (`urlForText`).
-    return { endpoint: urlForText(endpoint, BROKER_URL_SETTING), answered, raw: raw.body };
+    return this.#read(urlForText(endpoint, BROKER_URL_SETTING), answered, raw.body);
   }
 
   /**
@@ -979,83 +917,6 @@ export class BrokerTokenClient {
       credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,
     };
-  }
-
-  /**
-   * The answer of a placeholder trade, refusing one that is not a placeholder of Cipher's proxy:
-   * an issued type other than {@link TOKEN_TYPE_PROXY_PLACEHOLDER}, a `token_type` other than
-   * {@link TOKEN_TYPE_NOT_APPLICABLE} (read from the answer's own body, as `#read` reads it), no
-   * usable expiry, a refresh token, a placeholder without {@link PLACEHOLDER_PREFIX}, no grant id,
-   * or a proxy release that is not whole - a proxy URL that is no http URL, no authority, a
-   * password other than the placeholder, a name with no host. A string that does not open with
-   * the prefix could be a token, and a client that sent it through a proxy would hand it out. No
-   * value the broker wrote is quoted in these refusals, as in `#read`'s.
-   */
-  #readPlaceholder(
-    endpoint: string,
-    answered: TokenEndpointResponse,
-    raw: unknown
-  ): ProxyPlaceholder {
-    const refused = (what: string): BrokerTradeFailedError =>
-      new BrokerTradeFailedError(
-        `the broker at ${endpoint} answered a proxy placeholder trade with ${what}`
-      );
-    const body = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-    if (answered["issued_token_type"] !== TOKEN_TYPE_PROXY_PLACEHOLDER) {
-      throw refused("an issued_token_type that is not the proxy placeholder's");
-    }
-    if (body["token_type"] !== TOKEN_TYPE_NOT_APPLICABLE) {
-      throw refused(`a token_type other than ${TOKEN_TYPE_NOT_APPLICABLE}`);
-    }
-    if (answered.refresh_token !== undefined && answered.refresh_token !== "") {
-      throw refused("a refresh token, which this grant never issues");
-    }
-    const seconds = answered.expires_in ?? 0;
-    if (!(seconds > 0)) throw refused("no usable expires_in (a positive number of seconds)");
-    const placeholder = answered.access_token;
-    if (
-      !placeholder.startsWith(PLACEHOLDER_PREFIX) ||
-      placeholder.length <= PLACEHOLDER_PREFIX.length
-    ) {
-      throw refused("an access_token that is no placeholder");
-    }
-    // Held before anything else is read, so no refusal below and no line after prints it.
-    holdSecret(placeholder, Date.now() + seconds * 1000);
-    if (typeof body["grant_id"] !== "string" || body["grant_id"] === "")
-      throw refused("no grant_id");
-    const release = body["proxy"];
-    if (typeof release !== "object" || release === null) throw refused("no proxy release");
-    const {
-      proxy_url: proxyUrl,
-      ca_certificate: caCertificate,
-      proxy_password: password,
-      names,
-    } = release as Record<string, unknown>;
-    if (typeof proxyUrl !== "string" || !isHttpUrl(proxyUrl))
-      throw refused("a proxy_url that is no http URL");
-    if (typeof caCertificate !== "string" || caCertificate.trim() === "")
-      throw refused("no ca_certificate");
-    if (password !== placeholder) throw refused("a proxy_password other than the placeholder");
-    if (typeof names !== "object" || names === null || Object.keys(names).length === 0) {
-      throw refused("no name behind the proxy");
-    }
-    const read: Record<string, { readonly value: string; readonly hosts: readonly string[] }> = {};
-    for (const [name, entry] of Object.entries(names as Record<string, unknown>)) {
-      const { value, hosts } = (typeof entry === "object" && entry !== null ? entry : {}) as Record<
-        string,
-        unknown
-      >;
-      if (
-        value !== placeholder ||
-        !Array.isArray(hosts) ||
-        hosts.length === 0 ||
-        !hosts.every((host) => typeof host === "string" && host !== "")
-      ) {
-        throw refused("a name holding no host, or a value other than the placeholder");
-      }
-      read[name] = { value: placeholder, hosts: hosts as string[] };
-    }
-    return { placeholder, proxyUrl, caCertificate, names: read };
   }
 }
 
