@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { shellQuote } from "../local-instance-support";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
@@ -436,11 +437,11 @@ background="$background $never"
 began=$(clock)
 await_child "$never" 2
 echo "never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
-( '${sleep}' 0.2; clock >'${sevenEnded}'; exit 7 ) &
+( '${sleep}' 0.2; clock >${shellQuote(sevenEnded)}; exit 7 ) &
 seven=$!
 background="$background $seven"
 await_child "$seven" 30
-echo "seven exit=\${child_exit:-none} late=$(since "$(cat '${sevenEnded}' 2>/dev/null)") listed=$(listed "$seven")"
+echo "seven exit=\${child_exit:-none} late=$(since "$(cat ${shellQuote(sevenEnded)} 2>/dev/null)") listed=$(listed "$seven")"
 began=$(clock)
 stop_child "$never"
 echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"

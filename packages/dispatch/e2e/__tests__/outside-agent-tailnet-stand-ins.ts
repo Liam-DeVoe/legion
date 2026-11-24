@@ -893,8 +893,8 @@ ${
     ? ""
     : `# The window stays open until the owner's removal, which ends a real run's, for at most 30 s.
 closes=$((SECONDS + 30))
-while [ ! -f '${state}/removed' ] && [ "$SECONDS" -lt "$closes" ]; do sleep 0.05; done
-[ -f '${state}/removed' ] || echo 'the stand-in public leg: no removal within 30 s of its window' >&2`
+while [ ! -f "$state/removed" ] && [ "$SECONDS" -lt "$closes" ]; do sleep 0.05; done
+[ -f "$state/removed" ] || echo 'the stand-in public leg: no removal within 30 s of its window' >&2`
 }
 exit ${standIns.publicExit ?? 0}
 `
