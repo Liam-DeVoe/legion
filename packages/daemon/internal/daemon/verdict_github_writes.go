@@ -18,7 +18,7 @@ import (
 // daemon wrote on target's head concluded success.
 func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget) (bool, error) {
 	var newest map[store.VerdictWriteKind]store.VerdictConclusion
-	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
 		newest = map[store.VerdictWriteKind]store.VerdictConclusion{}
 		for _, written := range writes {
@@ -158,7 +158,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 // records the daemon wrote on target's head.
 func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget) (runs, statuses map[int64]bool, err error) {
 	runs, statuses = map[int64]bool{}, map[int64]bool{}
-	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err = store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
 		for _, written := range writes {
 			if written.Kind == store.VerdictWriteCheckRun {
@@ -242,7 +242,7 @@ func (w *workflowRuntime) createVerdictStatus(ctx context.Context, client github
 func (w *workflowRuntime) recordVerdictWrite(ctx context.Context, target verdictTarget, kind string, written store.VerdictWriteKind, id int64, conclusion verdict.Conclusion, foreign int64) error {
 	w.log.Info("legion_verdict_write", "repository", target.repository.String(), "pull_request", target.number, "head", target.head,
 		"head_kind", kind, "kind", string(written), "id", id, "conclusion", string(conclusion), "foreign_id", foreign)
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := store.RecordVerdictWriteTx(ctx, tx, store.VerdictWrite{Repository: target.repository, Head: target.head, Kind: written,
 			GitHubID: id, Conclusion: conclusion, ForeignID: foreign, WrittenAt: w.clockNow().UTC()})
 		return err

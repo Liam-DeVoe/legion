@@ -2013,7 +2013,7 @@ export function legionPlanRatingLoneField(
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
  * `verdict` is `approve` or `changes` for the completion of a review step, the reviewer's
- * (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 227, before which a
+ * (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 238, before which a
  * reviewer's `pass` is read as approve and its `fail` as changes), which the daemon takes only
  * from the claim the step's record names (`VERDICT_CALLER_FORBIDDEN`), `pass`, `pending` or
  * `fail` for a check report (`CHECK_VERDICT_REQUIRED`), and the empty string for every other phase
@@ -2058,13 +2058,13 @@ export const LegionHandoffCompleteRequest = z
     message: "returnTo is carried only by a tester's completion, which names no verdict",
   });
 
-/** The reviewer's verdict on the head it reviewed (contract 227): `approve`, the head may merge,
+/** The reviewer's verdict on the head it reviewed (contract 238): `approve`, the head may merge,
  * or `changes`, the head needs changes. The daemon takes no other word of a reviewer on that
  * contract (`REVIEWER_VERDICT_REQUIRED`). */
 export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
 
 /** `api.ReviewVerdictRequest`, the verdict past review of the agent of a review step (`POST
- * /legion/v1/review-verdict`, contract 227): its `verdict` on `commit`, the head its issue's pull
+ * /legion/v1/review-verdict`, contract 238): its `verdict` on `commit`, the head its issue's pull
  * request moved to while the issue stands in accepting, retro or merging, and `summary`. `issue`
  * is the issue the verdict is for: the architect that ran a child's owner acceptance names it,
  * since its grant is of its own issue, and the reviewer leaves it out, so the grant's issue is the
@@ -2174,7 +2174,7 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). `commit` is the head the architect sends back, required for that
- * grant (contract 227): the daemon takes the move only where it is the pull request's current head
+ * grant (contract 238): the daemon takes the move only where it is the pull request's current head
  * (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the owner's
  * acceptance's `changes`. A phase worker names none. */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -2207,7 +2207,7 @@ export const LegionEscalateRequest = z.strictObject({
 
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting` at `commit`,
  * the head it accepts, which moves it to `retro`; the daemon refuses it in every other phase
- * (`SIGNOFF_OUTSIDE_ACCEPTING`). From contract 227 it names that head, and the daemon takes it only
+ * (`SIGNOFF_OUTSIDE_ACCEPTING`). From contract 238 it names that head, and the daemon takes it only
  * where it is the pull request's current head (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing
  * nothing) and records it there as the owner's acceptance's `approve`. From contract 219 the daemon
  * judges it again when it applies it, and refuses it, changing nothing, where the architect no
@@ -2368,6 +2368,14 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission",
     "admission.blocked[].issue",
     "admission.blocked[].blockedBy",
+    // The summary's `held` lines name each held issue, its reason and the issues that hold it.
+    // Its `trees` line reads `admission.trees` off the summary's own `admission`, as it reads
+    // `cap`, `active` and `waiting`, which the census pairs with no parent. The census reads
+    // `held.issue` as a read of every `issue` under a `held`, so the open pause's held rows name
+    // their `issue` too, though the summary only counts them.
+    "admission.held[].issue",
+    "admission.held[].reason",
+    "admission.held[].heldBy",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -2393,6 +2401,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "paused.waitsOn[].issue",
     "paused.waitsOn[].role",
     "paused.held",
+    "paused.held[].issue",
     "lastPause",
     "lastPause.id",
     "lastPause.since",
@@ -2448,6 +2457,10 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "holds",
     "holds[].reason",
   ],
+  // No plugin code reads the release answer: the tool hands it to its agent whole. Its `held`
+  // rows name their `issue` all the same, because the census reads the summary's `held.issue` of
+  // the state's admission as a read of this as well (above).
+  LegionWaveReleaseResponse: ["held[].issue"],
   // No plugin code reads the pause and resume answers: the controller hands each to its agent
   // whole. Each names the actor's `kind` and a controller's `session` under `by` and `endedBy`
   // all the same, because the census reads the summary's `by.kind`, `by.session`, `endedBy.kind`

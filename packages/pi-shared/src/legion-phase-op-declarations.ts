@@ -374,7 +374,7 @@ export const PHASE_OP_SENTENCES = {
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing, and names in " +
     "`commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
-    "current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. ",
+    "current head (VERDICT_HEAD_NOT_CURRENT). That move counts no review round. ",
   reviewVerdict:
     "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
     "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +

@@ -54,7 +54,7 @@ func newVerdictListener(t *testing.T) *verdictListener {
 		t.Fatalf("subscribe: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	handler := webhook.GitHubHandler(verdictSecret, "@legion", fmt.Sprint(verdictApp), client, store)
+	handler := webhook.GitHubHandler(verdictSecret, "@legion", fmt.Sprint(verdictApp), client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	deliveries := 0
 	return &verdictListener{t: t, sub: sub, handler: func(event, body string) {
 		t.Helper()

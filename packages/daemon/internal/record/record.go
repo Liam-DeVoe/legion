@@ -1079,13 +1079,13 @@ type ConflictRead struct {
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
 // landing asked the reviewer to read the merge, which it does when the issue stands past review
-// and its task has a reviewer step (workflow's mergeForwardLanded), and which the merger's task
-// and its landed message read. Earlier is every merge forward that landed before this ask in the
-// same stretch of work, oldest first: a later ask replaces the one the record holds, so when the
-// head a merge left conflicts in its turn and is merged forward again, Earlier is what still names
-// the head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It
-// is stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil;
-// the jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
+// and its task has a reviewer step (workflow's mergeForwardLanded), and which the merger's task and
+// its landed message read. Earlier is every merge forward that landed before this ask in the same
+// stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
+// merge left conflicts in its turn and is merged forward again, Earlier is what still names the
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
+// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
+// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
 // empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
@@ -1790,7 +1790,10 @@ type Carried[T any] struct {
 func Carry[T any](value T) Carried[T] { return Carried[T]{Value: value, Carried: true} }
 
 // DispatchReading is one reading of a Dispatch issue at Seq, the sequence Dispatch had run to when
-// it was read: the values it carries, and the claim it showed (ClaimSeq above zero).
+// it was read: the values it carries, and the claim it showed (ClaimSeq above zero). Applied says
+// the reading is an issue fact the daemon applies through its handlers — an issue event, or a view
+// intake let through — rather than a reading that decides nothing: a listing, the periodic turn's
+// re-read, or the release's read of the children it adopts.
 type DispatchReading struct {
 	Key, Project string
 	Seq          int64
@@ -1801,6 +1804,7 @@ type DispatchReading struct {
 	Rank         Carried[string]
 	ClaimedBy    string
 	ClaimSeq     int64
+	Applied      bool
 }
 
 // Store contains only transactional operations. The caller owns each transaction so intake can
@@ -1891,7 +1895,9 @@ type Store interface {
 	// and an older one changes nothing at all. A value the reading does not carry stays as the copy
 	// holds it, and on a new row takes its column's default at sequence 0, written by no reading.
 	// A parent of "" is Dispatch showing no parent, a value written like any other. The row's Seq
-	// becomes the highest sequence of any reading it took. The claim is fenced apart, on ClaimSeq,
+	// becomes the highest sequence of any reading it took. An applied reading (Applied) also raises
+	// the row's applied sequence to its own where that stands lower, whatever its values did, and
+	// any other reading leaves it (DispatchIssueApplied). The claim is fenced apart, on ClaimSeq,
 	// whatever the values did: a reading carrying a claim (ClaimSeq above zero) writes it only over
 	// an older claim, and one carrying none leaves the stored claim as it stands. A reading whose
 	// Seq is zero — a fact the daemon minted from its own record, which Dispatch never said — writes
@@ -1928,6 +1934,12 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchIssueApplied is the highest sequence of an issue fact of key the daemon applied (a
+	// reading PutDispatchIssue took as Applied), 0 when it applied none or the copy holds no row of
+	// key: blockers.Mirror writes every issue fact the daemon applies first, in the fact's own
+	// transaction, whether or not the daemon records the issue, and no listing or turn's re-read
+	// moves it.
+	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,

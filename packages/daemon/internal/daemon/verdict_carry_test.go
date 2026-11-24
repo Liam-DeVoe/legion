@@ -227,7 +227,7 @@ func TestAHeadThatMovesPastReviewAsksTheRecordedReviewer(t *testing.T) {
 				publisher := &holderPublisher{}
 				logs := &syncBuffer{}
 				runner, _, pool := runnerIn(t, phase.Retro, "retro", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 					return runner.records.PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208",
 						Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: head, HeadUpdatedAt: time.Now(), Failing: []string{},
 						CheckRuns: []record.AttemptRun{}, Base: "main"})

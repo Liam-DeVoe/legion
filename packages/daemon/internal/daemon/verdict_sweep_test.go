@@ -240,7 +240,7 @@ func (g *sweepGitHub) counts() (lists, requests int) {
 // write asked for, and a check reads them back.
 func inStore(t *testing.T, pool *store.Pool, fn func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return fn(context.Background(), tx) }); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return fn(context.Background(), tx) }); err != nil {
 		t.Fatalf("the store: %v", err)
 	}
 }

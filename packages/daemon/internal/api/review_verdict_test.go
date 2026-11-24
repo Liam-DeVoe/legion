@@ -41,7 +41,7 @@ func (h *harness) reviewVerdict(req ReviewVerdictRequest) *httptest.ResponseReco
 // review record, the head it reviewed, its approve and the round's approval of that head.
 func seedRecordedReviewer(t *testing.T, h *harness, key string, reviewer claim.Token) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: reviewer,
 			HandoffCommit: reviewedSHA, HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
 			Decision: &record.ReviewDecision{State: "approved", Head: reviewedSHA}})
@@ -65,7 +65,7 @@ func seedStepAgent(t *testing.T, h *harness, key string, place int, agent claim.
 	t.Helper()
 	at := record.StepPlace{Task: plan.DefaultTask, Kind: record.PlaceStep, Place: place}
 	started := time.Date(2026, 11, 21, 22, place, 0, 0, time.UTC)
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if _, err := records.RaiseStepStarts(context.Background(), tx, key, at, func(int64) record.StepRecord {
 			return record.StepRecord{Task: at.Task, Step: at.Place, Kind: at.Kind, Agent: string(agent), StartedAt: &started}
@@ -89,7 +89,7 @@ func seedStepAgent(t *testing.T, h *harness, key string, place int, agent claim.
 func pastReviewChild(t *testing.T, h *harness, at phase.Phase) (reviewer, architect liveClaim) {
 	t.Helper()
 	parent := "LEGION-207"
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: parent, Project: testProject, Title: parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress"}); err != nil {
@@ -138,7 +138,7 @@ func stepVerdictAt(t *testing.T, h *harness, head string, place int) (store.Verd
 	t.Helper()
 	var given store.Verdict
 	var found bool
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) (err error) {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) (err error) {
 		given, found, err = store.StepVerdictTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), 42, head, plan.DefaultTask, place)
 		return err
 	}); err != nil {

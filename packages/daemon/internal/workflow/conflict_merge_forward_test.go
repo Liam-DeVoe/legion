@@ -477,11 +477,11 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	apply(2*time.Minute, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 		Summary: "ship it", Verdict: "approve", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
 	nothingAskedIn(phase.Accepting)
-	// The owner signs off as the agent its acceptance's start names (stepCallerRefusal), at the
-	// head it read.
+	// The owner signs off as the agent its acceptance's start names (stepCallerRefusal), with the
+	// claim, the generation and the run of accepting its route read, which the workflow judges
+	// again, at the head it read (rootsSignOff).
 	seedStepAgent(t, pool, acceptanceStep, architectClaim, false)
-	apply(3*time.Minute, intake.SignOff{Issue: "LEGION-208", By: architectClaim, Generation: 1,
-		Entry: openStepOf(t, pool, readsAfter(3*time.Minute), "LEGION-208"), Commit: conflictHead})
+	apply(3*time.Minute, rootsSignOff(t, pool, readsAfter(3*time.Minute), "LEGION-208"))
 	nothingAskedIn(phase.Retro)
 	// A base push in retro reads the head again, and a read that finds it still conflicting asks
 	// nothing either.

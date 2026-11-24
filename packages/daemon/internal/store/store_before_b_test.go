@@ -111,7 +111,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 	for _, table := range beforeBTables {
 		var present bool
 		var rows int64
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if err := tx.QueryRow(ctx, "select to_regclass($1) is not null", table).Scan(&present); err != nil || !present {
 				return err
 			}
@@ -148,7 +148,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 	t.Run("DecodeOutboxPayload decodes every outbox row", func(t *testing.T) {
 		decoded := map[record.OutboxKind]int{}
 		read := 0
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			rows, err := tx.Query(ctx, "select id, kind, issue, payload from outbox order by id")
 			if err != nil {
 				return err
@@ -180,7 +180,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			t.Fatal("the outbox holds no row, so no decode ran: TestRowsForTheBuildBeforeB writes one of each kind B writes")
 		}
 		var ofB int
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return tx.QueryRow(ctx, "select count(*) from outbox where issue in (select issue from verdicts where issue <> '')").Scan(&ofB)
 		}); err != nil {
 			t.Fatalf("count the outbox rows of the issues whose verdicts B recorded: %v", err)
@@ -284,7 +284,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewOutboxRow: %v", err)
 		}
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
@@ -299,7 +299,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			t.Fatalf("write an issue, its pull request, the reviewer's verdict and an outbox row on the database B migrated: %v", err)
 		}
 
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			readPR, err := records.PullRequest(ctx, tx, key)
 			if err != nil {
 				return err
@@ -366,7 +366,7 @@ func beforeBSum(counts map[record.OutboxKind]int) int {
 // statement of it reads one snapshot: a count and the read compared with it agree whatever
 // another session writes between them.
 func beforeBSnapshot(ctx context.Context, st *Store, read func(pgx.Tx) error) error {
-	tx, err := st.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
 	}

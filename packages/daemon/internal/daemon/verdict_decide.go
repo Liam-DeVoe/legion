@@ -150,7 +150,7 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 	var decided verdictDecision
 	var legion *legionHead
 	known, other := false, ""
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := ghrepo.Under(w.renames(), repository.String(), func(name string) (*record.PullRequest, error) {
 			return w.records.PullRequestByNumber(ctx, tx, name, number)
 		})
@@ -214,7 +214,7 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 		// A head of this project's issue that no record holds has no verdict here.
 		return verdictDecision{head: head, kind: headLegion}, nil
 	}
-	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err = store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := store.RecordOutsidePullRequestTx(ctx, tx, store.OutsidePullRequest{Repository: repository, Number: number,
 			Head: pull.Head.SHA, UpdatedAt: pull.UpdatedAt, RecordedAt: w.clockNow().UTC()}); err != nil {
 			return err

@@ -22,7 +22,7 @@ func TestTheOutsidePullRequestsHeadIsItsNewestSightingByGitHubsClock(t *testing.
 	ctx := context.Background()
 	widgets := ghrepo.MustParse("acme/widgets")
 	at := time.Date(2026, 11, 22, 18, 0, 0, 0, time.UTC)
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, sighted := range []OutsidePullRequest{
 			{Number: 42, Head: "h2", UpdatedAt: at.Add(2 * time.Minute)},
 			{Number: 42, Head: "h1", UpdatedAt: at.Add(time.Minute)},
@@ -113,7 +113,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		}
 		return id
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		firstHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, firstHead))
 		movedHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, movedHead))
 		approval.ID = written(RecordVerdictReviewTx(ctx, tx, approval))
@@ -176,7 +176,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 	// pgx reads a timestamptz back in the local zone, and one moment in two zones is two values to
 	// reflect.DeepEqual, so each time read is put back in UTC, as the rows were written, before
 	// the compare.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		pr, ok, err := OutsidePullRequestTx(ctx, tx, spelledOtherwise, 42)
 		if err != nil {
 			return err
@@ -458,7 +458,7 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 			return RecordVerdictWriteTx(ctx, tx, w)
 		}, "time"},
 	} {
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if id, err := tc.write(tx); err == nil {
 				t.Errorf("%s was written as row %d, want it refused", tc.row, id)
 			} else if !strings.Contains(err.Error(), tc.want) {

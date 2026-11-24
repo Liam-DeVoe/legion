@@ -125,8 +125,9 @@ func narrowingState(t *testing.T) State {
 // `kind`, and no caller both: below whyAndLineFieldsContract the band of that contract takes
 // `kind` first, and the strip finds nothing left to take. Every caller a pod places is below
 // cachesSourceContract, so each is expected the caches source's line as well. Every caller below
-// OwnerPlanContract is expected the line of `holdReason`, and one from heldContract up the line of
-// the held words: below heldContract the band of that contract takes `admission.held` whole first.
+// OwnerPlanContract is expected the line of `holdReason`, and one from heldContract up the line
+// of the held words: below heldContract the band of that contract takes `admission.held` whole
+// first.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -403,26 +404,26 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
 	// stateNarrowings is served one line per row, each naming its own keys, and three more for the
-	// value strips that took the retired entries out of its body, the `caches` source off the
-	// repository-cache-room row and LEGION-230's `holdReason`; and a caller at quietTimeContract is
+	// value strips that took the retired entries out of its body, LEGION-230's `holdReason` and
+	// the `caches` source off the repository-cache-room row; and a caller at quietTimeContract is
 	// served the line of every row above it, the line of the value strip that took LEGION-213's
 	// `kind`, the `waiting_on_issue` the first caller's body no longer carries, since a band below
-	// it has taken `kind` already, the `caches` source's line again, and the lines of the strips of
-	// `holdReason` and of the held words, the second of which the first caller's body no longer
-	// carries either, since the band of heldContract took `admission.held` whole. One line for all
-	// of them, or a line that named the contract and nothing else, would leave a reader of the log
-	// to find out elsewhere what left the body. Three checks share the work. The table check guards
-	// the table: no two rows of stateNarrowings name the same keys, whichever callers would see
-	// them, so a line names one row. The per-caller check guards what one caller is told: no line
-	// twice. The last two loops guard the sample: between the two callers every row writes its
-	// line, and so does every value strip whose value narrowingState carries.
+	// it has taken `kind` already, the lines of the strips of `holdReason` and of the held words,
+	// the second of which the first caller's body no longer carries either, since the band of
+	// heldContract took `admission.held` whole, and the `caches` source's line again. One line for
+	// all of them, or a line that named the contract and nothing else, would leave a reader of the
+	// log to find out elsewhere what left the body. Three checks share the work. The table check
+	// guards the table: no two rows of stateNarrowings name the same keys, whichever callers would
+	// see them, so a line names one row. The per-caller check guards what one caller is told: no
+	// line twice. The last two loops guard the sample: between the two callers every row writes
+	// its line, and so does every value strip whose value narrowingState carries.
 	//
 	// A value strip's line names the lowest contract the pod records, which is restore for this
 	// caller, where a band's line names the highest; the clause under `follows` is what tells an
 	// operator the two numbers of one request apart.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
 		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)+3 {
-			t.Fatalf("a caller below every row expects %d lines, want the %d rows, the retired entries' own, the caches source's and the hold reason's: %v",
+			t.Fatalf("a caller below every row expects %d lines, want the %d rows, the retired entries' own, the hold reason's and the caches source's: %v",
 				len(want), len(stateNarrowings), want)
 		}
 		namedBy := map[string]int{}

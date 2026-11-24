@@ -210,7 +210,7 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		if reads[92] != 1 || reads[93] != 1 {
 			t.Fatalf("GitHub was asked for pull requests 92 and 93 %d and %d times, want once each: the read that finds the head decides it", reads[92], reads[93])
 		}
-		if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			pr, found, err := store.OutsidePullRequestTx(context.Background(), tx, widgets, 92)
 			if err == nil && (!found || pr.Head != "out-9") {
 				t.Errorf("the outside pull request 92 reads %+v (found %v), want it recorded at out-9", pr, found)

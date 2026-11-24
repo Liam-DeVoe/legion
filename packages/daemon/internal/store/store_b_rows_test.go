@@ -170,7 +170,7 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 
 	// queued is the id of each outbox row this run writes.
 	var queued []int64
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Tree: key, Project: "ACME", Title: "A change the build before B reads",
 			Phase: phase.Merging, Generation: 1, Status: "in_progress", Repo: repo, DefaultBranch: "main", GitHubRepo: repo}); err != nil {
 			return err
@@ -247,7 +247,7 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 
 	// What was committed reads back through B's own reads: each review step's verdict at the head,
 	// and the reviewer's decision, a state and a head in the keys every build reads.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for step, by := range map[int]claim.Token{4: reviewerClaim, 5: architectClaim} {
 			verdict, ok, err := StepVerdictTx(ctx, tx, widgets, number, head, "default", step)
 			if err != nil {

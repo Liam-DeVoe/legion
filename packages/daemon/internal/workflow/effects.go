@@ -334,16 +334,16 @@ func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue stri
 	return e.enqueue(ctx, tx, issue, record.ControllerNotice(notice))
 }
 
-// logOnCommit writes one Info line once the fact's transaction commits (intake.OnCommit), so a
+// logOnCommit writes one Info line once the fact's transaction commits (store.OnCommit), so a
 // fact rolled back writes nothing and one retried after a failed commit writes it once.
 func (e *Engine) logOnCommit(ctx context.Context, msg string, args ...any) {
-	intake.OnCommit(ctx, func() { e.log.Info(msg, args...) })
+	store.OnCommit(ctx, func() { e.log.Info(msg, args...) })
 }
 
 // warnOnCommit is logOnCommit at Warn, for a committed fact that stalls a round and tells nobody
 // else: a log monitor keys on it where an Info line would drown.
 func (e *Engine) warnOnCommit(ctx context.Context, msg string, args ...any) {
-	intake.OnCommit(ctx, func() { e.log.Warn(msg, args...) })
+	store.OnCommit(ctx, func() { e.log.Warn(msg, args...) })
 }
 
 // refused is a committed 409: the fact changed nothing, and the caller is told why.
@@ -1046,7 +1046,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
-	if role == claim.RoleArchitect {
+	if !worker {
 		return row.Entry, row.EntryTask, nil
 	}
 	if err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {

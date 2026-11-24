@@ -54,6 +54,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
 			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was first queued to the architect's claim of LEGION-208"},
+		ControllerNotice{Kind: MemoryGuardKillNotice, Role: claim.RoleController,
+			Reason: "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)"},
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
@@ -407,6 +409,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
+		{name: "a memory-guard-kill notice for an architect", payload: Notice{Kind: MemoryGuardKillNotice, Role: claim.RoleController}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
@@ -1130,7 +1133,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
-			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",

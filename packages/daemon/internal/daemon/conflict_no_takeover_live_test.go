@@ -227,7 +227,7 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 	r.publishBasePush()
 	r.note("drove a push onto %s while the tester's turn runs, after which GitHub answers %s conflicting with it; %s's ruleset requires %s, which has no run on %s",
 		conflictBase, conflictFirstHead, conflictBase, conflictRequiredCheck, conflictFirstHead)
-	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Bounded(t, time.Minute, time.Second))
+	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Remaining(t))
 	r.note("read back: the daemon logged %q for %s, head %v against base %v", first.Message, r.key, first.Attrs["head"], first.Attrs["base"])
 	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindConflictConfirm); rows != 1 {
 		t.Fatalf("the outbox holds %d second reads of %s, want the one the first read queued", rows, r.key)
@@ -329,7 +329,7 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 		Landed: conflictMergedHead, Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
 	// The tester's landed reads nothing of the record but the repository it holds the pull request under.
 	pull := record.PullRequest{Repo: liveRepo}
-	told := r.awaitHeard(claim.RoleTester, 2, testwait.Bounded(t, time.Minute, time.Second))
+	told := r.awaitHeard(claim.RoleTester, 2, testwait.Remaining(t))
 	if told[1].Message != landed.Message(r.key, pull) {
 		t.Fatalf("the tester was told %q, want the merge forward's landing %q", told[1].Message, landed.Message(r.key, pull))
 	}

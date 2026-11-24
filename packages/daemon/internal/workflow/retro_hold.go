@@ -15,9 +15,10 @@ import (
 
 // beneathRetro is the issues beneath issue still in the workflow (openBeneath) where its move into
 // to is the pass of its task's last step into the retro, on a plan with no acceptance step, and
-// nothing for every other move. A parent's head proves its children's merged work, and
-// a task with no step acceptance:owner has no sign-off to refuse a parent while one of them runs
-// (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead (transition),
+// nothing for every other move. A parent is accepted only once no issue beneath it is still in
+// the workflow, and a task with no step acceptance:owner has no sign-off to refuse a parent while
+// one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead
+// (transition),
 // from retro for its children (record.HoldForChildren), until none of them is open beneath it
 // (releaseHeldParents). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
 // reads record.StandsAt), so the parent holds none of the slots its children may need. An issue
@@ -40,7 +41,7 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 func retroHeldNotice(parent string, beneath []string) record.Notice {
 	return record.Notice{Kind: "retro-held", Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, Reason: fmt.Sprintf(
 		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves.",
+			"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves.",
 		parent, strings.Join(beneath, ", ")) + " " + record.StatusNotTakenYet + " " + record.EndChildRule}
 }
 
@@ -184,6 +185,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, parent, status, ""); err != nil {
 		return err
 	}
+	from := record.StandsAt(parent)
 	parent.Phase, parent.Hold, parent.Status = phase.Retro, nil, status
 	if err := e.WriteIssue(ctx, tx, parent); err != nil {
 		return err
@@ -199,7 +201,14 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, parent.Key, role); err != nil {
 		return err
 	}
-	return e.start(ctx, tx, parent, w, role, func(at Standing) string {
+	if err := e.start(ctx, tx, parent, w, role, func(at Standing) string {
 		return task(parent, at, last, pr, "", "")
-	}, false)
+	}, false); err != nil {
+		return err
+	}
+	// The release moves the parent into its retro as the pass into the retro would have
+	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
+	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
+	// forward of the move.
+	return e.releasedIntoPhase(ctx, tx, parent, from)
 }

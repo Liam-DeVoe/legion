@@ -275,7 +275,7 @@ func (w *workflowRuntime) recordSwept(ctx context.Context, entry config.VerdictR
 		w.log.Warn("verdict: the sweep could not read the id of the CI reviewer's listed review, so that review counts for nothing",
 			"repository", entry.Repository.String(), "pull_request", pull.Number, "error", err)
 	}
-	return pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	return store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		sighted, found, err := store.OutsidePullRequestTx(ctx, tx, entry.Repository, pull.Number)
 		if err != nil {
 			return err

@@ -494,7 +494,7 @@ func (rig *verdictRig) writeLines(t *testing.T) []map[string]any {
 func verdictWrites(t *testing.T, pool *store.Pool, head string) []store.VerdictWrite {
 	t.Helper()
 	var writes []store.VerdictWrite
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		writes, err = store.VerdictWritesTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), head)
 		return err
@@ -508,7 +508,7 @@ func verdictWrites(t *testing.T, pool *store.Pool, head string) []store.VerdictW
 func verdictReviews(t *testing.T, pool *store.Pool, number int) []store.VerdictReview {
 	t.Helper()
 	var reviews []store.VerdictReview
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		reviews, err = store.VerdictReviewsTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), number)
 		return err
@@ -1063,7 +1063,7 @@ func TestLegionVerdictRecordsAnOutsidePullRequestWithItsHeadAndReviews(t *testin
 	rig.review(t, outsideReview(1, "a-writer", "approved"))
 	rig.written(t)
 	widgets := ghrepo.MustParse("acme/widgets")
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, found, err := store.OutsidePullRequestTx(context.Background(), tx, widgets, 90)
 		if err != nil {
 			return err
@@ -1558,7 +1558,7 @@ func TestLegionVerdictReadsAPullRequestNoRecordHoldsFromGitHub(t *testing.T) {
 			}
 			var sighted store.OutsidePullRequest
 			var found bool
-			if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				sighted, found, err = store.OutsidePullRequestTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), 92)
 				return err

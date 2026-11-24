@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -353,7 +354,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 	if err != nil {
 		return "", err
 	}
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err
@@ -375,7 +376,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 // read-only transaction of its own at each reviewer launch, as owningArchitect reads.
 func (w *workflowRuntime) reviewHead(ctx context.Context, issue string) (string, error) {
 	var head string
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := w.records.PullRequest(ctx, tx, issue)
 		if err != nil || pr == nil {
 			return err

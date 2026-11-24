@@ -23,6 +23,7 @@ import (
 // (TestAPodReviewerIsToldItsOwnCloneAndGit), never the shared workspace. An issue whose recorded
 // repository does not parse names the branch alone.
 func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Phase: phase.Implementing}
 	repo := ghrepo.MustParse("sjawhar/legion")
 	stateDir := t.TempDir()

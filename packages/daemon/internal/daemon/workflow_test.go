@@ -26,6 +26,7 @@ import (
 // hour count truncated to zero would reach the engine as no linger at all, closing a finished tree
 // the moment it ends, or as no check bound, which the engine's default would then stand in for.
 func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nlinger_hours: 0.3\nproduction_check_hours: 0.1\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -49,6 +50,7 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 // through config.Project.RunsByDefault): the steps an issue whose owner gives no plan stores at its
 // first step. A project that names none runs today's line up to the owner's acceptance.
 func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
+	t.Parallel()
 	todays := (config.Project{}).RunsByDefault()
 	steps := append(todays[1:2:2], todays[3]) // implementer reviewer
 	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {DefaultSteps: steps}, "ACME": {}}}
@@ -105,6 +107,7 @@ func (t loginTokens) ReadToken(ctx context.Context, _ string) (appauth.Lease, er
 // The engine judges a push by its pusher against the App's bot login, so boot refuses an App that
 // names no login before anything else opens.
 func TestOpenWorkflowRefusesAnAppThatNamesNoLogin(t *testing.T) {
+	t.Parallel()
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedBootCall(t, w, r, "demo") {
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
@@ -179,6 +182,7 @@ func TestOneAppLoginAtBoot(t *testing.T) {
 // sum of the waits, each cut at that end. The start's calls run one after the other
 // (openWorkflow), so no two waits of a start overlap.
 func TestStartWaitsDecidesEachWait(t *testing.T) {
+	t.Parallel()
 	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); startRateLimits != want {
 		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", startRateLimits, want)
 	}

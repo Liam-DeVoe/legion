@@ -146,8 +146,8 @@ parent's own first phase can start once the last of them has left the workflow, 
 request then builds on a base that already carries their merges. For the same reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow. A child's own architect starts with the child's first phase, so the children it files
-run beside the child's own work, and the child is accepted only after its last round, on an
-approved head at which its checks pass.
+run beside the child's own work, and the child is accepted only after its last round, on a head
+that the step before the acceptance passed and at which its checks pass.
 
 ## Phase workers
 
@@ -167,7 +167,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; records a result for each of the issue's checks and completes with no verdict, since the state of each check at the tested head moves the issue. | review App |
 | `reviewing` | reviewer | Reviews the pull request, posts its findings as a `COMMENT` review, and sends its verdict on the head it read, `approve` or `changes`. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's verdict at the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the planner where the plan has one, the implementer, or to the tester where the plan has one. Its acceptance is the verdict of a second review step: its sign-off, naming the head it read as `commit`, is its `approve` at that head, and its move back its `changes` there. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's verdict at the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the planner or the tester where the plan has that step. Its acceptance is the verdict of a second review step: its sign-off, naming the head it read as `commit`, is its `approve` at that head, and its move back its `changes` there. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -480,9 +480,9 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   in `merging`; a check the base requires has no green result on the head; the base requires a
   pull request to be current with it; or the daemon could not read the base's rules, which it
   reads (rulesets and branch protection) only on a conflicting read. Otherwise it records the
-  conflict, and the task's steps go on at that head; the reviewer's `approve` of the head ends the
-  review round. In `accepting` and `retro` the work is reviewed and the merge comes next, so the
-  conflict waits there, and the daemon acts once the issue enters `merging`.
+  conflict, and the task's steps go on at that head; the reviewer's `approve` of the head ends the review
+  round. In `accepting` and `retro` the work has passed every step of its task and the merge
+  comes next, so the conflict waits there, and the daemon acts once the issue enters `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. Before
   `merging` the implementer is asked on its role topic to merge the base forward in the issue
   workspace and push, with no handoff and no completion for it, and the tester or the reviewer
@@ -533,22 +533,24 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
-  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
-  phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
-  A move made while the record holds the head conflicting with its base is a conflict round, which
-  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
-  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
-  the conflict rounds left out.
-- Each move back is counted by its kind as well, as the pair `<from>-<to>` —
+  let converging rounds run, and posts that decision on the issue. Only a review that requests
+  changes counts a round; a tester's fail and every other move back count none. A review that
+  requests changes while the record holds the head conflicting with its base is a conflict round,
+  which `review_round_cap` does not count: the implementer answers such a round with a forward
+  merge, which no reviewer asked for, and the cap's message names both numbers, the rounds counted
+  and the conflict rounds left out.
+- Each move back is counted by its kind, as the pair `<from>-<to>` —
   `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
-  beside the round count, and a conflict round raises no pair.
+  beside the round count. A move back made while the record holds the head conflicting with its
+  base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
   issue that has had no move back.
 - **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, between its own
+  of that number; a move back made while the head conflicts with its base fires none. The daemon
+  writes the words to each role the hook names, between its own
   header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
@@ -591,7 +593,7 @@ waits for, merge again at the head it re-reads, or tell the architect what no wo
 repository setting or an App permission only a person can change.
 
 A conflict with the base, and a check the base's newer code breaks, are the merger's to resolve,
-and the issue stays in `merging`: the work was reviewed and accepted, and what is left is its
+and the issue stays in `merging`: the work passed every step of its task, and what is left is its
 merge. The merger merges the base forward in the issue workspace, resolves the conflict so both
 sides keep their intent, adapts the change in that merge commit where the base changed code it
 uses, runs again what the merge can reach, and pushes. The daemon asks it when two reads find the
@@ -651,7 +653,7 @@ request, the merge commit, what it drove and what failed. A defect with a clear 
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write.
+The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

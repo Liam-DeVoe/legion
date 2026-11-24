@@ -49,7 +49,7 @@ type sideAPI struct {
 func newSideAPI(t *testing.T, rig *verdictRig) sideAPI {
 	t.Helper()
 	grants := credential.New(nil)
-	grant, err := grants.MintController("ses_controller")
+	grant, err := grants.MintController("ses_controller", 0)
 	if err != nil {
 		t.Fatalf("mint the controller's grant: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestLegionVerdictAWebhookReviewOfARenamedRepositoryIsRecorded(t *testing.T)
 			rig.written(t)
 			var found bool
 			var reviews []store.VerdictReview
-			if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 				_, found, err = store.OutsidePullRequestTx(context.Background(), tx, ghrepo.MustParse(tc.webhook), 90)
 				if err != nil {
 					return err

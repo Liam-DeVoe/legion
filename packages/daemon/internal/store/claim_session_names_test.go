@@ -22,7 +22,7 @@ func TestClaimSessionNamesAreTheClaimsHoldsInItsProject(t *testing.T) {
 		other    claim.Token = "legion-acme-acme-1-implementer"
 		unknown  claim.Token = "legion-acme-acme-2-reviewer"
 	)
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, token := range []claim.Token{reviewer, other} {
 			if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
@@ -58,7 +58,7 @@ func TestClaimSessionNamesAreTheClaimsHoldsInItsProject(t *testing.T) {
 		{"", nil},
 	} {
 		var got []string
-		if err := store.Tx(ctx, func(tx pgx.Tx) (err error) {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) (err error) {
 			got, err = ClaimSessionNamesTx(ctx, tx, tc.token)
 			return err
 		}); err != nil || !slices.Equal(got, tc.want) {

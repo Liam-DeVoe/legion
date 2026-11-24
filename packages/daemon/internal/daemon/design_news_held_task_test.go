@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -53,6 +55,7 @@ func pendingNewsOf(t *testing.T, machine *supervise.Machine) record.DeliveryNews
 // version that Dispatch carries approved, which changes decision blocks alone, then sends nothing:
 // the reconcile raises what the reviewer took.
 func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -154,6 +157,7 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 // row still says version 4, and the merger's task, sent when the merger comes up, carries the
 // change list; its confirmation raises the row.
 func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Implementing}, pathMember{key: pathChild, parent: pathRoot, at: phase.Reviewing})
 	r.told(pathRoot, record.AudienceHolder, 5)
 	r.told(pathChild, record.AudienceHolder, 4)
@@ -179,14 +183,19 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 
 	// In that turn the architect signs the child off, and the child's retro completes. The sign-off
 	// is the root architect's, the agent the child's accepting start names (the child's own
-	// architect has no claim), on the step it stands in and at the head it read.
+	// architect has no claim), with the child's generation and its run of accepting, as the route
+	// reads them (api's signOff), and at the head it read.
 	var entry record.StepEntry
-	r.inTx(func(tx pgx.Tx) (err error) {
-		entry, err = r.records.OpenStep(r.ctx, tx, pathChild)
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		entry, err = record.NewStore().OpenStep(r.ctx, tx, pathChild)
 		return err
-	})
-	applyFact(t, r.pool, "api", "sign-off-"+pathChild, intake.SignOff{Issue: pathChild, By: architectToken, Generation: 1, Entry: entry,
-		Commit: pathHead(pathChild)}, r.engine, r.admission)
+	}); err != nil {
+		t.Fatalf("read %s's run of accepting: %v", pathChild, err)
+	}
+	signOff := intake.SignOff{Issue: pathChild, By: architectToken, Generation: readIssue(t, r.pool, pathChild).Generation, Entry: entry,
+		Commit: pathHead(pathChild)}
+	applyFact(t, r.pool, "api", "sign-off-"+pathChild, signOff, r.engine, r.admission)
 	r.complete(pathChild)
 	if issue := readIssue(t, r.pool, pathChild); issue.Phase != phase.Merging {
 		t.Fatalf("%s stands in %s after its retro's completion, want merging", pathChild, issue.Phase)
@@ -225,6 +234,7 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 // back and sends it again. The start waits on its backoff, also while the task is owed again on the
 // provider error's ladder, and its news goes once the claim holds no task.
 func TestAProviderErrorInTheTurnANewsOnlyStartReachedSendsThePhaseTaskAgain(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)

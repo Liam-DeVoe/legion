@@ -77,7 +77,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, send no `approve`, and wait with a 
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last verdict's head:
+After a forward merge, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last verdict's head:
 in `reviewing`, the `Last reviewed commit` your task names; past review, your last `review_verdict`'s `commit`, else your newest `review` handoff's `head`.
 `none`, or no such head: read the whole diff.
 

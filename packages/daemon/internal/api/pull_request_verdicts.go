@@ -96,7 +96,7 @@ func (s *server) pullRequestReviewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var replaced bool
-	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		earlier, found, err := store.SideReviewerTx(ctx, tx, repository, req.Number, req.Head)
 		if err != nil {
 			return err
@@ -163,7 +163,7 @@ func (s *server) pullRequestVerdict(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var named store.SideReviewer
 	var found bool
-	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if named, found, err = store.SideReviewerTx(ctx, tx, repository, req.Number, req.Head); err != nil || !found || named.Session != req.Session {
 			return err
@@ -264,7 +264,7 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 	}
 	ctx := r.Context()
 	var recorded *record.PullRequest
-	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var read error
 		recorded, read = ghrepo.Under(s.renames, requested.String(), func(name string) (*record.PullRequest, error) {
 			return s.records.PullRequestByNumber(ctx, tx, name, number)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
 
@@ -25,7 +26,7 @@ func (h mergeGroupHandler) Apply(ctx context.Context, _ pgx.Tx, fact intake.Fact
 	if err != nil {
 		return intake.Result{}, err
 	}
-	intake.OnCommit(ctx, func() { h.w.queueMergeGroupWrite(repository, group.Number, group.HeadSHA, false) })
+	store.OnCommit(ctx, func() { h.w.queueMergeGroupWrite(repository, group.Number, group.HeadSHA, false) })
 	return intake.Result{}, nil
 }
 

@@ -162,7 +162,7 @@ func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullReq
 func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
 	identity := fact.Identity()
 	args = append(identity.Attributes(), args...)
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		if e.droppedSettlements.Add(identity) {
 			e.log.Info(msg, args...)
 		}
@@ -206,7 +206,7 @@ const conflictConfirmWait = time.Minute
 // (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
 // merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
 // leaves the conflict recorded and logged with the checks the base requires and those green on
-// the head, and the tester and the reviewer go on at that head. A CONFLICTING read of a head the
+// the head, and the task's steps go on at that head. A CONFLICTING read of a head the
 // record already holds conflicting decides again in the same way, since the phase the issue has
 // reached since can need what the phase before did not, and mergeForward asks nothing twice for
 // one head.
@@ -1269,7 +1269,7 @@ func (e *Engine) askVerdictWrite(ctx context.Context, tx pgx.Tx, pr *record.Pull
 		return err
 	}
 	key, repo, number := issue.Key, pr.Repo, pr.Number
-	intake.OnCommit(ctx, func() { e.cfg.WriteVerdict(key, repo, number, head) })
+	store.OnCommit(ctx, func() { e.cfg.WriteVerdict(key, repo, number, head) })
 	return nil
 }
 
@@ -1313,7 +1313,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 		return nil
 	}
 	key := issue.Key
-	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 

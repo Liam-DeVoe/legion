@@ -255,7 +255,7 @@ func (rig *sideRig) written() []string {
 // sideRows is every side reviewer and every verdict the store records, oldest first.
 func (rig *sideRig) sideRows() (reviewers []store.SideReviewer, verdicts []store.Verdict) {
 	rig.t.Helper()
-	err := rig.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), rig.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(context.Background(), `select repository, number, head, session from side_reviewers order by id`)
 		if err != nil {
 			return err
@@ -423,7 +423,7 @@ func TestSideReviewCallsRefuseWhatNoSideReviewDecides(t *testing.T) {
 			code: "VERDICT_CALLER_FORBIDDEN"},
 		{name: "a pull request the record holds for a Legion issue", pull: func(rig *sideRig) {
 			seedIssueAt(rig.t, rig.harness, "LEGION-208", phase.Reviewing)
-			if err := rig.store.Tx(context.Background(), func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), rig.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestOpen,
 					Issue: "LEGION-208", Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: sideHead})
 			}); err != nil {

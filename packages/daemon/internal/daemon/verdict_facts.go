@@ -68,7 +68,7 @@ func (w *workflowRuntime) recordOutsideReview(ctx context.Context, tx pgx.Tx, fa
 		return err
 	}
 	repo, number := fact.Repo, fact.Number
-	intake.OnCommit(ctx, func() { w.queueVerdictWrite("", repo, number, head) })
+	store.OnCommit(ctx, func() { w.queueVerdictWrite("", repo, number, head) })
 	return nil
 }
 
@@ -94,7 +94,7 @@ func (w *workflowRuntime) recordLegionReview(ctx context.Context, tx pgx.Tx, fac
 	}
 	if issue == nil {
 		repo, number, other := fact.Repo, fact.Number, pr.Issue
-		intake.OnCommit(ctx, func() { w.noteOtherProject(repo, number, other) })
+		store.OnCommit(ctx, func() { w.noteOtherProject(repo, number, other) })
 		return nil
 	}
 	_, err = w.recordReview(ctx, tx, pr.Repo, fact)
@@ -128,5 +128,5 @@ func (w *workflowRuntime) noteIssueBranch(ctx context.Context, repo string, numb
 	if !w.namesVerdictRepository(repo) || !issueBranch || claim.KeyOfProject(w.dispatchProject, key) {
 		return
 	}
-	intake.OnCommit(ctx, func() { w.noteOtherProject(repo, number, key) })
+	store.OnCommit(ctx, func() { w.noteOtherProject(repo, number, key) })
 }

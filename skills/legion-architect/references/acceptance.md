@@ -34,6 +34,7 @@ Read, against the goal, every check and every requirement:
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
+
 - No `after_merge` result is asked here; the production check records it after the close.
 
 ## The last round
@@ -99,7 +100,6 @@ A task with no reviewer step has no review to await.
 
 The implementer resolves every thread.
 When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message, for a person to resolve it, with the options resolved and could not.
-The merger does not complete while it is open.
 
 ## The close
 

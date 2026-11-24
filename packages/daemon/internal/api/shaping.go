@@ -657,10 +657,10 @@ const followsRestore = "the contract the caller states, else its pod's lowest, w
 
 // droppedStrandedState, droppedWaitAnswer, droppedLineKind, droppedCapabilitySource,
 // droppedHoldReason and droppedHeldWord are what the rows of valueStrips name as dropped. They are
-// named rather than written in the rows because the tests that read the daemon's log and the
-// mixed pod's body name a row by them (narrowing_test.go, shaped_answers_test.go). Each names what
-// its row takes by the table's rule rather than by today's value, so the line stays true of a
-// value the table declares later.
+// named rather than written in the rows because the tests that read the daemon's log and the mixed
+// pod's body name a row by them (narrowing_test.go, shaped_answers_test.go). Each names what its
+// row takes by the table's rule rather than by today's value, so the line stays true of a value the
+// table declares later.
 const (
 	droppedStrandedState    = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer       = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
@@ -1575,9 +1575,9 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 // `answeredBy`, of the waiting line's `kind`, of a capability row's `source`, of an issue's
 // `holdReason` and of a held row's `reason`, read once from the list the table itself is written
 // from (answers.go's strandedStates, waitAnswers, lineKinds, capabilitySources, holdReasons and
-// heldReasons). The state's row answers for the record's too: an issue's field is one field at
-// two key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue
-// shapes the issue behind both answers.
+// heldReasons). The state's row answers for the record's too: an issue's field is one field at two
+// key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue shapes the
+// issue behind both answers.
 var (
 	strandedStateArrivals    = arrivalsOf(strandedStates)
 	waitAnswerArrivals       = arrivalsOf(waitAnswers)
