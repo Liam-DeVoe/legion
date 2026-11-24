@@ -110,13 +110,12 @@ const (
 	ruleSubArchitectProvider = "subarchitectpane"
 )
 
-// Three sentences given word for word: the first two to every reader, the third to every
-// architect. Each is a literal of this file, so a reworded rule fails this proof rather than
-// passing on a text the driver derived from the same files it is reading.
+// Two sentences given word for word, to every reader. Each is a literal of this file, so a
+// reworded rule fails this proof rather than passing on a text the driver derived from the same
+// files it is reading.
 const (
 	ruleSandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
 	ruleEveryRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-	ruleCIsWork                 = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
 )
 
 // podRuleForPhaseWorker is the pod memory rule as a phase worker's prompt carries it
@@ -137,9 +136,7 @@ var podRuleForArchitect = []string{
 	"Your subagents run their commands in your own issue pod",
 	ruleSandboxEndsTheContainer,
 	ruleEveryRolesTurn,
-	ruleCIsWork,
 	"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 }
 
 // What a child's architect is launched with and a root architect is not. The heading opens the

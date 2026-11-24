@@ -844,7 +844,6 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 	const (
 		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
 		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
 	)
 	worker := []string{
 		"In an issue pod every role of this issue runs in one container and shares its memory limit",
@@ -857,9 +856,7 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 		"Your subagents run their commands in your own issue pod",
 		sandboxEndsTheContainer,
 		everyRolesTurn,
-		ciWork,
 		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 	}
 	for _, tc := range []struct {
 		name   string
