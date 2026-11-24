@@ -36,15 +36,14 @@ import (
 // lasting answer, so its clients read it as the listener answering, not as an outage, though it
 // is a 5xx: the listener gives it the same way however often it is asked, and with no Retry-After.
 // On the routes its Go clients call it means a record the listener cannot decode - a role's claim
-// record (writeRoleClaimUnreadable, GET /v1/roles/<role>) or a session's interest record
-// (writeInterestRecordUnreadable, GET /v1/registry/<session_id> and the interest reads) - or, on a
-// write route (POST /v1/interests/unsubscribe, DELETE /v1/sessions/<session_id> and the listener's
-// other writes), a store answer (writeStoreError when storeAnswered: a key the store refuses, no
-// key, a conditional write another writer beat, a record it cannot decode), and on the listings of
-// GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from other than a
-// refill, which is their 503.
-// Its bus failing, which asking again can clear, it answers 503 with Retry-After: 1, never this.
-// The listener writes it through this constant, and Outage excepts it.
+// record (GET /v1/roles/<role>) or a session's interest record (GET /v1/registry/<session_id> and
+// the interest reads) - or, on a write route (POST /v1/interests/unsubscribe, DELETE
+// /v1/sessions/<session_id> and the listener's other writes), an answer its store gave (a key the
+// store refuses, no key, a conditional write another writer beat, a record it cannot decode), and
+// on the listings of GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from
+// other than a refill, which is their 503. Its bus failing, which asking again can clear, it
+// answers 503 with Retry-After: 1, never this. The listener writes it through this constant, and
+// Outage excepts it.
 const FaultStatus = http.StatusInternalServerError
 
 // Outage reports whether status, the answer of a route of the listener's API to a caller that

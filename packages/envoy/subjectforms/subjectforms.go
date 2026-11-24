@@ -9,9 +9,7 @@
 // own, so the daemon and the listener cannot read a name two ways.
 //
 // No package of the envoy module imports this one: an envoy package that needs one of these
-// readers reads internal/contracts directly. The listener image's build copies the whole module
-// (packages/envoy/docker/Dockerfile, `COPY packages/envoy ./`), so the image build does not
-// require that, as sessiontiming says.
+// readers reads internal/contracts directly.
 package subjectforms
 
 import "github.com/sjawhar/envoy/internal/contracts"

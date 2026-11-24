@@ -9,7 +9,10 @@
 // envoy module reads: envoy's readers call Is, but for the agent-secrets command below, and its
 // OAuth readers call it as oauthrefusal.Outage. It imports only the standard library. Its
 // TypeScript twin, the same set, is outage in @legion/contracts/http-status
-// (packages/contracts/src/http-status.ts).
+// (packages/contracts/src/http-status.ts). Envoy's own packages import it, though it is a
+// top-level package of the module: the listener image's build and the worker image's both copy the
+// whole module (packages/envoy/docker/Dockerfile and packages/daemon/docker/worker.Dockerfile), so
+// such an import still builds there.
 //
 // Three readers of the secrets broker's answers keep a rule of their own for now. Pull request
 // #5212 rewrites their files, and whichever of it and the change that made this package merges
