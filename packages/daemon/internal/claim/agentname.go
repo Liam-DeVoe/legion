@@ -42,7 +42,9 @@ func NumberedAgentName(role Role, n int) Agent {
 // workflow role (IsRole) has agents of a plan: the controller's claim names no agent of an issue.
 // It is also the rule that keeps a role from being named so: the settings loader refuses a role of
 // the deployment, and plan.Validate a role of a plan, whose name it reads as another role's, since
-// an agent of each role would then hold one claim token.
+// an agent of each role would then hold one claim token. A role is no numbered agent of itself: a
+// name that is one of roles is read as the numbered agent of another of them only, so each caller
+// passes the whole list.
 func NumberedAgentRole(name string, roles []Role) (Role, bool) {
 	cut := strings.LastIndexByte(name, '-')
 	if cut < 0 {
@@ -53,7 +55,7 @@ func NumberedAgentRole(name string, roles []Role) (Role, bool) {
 		return "", false
 	}
 	for _, role := range roles {
-		if IsRole(role) && NumberedAgentName(role, n) == Agent(name) {
+		if role != Role(name) && IsRole(role) && NumberedAgentName(role, n) == Agent(name) {
 			return role, true
 		}
 	}

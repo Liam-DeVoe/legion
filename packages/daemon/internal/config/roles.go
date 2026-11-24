@@ -113,8 +113,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 		names = append(names, role.Name)
 	}
 	for _, role := range roles {
-		others := slices.DeleteFunc(slices.Clone(names), func(r claim.Role) bool { return r == role.Name })
-		if of, ok := claim.NumberedAgentRole(string(role.Name), others); ok {
+		if of, ok := claim.NumberedAgentRole(string(role.Name), names); ok {
 			return nil, fmt.Errorf("%s.%s is the name Legion gives a second or later agent of the role %s, so an agent of each role would hold one claim: give the role another name", key, role.Name, of)
 		}
 	}
