@@ -329,22 +329,41 @@ func TestAVersionThatStartsATaskWithASubOwnerAgainStartsTasksOnce(t *testing.T) 
 	}
 }
 
-// The join of a task's needs queued again at its issue's generation (joinAgain) that ends at once,
-// for a task at its parts that holds the issue's own branch and needs none, leaves the task at its
-// parts with no wait, and its parts that wait start: f (owner=architect) runs at its parts waiting
-// for a join no row makes, and its part f1 waits; once joinAgain joined f, f waits for nothing and
-// f1 runs at its first step.
+// A re-admission carries a running task, its wait among it, to the next generation, and the join
+// its start queued at the generation the issue left finishes without acting, so the join is queued
+// again at the new one (joinAgain). For a task at its parts that holds the issue's own branch and
+// needs none, that join ends at once, and the task's parts that wait start (startAfterWait): f
+// (owner=architect) runs at its parts waiting for the join its task_branch row of generation 1
+// makes, f1 waits, and the plan is carried to generation 2 as the issue moves there; once joinAgain
+// joined f there, f waits for nothing and f1 runs at its first step.
 //
 // The fault it catches is a task at its parts with no wait whose parts wait for good (its control:
-// joinAgain with no startReadyNow, as at the base, which leaves f1 waiting).
-func TestAJoinQueuedAgainAtThePartsStartsThePartsThatWait(t *testing.T) {
+// joinAgain as at the base, whose start after the wait runs no startReadyNow, which leaves f1
+// waiting).
+func TestAJoinQueuedAgainAfterAReAdmissionStartsThePartsThatWait(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
 	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
 	seedOwnedVersion(t, pool, root.Key, root.Generation, subOwned("f"), part("f1", "f"))
+	readmitted := root
+	readmitted.Generation = root.Generation + 1
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, root.Key, root.Generation, "f", atParts, record.TaskRunning)
+		store := record.NewStore()
+		if err := store.MoveTask(t.Context(), tx, root.Key, root.Generation, "f", atParts, record.TaskRunning); err != nil {
+			return err
+		}
+		row, err := record.NewOutboxRow(root.Key, record.TaskBranch{Generation: root.Generation, Task: "f"}, stepClock)
+		if err != nil {
+			return err
+		}
+		if err := store.Enqueue(t.Context(), tx, row); err != nil {
+			return err
+		}
+		if err := store.CarryPlan(t.Context(), tx, root.Key, root.Generation, readmitted.Generation, true); err != nil {
+			return err
+		}
+		return store.PutIssue(t.Context(), tx, readmitted)
 	})
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "f", atParts, record.StepWaitJoin)
 
