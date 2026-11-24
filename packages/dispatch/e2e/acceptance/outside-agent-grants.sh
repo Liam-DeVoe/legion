@@ -1,5 +1,6 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154,SC2034 # the leg that sources this file sets what it reads, and reads what it sets
+# legion: tool - reads a full member's list of credential grants for the browser gate's probe grant, as outside-agent-tailnet.sh sources it; run alone it is the operator's preflight from a box on the tailnet, for the operator who decides whether to ask for a live browser gate.
 # The browser gate's grants control (row grants of outside-agent-tailnet.sh): a full member's own
 # list of credential grants, GET /api/v1/credential-grants?approver=me, read with the full member's
 # personal token (OUTSIDE_SWEEP_FULL_TOKEN_FILE, the person scope). outside-agent-tailnet.sh sources
@@ -14,8 +15,9 @@
 # nor the test person: a revoke Dispatch lets through ends nothing, and nothing here makes or ends
 # a grant.
 #
-# Run alone, `bash outside-agent-grants.sh`, it is the browser gate's preflight, to run before a
-# live gate is asked for: with OUTSIDE_SWEEP_FULL_TOKEN_FILE, OUTSIDE_TAILNET_DISPATCH_URL and
+# Run alone, `bash outside-agent-grants.sh`, it is the browser gate's preflight, the operator's
+# from a box on the tailnet, to run before a live gate is asked for: with
+# OUTSIDE_SWEEP_FULL_TOKEN_FILE, OUTSIDE_TAILNET_DISPATCH_URL and
 # OUTSIDE_PERSON (and OUTSIDE_ALLOW_HTTP=1 for a local stack), it reads the list as the gate reads
 # it before its run and prints `grant <id>`, the probe grant the gate would pass (exit 0); `no grant
 # with no approver and no operator` (exit 1); or `UNKNOWN: <why>` (exit 2). It writes nothing but

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads the node and tuple store's growth, the census sizing of a server's test database on this machine and production's Cloud SQL disk use from Cloud Monitoring, for the tester who decides the check c-growth; it reads production, so no CI job runs it.
 # Drives the growth pass of the node and tuple store's census against a running server's own
 # database (the check c-growth). It runs `envoy-dispatch census --store --sizing`
 # and reads every figure that check names out of the report: the write rate by kind, the row count

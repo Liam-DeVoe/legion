@@ -9,6 +9,11 @@
 # this: an address that answers on 443 forwards by path and by Host there, and a request it
 # refuses connects as well as one it forwards.
 #
+# It tests the real edge, which no stand-in makes, so the deployment's pipeline runs it: the
+# workflow outside-edge-e2e.yaml of theorem-labs/agent-infra runs it, in its step "The HTTPS
+# refusal check", from a checkout of this repository at that workflow's LEGION_COMMIT. CI here
+# runs its tests against a stand-in edge (e2e/__tests__/outside-edge-refusals*.test.ts).
+#
 # It is one file that sources nothing, and needs bash (3.2, as macOS ships it, or later), curl
 # 8.4.0 or later (from October 2023), mktemp, and sha256sum or shasum to hash each answer's body.
 # bash, mktemp and a hasher are on a stock macOS or Linux; an older curl refuses the run by name,
@@ -127,10 +132,11 @@
 # signal sent to the script's process alone ends the run within OUTSIDE_EDGE_READ_SECONDS, and one
 # sent to its process group, as a terminal's Ctrl-C is, ends that curl too, and the run at once.
 #
-# Usage: OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
-#          OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
+# Usage, as the deployment's workflow runs it: OUTSIDE_EDGE_ADDRESS=192.0.2.10 \
+#          OUTSIDE_EDGE_ROUTED=routed.txt OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
 
-# A shell other than bash stops here, before it reads a line it would take another way.
+# A shell other than bash stops here, before it reads a line it would take another way; the
+# deployment's workflow runs it with bash.
 if [ -z "${BASH_VERSION:-}" ]; then
   echo 'UNKNOWN: run this with bash: bash outside-edge-refusals.sh'
   exit 2

@@ -484,15 +484,17 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=902
   DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
 ```
 
-`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
-by kind, every table this branch's migrations touch, where the two store tables reach in a year,
-two runs printing one report, and the block-index backlog, with the reconciliation's own drain
-timed beside a request that indexes the same document itself, a reading that gates nothing. It
-takes `DISPATCH_URL`, the bearer, `PROJECT`, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`,
-and two required inputs of the production reading: `PRODUCTION_PROJECT`, the Google Cloud project
-whose Cloud Monitoring holds production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL
-instance whose disk use it reads, through this pod's own Google identity. This repository is
-public and names neither, so the driver refuses to start without them (exit 2).
+`e2e/acceptance/graph-sizing.sh` is a tool, not a test: it reads production, so no CI job runs it,
+and the tester who decides the check c-growth runs it by hand. It drives
+`envoy-dispatch census --store --sizing`: the write rate by kind, every table this branch's
+migrations touch, where the two store tables reach in a year, two runs printing one report, and
+the block-index backlog, with the reconciliation's own drain timed beside a request that indexes
+the same document itself, a reading that gates nothing. It takes `DISPATCH_URL`, the bearer,
+`PROJECT`, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`, and two required inputs of the
+production reading: `PRODUCTION_PROJECT`, the Google Cloud project whose Cloud Monitoring holds
+production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL instance whose disk use it
+reads, through this pod's own Google identity. This repository is public and names neither, so
+the tool refuses to start without them (exit 2).
 `PRODUCTION_WINDOW_DAYS` is optional (21 unset, refused below 14). It writes a corpus under an
 issue of its own and removes it on exit, since a corpus left behind is read by the next run as
 growth:
@@ -509,7 +511,10 @@ edge's one IPv4 address, on 443, for each path and Host the edge must not forwar
 whether one of the edge's routes took the request, by the `X-Outside-Edge-Backend` marker every
 route sets: an address that answers on 443 forwards by path and by Host there, which a TCP
 connect cannot see. It needs bash 3.2 or later, curl 8.4.0 or later, `mktemp`, and
-`sha256sum` or `shasum`, and reads PASS (exit 0), FAIL (exit 1) or UNKNOWN (exit 2):
+`sha256sum` or `shasum`, and reads PASS (exit 0), FAIL (exit 1) or UNKNOWN (exit 2). It tests
+the real edge, which no stand-in makes, so the deployment's pipeline runs it: the workflow
+`outside-edge-e2e.yaml` of theorem-labs/agent-infra runs it, in its step "The HTTPS refusal
+check", from a checkout of this repository at that workflow's `LEGION_COMMIT`, with these inputs:
 
 ```bash
 OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
@@ -524,9 +529,13 @@ inputs are, how it reads an answer, when a signal ends it, and what its three te
 legs of the outside agent's acceptance: what a person from outside the sign-in domain gets when
 their agents, on their own machine and on the public internet, work with ours through the edge
 origins, and the gate both legs make before a real person from outside is named on an access
-list. The tailnet leg is the one command and runs on a developer box; it starts the public leg
-on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
-them, what each row reads, and the controls. `cd packages/dispatch && bun test
+list. The tailnet leg is a tool, which no CI job runs: the operator's reading from a box on the
+tailnet, before a real person from outside goes on an access list, which starts the deployment's
+workflow for the public leg. The public leg tests the real edge, so the deployment's pipeline runs
+it: the workflow `outside-edge-e2e.yaml` of theorem-labs/agent-infra runs it, in its step "The
+outside agent's public leg", on a runner on the public internet, from a checkout of this
+repository at that workflow's `LEGION_COMMIT`. `e2e/acceptance/outside-agent-acceptance.md` says
+how each leg starts, what each row reads, and the controls. `cd packages/dispatch && bun test
 e2e/__tests__/outside-agent-acceptance.test.ts e2e/__tests__/outside-agent-public.test.ts` checks
 that each leg prints `UNKNOWN`, never `PASS`, for a row whose target is absent, and that each leg
 holds its rows to their controls (the public leg's P6, P7, P9, P10 and T5 part; the tailnet leg's

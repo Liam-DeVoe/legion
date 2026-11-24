@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
+# legion: tool - reads the outside agent's acceptance from a box on the tailnet (rows T1-T4, and the gate over the public leg it starts in the deployment's workflow outside-edge-e2e.yaml of theorem-labs/agent-infra, which runs outside-agent-public.sh), for the operator who decides, before a real person from outside goes on an access list, whether they may; no CI job runs it.
 # The tailnet leg of the outside agent's acceptance, and the one command that runs both legs: a
 # developer box on the private network runs it, with its project's key as the one argument. It
 # reads the deployed pins and Dispatch's serving build, and refuses to start unless the secrets
@@ -855,7 +856,7 @@ fi
 # own list, which must hold no such grant; the row passes only where there is one. The driver reads
 # its own list again just before its revoke, and sends none where that list shows the probe grant
 # naming an approver or an operator. `bash outside-agent-grants.sh` alone is the same read, the
-# preflight a person runs before asking for a live gate. ---
+# operator's preflight from a box on the tailnet before asking for a live gate. ---
 grants_problem=''
 grants_probe=''
 grants_before=''

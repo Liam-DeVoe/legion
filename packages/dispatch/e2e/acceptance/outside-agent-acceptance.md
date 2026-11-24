@@ -8,8 +8,8 @@ The gate must pass before the deployment names a real person from outside on any
 
 | File | What it is |
 | --- | --- |
-| `outside-agent-tailnet.sh` | The one command. It runs on a developer box on the private network, runs rows T1-T4 there, starts the public leg and prints the gate. |
-| `outside-agent-public.sh` | The public leg, rows P1-P10 and the Codex leg's C0-C7. A workflow on a runner on the public internet runs it, after that workflow's browser signs the test person in. |
+| `outside-agent-tailnet.sh` | The one command, a tool that no CI job runs: the operator's reading from a box on the tailnet, before a real person from outside goes on an access list. It runs rows T1-T4 there, starts the deployment's workflow for the public leg and prints the gate. |
+| `outside-agent-public.sh` | The public leg, rows P1-P10 and the Codex leg's C0-C7. It tests the real edge, so the deployment's pipeline runs it: the workflow `outside-edge-e2e.yaml` of theorem-labs/agent-infra runs it on a runner on the public internet, from a checkout of this repository at that workflow's `LEGION_COMMIT`, after the workflow's browser signs the test person in. |
 | `outside-agent-codex.sh` | The Codex leg, rows C0-C7: the outside person's Codex CLI with the codex-envoy plugin's npm release, under row P2's device login, and that release's provenance. The public leg runs it after P10. |
 | `outside-agent-codex-model.ts` | The Codex leg's keyless stand-in model, which speaks the Responses API and plays one scripted turn per run. It binds a port of the kernel's choosing and answers `/_ready` with the leg's nonce. |
 | `outside-agent-codex-provenance.ts` | The Codex leg's reads of row C0: the registry's record and provenance attestation of the plugin's release, and the byte comparison of two builds' bundles. |
@@ -48,7 +48,8 @@ a fixed phrase.
 
 ## How to run it
 
-On a developer box, from a checkout of this repository with `bun install` done and
+The operator runs the tailnet leg, a tool, from a developer box on the tailnet, before a real person
+from outside goes on an access list, from a checkout of this repository with `bun install` done and
 `packages/pi-envoy` built:
 
 ```bash
@@ -229,7 +230,8 @@ The tailnet leg does these steps, in this order:
 
 ## The workflow's contract with the public leg
 
-The workflow runs `outside-agent-public.sh` after its own sign-in, with:
+The deployment's workflow, `outside-edge-e2e.yaml` of theorem-labs/agent-infra, runs
+`outside-agent-public.sh` in its step "The outside agent's public leg", after its own sign-in, with:
 
 | Variable | What it holds |
 | --- | --- |
@@ -406,9 +408,9 @@ another code, stands whatever the foreign session did.
 
 `OUTSIDE_GATE=browser` runs the browser leg alone: what a person from outside gets in their
 browser, proved while nothing of the agents' path serves (no edge listener, no broker route at the
-edge, no broker project check). It is the same command, `outside-agent-tailnet.sh <project>`;
-`OUTSIDE_GATE=all`, the default, is both legs as above, and any other value reads every row UNKNOWN
-and exits 2.
+edge, no broker project check). It is the same tool, `outside-agent-tailnet.sh <project>`, which
+the operator runs from a box on the tailnet; `OUTSIDE_GATE=all`, the default, is both legs as
+above, and any other value reads every row UNKNOWN and exits 2.
 
 The project's owner acts through four commands. Each is a command line, split on blanks, that holds
 its own owner credential, which the leg never sees:
@@ -451,10 +453,11 @@ secret, and asks no terminal. In this gate it does these steps:
    probe grant: the first grant with no approver and no operator, whose approver and operator name
    neither the full member (their token's whoami) nor the test person. No person may end such a
    grant at the broker, whatever Dispatch relays, so the probe ends nothing.
-   `outside-agent-grants.sh`, run alone (`bash outside-agent-grants.sh`, with
+   `outside-agent-grants.sh`, which the leg sources, run alone (`bash outside-agent-grants.sh`, with
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_TAILNET_DISPATCH_URL` and `OUTSIDE_PERSON`), is the
-   same read as a preflight before a live gate is asked for: it prints `grant <id>` (exit 0), `no
-   grant with no approver and no operator` (exit 1), or `UNKNOWN: <why>` (exit 2).
+   same read, a tool: the operator's preflight from a box on the tailnet before a live gate is
+   asked for. It prints `grant <id>` (exit 0), `no grant with no approver and no operator`
+   (exit 1), or `UNKNOWN: <why>` (exit 2).
 6. It starts the workflow as step 6 above says, with `checks=browser`, `project`,
    `routed_controls=dispatch-healthz`, the link as `invite_url`, the issue's key as
    `sweep_member_issue` (the issue the person's own comment and issue message go on, the control of

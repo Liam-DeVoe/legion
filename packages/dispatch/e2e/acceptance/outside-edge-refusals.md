@@ -8,8 +8,10 @@ is `legion/checks/outside-path-reach.sh` in theorem-labs/agent-infra; this repos
 cannot see this: it measures TCP connects, and an address that answers on 443 forwards by path and
 by Host there. Every route of the edge sets the response header `X-Outside-Edge-Backend` to the
 backend it reached, so an answer without it came through none of them, and that marker is what the
-check reads. The script's own header has every rule; this page says what a person running it or
-changing it needs.
+check reads. It tests the real edge, which no stand-in makes, so the deployment's pipeline runs it:
+the workflow `outside-edge-e2e.yaml` of theorem-labs/agent-infra runs it, in its step "The HTTPS
+refusal check", from a checkout of this repository at that workflow's `LEGION_COMMIT`. The script's
+own header has every rule; this page says what a person reading its run or changing it needs.
 
 ## What it needs
 
@@ -51,6 +53,8 @@ whose path holds `//`, `%2f` or a literal dot segment, so no route could be plan
 `outside-path-reach.sh`'s two settings follow.
 `OUTSIDE_EDGE_ALLOW_HTTP=1` lets the address be `http://127.0.0.1:<port>`, and nothing else, for the
 script's own tests.
+
+The deployment's workflow, `outside-edge-e2e.yaml`, runs it with the three inputs set:
 
 ```bash
 OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \

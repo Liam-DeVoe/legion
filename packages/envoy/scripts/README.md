@@ -270,7 +270,11 @@ of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts
 which prints the token's `project_scope` and `projects` from the broker's
 introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
 the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
-exits 0 only when all 16 rows ran and passed.
+exits 0 only when all 16 rows ran and passed. The `envoy-session-proofs` leg of
+`ci.yaml`'s `envoy-held` job runs it, and its negative control below, on the leg's
+Postgres, with the airlock's stands in a container of the Debian image
+`.github/ci-images.yaml` copies (`DEV_STACK_AIRLOCK_IMAGE`); the same command runs it
+again here:
 
 ```bash
 cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
@@ -294,13 +298,16 @@ session listed.
 The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
 and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
 it should have been refused: <caller>` (on the right stack, carol's session naming
-nothing):
+nothing); the same leg's step passes only on that line:
 
 ```bash
 LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
 ```
 
-Live mode runs the session half against a deployment and writes nothing:
+Live mode runs the session half against a deployment and writes nothing. It is a tool,
+which no job runs: the operator runs it, as below, to read whether a deployment holds a
+private project's secret to the credentials that name its project, and the script's
+first lines carry the tool line for it:
 
 ```bash
 bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>

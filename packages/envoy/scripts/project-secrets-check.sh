@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - its live mode alone (--broker-url, --secret) reads a running deployment's broker and writes nothing: the pod's trade, the pod's request for a private project's secret and the operator's session listing that project, for the operator who decides whether that deployment holds the secret to the credentials that name its project; no job runs that mode. The local-stack mode and its control are a test, which the envoy-session-proofs leg of ci.yaml's envoy-held job runs.
 # packages/envoy/scripts/project-secrets-check.sh
 # dispatch://INFRA-3862's R11, driven on the binaries production runs: a private project's secret
 # goes only to a credential that names that project.
@@ -36,11 +37,12 @@
 # have been refused. It fails for the reason the probe would be blind: a secret the rule cannot see
 # is exactly an untagged one.
 #
-# Live mode, --broker-url URL --secret NAME: no stack and no write, the session half alone,
-# against a running deployment. It needs, in its environment, the pod's exchange token
-# (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's enrolled key directory (AGENT_SECRETS_KEY_DIR), the
-# operator's helper socket with its machine login (AGENT_SECRETS_HELPER_SOCK), and an account token
-# the broker lists in BROKER_API_ACCOUNTS (AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the only caller the
+# Live mode, --broker-url URL --secret NAME, is a tool (the line above): no stack and no write,
+# the session half alone, against a running deployment. It needs, in its environment, the pod's
+# exchange token (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's enrolled key directory
+# (AGENT_SECRETS_KEY_DIR), the operator's helper socket with its machine login
+# (AGENT_SECRETS_HELPER_SOCK), and an account token the broker lists in BROKER_API_ACCOUNTS
+# (AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the only caller the
 # broker lets read a token's introspection. It runs the pod's trade, which names the project; the
 # pod's request for the secret; and the operator's session listing that project, which reads F's
 # check as the stack's row does. It takes no Dispatch URL: nothing of that half reads one.
@@ -55,9 +57,9 @@
 # variable to the option for a URL that holds a password: the option stays in this script's own
 # arguments, in the process list for any user of the machine to read, and the environment is not.
 #
-#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh
-#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged
-#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV
+#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh                     # as CI runs it
+#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged  # as CI runs it
+#   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV  # the tool
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,8 +109,8 @@ of its own and drives every caller against it.
                    write PRIV_KEY with no dispatch-project tag: every caller then gets it and this
                    run fails, naming the first caller that should have been refused
   --broker-url, --secret
-                   live mode: drive the session half against a running deployment, writing
-                   nothing. Its environment names the pod's exchange token
+                   live mode, a tool: drive the session half against a running deployment,
+                   writing nothing. Its environment names the pod's exchange token
                    (AGENT_SECRETS_MACHINE_TOKEN_FILE), the pod's key dir (AGENT_SECRETS_KEY_DIR),
                    the operator's helper (AGENT_SECRETS_HELPER_SOCK) and an account token the
                    broker lets introspect (AGENT_SECRETS_ACCOUNT_TOKEN_FILE)
