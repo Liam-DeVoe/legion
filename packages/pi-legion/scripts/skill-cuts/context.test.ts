@@ -781,6 +781,18 @@ test("comments inside the block are dropped in one left-to-right pass, as Oh My 
   });
 });
 
+// Catches: nested keys left in kebab-case, where Oh My Pi's `normalizeFrontmatterKeys` makes each
+// key camelCase at every depth: two copies of a skill that differ only so read as different,
+// though Oh My Pi drops one as the other (capture.ts's `listedSkills`).
+test("kebab-case keys become camelCase at every depth, in a list's mappings too, and no value changes", () => {
+  const text =
+    "---\nname: nested\nmetadata:\n  made-up-kind: greeting\n  steps:\n    - step-name: one\n      keep: [a-b]\n---\nBody.\n";
+  expect(readFrontmatter(text)).toEqual({
+    name: "nested",
+    metadata: { madeUpKind: "greeting", steps: [{ stepName: "one", keep: ["a-b"] }] },
+  });
+});
+
 /** A stand-in `gh` that answers its first `fails` calls with a network timeout on stderr, then
  *  with `answer`; each call is counted in the file `count`. */
 function standinGh(name: string, fails: number, answer: string): { gh: string; count: string } {

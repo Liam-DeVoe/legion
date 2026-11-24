@@ -49,7 +49,6 @@ import { postMessages, readKeyFile, runKeyCommand } from "./messages-api";
 import {
   byCreatedAt,
   type CliIo,
-  type Fetch,
   inWindow,
   mapLimit,
   outRefusal,
@@ -58,14 +57,13 @@ import {
   parseWindow,
   processIo,
   resolveDispatch,
-  type Sleep,
 } from "./production-dispatch";
 import { processSpendRecorder, type SpendRecorder } from "./spend-record";
 
 /** What `main` reads and writes: production-dispatch.ts's CliIo, and where each model answer
  *  records its usage span (`processSpendRecorder()` in a real run; none when absent). */
 export interface LabelIo extends CliIo {
-  readonly spend?: SpendRecorder;
+  readonly spendRecorder?: SpendRecorder;
 }
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
@@ -227,15 +225,14 @@ export function isYes(chance: number): boolean {
   return chance > 0.5;
 }
 
-/** The chances that the model gave for one comment, each answer's usage recorded with `spend`.
- *  Throws naming why it has no label. */
+/** The chances that the model gave for one comment, each answer's usage recorded with
+ *  `io.spendRecorder`. Throws naming why it has no label. */
 async function label(
   item: Labelled,
   route: ModelRoute,
-  fetchImpl: Fetch,
-  sleep: Sleep,
-  spend: SpendRecorder | undefined
+  io: Pick<LabelIo, "fetch" | "sleep" | "spendRecorder">
 ): Promise<Record<QuestionKey, number>> {
+  const { spendRecorder } = io;
   return postMessages({
     url: route.url,
     key: route.key,
@@ -246,15 +243,17 @@ async function label(
       system: SYSTEM_BLOCKS,
       messages: [{ role: "user", content: stateMessage(item.issue, item.comment) }],
     }),
-    fetch: fetchImpl,
-    sleep,
+    fetch: io.fetch,
+    sleep: io.sleep,
     tries: MODEL_TRIES,
     timeoutMs: MODEL_TIMEOUT_MS,
     // A sampled reply can leave out a question: chancesOf throws, and the comment is asked again.
     accept: chancesOf,
-    ...(spend === undefined
+    ...(spendRecorder === undefined
       ? {}
-      : { spend: (answer, times) => spend.record(answer, { model: MODEL, ...times }) }),
+      : {
+          onAnswer: (answer, times) => spendRecorder.record(answer, { model: MODEL, ...times }),
+        }),
   });
 }
 
@@ -428,7 +427,7 @@ function modelRoute(args: Arguments): ModelRoute | string {
 }
 
 /** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused), once
- *  the usage spans of its model answers are sent (`io.spend`'s `flush`, at most 2 s). */
+ *  the usage spans of its model answers are sent (`io.spendRecorder`'s `flush`, at most 2 s). */
 export async function main(argv: readonly string[], io: LabelIo): Promise<number> {
   const refuse = (why: string) => {
     io.err(`label-comments: ${why}`);
@@ -468,7 +467,7 @@ export async function main(argv: readonly string[], io: LabelIo): Promise<number
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
       try {
-        return { item, chances: await label(item, route, io.fetch, io.sleep, io.spend) };
+        return { item, chances: await label(item, route, io) };
       } catch (error) {
         return { item, failure: messageFor(error) };
       }
@@ -509,10 +508,12 @@ export async function main(argv: readonly string[], io: LabelIo): Promise<number
   } finally {
     // Gone after a rename. Left only by a write or rename that failed.
     rmSync(partial, { force: true });
-    await io.spend?.flush();
+    await io.spendRecorder?.flush();
   }
 }
 
 if (import.meta.main) {
-  process.exit(await main(Bun.argv.slice(2), { ...processIo(), spend: processSpendRecorder() }));
+  process.exit(
+    await main(Bun.argv.slice(2), { ...processIo(), spendRecorder: processSpendRecorder() })
+  );
 }

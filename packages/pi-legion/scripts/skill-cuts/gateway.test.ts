@@ -9,7 +9,6 @@ import type { Fetch } from "../skill-scenarios/production-dispatch";
 import {
   BudgetSpent,
   bodyIdentity,
-  type ContentBlock,
   costUsd,
   createGateway,
   freshIdentity,
@@ -25,6 +24,7 @@ import {
   type Sent as SentAt,
   toolCalls,
 } from "./gateway";
+import { f9Completed, fixtureReply } from "./testdata/fixtures";
 
 // The gateway's client, on F5 and F9 (testdata/, captured as testdata/CAPTURE.md says in "F5" and
 // in "F8 and F9"): the model gateway's replies to request bodies made from F2 and F8. Each F5
@@ -48,15 +48,6 @@ const RESPONSES_BODY = JSON.parse(
   readFileSync(path.join(TESTDATA, "F8-request.json"), "utf8")
 ) as ResponsesBody;
 
-/** The fixture reply `stem` as the gateway sent it: its SSE body and its kept headers. */
-function fixtureReply(stem: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `${stem}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `${stem}.sse`), "utf8"), {
-    status: kept.status,
-    headers: kept.headers,
-  });
-}
-
 /** F5's reply `shape`, a Messages API stream. */
 function f5(shape: string): Response {
   return fixtureReply(`F5-${shape}`);
@@ -65,15 +56,6 @@ function f5(shape: string): Response {
 /** F9's reply `shape`, a Responses API stream. */
 function f9(shape: string): Response {
   return fixtureReply(`F9-${shape}`);
-}
-
-/** The response F9's reply `shape` holds whole: the one its `response.completed` event carries. */
-function f9Response(shape: string): { output: ContentBlock[]; usage: { cost: number } } {
-  const events = readFileSync(path.join(TESTDATA, `F9-${shape}.sse`), "utf8")
-    .split("\n")
-    .filter((line) => line.startsWith("data: {"))
-    .map((line) => JSON.parse(line.slice("data: ".length)));
-  return events.find((event) => event.type === "response.completed").response;
 }
 
 /** An Anthropic error answer. */
@@ -126,7 +108,7 @@ function world(
     keyFile: keyFileHolding(fixtureSecret("gw")),
     concurrency: 4,
     timeoutMs: 5_000,
-    spend: null,
+    spendRecorder: null,
     fetch,
     sleep: async (ms) => {
       slept.push(ms);
@@ -656,7 +638,7 @@ test("posts a Responses body to <base>/v1/responses with the key as a bearer tok
   expect(reply.message.stop_reason).toBe("completed");
   // The reply's content is the response's output items as they came, and its echo of the request
   // (`instructions`, `tools`) is left out.
-  expect(reply.message.content).toEqual(f9Response("skill-read").output);
+  expect(reply.message.content).toEqual(f9Completed("skill-read").output);
   expect(Object.keys(reply.message).sort()).toEqual([
     "content",
     "id",
@@ -666,7 +648,7 @@ test("posts a Responses body to <base>/v1/responses with the key as a bearer tok
   ]);
   expect(toolCalls(reply.message.content)).toEqual([
     {
-      id: String(f9Response("skill-read").output[0]?.call_id),
+      id: String(f9Completed("skill-read").output[0]?.call_id),
       name: "read",
       input: { i: "Reading alpha checklist reference", path: "skill://alpha/references/x.md" },
     },
@@ -747,7 +729,7 @@ test("sums a Responses reply's usage, its cache reads and writes and its reasoni
     [second, "cache-read"],
     [third, "text"],
   ] as const) {
-    expect(reply.spent.usd).toBeCloseTo(f9Response(shape).usage.cost, 10);
+    expect(reply.spent.usd).toBeCloseTo(f9Completed(shape).usage.cost, 10);
   }
   const spend = gateway.spend();
   expect(spend.models["gpt-6.1-sol"]).toMatchObject({

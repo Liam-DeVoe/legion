@@ -27,9 +27,9 @@
  *   status of the last try's answer (its headers came, even when its body then failed), or
  *   undefined when the last try got no answer. `accept` gets the body whole as text: a streamed
  *   (SSE) reply is read to its end before it. Each ok answer, its body read whole, is first given
- *   to `call.spend` with when its try was sent and when its body ended (spend-record.ts records
- *   its usage there), whether `accept` then takes it or not: the provider billed it either way.
- *   A try whose body failed, and an answer that is not ok, give it nothing.
+ *   to `call.onAnswer` with when its try was sent and when its body ended (spend-record.ts
+ *   records its usage there), whether `accept` then takes it or not: the provider billed it
+ *   either way. A try whose body failed, and an answer that is not ok, give it nothing.
  * - `sseData(text, wanted)`: the `data` of each event of an SSE stream, in order, an event's
  *   `data` lines joined by newlines; an event with no data, the `[DONE]` that closes a Responses
  *   stream, and an event whose text `wanted` (when given) does not match are none.
@@ -119,7 +119,7 @@ export interface MessagesCall<T> {
   /** Told of each ok answer, its body read whole, before `accept` takes it: its text, when its
    *  try was sent and when its body ended (epoch milliseconds). spend-record.ts's recorder records
    *  the answer's usage here; it never throws and never waits. None when absent. */
-  readonly spend?: (answer: string, times: AnswerTimes) => void;
+  readonly onAnswer?: (answer: string, times: AnswerTimes) => void;
 }
 
 /** When one try was sent and when its answer's body ended, in epoch milliseconds. */
@@ -192,8 +192,8 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
       }
       throw new MessagesApiError(last, status);
     }
-    // Outside the tries' catch, so nothing `spend` does can send the call again.
-    call.spend?.(text, { startedAt, endedAt });
+    // Outside the tries' catch, so nothing `onAnswer` does can send the call again.
+    call.onAnswer?.(text, { startedAt, endedAt });
     try {
       return await call.accept(text, response);
     } catch (error) {

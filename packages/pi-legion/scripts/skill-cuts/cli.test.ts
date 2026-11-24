@@ -12,7 +12,8 @@ import {
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { createSpendRecorder } from "../skill-scenarios/spend-record";
+import { postedSpan, startCollector } from "../skill-scenarios/collector-standin";
+import { createSpendRecorder, FLUSH_MS } from "../skill-scenarios/spend-record";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm, snapshotTag } from "./arms";
 import { ListingMeasure } from "./build";
@@ -60,19 +61,15 @@ import {
   type Stage,
   scoreSkill,
 } from "./score";
-import {
-  postedSpan,
-  startCollector,
-  truncatedSkillsTree,
-  writeGhStandIn,
-} from "./testdata/fixtures";
+import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
 // 127.0.0.1 built on recorder.ts, which answers in the stream shape of the F5 replies
 // (testdata/CAPTURE.md), and with its usage spans posted to a stand-in collector on 127.0.0.1
-// (testdata/fixtures.ts's `startCollector`), every other OTEL_* variable taken out. The behaviour
-// commands read their cases from a temporary directory, made from F1 (an Oh My Pi 18.18.6 session
+// (skill-scenarios/collector-standin.ts's `startCollector`), every other OTEL_* variable taken
+// out. The behaviour commands read their cases from a temporary directory, made from F1 (an Oh My
+// Pi 18.18.6 session
 // of a scratch profile with the made-up skills alpha and beta: 0 the user's prompt, 1 a read of
 // skill://alpha, 2 its result, 3 a read of skill://alpha/references/x.md, 4 its result, 5 a read
 // of the missing skill://gamma, 6 its result, 7 a `task` call), and replay bodies recorded from F2
@@ -2326,6 +2323,45 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+
+  // Catches: build-cases and build-tasks through cli.ts waiting for the span queue twice, in
+  // build.ts's `main` and again in cli.ts's, so that a collector that hangs held the exit twice
+  // FLUSH_MS where README.md ("Usage records") says 2 s.
+  test("build-cases and build-tasks wait for the usage spans queued once: a collector that hangs holds the exit FLUSH_MS at most", async () => {
+    const hanging = startCollector();
+    hanging.delayMs = 60_000;
+    try {
+      for (const command of ["build-cases", "build-tasks"]) {
+        const spendRecorder = createSpendRecorder({
+          env: { OTEL_EXPORTER_OTLP_ENDPOINT: hanging.url },
+          warn: () => {},
+        });
+        // Three spans, each post held until POST_TIMEOUT_MS: the queue outlasts any one wait.
+        for (let n = 1; n <= 3; n++) {
+          spendRecorder.record({
+            id: `msg_queued_${n}`,
+            model: "claude-sonnet-5-5",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        }
+        const err: string[] = [];
+        const started = performance.now();
+        const code = await main([command], {
+          out: () => {},
+          err: (line) => err.push(line),
+          peakRssBytes: () => 0,
+          spendRecorder,
+        });
+        const took = performance.now() - started;
+        expect({ command, code }).toEqual({ command, code: 2 });
+        expect(err.join("\n")).toContain(`${command}: `);
+        expect(took).toBeGreaterThanOrEqual(FLUSH_MS - 50);
+        expect(took).toBeLessThan(FLUSH_MS + 500);
+      }
+    } finally {
+      hanging.close();
+    }
+  }, 30_000);
 });
 
 // The architect, 2026-11-22T07:48:46Z: "Count, per report, the cases resting on the assumption,

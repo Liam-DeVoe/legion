@@ -18,10 +18,9 @@
  *   ended, its cost, its provider, its session id.
  * - `recorder.recordLogged(row)`: queues the span of one call from one line of the runner's
  *   request log (skill-cuts/cli.ts's `loggedGateway`), with the line's own start, duration, model,
- *   ids and usage (`loggedAnswer`, exported too); a line of a failed call (`error`) is passed
- *   over.
+ *   ids and usage (`loggedAnswer`); a line of a failed call (`error`) is passed over.
  * - `recorder.flush(timeoutMs)`: waits up to `timeoutMs` in all (FLUSH_MS by default) for the
- *   queued spans to be sent.
+ *   queue to empty, and says whether it did: a backfill queues no more until it has.
  * - `conversationId(identity)`: the session id in a body's session id field, as the gateway logs
  *   it.
  *
@@ -57,21 +56,25 @@
  * only when `call.costUsd` is a finite number, or text that reads as one; else the collector prices
  * the row from the list price of its model and its token counts.
  *
- * `record` never throws and never waits on the network: it builds the span, puts it on a queue of
- * at most QUEUE_MAX spans (when full, the span is dropped with a warning) and returns. One sender
- * posts the queue in order, each post ended after POST_TIMEOUT_MS, its answer's body read included.
- * The first failure (no endpoint, a full queue, an answer it cannot read, a refused connection, a
+ * `record` never throws and never waits on the network: it checks that the span can be sent, then
+ * builds it, puts it on a queue of at most QUEUE_MAX spans (when full, the span is dropped with a
+ * warning) and returns. One sender posts the queue in order, each post ended after
+ * POST_TIMEOUT_MS, its answer's body read included. The first failure (an answer it cannot read,
+ * an answer with no id, a time that is no time, no endpoint, a full queue, a refused connection, a
  * post past its time, an answer that is not 2xx) is written once (`options.warn`), as
  * `spend-record: <what failed> (further failures are not reported)`; no message names a header.
- * A process that exits drops what is still queued: `spend_record.py` waits for it at exit, which a
- * Bun process cannot do on its own, so a program awaits `flush()` on every way out (the runner's
- * `main`s do, skill-cuts/cli.ts and skill-cuts/build.ts).
+ * Where two of them meet in one answer, the one written is the one `spend_record.py`'s `record`
+ * meets first: it builds the span (and so meets an unreadable answer, a missing id and a bad time)
+ * before it reads the endpoint, and reads the endpoint before it queues. A process that exits
+ * drops what is still queued: `spend_record.py` waits for it at exit, which a Bun process cannot
+ * do on its own, so a program awaits `flush()` on every way out (the runner's `main`s do,
+ * skill-cuts/cli.ts's and skill-cuts/build.ts's when run on its own).
  */
 import { randomBytes } from "node:crypto";
 import { sseData } from "./messages-api";
 
 /** The most spans waiting to be sent; one more is dropped. */
-export const QUEUE_MAX = 1000;
+const QUEUE_MAX = 1000;
 /** The longest one post may take, its answer's body read included. */
 export const POST_TIMEOUT_MS = 2000;
 /** The longest `flush()` waits by default, in all. */
@@ -104,9 +107,10 @@ export interface SpendRecorder {
   /** Queues the span of the call one line of the runner's request log holds (`loggedAnswer`);
    *  passes over a line of a failed call. Never throws, never waits. */
   recordLogged(row: unknown): void;
-  /** Waits up to `timeoutMs` in all (FLUSH_MS by default) for the queued spans to be sent. Never
-   *  rejects. */
-  flush(timeoutMs?: number): Promise<void>;
+  /** Waits up to `timeoutMs` in all (FLUSH_MS by default) for the queue to empty, each queued
+   *  span's post ended. True once it has; false when `timeoutMs` passed first, with spans still
+   *  queued or a post in flight. Never rejects. */
+  flush(timeoutMs?: number): Promise<boolean>;
 }
 
 export interface SpendRecorderOptions {
@@ -207,9 +211,12 @@ function failureName(error: unknown): string {
 
 /** The last events of a Responses stream, each of which carries the whole response. */
 const RESPONSE_ENDS = ["response.completed", "response.incomplete", "response.failed"];
-/** Text that each event a stream's usage is read from holds (a Messages stream's start and its
- *  deltas, and RESPONSE_ENDS): the events whose text lacks it are passed over unparsed. */
-const ANSWER_EVENT = /"(message_start|message_delta|response\.(completed|incomplete|failed))"/;
+/** Text that each event a stream's usage is read from holds, its type quoted (a Messages stream's
+ *  start and its deltas, and RESPONSE_ENDS): the events whose text lacks it are passed over
+ *  unparsed. */
+const ANSWER_EVENT = new RegExp(
+  `"(${["message_start", "message_delta", ...RESPONSE_ENDS].map((type) => type.replaceAll(".", "\\.")).join("|")})"`
+);
 
 /**
  * The whole answer a streamed (SSE) reply assembles, as far as its usage goes: a Messages stream's
@@ -261,8 +268,11 @@ function wholeAnswer(answer: unknown): Json | undefined {
   throw new TypeError("the answer is not a JSON object");
 }
 
-/** Which API answered: `responses`, `chat` or `messages` (the file's header). */
-function shapeOf(answer: Json, usage: Json): "responses" | "chat" | "messages" {
+/** The API that answered: the Responses API, chat completions, or the Messages API. */
+type ApiShape = "responses" | "chat" | "messages";
+
+/** Which API answered (the file's header). */
+function shapeOf(answer: Json, usage: Json): ApiShape {
   if (answer.object === "response") return "responses";
   if (
     answer.object === "chat.completion" ||
@@ -275,7 +285,7 @@ function shapeOf(answer: Json, usage: Json): "responses" | "chat" | "messages" {
 }
 
 /** anthropic for a Claude model, openai for a GPT model, else by the API that answered. */
-function providerOf(shape: string, model: unknown): string {
+function providerOf(shape: ApiShape, model: unknown): string {
   const name = (
     String(model || "")
       .split("/")
@@ -321,7 +331,7 @@ function messagesCounts(usage: Json): Counts {
 /** An OpenAI usage's counts: its input already holds the cached part. The gateway's chat
  *  completion of a Claude call adds Anthropic's cache counts to the usage, and their 5-minute and
  *  1-hour split to `prompt_tokens_details`. */
-function openaiCounts(shape: "responses" | "chat", usage: Json): Counts {
+function openaiCounts(shape: Exclude<ApiShape, "messages">, usage: Json): Counts {
   if (shape === "chat") {
     const details = dict(usage.prompt_tokens_details);
     const split = dict(details.cache_creation_token_details);
@@ -355,21 +365,23 @@ function integer(key: string, value: number) {
   return { key, value: { intValue: String(value) } };
 }
 
-/** The OTLP/HTTP JSON body of the span of `answer` (the file's header). `warn` is told when the
- *  answer has no id. Throws on a time that is neither epoch milliseconds nor a Date. */
+/** A span's start and end, as OTLP's decimal nanoseconds. */
+interface SpanTimes {
+  readonly start: string;
+  readonly end: string;
+}
+
+/** The OTLP/HTTP JSON body of the span of `answer` (the file's header), which starts and ends at
+ *  `times`. */
 function spanOf(
   answer: Json,
   call: SpendCall,
-  env: Readonly<Record<string, string | undefined>>,
-  warn: (message: string) => void
+  times: SpanTimes,
+  env: Readonly<Record<string, string | undefined>>
 ): Json {
   const usage = dict(answer.usage);
-  if (!answer.id)
-    warn("the answer has no id, and the collector keeps no row of an answer without one");
   const shape = shapeOf(answer, usage);
   const provider = call.provider || providerOf(shape, answer.model || call.model);
-  const end = call.endedAt ?? Date.now();
-  const start = call.startedAt ?? end;
   const attributes: Json[] = [
     text("gen_ai.operation.name", "chat"),
     text("gen_ai.provider.name", provider),
@@ -419,8 +431,8 @@ function spanOf(
                 spanId: randomBytes(8).toString("hex"),
                 name: `chat ${name}`.trim(),
                 kind: 3,
-                startTimeUnixNano: nanos(start),
-                endTimeUnixNano: nanos(end),
+                startTimeUnixNano: times.start,
+                endTimeUnixNano: times.end,
                 attributes,
               },
             ],
@@ -460,7 +472,7 @@ export function conversationId(identity: string | null | undefined): string | un
  * sent) and its end `durationMs` later, and the session id of its `userId` (`conversationId`).
  * Throws on a line with no usage or no readable `sentAt`.
  */
-export function loggedAnswer(row: unknown): { answer: Json; call: SpendCall } | undefined {
+function loggedAnswer(row: unknown): { answer: Json; call: SpendCall } | undefined {
   if (!isJson(row)) throw new TypeError("the line is not a JSON object");
   if (row.error !== undefined) return undefined;
   if (!isJson(row.usage)) throw new TypeError("the line holds no usage");
@@ -535,8 +547,17 @@ export function createSpendRecorder(options: SpendRecorderOptions = {}): SpendRe
     sending = undefined;
   }
 
+  /** Queues the span of `answer`, once it is known that the span can be sent: the failures come
+   *  in `spend_record.py`'s order (the file's header), so that the one written is its, and the
+   *  span is built only after the last of them. */
   function queueSpan(answer: Json, call: SpendCall): void {
-    const span = spanOf(answer, call, env, warn);
+    if (!answer.id) {
+      warn("the answer has no id, and the collector keeps no row of an answer without one");
+    }
+    // The call's end, now by default, and its start, the end by default: `nanos` throws on a time
+    // that is neither epoch milliseconds nor a Date.
+    const end = call.endedAt ?? Date.now();
+    const times: SpanTimes = { start: nanos(call.startedAt ?? end), end: nanos(end) };
     const url = endpointUrl(env);
     if (url === undefined) {
       warn(
@@ -544,18 +565,23 @@ export function createSpendRecorder(options: SpendRecorderOptions = {}): SpendRe
       );
       return;
     }
-    const body = JSON.stringify(span);
     if (queue.length >= queueMax) {
       warn(`${queueMax} spend records are waiting to be sent: this one is dropped`);
       return;
     }
-    queue.push({ url, body });
+    queue.push({ url, body: JSON.stringify(spanOf(answer, call, times, env)) });
     // Started after this call returns, so no part of a post runs inside `record`.
     sending ??= Promise.resolve().then(send);
   }
 
+  /** Whether no answer can change anything now: the one warning is written, and no span can be
+   *  queued (no endpoint, or a full queue). An answer is then not read at all. */
+  const idle = (): boolean =>
+    warned && (queue.length >= queueMax || endpointUrl(env) === undefined);
+
   return {
     record(answer, call = {}) {
+      if (idle()) return;
       try {
         const whole = wholeAnswer(answer);
         if (whole !== undefined) queueSpan(whole, call);
@@ -564,6 +590,7 @@ export function createSpendRecorder(options: SpendRecorderOptions = {}): SpendRe
       }
     },
     recordLogged(row) {
+      if (idle()) return;
       try {
         const logged = loggedAnswer(row);
         if (logged !== undefined) queueSpan(logged.answer, logged.call);
@@ -575,12 +602,13 @@ export function createSpendRecorder(options: SpendRecorderOptions = {}): SpendRe
       const deadline = Date.now() + timeoutMs;
       for (let pending = sending; pending !== undefined; pending = sending) {
         const left = deadline - Date.now();
-        if (left <= 0) return;
+        if (left <= 0) return false;
         const { promise: waited, resolve } = Promise.withResolvers<void>();
         const timer = setTimeout(resolve, left);
         await Promise.race([pending, waited]);
         clearTimeout(timer);
       }
+      return true;
     },
   };
 }

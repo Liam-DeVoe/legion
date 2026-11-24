@@ -204,7 +204,16 @@ import {
   InjectionRefused,
 } from "./arms";
 import type { Case } from "./cases";
-import { json, ompText, pastLimit, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
+import {
+  json,
+  ompText,
+  pastLimit,
+  STORE_QUIET_MS,
+  splitFrontmatter,
+  textOf,
+  timeLimit,
+  writeWhole,
+} from "./common";
 import {
   buildContext,
   type CaseContext,
@@ -734,27 +743,32 @@ function putDescriptions(database: string, rows: readonly (readonly [string, str
   }
 }
 
-/** The rows of the `skill_descriptions` table of the Oh My Pi database file `database`. */
-function descriptionRows(database: string): { key: string; description: string }[] {
-  const db = new Database(database);
-  try {
-    return db.query("SELECT key, description FROM skill_descriptions").all() as {
-      key: string;
-      description: string;
-    }[];
-  } finally {
-    db.close();
-  }
+/** A row of the `skill_descriptions` table of an Oh My Pi database. */
+interface DescriptionRow {
+  key: string;
+  description: string;
 }
 
-/** The body of a SKILL.md's text: what follows the line that closes its frontmatter block (as
- *  `readFrontmatter` finds that block), CRLF read as LF; the whole text when it has no block. */
-function skillBody(text: string): string {
-  const normalized = text.replace(/\r\n?/g, "\n");
-  const end = normalized.startsWith("---") ? normalized.indexOf("\n---", 3) : -1;
-  if (end === -1) return normalized;
-  const next = normalized.indexOf("\n", end + 4);
-  return next === -1 ? "" : normalized.slice(next + 1);
+/** A connection to an Oh My Pi database file, and its read of the rows of the
+ *  `skill_descriptions` table (`rows`); `close` ends it. */
+interface DescriptionReader {
+  readonly rows: () => DescriptionRow[];
+  readonly close: () => void;
+}
+
+/** The reader of the Oh My Pi database file `database`: opened once for a hint run, its read
+ *  prepared once. Not read-only: a read-only connection can fail to open a database in WAL mode.
+ *  The read is a `query` statement, which `close` finalizes, so that the connection is released
+ *  at once: one `prepare` makes would keep it open until the statement is collected. */
+function descriptionReader(database: string): DescriptionReader {
+  const db = new Database(database);
+  try {
+    const select = db.query<DescriptionRow, []>("SELECT key, description FROM skill_descriptions");
+    return { rows: () => select.all(), close: () => db.close() };
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 /**
@@ -762,24 +776,37 @@ function skillBody(text: string): string {
  * each copy it drops. Oh My Pi admits the copies of `skillsDir` first, then those of each
  * namespaced directory in the profile's order (`skills.customDirectories`), and drops a copy whose
  * body and frontmatter are those of a copy it admitted before under the same name, which it then
- * neither lists nor asks a hint of (extensibility/skills.ts at the pinned tag, `resolveCollision`:
- * "Any other candidate identical to a registered copy → silently dropped"). So a profile that
- * installs one text twice, once under `<namespace>/<name>`, lists it once, under the copy admitted
- * first.
+ * neither lists nor asks a hint of (packages/coding-agent/src/extensibility/skills.ts of
+ * cybermonklabs/oh-my-pi at v18.18.6-sami.20261119-162325, the build the runner pins, arms.ts,
+ * `resolveCollision`: "Any other candidate identical to a registered copy → silently dropped").
+ * It compares what discovery/helpers.ts's `scanSkillsFromDir` keeps of each copy (skills.ts and
+ * `scanSkillsFromDir` are the same there as at rig.sh's v18.18.6-sami.20261117-013345): the body
+ * and the frontmatter of `parseFrontmatter` with its defaults, which are common.ts's
+ * `splitFrontmatter` with `repair` (leading HTML comments dropped, the body trimmed) and
+ * context.ts's `readFrontmatter` (its keys camelCase at every depth), compared with
+ * `Bun.deepEquals` as Oh My Pi compares them. So a profile that installs one text twice, once
+ * under `<namespace>/<name>`, lists it once, under the copy admitted first. Only a name installed
+ * more than once can lose a copy, so only the copies of such a name are read.
  */
 function listedSkills(
   context: Pick<CaseContext, "skills" | "namespacedDirs">
 ): readonly InstalledSkill[] {
+  const bareName = (skill: InstalledSkill) => skill.name.split("/").at(-1) ?? skill.name;
+  const copies = new Map<string, number>();
+  for (const skill of context.skills) {
+    copies.set(bareName(skill), (copies.get(bareName(skill)) ?? 0) + 1);
+  }
   const rank = (skill: InstalledSkill) =>
     context.namespacedDirs.findIndex((dir) => skill.dir.startsWith(`${dir}${path.sep}`));
   const admitted: { name: string; body: string; frontmatter: Record<string, unknown> }[] = [];
   const dropped = new Set<InstalledSkill>();
   // A stable sort: the copies of `skillsDir` (rank -1) first, each namespaced directory's after.
-  for (const skill of context.skills.toSorted((a, b) => rank(a) - rank(b))) {
+  const twice = context.skills.filter((skill) => (copies.get(bareName(skill)) ?? 0) > 1);
+  for (const skill of twice.toSorted((a, b) => rank(a) - rank(b))) {
     const text = ompText(readFileSync(path.join(skill.dir, "SKILL.md")));
     const copy = {
-      name: skill.name.split("/").at(-1) ?? skill.name,
-      body: skillBody(text),
+      name: bareName(skill),
+      body: splitFrontmatter(text, true).body,
       frontmatter: readFrontmatter(text),
     };
     const same = admitted.some(
@@ -1746,10 +1773,10 @@ export async function captureBody(
       .map((h) => h.skill.name)
   );
   const written = new Map<string, HintReply>();
-  // When each owed hint's request reached the recorder (performance.now()), how long its answer
-  // took from then, and when the last hint request came or answer went: the hint run's turn ends
+  // Each owed hint whose request reached the recorder, how long its answer took from then, and
+  // when the last hint request came or answer went (performance.now()): the hint run's turn ends
   // once `hintIdleMs` pass after that (HINT_IDLE_MS).
-  const asked = new Map<string, number>();
+  const requested = new Set<string>();
   const answerMs = new Map<string, number>();
   let lastHintEvent = 0;
   const hintIdleMs = options.hintIdleMs ?? HINT_IDLE_MS;
@@ -1757,6 +1784,8 @@ export async function captureBody(
   const otherRequests: CaptureRecord["otherRequests"][number][] = [];
   const turns: { readonly body: string; readonly headers: Record<string, string> }[] = [];
   let hintRun = false;
+  /** The hint run's read of Oh My Pi's database (`descriptionReader`), open while the run is. */
+  let hintReader: DescriptionReader | undefined;
   // The first error a hint write gave. It ends the capture at once as itself (a BudgetSpent stays
   // one), so that neither Oh My Pi nor the hint wait is blamed for it: the turn waits no more and
   // the run in flight (`ompRun`) is ended.
@@ -1767,7 +1796,7 @@ export async function captureBody(
    *  the answer trimmed, under a hint's key, where Oh My Pi keeps it; else the cut-down
    *  description, under the key of a reply it kept no hint of, with why it kept none), neither
    *  seeded nor another skill's. */
-  const storedRows = (rows: readonly { key: string; description: string }[]) => {
+  const storedRows = (rows: readonly DescriptionRow[]) => {
     const taken = new Set(seeded);
     const found = new Map<
       string,
@@ -1799,9 +1828,9 @@ export async function captureBody(
   };
   /** Whether Oh My Pi has stored the row of every hint the hint run owes. */
   const allStored = (): boolean => {
-    if (written.size < wanted.size) return false;
+    if (written.size < wanted.size || hintReader === undefined) return false;
     try {
-      return storedRows(descriptionRows(database)).size === wanted.size;
+      return storedRows(hintReader.rows()).size === wanted.size;
     } catch {
       // A read that meets Oh My Pi's write is made again at the next poll.
       return false;
@@ -1811,7 +1840,7 @@ export async function captureBody(
   const unstored = (entry: ListedHint): string => {
     const name = entry.skill.name;
     const reply = written.get(name);
-    if (!asked.has(name)) {
+    if (!requested.has(name)) {
       return `Oh My Pi asked for no hint of skill ${name}, and the hint run's turn ended after ${hintIdleMs} ms with no hint request or answer`;
     }
     if (reply === undefined) {
@@ -1918,7 +1947,7 @@ export async function captureBody(
       // the row Oh My Pi stores of it gives Oh My Pi's key of its text.
       const line = hints.find((entry) => entry.skill.name === skill)?.recorded;
       const askedAt = performance.now();
-      asked.set(skill, askedAt);
+      requested.add(skill);
       lastHintEvent = askedAt;
       try {
         const reply: HintReply =
@@ -2107,13 +2136,19 @@ export async function captureBody(
     });
     let hintRunMs = 0;
     if (wanted.size > 0) {
+      const reader = descriptionReader(database);
+      let rows: DescriptionRow[];
+      hintReader = reader;
       hintRun = true;
       try {
         hintRunMs = await runOmp();
+        rows = reader.rows();
       } finally {
         hintRun = false;
+        hintReader = undefined;
+        reader.close();
       }
-      const stored = storedRows(descriptionRows(database));
+      const stored = storedRows(rows);
       // Each recorded line whose key the hint run gave, under that key.
       const learned: [string, string][] = [];
       // Each owed hint Oh My Pi stored no row of. Every hint it did store is kept first, so that

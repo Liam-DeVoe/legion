@@ -2378,7 +2378,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
         keyFile: made.keyFile,
         concurrency: 2,
         timeoutMs: 60_000,
-        spend: null,
+        spendRecorder: null,
       }),
       hints: async () => {
         throw new Error("no hint is written here");
@@ -2449,7 +2449,7 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
       keyFile: made.keyFile,
       concurrency: 2,
       timeoutMs: 60_000,
-      spend: null,
+      spendRecorder: null,
     }),
     hints: async () => {
       throw new Error("no hint is written here");
@@ -2533,7 +2533,7 @@ test("a task whose context needs a directory GitHub cuts short even read alone i
         keyFile: made.keyFile,
         concurrency: 2,
         timeoutMs: 60_000,
-        spend: null,
+        spendRecorder: null,
       }),
       hints: async () => {
         throw new Error("no hint is written here");

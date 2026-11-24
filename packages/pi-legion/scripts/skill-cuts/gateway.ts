@@ -50,12 +50,12 @@
  *   which says so. A call already in flight finishes and is counted, so the spend can pass the
  *   budget by at most the calls in flight, and the bill by those and the tries that failed
  *   mid-stream.
- * - Each ok answer of each try records one usage span through `spend`
+ * - Each ok answer of each try records one usage span through `spendRecorder`
  *   (`skill-scenarios/spend-record.ts`, README.md "Usage records"), whether the try's reply is
  *   then taken or tried again, since the provider bills each: postMessages gives it the answer's
  *   text whole, the body's model, the try's start and end, and the session id the gateway logs for
- *   the body (`gatewaySessionId`). A try that got no ok answer records nothing. `spend` null
- *   records nothing: a gateway whose answers are a test's stand-ins.
+ *   the body (`gatewaySessionId`). A try that got no ok answer records nothing. `spendRecorder`
+ *   null records nothing: a gateway whose answers are a test's stand-ins.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
@@ -616,7 +616,7 @@ export interface GatewayOptions {
   /** Where each ok answer records its usage span (spend-record.ts's recorder; the runner's is
    *  `processSpendRecorder()`), or null for none: a gateway whose answers are a test's
    *  stand-ins. */
-  readonly spend: SpendRecorder | null;
+  readonly spendRecorder: SpendRecorder | null;
 }
 
 /** When a call got its place and was sent, and how many calls were in flight then, this one
@@ -952,7 +952,7 @@ export function responseMessage(response: unknown): ReplyMessage {
 
 /** The gateway at `options.baseUrl`. Throws when an option is out of range. */
 export function createGateway(options: GatewayOptions): Gateway {
-  const { keyFile, concurrency, timeoutMs, budgetUsd, spend } = options;
+  const { keyFile, concurrency, timeoutMs, budgetUsd, spendRecorder } = options;
   let url: URL;
   try {
     url = new URL(options.baseUrl);
@@ -1060,11 +1060,11 @@ export function createGateway(options: GatewayOptions): Gateway {
         sleep,
         tries: GATEWAY_TRIES,
         timeoutMs,
-        ...(spend === null
+        ...(spendRecorder === null
           ? {}
           : {
-              spend: (reply: string, times: AnswerTimes) =>
-                spend.record(reply, { ...recorded, ...times }),
+              onAnswer: (reply: string, times: AnswerTimes) =>
+                spendRecorder.record(reply, { ...recorded, ...times }),
             }),
         accept: (reply, response) => {
           try {

@@ -1401,10 +1401,10 @@ TypeScript): one OTLP/HTTP JSON span, shaped like Oh My Pi's model-response span
 spend collector.
 
 - **The one place.** `skill-scenarios/messages-api.ts`'s `postMessages` gives each ok answer of
-  each try, its body read whole, to `gateway.ts`'s recorder (`createGateway`'s `spend`, which
-  every gateway must name). Every command that calls a model opens its gateway with the process's
-  recorder (`processSpendRecorder()`): `read`, `control`, `behaviour` and `load` through
-  `cli.ts`'s `openGateway`, `build-cases` and `build-tasks` through `build.ts`'s
+  each try, its body read whole, to `gateway.ts`'s recorder (`createGateway`'s `spendRecorder`,
+  which every gateway must name). Every command that calls a model opens its gateway with the
+  process's recorder (`processSpendRecorder()`): `read`, `control`, `behaviour` and `load`
+  through `cli.ts`'s `openGateway`, `build-cases` and `build-tasks` through `build.ts`'s
   `readerGateway`. So every replay, judge call, reader call, hint call and load run records its
   answer there, and nowhere else.
 - **Which answers.** Every ok answer, the provider having billed each: one the runner then asks
@@ -1425,12 +1425,15 @@ spend collector.
 - **Where it goes.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT` and
   `/v1/traces`, with `Content-Type: application/json` and no other header, never through a proxy
   (Bun's fetch reads `http_proxy` and the rest; each post sets `proxy: false`). Its resource
-  attributes are every pair of `OTEL_RESOURCE_ATTRIBUTES` and `theorem.harness=script`. An
-  environment with neither endpoint variable records nothing, and stderr says so once.
+  attributes are every pair of `OTEL_RESOURCE_ATTRIBUTES`; `service.name`, from
+  `OTEL_SERVICE_NAME`, else `spend-record`, where no pair names one; and `theorem.harness=script`,
+  in place of any pair of that key. An environment with neither endpoint variable records
+  nothing, and stderr says so once.
 - **Never in the way.** A span is queued (1000 at most; one more is dropped) and one sender posts
-  them in order, each post ended after 2 s. The first failure is written once to stderr. Each
-  command's `main` waits up to 2 s for the queue on every way out; a run ended by a signal loses
-  what is still queued.
+  them in order, each post ended after 2 s. The first failure is written once to stderr.
+  `cli.ts`'s `main` waits up to 2 s for the queue on every way out, once for every command
+  (`build.ts`'s `main` leaves the wait to its caller); a run ended by a signal loses what is
+  still queued.
 - **The child programs.** Oh My Pi (`behaviour`'s captures, `load`'s captures and their hint runs)
   and Claude Code (`load`) run with an environment the runner builds from nothing, which holds no
   `OTEL_*` variable (and, for Claude Code, `DISABLE_TELEMETRY`), so neither records a span. Their
@@ -1440,7 +1443,9 @@ spend collector.
   recorder's stand-in replies as model calls, and each hint call twice.
 - **A backfill.** `recordLogged(line)` queues the span of one line of a request log (above) with
   the line's own start (`sentAt`), end (`durationMs` later), ids and usage; a line of a failed call
-  is passed over. A backfill awaits `flush(timeoutMs)` after each 1000 lines at most.
+  is passed over. A backfill queues at most 1000 lines at a time, then awaits `flush()` until it
+  returns true, the queue emptied, before it queues more: `flush` returns false at its time limit
+  with spans still queued, and the queue drops what it has no room for.
 
 ## Exit status
 

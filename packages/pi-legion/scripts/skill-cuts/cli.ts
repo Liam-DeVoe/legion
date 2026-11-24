@@ -415,7 +415,7 @@ export interface CliIo {
   peakRssBytes(): number;
   /** Where each model answer records its usage span (spend-record.ts; `processSpendRecorder()` in
    *  a real run), flushed before `main` returns; none when absent. */
-  readonly spend?: SpendRecorder;
+  readonly spendRecorder?: SpendRecorder;
 }
 
 /** The io of a real run. Where the kernel keeps no `VmHWM`, the resident memory is read every
@@ -426,7 +426,7 @@ function processIo(): CliIo {
     out: (text) => process.stdout.write(text),
     err: (line) => process.stderr.write(`${line}\n`),
     peakRssBytes: procPeakRssBytes,
-    spend: processSpendRecorder(),
+    spendRecorder: processSpendRecorder(),
   };
 }
 
@@ -550,14 +550,14 @@ const GATEWAY_OPTIONS = {
 } as const;
 
 /** The gateway a command's options name: the configuration's address, the key file, the budget
- *  and the concurrency, its answers' usage recorded with `spend`. Throws a refusal on an option
- *  out of range. */
+ *  and the concurrency, its answers' usage recorded with `spendRecorder` (none when undefined).
+ *  Throws a refusal on an option out of range. */
 function openGateway(values: {
   config: SkillCutsConfig;
   keyFile: string;
   budgetUsd?: string;
   concurrency?: string;
-  spend: SpendRecorder | null;
+  spendRecorder: SpendRecorder | undefined;
 }): Gateway {
   const concurrency =
     values.concurrency === undefined ? DEFAULT_CONCURRENCY : Number(values.concurrency);
@@ -577,7 +577,7 @@ function openGateway(values: {
     concurrency,
     timeoutMs: CALL_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
-    spend: values.spend,
+    spendRecorder: values.spendRecorder ?? null,
   });
 }
 
@@ -649,7 +649,7 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
-    spend: io.spend ?? null,
+    spendRecorder: io.spendRecorder,
   });
   const logged = loggedGateway(
     gateway,
@@ -780,7 +780,7 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
-    spend: io.spend ?? null,
+    spendRecorder: io.spendRecorder,
   });
   const logged = loggedGateway(
     gateway,
@@ -3033,7 +3033,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
-    spend: io.spend ?? null,
+    spendRecorder: io.spendRecorder,
   });
   const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
   const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
@@ -3195,7 +3195,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     keyFile: given["key-file"],
     budgetUsd: values["budget-usd"],
     concurrency: values.concurrency,
-    spend: io.spend ?? null,
+    spendRecorder: io.spendRecorder,
   });
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const result = await runLoad({
@@ -3259,7 +3259,9 @@ const USAGE = [
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT), once the usage spans its model calls queued
- *  are sent (`io.spend`'s `flush`, at most FLUSH_MS), on every way out. */
+ *  are sent (`io.spendRecorder`'s `flush`, at most FLUSH_MS), on every way out: the one wait of
+ *  the process, `build-cases` and `build-tasks` among them, whose build.ts `main` leaves it to its
+ *  caller. */
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -3291,7 +3293,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           err: io.err,
           gh: spawnGh,
           now: () => performance.now(),
-          spend: io.spend,
+          spendRecorder: io.spendRecorder,
         });
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
@@ -3308,7 +3310,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     io.err(`skill-cuts: ${command}: ${messageFor(error)}`);
     return EXIT.failed;
   } finally {
-    await io.spend?.flush();
+    await io.spendRecorder?.flush();
   }
 }
 

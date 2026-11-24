@@ -1,8 +1,10 @@
 /**
- * Builders of made-up fixtures that more than one test file of the runner uses. Each repository,
- * commit and route they give is made up.
+ * Builders of fixtures that more than one test file of the runner uses: made-up ones, each
+ * repository, commit and route they give made up, and the gateway replies this directory holds
+ * (CAPTURE.md).
  */
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { type Manifest, type ManifestKind, parseManifest } from "../copies";
 
 /** A manifest of `repository` at `file` in its tree, parsed as `kind`. */
@@ -62,67 +64,26 @@ process.stdout.write(JSON.stringify(answers[route]));
   );
 }
 
-/** One post a stand-in collector took: its path, its headers by lower-case name, and its body. */
-export interface CollectedPost {
-  readonly path: string;
-  readonly headers: Readonly<Record<string, string>>;
-  readonly body: string;
-}
-
-/** A stand-in spend collector (`startCollector`). */
-export interface Collector {
-  /** The base URL, `http://127.0.0.1:<port>`, as OTEL_EXPORTER_OTLP_ENDPOINT names one. */
-  readonly url: string;
-  /** Every post taken so far, in the order their bodies were read whole. */
-  readonly posts: CollectedPost[];
-  /** The status each answer has, 200 at first. */
-  status: number;
-  /** How long each answer waits before it goes, 0 ms at first. */
-  delayMs: number;
-  /** Stops the server; posts still open are ended. */
-  close(): void;
-}
-
-/** A stand-in spend collector on 127.0.0.1, which keeps each post it takes and answers it with
- *  `status` after `delayMs`. */
-export function startCollector(): Collector {
-  const posts: CollectedPost[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    idleTimeout: 0,
-    async fetch(request) {
-      posts.push({
-        path: new URL(request.url).pathname,
-        headers: Object.fromEntries(request.headers),
-        body: await request.text(),
-      });
-      if (collector.delayMs > 0) await Bun.sleep(collector.delayMs);
-      return new Response("{}", { status: collector.status });
-    },
+/** The fixture reply `stem` (testdata/CAPTURE.md) as the gateway sent it: its SSE body, and the
+ *  status and headers kept beside it. */
+export function fixtureReply(stem: string): Response {
+  const kept = JSON.parse(readFileSync(path.join(import.meta.dir, `${stem}.headers.json`), "utf8"));
+  return new Response(readFileSync(path.join(import.meta.dir, `${stem}.sse`), "utf8"), {
+    status: kept.status,
+    headers: kept.headers,
   });
-  const collector: Collector = {
-    url: `http://127.0.0.1:${server.port}`,
-    posts,
-    status: 200,
-    delayMs: 0,
-    close: () => {
-      server.stop(true);
-    },
-  };
-  return collector;
 }
 
-/** The one span of a post a recorder sent (spend-record.ts), and its attributes by key, each as
- *  the text or the number it holds. */
-export function postedSpan(post: CollectedPost): {
-  readonly span: Record<string, unknown>;
-  readonly attributes: Record<string, string | number>;
+/** The response F9's reply `shape`, a Responses API stream, holds whole: the one its
+ *  `response.completed` event carries, with its id, its output items and its usage. */
+export function f9Completed(shape: string): {
+  readonly id: string;
+  readonly output: { type: string; [key: string]: unknown }[];
+  readonly usage: { readonly cost: number };
 } {
-  const span = JSON.parse(post.body).resourceSpans[0].scopeSpans[0].spans[0];
-  const attributes: Record<string, string | number> = {};
-  for (const { key, value } of span.attributes) {
-    attributes[key] = value.stringValue ?? value.intValue ?? value.doubleValue;
-  }
-  return { span, attributes };
+  return readFileSync(path.join(import.meta.dir, `F9-${shape}.sse`), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice("data: ".length)))
+    .find((event) => event.type === "response.completed").response;
 }

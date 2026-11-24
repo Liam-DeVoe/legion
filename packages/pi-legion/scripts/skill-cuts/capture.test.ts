@@ -202,13 +202,17 @@ const SESSION: SessionFacts = sessionFacts(SESSION_HEAD, {
   devboxClaudeConfigDir: DEVBOX_CLAUDE,
 });
 
+/** The skill a hint request's body names. */
+const hintSkillOf = (body: MessagesBody) =>
+  /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
+
 /** The skill each hint request names, in the order the stand-in got them. */
 const hintRequests: string[] = [];
 /** The `anthropic-version` header each hint request came with. */
 const hintVersions: (string | undefined)[] = [];
 /** A stand-in hint writer: a new hint on each call, naming the skill and the call. */
 const hints: HintWriter = async (body, headers) => {
-  const skill = /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
+  const skill = hintSkillOf(body);
   hintRequests.push(skill);
   hintVersions.push(headers["anthropic-version"]);
   return {
@@ -1408,9 +1412,6 @@ export default function bootProbe(pi) {
   // The rows on the hint run's bounds. Each needs real time: the bounds are Oh My Pi's own, on
   // the real binary (it gives a hint request up after 30 s and asks 4 at a time), which no fake
   // clock reaches.
-  /** The skill a hint request's body names. */
-  const hintSkillOf = (body: MessagesBody) =>
-    /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
 
   // Catches: a bound on the whole hint run (the 180 s the turn waited at 525af9d8, "Oh My Pi
   // asked for no hint of skill <name> within 180000 ms"), which a profile of more hints than fit
@@ -1594,6 +1595,80 @@ export default function bootProbe(pi) {
     ROW_TIMEOUT_MS
   );
 
+  // Catches: copies of a name compared otherwise than Oh My Pi's `resolveCollision` compares them
+  // (the body and the frontmatter discovery/helpers.ts's `scanSkillsFromDir` keeps of each, at the
+  // pinned tag). A copy that opens with an HTML comment before its frontmatter, one with blank
+  // lines after its body, and one whose frontmatter names a nested key in camelCase where the
+  // other names it in kebab-case are each the same text to Oh My Pi, which drops it and asks no
+  // hint of it; the capture owed a hint of each, and the hint run failed once its turn had waited
+  // HINT_IDLE_MS for them.
+  test(
+    "copies of beta that differ from it only in a leading HTML comment, in blank lines after its body, or in the case of a nested key are dropped as Oh My Pi drops them, and owe no hint",
+    async () => {
+      await captures();
+      const COPIES_COMMIT = "2468ace02468ace02468ace02468ace02468ace0";
+      const tagged = BETA_SKILL.replace(
+        "\n---\n\n# Beta",
+        "\nmetadata:\n  made-up-kind: greeting\n---\n\n# Beta"
+      );
+      writeTree(path.join(dir, "repos", "acme/skills", COPIES_COMMIT), {
+        "skills/beta/SKILL.md": tagged,
+        "skills/commented/SKILL.md": `<!-- A made-up note before the frontmatter. -->\n${tagged}`,
+        "skills/spaced/SKILL.md": `${tagged}\n\n`,
+        "skills/camel/SKILL.md": tagged.replace("made-up-kind", "madeUpKind"),
+      });
+      const beta = (at: string, namespace?: string) => ({
+        repo: "acme/skills",
+        commit: COPIES_COMMIT,
+        path: `skills/${at}`,
+        name: "beta",
+        ...(namespace === undefined ? {} : { namespace }),
+      });
+      const asked: string[] = [];
+      const copiesHints: HintWriter = async (body) => {
+        const skill = hintSkillOf(body);
+        asked.push(skill);
+        return { text: `Use for the ${skill} work, stand-in hint.`, model: body.model };
+      };
+      const base = f1Case("copies-1");
+      const c: Case = {
+        ...base,
+        profile: {
+          ...base.profile,
+          skills: [
+            ...base.profile.skills.filter((skill) => skill.name !== "beta"),
+            beta("beta"),
+            beta("commented", "acme-a"),
+            beta("spaced", "acme-b"),
+            beta("camel", "acme-c"),
+          ],
+        },
+      };
+      const made = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-copies"),
+          scratchDir: path.join(dir, "scratch"),
+          // A cache of its own, so every hint is owed and the hint run asks for each.
+          cacheDir: path.join(dir, "cache-copies"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints: copiesHints,
+          session: SESSION,
+        }
+      );
+      expect(asked.sort()).toEqual(["alpha", "beta"]);
+      expect(Object.fromEntries(skillListing(made.body))).toEqual({
+        alpha: "Use for the alpha work, stand-in hint.",
+        beta: "Use for the beta work, stand-in hint.",
+      });
+      expect(made.record.hints.map((hint) => hint.skill).sort()).toEqual(["alpha", "beta"]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
   // The rows on a hint reply Oh My Pi does not keep. gamma is a skill of their own, whose
   // description has a first sentence of at least 40 characters within its first 99.
   const GAMMA_COMMIT = "89abcdef0123456789abcdef0123456789abcdef";
@@ -1621,7 +1696,7 @@ export default function bootProbe(pi) {
   const unkeptBodies: MessagesBody[] = [];
   /** A stand-in hint writer that answers each skill with its reply above. */
   const unkeptHints: HintWriter = async (body) => {
-    const skill = /Skill: ([^\\]+)\\nDescription: /.exec(JSON.stringify(body.messages))?.[1] ?? "";
+    const skill = hintSkillOf(body);
     unkeptAsked.push(skill);
     unkeptBodies.push(body);
     return { text: UNKEPT_REPLIES[skill] ?? "", model: body.model };

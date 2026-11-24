@@ -119,6 +119,7 @@ import {
   ompText,
   parseJson,
   pastLimit,
+  splitFrontmatter,
   textOf,
   timeLimit,
 } from "./common";
@@ -420,26 +421,37 @@ function dropComments(text: string): string {
   return kept + text.slice(at);
 }
 
+/** `value` with each kebab-case key of each mapping in it, at every depth, in camelCase (`foo-bar`
+ *  as `fooBar`; a key it then shares takes the later value), as Oh My Pi's
+ *  `normalizeFrontmatterKeys` gives a skill's frontmatter (packages/utils/src/frontmatter.ts at
+ *  the pin). A YAML parse gives plain mappings, lists and scalars alone. */
+function camelKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(camelKeys);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, inner]) => [
+      key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+      camelKeys(inner),
+    ])
+  );
+}
+
 /**
  * The frontmatter of a SKILL.md's text, read as Oh My Pi's `parseFrontmatter` reads a skill's
  * with its defaults (packages/utils/src/frontmatter.ts of cybermonklabs/oh-my-pi at the tag
- * v18.18.6-sami.20261117-013345, the pin): CRLF as LF; leading HTML comments before the opening
- * `---` dropped, and comments inside the block; the block from after `---` to the next line that
- * starts `---`; parsed as YAML with each tab replaced by two spaces; when that fails, parsed again
- * with each plain scalar that holds `: ` quoted (`quoteAmbiguousPlainScalars`); when that fails
- * too, each `key: value` line read on its own, a value that does not parse as YAML kept as its
- * text. Top-level kebab-case keys become camelCase. A text with no block has none (`{}`).
+ * v18.18.6-sami.20261119-162325, the build the runner pins, the same file as at
+ * v18.18.6-sami.20261117-013345): the block common.ts's `splitFrontmatter` finds with
+ * `repair` (CRLF as LF, leading HTML comments before the opening `---` dropped), the comments
+ * inside it dropped; parsed as YAML with each tab replaced by two spaces; when that fails, parsed
+ * again with each plain scalar that holds `: ` quoted (`quoteAmbiguousPlainScalars`); when that
+ * fails too, each `key: value` line read on its own, a value that does not parse as YAML kept as
+ * its text. Kebab-case keys become camelCase, at every depth (`camelKeys`). A text with no block
+ * has none (`{}`).
  */
 export function readFrontmatter(content: string): Record<string, unknown> {
-  let text = content.replace(/\r\n?/g, "\n");
-  const comments = /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text);
-  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
-    text = text.slice(comments[0].length).replace(/^\s+/, "");
-  }
-  if (!text.startsWith("---")) return {};
-  const end = text.indexOf("\n---", 3);
-  if (end === -1) return {};
-  const block = dropComments(text.slice(4, end));
+  const { block: raw } = splitFrontmatter(content, true);
+  if (raw === undefined) return {};
+  const block = dropComments(raw);
   let read: Record<string, unknown> | null | undefined;
   try {
     read = yamlRecord(block);
@@ -481,12 +493,7 @@ export function readFrontmatter(content: string): Record<string, unknown> {
       }
     }
   }
-  return Object.fromEntries(
-    Object.entries(read ?? {}).map(([key, value]) => [
-      key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
-      value,
-    ])
-  );
+  return camelKeys(read ?? {}) as Record<string, unknown>;
 }
 
 /** The frontmatter of the SKILL.md text `text`, as Oh My Pi reads it for the listing

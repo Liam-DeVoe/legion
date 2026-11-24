@@ -292,19 +292,29 @@ spend_env() {
   for name in $(spend_variables); do printf '%s=%s\n' "$name" "${!name}"; done
 }
 
+# add_host_args HOST prints the `docker run` words that give a container HOST's address as resolved
+# here, one a line: `--add-host` and `HOST:IP`, since a container cannot resolve a cluster or
+# tailnet name itself. It prints nothing for an empty HOST, one that does not resolve, or one that
+# is an address already.
+add_host_args() {
+  local ip
+  ip=$(getent hosts "$1" 2>/dev/null | awk '{print $1; exit}') || ip=
+  [ -z "$ip" ] || [ "$ip" = "$1" ] || printf '%s\n%s\n' --add-host "$1:$ip"
+}
+
 # spend_docker_args prints the `docker run` words that give a judge's container the spend
 # collector's variables, one a line: `-e NAME` for each of spend_variables, so that docker takes
-# each value from its own environment and no value stands in its arguments; and `--add-host` for
-# the collector's host name as resolved here, as cmd_judge_omp passes the model endpoint's, since a
-# container cannot resolve a cluster or tailnet name itself.
+# each value from its own environment and no value stands in its arguments; and the collector's
+# host (add_host_args), once though both endpoint variables name it, as cmd_judge_omp passes the
+# model endpoint's.
 spend_docker_args() {
-  local name url host ip
+  local name url host seen=
   for name in $(spend_variables); do printf '%s\n%s\n' -e "$name"; done
   for url in "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"; do
     host=$(printf '%s\n' "$url" | sed -n 's#^ *https\{0,1\}://\([^/:]*\).*#\1#p')
-    [ -n "$host" ] || continue
-    ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
-    [ -z "$ip" ] || [ "$ip" = "$host" ] || printf '%s\n%s\n' --add-host "$host:$ip"
+    [ -n "$host" ] && [ "$host" != "$seen" ] || continue
+    seen=$host
+    add_host_args "$host"
   done
 }
 
@@ -437,7 +447,7 @@ install_provider_route() {
     const models = { providers: { [name]: { ...connection, models: [entry] } } };
     await Bun.write(out, `${JSON.stringify(models, null, 2)}\n`);
   ' "$LEGION_E2E_MODEL_PROVIDER_FILE" "$LEGION_E2E_MODEL_PROVIDER" "$model_id" "$agent/models.yml" || return 1
-  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role
+  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role disabled
   {
     echo "# Written by rig.sh install_provider_route: $model is the one model, and no other provider"
     echo "# a session or a subagent could fall back to without a word is enabled."
@@ -445,8 +455,14 @@ install_provider_route() {
     # of every profile: AskGate's review is one tool call, and the default limit cuts it short.
     printf 'extensionHandlers:\n  toolCallTimeoutMs: 120000\n'
     printf 'enabledModels:\n  - %s\n' "$model"
+    # Every provider a session could fall back to, less the route's own: the pinned Oh My Pi drops
+    # a disabled provider whatever its block holds (model-registry.ts at
+    # v18.18.6-sami.20261117-013345, `#createProviderAvailabilityCheck`), so a block named
+    # `anthropic` that was disabled here would leave the one model enabledModels names unusable.
     printf 'disabledProviders:\n'
-    printf '  - %s\n' anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio
+    for disabled in anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio; do
+      [ "$disabled" = "$LEGION_E2E_MODEL_PROVIDER" ] || printf '  - %s\n' "$disabled"
+    done
     printf 'modelRoles:\n'
     for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
       printf '  %s: %s\n' "$role" "$model"
@@ -773,6 +789,11 @@ cmd_live_read() {
   # No Dispatch, and an Envoy address nothing listens on: the session reads files and nothing else.
   echo "ENVOY_URL=http://127.0.0.1:1" >>"$R/pane.env"
   launch "live-read-${P##*/}"
+  # launch appends Oh My Pi's `exit=<status>` (or `exit=timeout`) as out.txt's last line. A session
+  # that did not exit 0 read nothing to score, or not all of it.
+  local ended
+  ended=$(tail -n 1 "$R/out.txt")
+  [ "$ended" = exit=0 ] || fail "the live read of $* under label ${P##*/}: Oh My Pi ended $ended; see $R/out.txt"
   bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
@@ -1319,7 +1340,7 @@ cmd_judge_omp() {
   judge_profiles
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
-  local route=() host ip
+  local route=() host
   keys=$dir.key
   rm -rf -- "$keys"
   on_exit "$(printf 'rm -rf -- %q' "$keys")"
@@ -1332,8 +1353,7 @@ cmd_judge_omp() {
   # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
   # route left out here would let the scenario agents reach it while its judges could not.
   host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
-  ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
-  [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
+  mapfile -t -O "${#route[@]}" route < <(add_host_args "$host")
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"

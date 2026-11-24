@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { postedSpan, startCollector } from "./collector-standin";
 import { isYes, MODEL, main, QUESTIONS } from "./label-comments";
 import { createSpendRecorder } from "./spend-record";
 
@@ -409,19 +410,11 @@ test("a 429, a 5xx or a reply that skips a question is asked again", async () =>
 
 test("each model answer, one asked for again among them, records one usage span, sent before main returns; a 429 records none", async () => {
   // A stand-in spend collector on 127.0.0.1, named by the recorder's own environment.
-  const posts: string[] = [];
-  const collector = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      posts.push(`${new URL(request.url).pathname} ${await request.text()}`);
-      return new Response("{}");
-    },
-  });
+  const collector = startCollector();
   try {
     const warnings: string[] = [];
-    const spend = createSpendRecorder({
-      env: { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.port}` },
+    const spendRecorder = createSpendRecorder({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: collector.url },
       warn: (line) => warnings.push(line),
     });
     // Each answer carries an id and a usage, as the Messages API's does.
@@ -451,23 +444,16 @@ test("each model answer, one asked for again among them, records one usage span,
     const out = path.join(dir("spans"), "labels");
     const code = await main(
       ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
-      { ...run.io, spend }
+      { ...run.io, spendRecorder }
     );
     expect({ code, stderr: run.stderr, warnings }).toEqual({ code: 0, stderr: [], warnings: [] });
     // Four comments and the one answer asked for again: five answers, five spans, already sent.
     expect(answered).toHaveLength(5);
-    expect(posts.map((post) => post.split(" ")[0])).toEqual(Array(5).fill("/v1/traces"));
-    const spans = posts.map((post) => {
-      const body = JSON.parse(post.slice(post.indexOf(" ") + 1));
-      const span = body.resourceSpans[0].scopeSpans[0].spans[0];
-      const attributes = Object.fromEntries(
-        span.attributes.map((each: { key: string; value: Record<string, unknown> }) => [
-          each.key,
-          Object.values(each.value)[0],
-        ])
-      );
-      return { resource: body.resourceSpans[0].resource.attributes, attributes };
-    });
+    expect(collector.posts.map((post) => post.path)).toEqual(Array(5).fill("/v1/traces"));
+    const spans = collector.posts.map((post) => ({
+      resource: JSON.parse(post.body).resourceSpans[0].resource.attributes,
+      attributes: postedSpan(post).attributes,
+    }));
     expect(spans.map(({ attributes }) => attributes["gen_ai.response.id"]).sort()).toEqual(
       answered.toSorted()
     );
@@ -484,7 +470,7 @@ test("each model answer, one asked for again among them, records one usage span,
       });
     }
   } finally {
-    collector.stop(true);
+    collector.close();
   }
 });
 

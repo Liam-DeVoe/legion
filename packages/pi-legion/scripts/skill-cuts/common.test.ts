@@ -5,6 +5,7 @@ import {
   MAX_RATE_RETRIES,
   MAX_RATE_WAIT_MS,
   type ResetIo,
+  splitFrontmatter,
   type TimeLimit,
   transientReason,
   untilInstallationReset,
@@ -338,5 +339,35 @@ describe("eachChunk", () => {
       fire();
     });
     expect(taken).toEqual([2]);
+  });
+});
+
+// Catches: one split of a SKILL.md's text for both of Oh My Pi's reads where they differ: the
+// skill loader's (`repair`: leading HTML comments dropped, the body that `resolveCollision`
+// compares) and an autoloaded block's (no `repair`: a leading comment stays, arms.ts's
+// `autoloadedText`), each as `parseFrontmatter` splits at the pinned tag.
+describe("splitFrontmatter", () => {
+  const TEXT = "<!-- a made-up note -->\r\n---\r\nname: alpha\r\n---\r\n\r\n# Alpha\r\n\r\n";
+
+  test("with repair, the comments before the opening --- are dropped, CRLF read as LF, and the body trimmed", () => {
+    expect(splitFrontmatter(TEXT, true)).toEqual({ block: "name: alpha", body: "# Alpha" });
+  });
+
+  test("without repair, a text that opens with a comment has no block, and its body is the whole text, untrimmed", () => {
+    expect(splitFrontmatter(TEXT, false)).toEqual({
+      block: undefined,
+      body: TEXT.replaceAll("\r\n", "\n"),
+    });
+  });
+
+  test("the rest of the closing line is the body's, and a text with no closing line has no block", () => {
+    expect(splitFrontmatter("---\nname: beta\n----\nBody.", true)).toEqual({
+      block: "name: beta",
+      body: "-\nBody.",
+    });
+    expect(splitFrontmatter("---\nname: beta\n", true)).toEqual({
+      block: undefined,
+      body: "---\nname: beta\n",
+    });
   });
 });

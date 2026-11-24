@@ -39,6 +39,7 @@ import {
 } from "./judge";
 import * as readers from "./readers";
 import { PROMPTS_DIR, parsePrompt } from "./readers";
+import { fixtureReply } from "./testdata/fixtures";
 
 /** When set, the judge's prompt reads as this error: a missing or bad `prompts/judge.md`. Every
  *  other read is readers.ts's own. */
@@ -174,11 +175,7 @@ function filesUnder(dir: string): string[] {
 
 /** F5's reply `shape` as the gateway sent it. */
 function f5(shape: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `F5-${shape}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `F5-${shape}.sse`), "utf8"), {
-    status: kept.status,
-    headers: kept.headers,
-  });
+  return fixtureReply(`F5-${shape}`);
 }
 
 /** The message F5's reply `shape` holds. */
@@ -258,7 +255,7 @@ function world(answer: (body: MessagesBody, n: number) => Response, budgetUsd?: 
     keyFile,
     concurrency: 1,
     timeoutMs: 5_000,
-    spend: null,
+    spendRecorder: null,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;

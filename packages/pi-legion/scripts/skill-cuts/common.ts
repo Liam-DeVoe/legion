@@ -1,9 +1,10 @@
 /**
  * What the skill-cuts commands share: a whole-file write, JSON text, a zod error's faults on one
  * line, strict option parsing, the configuration as a refusal, the two errors a command's `main`
- * turns into its exit status (`Refused` 2, `Stopped` 3), and the one rule by which a gh call that
- * failed is sent again (`GhRetries`). It imports no other command's file, so every one of them can
- * import it.
+ * turns into its exit status (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads and
+ * splits it (`ompText`, `splitFrontmatter`), and the one rule by which a gh call that failed is
+ * sent again (`GhRetries`). It imports no other command's file, so every one of them can import
+ * it.
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -99,6 +100,33 @@ export function firstLine(text: string): string {
  *  SKILL.md the runner parses is read through it. */
 export function ompText(raw: Uint8Array | string): string {
   return typeof raw === "string" ? raw.replace(/^\uFEFF/, "") : new TextDecoder().decode(raw);
+}
+
+/**
+ * A SKILL.md's text split as Oh My Pi's `parseFrontmatter` splits it (packages/utils/src/
+ * frontmatter.ts of cybermonklabs/oh-my-pi at the tag v18.18.6-sami.20261119-162325, the build
+ * the runner pins, arms.ts; the file is the same at rig.sh's v18.18.6-sami.20261117-013345):
+ * CRLF read as LF; with `repair` (its default, which the skill loader's parse takes), the HTML
+ * comments before an opening `---` dropped, with the white space after them
+ * (`stripLeadingHtmlComments`); then the frontmatter block, from after that `---` to the next line
+ * that starts `---`, and the body, the text after that `\n---`, trimmed. A text that opens with no
+ * `---`, or has no such line, has no block (`undefined`), and its body is the whole text,
+ * untrimmed. context.ts's `readFrontmatter` reads the block; the body is what Oh My Pi's
+ * `resolveCollision` compares (`repair`, capture.ts's `listedSkills`) and what an autoloaded block
+ * holds (no `repair`, arms.ts's `autoloadedText`).
+ */
+export function splitFrontmatter(
+  content: string,
+  repair: boolean
+): { readonly block: string | undefined; readonly body: string } {
+  let text = content.replace(/\r\n?/g, "\n");
+  const comments = repair ? /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text) : null;
+  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
+    text = text.slice(comments[0].length).replace(/^\s+/, "");
+  }
+  const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
+  if (end === -1) return { block: undefined, body: text };
+  return { block: text.slice(4, end), body: text.slice(end + 4).trim() };
 }
 
 /** A rate limit, primary or secondary, as gh reports it. */

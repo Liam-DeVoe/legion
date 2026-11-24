@@ -864,8 +864,8 @@ export interface BuildIo {
    *  absent); `GithubReads.tarball` sends a try that failed for a transient reason again. */
   readonly npm?: NpmTarball;
   /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
-   *  in a real run), flushed before `main` returns; none when absent. */
-  readonly spend?: SpendRecorder;
+   *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
+  readonly spendRecorder?: SpendRecorder;
 }
 
 /** The file in a spool directory (`spoolDir`) that says which run holds it: `<pid> <token>`. */
@@ -5748,12 +5748,13 @@ function taskSkill(dir: string): { name: string; description: string } {
   };
 }
 
-/** The gateway of a builder's readers, which records each answer's usage with `recorder`, starts
- *  no call once its spend reaches `budgetUsd`, and takes `concurrency` calls at once. */
+/** The gateway of a builder's readers, which records each answer's usage with `spendRecorder`
+ *  (none when undefined), starts no call once its spend reaches `budgetUsd`, and takes
+ *  `concurrency` calls at once. */
 function readerGateway(
   config: SkillCutsConfig,
   keyFile: string,
-  recorder: SpendRecorder | null,
+  spendRecorder: SpendRecorder | undefined,
   budgetUsd?: number,
   concurrency = 1
 ): Gateway {
@@ -5763,7 +5764,7 @@ function readerGateway(
     concurrency,
     timeoutMs: READER_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
-    spend: recorder,
+    spendRecorder: spendRecorder ?? null,
   });
 }
 
@@ -7522,7 +7523,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     gateway: readerGateway(
       config,
       given["key-file"],
-      io.spend ?? null,
+      io.spendRecorder,
       budgetUsd === undefined ? undefined : Math.max(0, budgetUsd - priorSpend.usd),
       concurrency
     ),
@@ -9199,7 +9200,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out, io);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
   const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
-  const gateway = readerGateway(config, given["key-file"], io.spend ?? null);
+  const gateway = readerGateway(config, given["key-file"], io.spendRecorder);
   const spend = () => addSpend(priorSpend, gateway.spend());
   let terms = prior?.terms;
   const queries: TasksQuery[] = [];
@@ -9615,7 +9616,7 @@ async function buildControlTasks(
   // the next session.
   const spools = spoolDir(given.out, io);
   const spool = path.join(spools, "session.jsonl");
-  const gateway = readerGateway(config, given["key-file"], io.spend ?? null);
+  const gateway = readerGateway(config, given["key-file"], io.spendRecorder);
   const spend = () => addSpend(priorSpend, gateway.spend());
   const sessions: ControlRecord[] = [];
   const write = (done: boolean, extra: Record<string, unknown> = {}) =>
@@ -9896,8 +9897,9 @@ async function buildControlTasks(
 const USAGE = [BUILD_CASES_USAGE, BUILD_TASKS_USAGE].join("\n");
 
 /** `skill-cuts build-cases …` and `skill-cuts build-tasks …`: `argv` starts with the command's
- *  name. Returns the exit status (EXIT), once the usage spans its reader calls queued are sent
- *  (`io.spend`'s `flush`, at most FLUSH_MS), on every way out. */
+ *  name. Returns the exit status (EXIT). The usage spans its reader calls queued are its caller's
+ *  to wait for (`io.spendRecorder`'s `flush`), so that a process waits once: cli.ts's `main` does
+ *  for every command, and this file's own run once `main` has returned. */
 export async function main(argv: readonly string[], io: BuildIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -9918,18 +9920,18 @@ export async function main(argv: readonly string[], io: BuildIo): Promise<number
     return EXIT.failed;
   } finally {
     releaseSpools(io);
-    await io.spend?.flush();
   }
 }
 
 if (import.meta.main) {
-  process.exit(
-    await main(Bun.argv.slice(2), {
-      out: (text) => process.stdout.write(text),
-      err: (line) => process.stderr.write(`${line}\n`),
-      gh: spawnGh,
-      now: () => performance.now(),
-      spend: processSpendRecorder(),
-    })
-  );
+  const spendRecorder = processSpendRecorder();
+  const code = await main(Bun.argv.slice(2), {
+    out: (text) => process.stdout.write(text),
+    err: (line) => process.stderr.write(`${line}\n`),
+    gh: spawnGh,
+    now: () => performance.now(),
+    spendRecorder,
+  });
+  await spendRecorder.flush();
+  process.exit(code);
 }

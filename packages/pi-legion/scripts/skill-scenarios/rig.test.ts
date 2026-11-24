@@ -207,6 +207,41 @@ describe("install_model_route", () => {
     );
   });
 
+  // Catches: a provider route whose block is named `anthropic` (an operator's own models.yml can
+  // name it so) written into disabledProviders as well: the pinned Oh My Pi drops a disabled
+  // provider whatever its block holds, so the one model enabledModels names could never be used.
+  test("provider leaves its own provider out of disabledProviders and disables the other six", () => {
+    const dir = profileDir();
+    const file = path.join(work, `models-anthropic-${profiles}.yml`);
+    writeFileSync(
+      file,
+      [
+        "providers:",
+        "  anthropic:",
+        "    baseUrl: http://gateway.internal.example:4000",
+        '    apiKey: "!cat /run/user/1000/box/gateway-key"',
+        "    api: anthropic-messages",
+        "",
+      ].join("\n")
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const config = readFileSync(
+      path.join(dir, "home/.omp/profiles/skills-test/agent/config.yml"),
+      "utf8"
+    );
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(/disabledProviders:\n((?: {2}- .*\n)*)/.exec(config)?.[1]).toBe(
+      ["amazon-bedrock", "bedrock-mantle", "google", "ollama", "llama.cpp", "lm-studio"]
+        .map((name) => `  - ${name}\n`)
+        .join("")
+    );
+  });
+
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
     const dir = profileDir();
     const { code, stderr } = route(dir, {
@@ -466,6 +501,81 @@ describe("skill_reads", () => {
     const { code, stderr } = reads(co, "absent");
     expect(code).toBe(1);
     expect(stderr).toContain(`${co} has no skill absent`);
+  });
+});
+
+// cmd_live_read on a label as cmd_profile leaves one, with a stand-in tmux that starts the pane's
+// command a moment later, as a real tmux server does, and a stand-in mise whose omp exits as the
+// row says, printing on a failure what the measured run printed (2026-11-24T09:44:52Z).
+describe("cmd_live_read", () => {
+  function liveRead(status: number) {
+    const work = freshDir("live-read-work");
+    const bin = freshDir("live-read-bin");
+    const co = freshDir("live-read-checkout");
+    mkdirSync(path.join(co, "skills", "demo"), { recursive: true });
+    writeFileSync(path.join(co, "skills", "demo", "SKILL.md"), "# Demo\n");
+    const P = path.join(work, "profiles", "label-a");
+    const agent = path.join(P, "home/.omp/profiles/skills-label-a/agent");
+    mkdirSync(agent, { recursive: true });
+    writeFileSync(
+      path.join(agent, "config.yml"),
+      "extensionHandlers:\n  toolCallTimeoutMs: 120000\n"
+    );
+    for (const [file, text] of [
+      ["ready", ""],
+      ["checkout", co],
+      ["pin", "omp@pin"],
+      ["profile", "skills-label-a"],
+    ] as const) {
+      writeFileSync(path.join(P, file), text);
+    }
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(
+      path.join(bin, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n[ ${status} = 0 ] || echo 'No model available matching enabledModels' >&2\nexit ${status}\n`,
+      { mode: 0o755 }
+    );
+    const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }
+stop_run() { :; }`;
+    const functions = [
+      "fail",
+      "label_dir",
+      "load_label",
+      "on_exit",
+      "skill_reads",
+      "spend_variables",
+      "spend_env",
+      "base_env",
+      "standins",
+      "pinned_omp",
+      "launch",
+      "cmd_live_read",
+    ];
+    const script = [
+      "set -euo pipefail",
+      ...functions.map(fn),
+      standIns,
+      `work=$1 here=${JSON.stringify(import.meta.dir)} tag=t`,
+      "cmd_live_read label-a demo",
+    ].join("\n");
+    return bash(script, [work], { PATH: `${bin}:${childEnv.PATH}`, USER: "rig" });
+  }
+
+  // Catches: a live read whose Oh My Pi failed (exit=1: "No model available matching
+  // enabledModels", measured twice on 2026-11-24) scored as though it had read, and exiting 0.
+  test("a session whose Oh My Pi exits 1 fails the live read, naming its skills and the exit, and scores nothing; one that exits 0 is scored", () => {
+    const failed = liveRead(1);
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain(
+      "skill-scenarios: the live read of demo under label label-a: Oh My Pi ended exit=1; see "
+    );
+    expect(failed.stdout).not.toContain("reads arrived whole");
+    const scored = liveRead(0);
+    expect({ code: scored.code, stderr: scored.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(scored.stdout).toContain("0 of 0 reads arrived whole");
   });
 });
 
@@ -998,7 +1108,7 @@ sleep() { command sleep 0.05; }`;
   // Catches: a judge's container given no spend variable, one beyond the six, or a value in its
   // `docker run` arguments, which any process of the machine can read.
   test("a judge's docker run names the six, each as `-e NAME` alone, and no other OTEL_* variable", () => {
-    const script = `${fn("spend_variables")}\n${fn("spend_docker_args")}\nspend_docker_args`;
+    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("spend_docker_args")}\nspend_docker_args`;
     const result = bash(script, [], { ...SPEND, ...OTHER_OTEL });
     expect(result.code).toBe(0);
     holdsNoSpendValue(result.stdout + result.stderr);

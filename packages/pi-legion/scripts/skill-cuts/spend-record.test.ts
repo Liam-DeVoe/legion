@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { type Collector, postedSpan, startCollector } from "../skill-scenarios/collector-standin";
 import { postMessages } from "../skill-scenarios/messages-api";
 import {
   conversationId,
@@ -18,14 +19,15 @@ import {
   type RequestBody,
   type ResponsesBody,
 } from "./gateway";
-import { type Collector, postedSpan, startCollector } from "./testdata/fixtures";
+import { f9Completed, fixtureReply } from "./testdata/fixtures";
 
 // The usage records of skill-scenarios/spend-record.ts (README.md, "Usage records"): the rows of
 // the spend client's own test of spend_record.py, ported, and the rows of the runner's wiring
-// (gateway.ts's `spend`, the request log's lines). Each row posts to a stand-in collector on
-// 127.0.0.1 (testdata/fixtures.ts's `startCollector`), named by the environment the recorder is
-// given, never this process's own; the replies are F5's and F9's (testdata/CAPTURE.md) or made up,
-// and every fetch of a model call is a fake. No row reaches the gateway or a real collector.
+// (gateway.ts's `spendRecorder`, the request log's lines). Each row posts to a stand-in collector
+// on 127.0.0.1 (skill-scenarios/collector-standin.ts's `startCollector`), named by the environment
+// the recorder is given, never this process's own; the replies are F5's and F9's
+// (testdata/CAPTURE.md) or made up, and every fetch of a model call is a fake. No row reaches the
+// gateway or a real collector.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const SPEND_RECORD = path.join(import.meta.dir, "..", "skill-scenarios", "spend-record.ts");
@@ -75,20 +77,7 @@ const RESPONSES_BODY = JSON.parse(
 
 /** The id of F9-skill-read's response, as its `response.completed` event carries it: the
  *  gateway's long `resp_` id. */
-const F9_ID: string = readFileSync(path.join(TESTDATA, "F9-skill-read.sse"), "utf8")
-  .split("\n")
-  .filter((line) => line.startsWith("data: {"))
-  .map((line) => JSON.parse(line.slice("data: ".length)))
-  .find((event) => event.type === "response.completed").response.id;
-
-/** The fixture reply `stem` as the gateway sent it: its SSE body and its kept headers. */
-function fixtureReply(stem: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `${stem}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `${stem}.sse`), "utf8"), {
-    status: kept.status,
-    headers: kept.headers,
-  });
-}
+const F9_ID = f9Completed("skill-read").id;
 
 function text(key: string, value: string) {
   return { key, value: { stringValue: value } };
@@ -139,10 +128,10 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-/** A gateway at a made-up address that records its answers with `spend`, whose fetch answers the
- *  n-th try (from 1) with `answer`. */
+/** A gateway at a made-up address that records its answers with `spendRecorder`, whose fetch
+ *  answers the n-th try (from 1) with `answer`. */
 function gatewayWith(
-  spend: SpendRecorder | null,
+  spendRecorder: SpendRecorder | null,
   answer: (n: number) => Response | Promise<Response>
 ) {
   const keyFile = path.join(scratch, `key-${Math.random()}`);
@@ -153,7 +142,7 @@ function gatewayWith(
     keyFile,
     concurrency: 2,
     timeoutMs: 5_000,
-    spend,
+    spendRecorder,
     fetch: async () => answer(++tries),
     sleep: async () => {},
   });
@@ -499,6 +488,61 @@ describe("the span (spend_record.py's rules)", () => {
     expect(collector.posts).toEqual([]);
   });
 
+  // Catches: a span built (its usage read, its ids drawn, its text made) for an answer it then
+  // cannot send, and a warning other than spend_record.py's where two failures meet in one answer.
+  test("an answer with no endpoint to go to, or no room in the queue, is built into no span; where two failures meet, the warning is spend_record.py's", async () => {
+    let reads = 0;
+    /** An answer that counts each read of its usage, which only the building of its span makes. */
+    const counted = (id?: string) => ({
+      ...(id === undefined ? {} : { id }),
+      model: "claude-sonnet-5-5",
+      get usage() {
+        reads += 1;
+        return { input_tokens: 1, output_tokens: 1 };
+      },
+    });
+    const bad = (value: unknown) => value as number;
+    const noEndpoint = { OTEL_EXPORTER_OTLP_ENDPOINT: undefined };
+
+    const nowhere = recorderFor(noEndpoint);
+    nowhere.recorder.record(counted("msg_nowhere"));
+    nowhere.recorder.record(counted("msg_nowhere_2"));
+    expect(nowhere.warnings).toEqual([
+      "spend-record: no OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: no spend record sent (further failures are not reported)",
+    ]);
+    // A queue of one, which the first answer fills before the sender takes it.
+    const full = recorderFor({}, 1);
+    full.recorder.record(RESPONSE);
+    full.recorder.record(counted("msg_dropped"));
+    expect(full.warnings).toEqual([
+      "spend-record: 1 spend records are waiting to be sent: this one is dropped (further failures are not reported)",
+    ]);
+    expect(reads).toBe(0);
+    await full.recorder.flush();
+    expect(
+      collector.posts.map((post) => postedSpan(post).attributes["gen_ai.response.id"])
+    ).toEqual(["msg_01TestResponse"]);
+
+    // spend_record.py's `record` builds the span first, and so meets an answer with no id or a
+    // time that is no time before it reads the endpoint, and the endpoint before the queue.
+    const unnamed = recorderFor(noEndpoint);
+    unnamed.recorder.record(counted());
+    expect(unnamed.warnings).toEqual([
+      "spend-record: the answer has no id, and the collector keeps no row of an answer without one (further failures are not reported)",
+    ]);
+    const untimed = recorderFor(noEndpoint);
+    untimed.recorder.record(counted("msg_untimed"), { startedAt: bad("bad") });
+    expect(untimed.warnings).toEqual([
+      "spend-record: could not build the spend record: TypeError (further failures are not reported)",
+    ]);
+    const unnamedFull = recorderFor({}, 0);
+    unnamedFull.recorder.record(counted());
+    expect(unnamedFull.warnings).toEqual([
+      "spend-record: the answer has no id, and the collector keeps no row of an answer without one (further failures are not reported)",
+    ]);
+    expect(reads).toBe(0);
+  });
+
   test("an answer of the collector that is not 2xx never throws, and is reported once", async () => {
     collector.status = 500;
     const { recorder, warnings } = recorderFor();
@@ -530,23 +574,23 @@ describe("the span (spend_record.py's rules)", () => {
     expect(collector.posts).toHaveLength(3);
   });
 
-  test("flush returns within its limit while a post hangs, and the post ends at POST_TIMEOUT_MS, reported once", async () => {
+  test("flush says whether the queue emptied: yes at once when nothing is queued, no at its limit while a post hangs, and yes once the post ends at POST_TIMEOUT_MS, reported once", async () => {
     // A collector that holds each post past POST_TIMEOUT_MS: the limits are of real posts on the
     // real clock, which no fake timer ends.
     collector.delayMs = 10_000;
     const { recorder, warnings } = recorderFor();
     const idle = performance.now();
-    await recorder.flush();
+    expect(await recorder.flush()).toBe(true);
     expect(performance.now() - idle).toBeLessThan(50);
     const recorded = performance.now();
     recorder.record(RESPONSE);
     const flushed = performance.now();
-    await recorder.flush(300);
+    expect(await recorder.flush(300)).toBe(false);
     const waited = performance.now() - flushed;
     expect(waited).toBeGreaterThanOrEqual(290);
     expect(waited).toBeLessThan(1_000);
     expect(warnings).toEqual([]);
-    await recorder.flush(10_000);
+    expect(await recorder.flush(10_000)).toBe(true);
     const ended = performance.now() - recorded;
     expect(ended).toBeGreaterThanOrEqual(POST_TIMEOUT_MS - 50);
     expect(ended).toBeLessThan(POST_TIMEOUT_MS + 1_000);
@@ -613,7 +657,7 @@ describe("the span (spend_record.py's rules)", () => {
   }, 30_000);
 });
 
-describe("the gateway's records (gateway.ts's `spend`)", () => {
+describe("the gateway's records (gateway.ts's `spendRecorder`)", () => {
   test("each answer of each API gives exactly one span, with the body's model, its session id, and the try's real start", async () => {
     const { recorder, warnings } = recorderFor();
     const json = {
@@ -681,7 +725,7 @@ describe("the gateway's records (gateway.ts's `spend`)", () => {
     });
   });
 
-  test("postMessages hands a chat completion's answer to its `spend` too, which records one span", async () => {
+  test("postMessages hands a chat completion's answer to its `onAnswer` too, which records one span", async () => {
     const { recorder, warnings } = recorderFor();
     const chat = {
       id: "chatcmpl-alpha",
@@ -704,7 +748,7 @@ describe("the gateway's records (gateway.ts's `spend`)", () => {
       tries: 1,
       timeoutMs: 5_000,
       accept: (reply) => JSON.parse(reply).id,
-      spend: (reply, times) => recorder.record(reply, { model: "gpt-6.1-sol", ...times }),
+      onAnswer: (reply, times) => recorder.record(reply, { model: "gpt-6.1-sol", ...times }),
     });
     expect(answer).toBe("chatcmpl-alpha");
     await recorder.flush();
@@ -797,9 +841,9 @@ describe("the gateway's records (gateway.ts's `spend`)", () => {
       env: { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}` },
       warn: (line) => warnings.push(line),
     });
-    /** The median milliseconds of 15 sends of F2 answered by F5, recorded with `spend`. */
-    const median = async (spend: SpendRecorder | null) => {
-      const gateway = gatewayWith(spend, () => fixtureReply("F5-skill-read"));
+    /** The median milliseconds of 15 sends of F2 answered by F5, recorded with `spendRecorder`. */
+    const median = async (spendRecorder: SpendRecorder | null) => {
+      const gateway = gatewayWith(spendRecorder, () => fixtureReply("F5-skill-read"));
       const took: number[] = [];
       for (let n = 0; n < 15; n++) {
         const started = performance.now();
