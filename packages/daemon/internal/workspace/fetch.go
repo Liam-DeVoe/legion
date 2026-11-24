@@ -82,6 +82,12 @@ type FetchRequest struct {
 	// The stream from the repository cache is no stage of this kind: it holds the low-speed bound
 	// (CacheStreamLowSpeedBytes) and no clock at all.
 	Bound time.Duration
+	// ReplaceForeign is the repository cache's own fetch (repocache), whose clone no other clone
+	// borrows objects from: an issue pod takes a tar of it. A feed Fetch finds present in a shape it
+	// does not write is then removed, logged naming why, and filled afresh (ownFeedRepository). An
+	// issue pod's workspace-fetch leaves it false: the pod's clone reads its feed's objects through
+	// its alternates, so a foreign feed fails the fetch and is kept.
+	ReplaceForeign bool
 }
 
 // bound is the time each clocked stage of the fetch gets once it may start: Bound, or FetchTimeout.
@@ -159,11 +165,13 @@ type FetchReport struct {
 // A feed that holds the repository already — the cache's clone at each refresh, or an issue pod's
 // feed when the kubelet retries its fetch container in the same pod — has the delta fetched into
 // it from GitHub, once the locks and partial packs a killed fetch left are gone
-// (RemoveStaleFeedLocks). A feed found present is never removed or replaced: one in a shape Fetch
-// does not write fails the fetch and is kept (ownFeedRepository), since an issue pod's clone reads
-// the feed's objects through its alternates. A feed that does not exist is filled in a temporary
-// sibling, its garbage collection turned off (feedConfiguration), and renamed into place once
-// everything that fills it succeeded, so the feed's repository is whole and current, or absent.
+// (RemoveStaleFeedLocks). An issue pod's feed found present is never removed or replaced: one in a
+// shape Fetch does not write fails the fetch and is kept (ownFeedRepository), since the pod's clone
+// reads the feed's objects through its alternates; the repository cache's own clone, which no clone
+// borrows from, is removed in that case and filled afresh (FetchRequest.ReplaceForeign). A feed
+// that does not exist is filled in a temporary sibling, its garbage collection turned off
+// (feedConfiguration), and renamed into place once everything that fills it succeeded, so the
+// feed's repository is whole and current, or absent.
 // With a cache named, it comes from the cache alone: Fetch waits for the cache to be ready
 // (waitForCache), unpacks its tar (unpackCache), verifies it (verifyCache), then fetches from
 // GitHub, by name, the default branch GitHub names and the issue's recorded default, and the
@@ -239,7 +247,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	defer func() {
 		_ = credential.remove()
 	}()
-	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log)
+	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log, request.ReplaceForeign)
 	if err != nil {
 		return FetchReport{}, err
 	}

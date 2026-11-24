@@ -17,19 +17,28 @@ import (
 
 // ownFeedRepository makes the feed repository gitDir one Fetch may take as its own, before it runs
 // any git there: the stale locks a killed fetch left are removed (RemoveStaleFeedLocks, which
-// follows no link), and a feed in any shape Fetch does not write is refused. It answers whether a
-// repository Fetch may fetch into is there, and an error naming why the feed is foreign when it is
-// one: a symlink at the repository's owner directory (an earlier release's agent could have
-// pointed it anywhere), or a repository foreignFeed refuses. A foreign feed is kept as it stands,
-// never removed or replaced: an issue pod's clone reads the feed's objects through its alternates
-// (feedClone), and a feed replaced under it would leave the clone without its history. The pod's
+// follows no link), and a feed in any shape Fetch does not write is refused, or, with replace (the
+// repository cache's own clone, FetchRequest.ReplaceForeign), removed. It answers whether a
+// repository Fetch may fetch into is there, and, for a foreign one it keeps, an error naming why:
+// a symlink at the repository's owner directory (an earlier release's agent could have pointed it
+// anywhere), or a repository foreignFeed refuses. An issue pod's feed is kept as it stands, never
+// removed or replaced: the pod's clone reads the feed's objects through its alternates (feedClone),
+// and a feed replaced under it would leave the clone without its history. The pod's
 // workspace-fetch fails instead, as any failure of it does; its next pod takes a new volume, or,
 // for a kept volume, the next launch resets the volume on that failure (the sandbox runtime's
-// localInitFailure). The repository cache's Fetch keeps its own root the same way.
-func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log func(string)) (bool, error) {
+// localInitFailure). The repository cache's clone is borrowed by no clone, since an issue pod takes
+// a tar of it, so a foreign one is removed whole, logged naming why, and the feed is filled afresh.
+func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log func(string), replace bool) (bool, error) {
 	owner := filepath.Dir(gitDir)
 	if info, err := os.Lstat(owner); err == nil && info.Mode()&fs.ModeSymlink != 0 {
-		return false, foreignFeedError(owner, "it is a symlink")
+		if !replace {
+			return false, foreignFeedError(owner, "it is a symlink")
+		}
+		if err := os.Remove(owner); err != nil {
+			return false, fmt.Errorf("remove the symlink at the feed's %s: %w", owner, err)
+		}
+		log(fmt.Sprintf("the feed's %s is not one this fetch wrote (it is a symlink): removed; the feed is filled afresh", owner))
+		return false, nil
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
@@ -45,14 +54,21 @@ func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log
 	if err != nil {
 		return false, err
 	}
-	if why != "" {
+	switch {
+	case why == "":
+		return true, nil
+	case !replace:
 		return false, foreignFeedError(repo.String(), why)
 	}
-	return true, nil
+	if err := rolefile.RemoveTree(gitDir); err != nil {
+		return false, fmt.Errorf("remove the feed's %s, which %s: %w", gitDir, why, err)
+	}
+	log(fmt.Sprintf("the feed's %s is not one this fetch wrote (%s): removed; the feed is filled afresh", repo, why))
+	return false, nil
 }
 
-// foreignFeedError is Fetch's refusal of a feed it found present and did not write: which part of
-// the feed, why it is foreign, and that the feed is kept.
+// foreignFeedError is Fetch's refusal of an issue pod's feed it found present and did not write:
+// which part of the feed, why it is foreign, and that the feed is kept.
 func foreignFeedError(what, why string) error {
 	return fmt.Errorf("workspace fetch: the feed's %s is not one this fetch wrote (%s): it is kept, since a clone may read its objects through its alternates, and nothing is fetched into it", what, why)
 }
