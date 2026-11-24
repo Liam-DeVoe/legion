@@ -208,7 +208,7 @@ type heldMessage struct {
 // is published again and ends again, so a launch may be told twice and none is told nothing.
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
-	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+	if supervise.FailedOrRetired(held.State) {
 		if r.beforeUndeliveredEnd != nil {
 			r.beforeUndeliveredEnd(row)
 		}
