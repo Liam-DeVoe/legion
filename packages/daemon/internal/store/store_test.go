@@ -1103,7 +1103,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
+// column. So does one that alters a table a version of the list creates, as 20261124022547 adds
+// plan_tasks.parent_ref to the table 20261117034837 creates: applied before it, it fails on the
+// missing table. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
 // main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
 // 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
 // column a version of the list adds either, so neither is in the list. Any other version left out
@@ -1118,6 +1120,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261124022547: true,
 }
 
 const idleRelease = 20261101222956

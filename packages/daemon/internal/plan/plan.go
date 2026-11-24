@@ -69,7 +69,8 @@ type Task struct {
 	// ParentRef is who the block's parent is, as the read gave it at the version: before
 	// Dispatch serves the tree, the reference its `parent` writes, whole, "" for none. It names a
 	// parent of any document, so it tells two parents apart where PartOf is "" for both, such as
-	// two requirements. Nothing compares or stores it yet.
+	// two requirements. The record stores it with the task (record.PlanTask.ParentRef), and a later
+	// version is compared with it (sameParent), so a running task's parent does not change.
 	ParentRef string
 	// MissingParent is the block's Parent where no block of the version holds that id, as
 	// FromBlocks leaves it: a block of the plan's document that the version lacks, or a heading's,

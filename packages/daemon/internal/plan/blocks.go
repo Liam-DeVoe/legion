@@ -186,11 +186,12 @@ func neededID(word string) string {
 }
 
 // ChangedTasks is the ids of the tasks next changes against held, in the order of their ids: each
-// task whose block says anything else (its steps, its text, `needs`, `owner`, `merges`, or the task
-// it is a part of, which its `parent` gives), each task held has and next does not, and each task
-// next adds. A change of the prose outside the task blocks changes no task, and neither does a
-// change of `serves`, which says what a task is for and nothing Legion carries out, nor a change of
-// an element, which is no task (Places). The answer is never nil.
+// task whose block says anything else (its steps, its text, `needs`, `owner`, `merges`, the block
+// its `parent` names, or the task it is a part of, which its `parent` gives), each task held has and
+// next does not, and each task next adds. A change of the prose outside the task blocks changes no
+// task, and neither does a change of `serves`, which says what a task is for and nothing Legion
+// carries out, nor a change of an element, which is no task (Places), nor a pin added to or taken
+// from the same parent (sameParent). The answer is never nil.
 //
 // It compares the tasks as the blocks write them, so a held plan is read from the blocks of the
 // version that was given, not from the steps a task runs (a task with no steps runs the project's
@@ -223,11 +224,28 @@ func sameBlock(a, b Task) bool {
 }
 
 // sameBesideText says whether two tasks of one id say the same thing but for their text: the same
-// steps, `needs`, `owner` and `merges`, and the same task they are a part of. It is the one rule of
-// a change that is only text: the change a running task takes (RunningChange).
+// steps, `needs`, `owner` and `merges`, the same task they are a part of, and the same parent
+// (sameParent). It is the one rule of a change that is only text: the change a running task takes
+// (RunningChange).
 func sameBesideText(a, b Task) bool {
-	return a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
+	return a.PartOf == b.PartOf && sameParent(a.ParentRef, b.ParentRef) && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+}
+
+// sameParent says whether two parents, each a block's `parent` whole (Task.ParentRef), name one
+// block: each is compared without a trailing pin (`@v<N>`, pin), which names a version of the same
+// block and no other block. A block that names no parent has "", which equals "" alone.
+func sameParent(a, b string) bool {
+	return unpinned(a) == unpinned(b)
+}
+
+// unpinned is reference without its trailing `@v<N>` (pin), and reference itself where it ends in
+// none.
+func unpinned(reference string) string {
+	if at := strings.LastIndex(reference, "@"); at >= 0 && pin.MatchString(reference[at+1:]) {
+		return reference[:at]
+	}
+	return reference
 }
 
 // RunningChange is the refusal of next's change of task, a task of held that runs: nil where next
