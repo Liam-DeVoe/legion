@@ -55,23 +55,6 @@ const (
 	noDeadline = 24 * time.Hour
 )
 
-// waitBound is bound, or what the test's deadline (go test -timeout) leaves less margin when that
-// is sooner, as the shared wait bounds a wait (testwait.Bounded), so the wait fails naming its fact
-// before go test ends the binary. margin covers what the caller does past the bound before its
-// failure: the ask of the fact under way as the bound passes, the one more ask the shared wait
-// makes once its bound has passed, and whatever the caller reads after the answer. A t that
-// reports no deadline, as a binary run with -timeout 0 does, is bounded by bound.
-func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
-	if timed, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, ok := timed.Deadline(); ok {
-			if left := time.Until(deadline) - margin; left < bound {
-				return left
-			}
-		}
-	}
-	return bound
-}
-
 // sendCreate sends a test fixture's own create of a stream or a bucket on conn until the cluster
 // answers it, and returns the answer: nil once the stream is made, or the cluster's refusal. send
 // makes one create through a JetStream context on conn whose requests createSendWait bounds,
@@ -94,14 +77,15 @@ func waitBound(t testing.TB, bound, margin time.Duration) time.Duration {
 // never a refusal. A publish conn's grant does not cover draws no answer either, as the server
 // reports it on the connection and never in the answer; the refusal conn records during the send
 // (refusalOf) is then the answer, so a refused create is sent once. The sends end otherwise only on
-// an answer, or at the wait's bound (waitBound), where the failure names the sends that drew none.
+// an answer, or at the wait's bound (testwait.Bounded), where the failure names the sends that
+// drew none.
 // That bound leaves before the test's deadline the send under way as it passes, the one more send
 // the shared wait (testwait.Holds) makes after it, and the one read of the stream held that a
 // caller makes on an "already in use" answer, so the caller's failure comes before go test's
 // timeout panic.
 func sendCreate(t testing.TB, conn *natsgo.Conn, what string, sendWait time.Duration, subjects []string, send func() error) error {
 	t.Helper()
-	bound := waitBound(t, noDeadline, 2*sendWait+createSendWait+time.Second)
+	bound := testwait.Bounded(t, noDeadline, 2*sendWait+createSendWait+time.Second)
 	sends := 0
 	var unanswered, answer error
 	if !testwait.Holds(bound, testwait.Poll, func() bool {

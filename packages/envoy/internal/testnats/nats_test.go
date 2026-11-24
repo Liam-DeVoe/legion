@@ -158,7 +158,7 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 }
 
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
-// test's deadline, which a wait bounded by it reads (waitBound).
+// test's deadline, which a wait bounded by it reads (testwait.Bounded).
 type fatalRecorder struct {
 	testing.TB
 	message string

@@ -708,8 +708,7 @@ func testDeadline(t testing.TB) (deadline time.Time, bounded bool) {
 // gives up fails its test by name before the binary's own -timeout panics. Each step is cut to
 // what is left (step), the dials of a connect together (dial), and the wait checks its end after
 // every step (over). With no deadline (bounded false) every step takes its own bound and the wait
-// has no end. It is not buckets.go's waitBound, which bounds one fixture create by a margin of its
-// own before the test's deadline.
+// has no end.
 type waitEnd struct {
 	end     time.Time
 	bounded bool
