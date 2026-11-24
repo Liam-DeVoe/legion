@@ -382,13 +382,14 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // as a reference to one of its blocks names it (documentReference): `dispatch://<KEY>/spec` for
 // the issue's primary document, and `dispatch://<KEY>/artifact/<slug>` for any other. So a
 // `parent` in the registered document's form puts its block under the block it names, and the
-// other form names another document, whatever its id. Validate's refusals of an element and of a
+// other form names another document, whatever its id: the block is then a task of the top level,
+// and version 3 is taken with the tasks a and b. Validate's refusals of an element and of a
 // `parent` that names a block the version does not hold reach the answer among its reasons. A
 // `parent` that is not one reference, and task blocks under each other, are a plan Legion cannot
-// read, answered with one reason. None records anything. The fault is a route that reads a
-// `parent` against no document, or against the wrong one. The control is planAt given the artifact
-// form of the primary document: version 1 is refused as two tasks that no task needs, and version
-// 3 refused as an element with steps.
+// read, answered with one reason. A refused version records nothing. The fault is a route that
+// reads a `parent` against no document, or against the wrong one. The control is planAt given the
+// artifact form of the primary document: version 3 is refused as an element with steps, where it
+// is taken.
 func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -401,7 +402,8 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 		return PlanReason{Task: id, Reason: "task block " + id + " is an element of task a: it stands under a, which names no sub-owner. " +
 			"Legion does not carry out an element, so an element names no steps, owner or merges, and " + id + " names steps."}
 	}
-	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
+	missingParent := PlanReason{Task: "b", Reason: "task block b names gone as its parent, which no typed block of version 4 of the plan holds. " +
+		"Name a typed block of this version in parent, or leave parent out."}
 	// The fake gives planDoc no slug, so it is the primary document of LEGION-208.
 	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"), parented(taskBlock("e1", ""), spec))
 	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), parented(taskBlock("e1", "implementer"), spec))
@@ -414,10 +416,10 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 		t.Fatalf("register version 1 = %d %s, want 200: e1 is an element of a, which names nothing only a task carries out", taken.Code, taken.Body)
 	}
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), elementWithSteps("e1"))
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoSinks)
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), twoSinks,
-		PlanReason{Task: "b", Reason: "task block b names gone as its parent, which no typed block of version 4 of the plan holds. " +
-			"Name a typed block of this version in parent, or leave parent out."})
+	if taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3); taken.Code != http.StatusOK {
+		t.Fatalf("register version 3 = %d %s, want 200: b's parent names another document, so b is a task of the top level beside a", taken.Code, taken.Body)
+	}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), missingParent)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 5),
 		PlanReason{Reason: `task block b: its parent "` + spec + ` ` + spec + `" is not one dispatch:// reference.`})
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
@@ -428,12 +430,17 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), elementWithSteps("b"))
 
 	got := facts.recorded()
-	if len(got) != 1 {
-		t.Fatalf("facts = %#v, want the one fact of version 1", got)
+	if len(got) != 2 {
+		t.Fatalf("facts = %#v, want the facts of versions 1 and 3", got)
 	}
 	given, ok := got[0].(intake.PlanGiven)
 	if want := []plan.Element{{ID: "e1", Of: "a", Under: "a"}}; !ok || len(given.Plan.Tasks) != 1 || given.Plan.Tasks[0].ID != "a" || !reflect.DeepEqual(given.Plan.Elements, want) {
 		t.Fatalf("the fact of version 1 = %#v, want the one task a and the element %+v", got[0], want)
+	}
+	third, ok := got[1].(intake.PlanGiven)
+	if !ok || third.Plan.Version != 3 || len(third.Plan.Tasks) != 2 || third.Plan.Tasks[0].ID != "a" || third.Plan.Tasks[1].ID != "b" ||
+		third.Plan.Tasks[1].PartOf != "" || len(third.Plan.Elements) != 0 {
+		t.Fatalf("the fact of version 3 = %#v, want the tasks a and b, b of the top level, and no element", got[1])
 	}
 }
 
