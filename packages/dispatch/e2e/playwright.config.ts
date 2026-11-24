@@ -530,7 +530,8 @@ const parallelProjects = [
  * the reporting around them does: a row whose claim is a wall-clock time has nothing to gain
  * from a second attempt, because a threshold that a regression misses half the time would fail
  * the first attempt, pass the retry, be reported `flaky`, and leave the run green where it
- * should be red. The multiprocess project above sets the same value on a different argument.
+ * should be red. The multiprocess project above sets no `retries` of its own: it takes the
+ * run's one retry on CI, for the reason its own comment gives.
  */
 const aloneProjects = [
   {

@@ -188,7 +188,11 @@ signalable() {
 # the caller may signal. No group is written with a leading zero, and kill reads 00 as 0. Each is
 # refused whatever produced it: gVisor's stat of a process that had just exited once read as group 0
 # (proc_stat_fields, above), and a read that found no process or failed leaves an empty group. A
-# refusal is printed, naming GROUP, since a caller that hands one over has a bug.
+# refusal is printed, naming GROUP, since a caller that hands one over has a bug. The same check is
+# written out in four more places, which cannot source this file: lib/role-namespaces.sh's
+# role_kill_sh, which runs in the pod's shell; pack-memory-probe.sh's stop_background, since that
+# script sources nothing of lib/; and, in TypeScript, signalGroup in lib/signal-group.ts and in
+# packages/dispatch/e2e/signal-group.ts. A change to this check is made to each of them.
 group_signalable() {
   local why
   case $1 in
