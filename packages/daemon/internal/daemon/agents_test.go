@@ -296,7 +296,7 @@ func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
 	}
 }
 
-// phaseRow is what entryRose reads of one phases row: the claim it names and its entry.
+// phaseRowNow is what entryRose reads of one phases row: the claim it names and its entry.
 type phaseRowNow struct {
 	claim string
 	entry int64
