@@ -1070,25 +1070,32 @@ function pressPlaces(element: Element): Element[] {
 /**
  * Whether the reader caused the loss of `element`'s focus: the armed press (`armHandOff`) is
  * still live, and one of `element`'s places (`pressPlaces`) - the element, any row it was in, or
- * the dialog, panel or selection bar it was lost from - is the press's control or holds it, or
- * holds a root the press was armed at (`ArmedPress`'s `roots`), as a pick in a list portalled out
- * of the selection bar is a press in the bar. A loss the reader caused keeps the hand-off that
- * pulls the focus to the control now at the lost one's place; one they did not - a live update
- * taking a row away, a refetch emptying a bar - and every loss with nothing armed leaves the focus
- * on the body, and scrolls nothing. Every component hand-off that can move the focus to another
- * row reads this one rule; a hand-off to the lost control's own row, as AskCard's is, is no move
- * to another row.
+ * the dialog, panel or selection bar it was lost from - holds the press (`pressMadeIn`), as a pick
+ * in a list portalled out of the selection bar is a press in the bar. A loss the reader caused
+ * keeps the hand-off that pulls the focus to the control now at the lost one's place; one they did
+ * not - a live update taking a row away, a refetch emptying a bar - and every loss with nothing
+ * armed leaves the focus on the body, and scrolls nothing. Every component hand-off that can move
+ * the focus to another row reads this one rule; a hand-off to the lost control's own row, as
+ * AskCard's is, is no move to another row.
  */
 export function causedByReader(element: Element): boolean {
+  return armed !== null && pressPlaces(element).some((place) => pressMadeIn(place));
+}
+
+/** Whether the armed press (`armHandOff`) is live and was made inside `place`: `place` is the
+ *  press's control or holds it, or holds a root the press was armed at (`ArmedPress`'s `roots`).
+ *  It reads `place` alone, never the places around it: where no focused element says where a
+ *  press was - WebKit leaves the focus on the body after a click on a button - a component asks
+ *  it of its own element, as the Inbox's anchor does of the page's control row
+ *  (`ViewportAnchor`'s `pressedRow`). */
+export function pressMadeIn(place: Element): boolean {
   const press = armed;
   if (press === null) return false;
-  return pressPlaces(element).some((place) => {
-    if (place.contains(press.control)) return true;
-    for (const root of press.roots) {
-      if (place.contains(root)) return true;
-    }
-    return false;
-  });
+  if (place.contains(press.control)) return true;
+  for (const root of press.roots) {
+    if (place.contains(root)) return true;
+  }
+  return false;
 }
 
 /** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the

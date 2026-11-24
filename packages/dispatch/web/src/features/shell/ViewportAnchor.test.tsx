@@ -1034,6 +1034,30 @@ test("a press of the reader's in the control row above the list that draws rows 
   }
 });
 
+// WebKit leaves the focus on the body after a click on a button, so no focused element says the
+// press was made in the control row: the anchor reads the press from the row itself.
+test("a click in the control row that moves no focus, as WebKit's does, keeps that row where it stood while the narrowing it takes off draws rows back", () => {
+  const view = render(<Narrowed />);
+  try {
+    setScrollY(100);
+    const filter = screen.getByRole("button", { name: "Filter" });
+    const chip = screen.getByRole("button", { name: "Remove Type: question filter" });
+    expect(document.activeElement).toBe(document.body);
+    const stood = filter.getBoundingClientRect().top;
+    expect(chosen()).toEqual({ id: "r8", via: "center" });
+
+    // The click alone, with no focus moved by it, as WebKit's on a button is: user-event focuses
+    // the button it clicks.
+    fireEvent.click(chip);
+    expect(viewportTop("r1")).toBeDefined();
+    expect(filter.getBoundingClientRect().top).toBe(stood);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    disarm();
+    view.unmount();
+  }
+});
+
 // The same rows drawn back by a live update while the focus rests on the row's Filter, with no
 // press of the reader's: a change they did not make is made up for around the row at the list's
 // centre, as any other is, so the rows in view stay where they were.

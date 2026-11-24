@@ -1,7 +1,7 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
 import { CONTROL, controlIn } from "../../components/control-names";
-import { causedByReader } from "../../components/focus-place";
+import { pressMadeIn } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 import { PANEL_ATTRIBUTE } from "./keymap";
 
@@ -205,13 +205,14 @@ function focusedControl(): Element | null {
  *
  * A press of the reader's in the page's control row (`components/ControlRow.tsx`), while that
  * row stands outside the list in the box that scrolls it, makes the row their place for the
- * commit, ahead of every row: the focus on a control of the row and the press on that control
- * (`causedByReader`). The reader's place is the control they pressed, so the row is put back
- * where it stood (`pressedRow`): the rows the press brings back into the list or takes out of it,
- * and the list growing or shrinking under the row, move nothing above them, and the control the
- * row hands the focus to as a chip goes stays where it stood. A change above the row in the same
- * commit is made up for. A commit the reader did not make while the focus rests in that row, by
- * a live update or another device, is made up for around the row they are on, as any other is.
+ * commit, ahead of every row: a press live on a control of the row or at its root
+ * (`pressMadeIn`), wherever the focus is. The reader's place is the control they pressed, so the
+ * row is put back where it stood (`pressedRow`): the rows the press brings back into the list or
+ * takes out of it, and the list growing or shrinking under the row, move nothing above them, and
+ * the control the row hands the focus to as a chip goes stays where it stood. A change above the
+ * row in the same commit is made up for. A commit the reader did not make while the focus rests
+ * in that row, by a live update or another device, is made up for around the row they are on, as
+ * any other is.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -699,21 +700,20 @@ export class ViewportAnchor extends Component<
     return snapshot;
   }
 
-  /** The page's control row (`components/ControlRow.tsx`) and its top, where the focus is on a
-   *  control of that row and a press of the reader's is on that control (`causedByReader`), while
-   *  the row stands outside the list in the box that scrolls it - the first control row in that
-   *  box; else null. Measured in the Inbox at 390x664 with the window at 30 px: Enter on the only
-   *  chip, or on Clear filters, drew the threads the narrowing had left out above the row nearest
-   *  the list's centre, and holding that row scrolled the window to 1,269 px, which left the
-   *  Filter trigger the control row hands the focus to at -1,140 px, in Chromium, Firefox and
-   *  WebKit. The press is asked for first: a commit no press of the reader's is live in, as a
-   *  live update's, searches nothing. */
+  /** The page's control row (`components/ControlRow.tsx`) and its top, where a press of the
+   *  reader's is live on a control of that row or at its root (`pressMadeIn`), while the row stands
+   *  outside the list in the box that scrolls it - the first control row in that box; else null.
+   *  The press is read from the row rather than from the focus, which WebKit leaves on the body
+   *  after a click on a button. Measured in the Inbox at 390x664 with the window at 30 px: Enter on
+   *  the only chip, or on Clear filters, drew the threads the narrowing had left out above the row
+   *  nearest the list's centre, and holding that row scrolled the window to 1,269 px, which left
+   *  the Filter trigger the control row hands the focus to at -1,140 px, in Chromium, Firefox and
+   *  WebKit. */
   private pressedRow(): PressedRow | null {
     const root = this.root;
-    const focused = document.activeElement;
-    if (root === null || focused === null || !causedByReader(focused)) return null;
+    if (root === null) return null;
     const row = controlIn(this.scrollerElement() ?? document, CONTROL.controlRow);
-    if (row === null || root.contains(row) || !row.contains(focused)) return null;
+    if (row === null || root.contains(row) || !pressMadeIn(row)) return null;
     return { row, top: row.getBoundingClientRect().top };
   }
 
