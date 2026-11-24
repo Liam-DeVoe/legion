@@ -13,6 +13,7 @@ import type { Subprocess } from "bun"
 import type { ModCallArguments } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
 import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -74,6 +75,7 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
+      ...NO_TRANSPILER_CACHE,
     },
     stdin: "pipe",
     stdout: "pipe",

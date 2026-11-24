@@ -8,6 +8,7 @@ import { EnvoySendUnconfirmedError, type KeyTakenResult } from "@legion/envoy-cl
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { type SentEnvoyMessage, sendEnvoyMessage } from "../src/envoy-client"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 /** What one send reached the stand-in listener with. */
 interface Sent {
@@ -279,7 +280,12 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     ],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+        ...NO_TRANSPILER_CACHE,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -330,10 +336,13 @@ async function runEnvoySend(
       : ["bash", "-c", options.command],
     {
       cwd: scratch,
-      env: options.env ?? {
-        PATH: bunFirstPath,
-        HOME: scratch,
-        ENVOY_CONFIG_FILE: file,
+      env: {
+        ...NO_TRANSPILER_CACHE,
+        ...(options.env ?? {
+          PATH: bunFirstPath,
+          HOME: scratch,
+          ENVOY_CONFIG_FILE: file,
+        }),
       },
       stdout: "pipe",
       stderr: "pipe",

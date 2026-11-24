@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { unrealReader } from "./proc-root";
 
@@ -123,7 +124,7 @@ const tools = [
 ];
 const found = new Map(tools.map((name) => [name, hostTool(name)] as const));
 const missing = tools.filter((name) => found.get(name) === null);
-// Why the row that runs the rig can say nothing: a tool the walk found no real binary for would be
+// Why the rows that run the rig can say nothing: a tool the walk found no real binary for would be
 // absent from the run's PATH, and the run would stop at the first line that calls it rather than at
 // the pin; and with no HOME of this process the walk has no second environment to tell a real
 // binary from a version manager's shim.
@@ -137,10 +138,11 @@ if ((process.env.HOME ?? "") === "") {
       "version manager's shim"
   );
 }
-const skip = reasons.length > 0;
-if (skip) {
-  console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
-}
+// Outside CI the rows skip, naming why; under GITHUB_ACTIONS they fail so, each by its own name
+// (hostGate).
+const host = hostGate({
+  reason: reasons.length > 0 ? `The rows that run the rig cannot run: ${reasons.join("; ")}.` : "",
+});
 const keyFile = join(dir, "model-key");
 // The proc root refuse_leftovers reads in prerequisites (`${proc_root:-/proc}`). Over the host's
 // /proc refuse_leftovers runs three commands for each process the host has, so the row's time, held
@@ -206,7 +208,7 @@ function firstFailLine(path: string, root: string): string {
   return output.split("\n").find((line) => line.startsWith("FAIL ")) ?? "";
 }
 
-test.skipIf(skip)(
+host.test(
   "a bun other than the pinned release is refused in prerequisites, naming the pin",
   () => {
     const failLine = firstFailLine(bin, proc);
@@ -218,7 +220,7 @@ test.skipIf(skip)(
 
 // A bun that cannot run, as mise's shim answers under a HOME whose config names no version, is
 // refused in prerequisites with its own words, not read as a Bun of no version.
-test.skipIf(skip)(
+host.test(
   "a bun that cannot run is refused in prerequisites with its own error",
   () => {
     const failLine = firstFailLine(brokenBin, brokenProc);
