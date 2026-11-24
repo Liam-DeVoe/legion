@@ -600,6 +600,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: stateSeqContract, state: withoutStateSeq,
 		dropped: "daemon.stateSeq, daemon.stateId and daemon.stateRun"},
 }
@@ -1079,6 +1080,27 @@ const assignmentPlanContract = 220
 // moves that constant, and the contract the key and the two answers arrived at stays where it is.
 const intakeGiveUpsContract = 228
 
+// podHoldContract is the daemon contract that added each issue's `podHold` to the state
+// (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its
+// own table before. A plugin before it reads each issue with a
+// strict schema that names no `podHold` and refuses the whole body for it, so every caller below
+// it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
+// it with no row of stateNarrowings between the two (232, between them, moves a request body and
+// no key of the state), so a caller from that contract to 245 is served 228's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
+// is, and answers.go's SupportedContracts names the constant.
+const podHoldContract = 246
+
+// withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
+// nothing else of that contract is on the route. The key is written only for an issue whose pod
+// a hold stands on, so the band reports a move only for an issue that carries one.
+func withoutPodHold(issue Issue) (Issue, bool) {
+	moved := issue.PodHold != nil
+	issue.PodHold = nil
+	return issue, moved
+}
+
 // stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
 // state event the project's daemon committed, read in the body's own snapshot, and beside it
 // `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
@@ -1090,9 +1112,8 @@ const intakeGiveUpsContract = 228
 // ask for them rather than what keeps such a caller reading at all. The same contract added the
 // observed view of the state route, shaping.go's answer AnswerObservedState, which is no row of
 // Answers: it carries the same daemon block, and observedFor narrows it by the same band.
-// intakeGiveUpsContract stands below it with no row of stateNarrowings between the two, so a
-// caller at or above intakeGiveUpsContract and below this contract is served `intakeGiveUps`
-// and none of the three keys.
+// podHoldContract stands below it with no row of stateNarrowings between the two, so a caller at
+// or above podHoldContract and below this contract is served `podHold` and none of the three keys.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It is the last number

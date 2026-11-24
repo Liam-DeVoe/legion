@@ -710,7 +710,9 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // without the key, and says so in its own log; a caller that states the contract is served the
 // key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
 // states its contract in the header, and a pod's claims place no caller at 193 or above
-// (podContracts), so the header is what places a caller below this band.
+// (podContracts), so the header is what places a caller below this band. The older caller's log
+// holds one line for each band above its contract (narrowingsExpected), the give-ups' first; a
+// later band's own line is that band's test's to name.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if intakeGiveUpsContract > DaemonAPIVersion {
 		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)
@@ -734,8 +736,9 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	// The caller stands below every row of stateNarrowings above it, stateSeqContract's included,
-	// so the log holds the line of each of those rows, the give-ups' line among them, and no other.
+	// The caller stands below every row of stateNarrowings above it, podHoldContract's and
+	// stateSeqContract's included, so the log holds the line of each of those rows, the give-ups'
+	// line among them, and no other.
 	expected := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
 	if !slices.Contains(expected, "intakeGiveUps") || len(narrowings) != len(expected) {
 		t.Fatalf("the daemon logged %+v for a caller at %d, want one line for each of %v, the give-ups' among them", narrowings, intakeGiveUpsContract-1, expected)
@@ -746,6 +749,7 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 				i, intakeGiveUpsContract-1, line.Dropped, line.PluginContract, expected[i], intakeGiveUpsContract-1)
 		}
 	}
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(populatedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")

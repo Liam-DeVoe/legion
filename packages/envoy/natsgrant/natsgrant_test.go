@@ -55,9 +55,30 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 	require.Equal(t, want.Subscribe, got.Subscribe, "%s subscribe", name)
 }
 
+// knownSessionPurge is the one entry every set built on listenerGrant has gained since the merge
+// base the fixture records: the known-session store's purge of its replaced chunks' markers
+// (internal/kvchunk, session.KnownSessions.purgeChunkMarkers), right after the interest bucket's
+// purge.
+const (
+	interestPurge     = "$JS.API.STREAM.PURGE.KV_envoy_interests"
+	knownSessionPurge = "$JS.API.STREAM.PURGE.KV_envoy_known_sessions"
+)
+
+// sinceMergeBase is a set the fixture records with knownSessionPurge added after its one
+// interestPurge, which it must hold, so a fixture set the addition does not reach fails here rather
+// than compare unchanged.
+func sinceMergeBase(t *testing.T, base set, name string) set {
+	t.Helper()
+	at := slices.Index(base.Publish, interestPurge)
+	require.NotEqual(t, -1, at, "the fixture's %s holds no %s to add %s after", name, interestPurge, knownSessionPurge)
+	require.NotContains(t, base.Publish, knownSessionPurge, "the fixture's %s already holds %s", name, knownSessionPurge)
+	base.Publish = slices.Insert(slices.Clone(base.Publish), at+1, knownSessionPurge)
+	return base
+}
+
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization, with the one grant
-// Dispatch gained since (withLegionStateDurable).
+// the merge base, so moving them here rewrites no hub's rendered authorization, with the entries
+// added since (sinceMergeBase) and the one grant Dispatch gained since (withLegionStateDurable).
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -72,7 +93,8 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			"Dispatch":     {withLegionStateDurable(t, base.Dispatch[id]), natsgrant.Dispatch(id)},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
-			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
+			name := name + "(" + strconv.Quote(id) + ")"
+			requireSet(t, sinceMergeBase(t, pair.want, name), pair.got, name)
 		}
 	}
 	requireSet(t, base.SessionPattern, natsgrant.SessionPattern(), "SessionPattern()")
