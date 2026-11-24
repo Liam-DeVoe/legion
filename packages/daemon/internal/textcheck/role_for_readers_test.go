@@ -64,7 +64,10 @@ type roleForReader struct {
 // reads the retro's own place (Engine.holdBeforeRetro and Engine.startHeldRetro, which run only
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for every
 // phase but step and its place's, which admitted never is, to the readers this list holds
-// (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
+// (record.Issue.RoleAt), or names the worker of the step a task stands at for messages that tell
+// the architect, its answer at admitted, nothing (record.Issue.StepWorkerRole: a merge forward
+// reaches no architect's step, and the design gate's message passes the architect over), or reads
+// the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
 // the retry of a named claim), or settles nothing at admitted whatever it reads, since it settles
 // a round only in reviewing (Engine.settleRound, which reads whether the owner works the review
@@ -98,6 +101,17 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/record/phase_rows.go", fn: "RolePlace"}: {calls: 1, tests: []string{
 		"TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands", "TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	// The worker of the step a task stands at, which the merge forward's hold and landed
+	// (record.MergeForwardWorker, read by Engine.mergeForward and Engine.mergeForwardLanded) and the
+	// design gate's message to each member (Engine.tellGateMoved) are addressed by: the step's own
+	// role at a place the owner works, else RoleAt. Its architect at admitted is told none of
+	// them: record.MergeForwardReaches gives the architect no hold and no landed, and
+	// tellGateMoved passes the architect over and tells the root's architect once.
+	{file: "internal/record/record.go", fn: "Issue.StepWorkerRole"}: {calls: 1, tests: []string{
+		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole",
+		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
+		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded",
+		"TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved"}},
 	{file: "internal/record/record.go", fn: "Issue.OwnersPlace"}: {calls: 1, tests: []string{
 		"TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt", "TestASignOffEndsOnlyTheOwnersOwnAcceptance"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
@@ -132,8 +146,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "completionOf"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestTheRetroRunsAsTheRoleOfItsAgent",
 		"TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop"}},
-	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}: {calls: 1, tests: []string{
-		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// The merge's role and the role a step's role runs as; the retro's is its agent's
 	// (record.PlaceWorker), which reads no RoleFor.
 	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 2, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports", "TestTheRetroRunsAsTheRoleOfItsAgent"}},
@@ -142,10 +154,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// issue with none.
 	{file: "internal/workflow/line.go", fn: "Walk.endingRole"}: {calls: 2, tests: []string{
 		"TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
 		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 1, tests: []string{
