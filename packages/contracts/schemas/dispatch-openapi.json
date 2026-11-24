@@ -329,6 +329,13 @@
             }
           },
           {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -2338,7 +2345,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. A version's author carries proven: true only when the credential of every write that author made to the version proved it.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -2359,6 +2366,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -5338,7 +5352,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -6125,6 +6139,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -7029,6 +7050,53 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/issues/{key}/legion": {
+      "get": {
+        "description": "One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
+        "operationId": "getApiV1IssuesByKeyLegion",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionIssueResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/issues/{key}/messages": {
       "get": {
         "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies.",
@@ -7204,7 +7272,7 @@
     },
     "/api/v1/issues/{key}/plans/{id}": {
       "put": {
-        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyPlansById",
         "parameters": [
           {
@@ -11058,6 +11126,13 @@
             }
           },
           {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -14679,6 +14754,12 @@
               "array",
               "null"
             ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -24069,6 +24150,211 @@
           "kind",
           "since",
           "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionIssueRead": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "at",
+          "ok",
+          "error"
+        ],
+        "type": "object"
+      },
+      "LegionIssueResponse": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "project",
+          "configured",
+          "state",
+          "read",
+          "runs_revision"
+        ],
+        "type": "object"
+      },
+      "LegionIssueState": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "phase_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "phase_start_seen": {
+            "type": "boolean"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/LegionRoleClaim"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slot": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "waiting_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueWaitingLine"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "description": "what the issue waits on from a person, the Legion daemon's waitingOn object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+                "properties": {
+                  "answeredAt": {
+                    "description": "an RFC3339 timestamp",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "answeredBy": {
+                    "description": "how the wait was answered, once it was, and not always by a person",
+                    "type": "string"
+                  },
+                  "artifactId": {
+                    "description": "for a gate, the id of the document whose version no person has reviewed",
+                    "type": "string"
+                  },
+                  "ask": {
+                    "description": "for an ask, the id of the oldest question of the issue's tree still with a person",
+                    "type": "string"
+                  },
+                  "gateVersion": {
+                    "description": "for a gate, the spec version no person has reviewed",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "description": "the kind of wait: ask, gate, or a kind a later daemon names",
+                    "type": "string"
+                  },
+                  "since": {
+                    "description": "an RFC3339 timestamp",
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "phase",
+          "phase_since",
+          "phase_start_seen",
+          "roles",
+          "slot",
+          "waiting_line",
+          "blocked_by",
+          "waiting_on"
+        ],
+        "type": "object"
+      },
+      "LegionIssueWaitingLine": {
+        "properties": {
+          "length": {
+            "type": "integer"
+          },
+          "place": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "place",
+          "length"
+        ],
+        "type": "object"
+      },
+      "LegionRoleClaim": {
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "state"
         ],
         "type": "object"
       },
