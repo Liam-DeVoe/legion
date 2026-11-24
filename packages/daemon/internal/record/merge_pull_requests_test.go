@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -180,4 +181,47 @@ func TestAParkedIssuesMergePullRequestIsItsLeftTasks(t *testing.T) {
 		must(t, records.PutPullRequest(ctx, tx, merged))
 	})
 	reads("#7 merged by a person", PullRequestMerged)
+}
+
+// The queued closes of an issue's pull requests are the rows that close pull requests of that issue
+// at that generation which the outbox has not finished, in any attempt. Of LEGION-208's rows: one of
+// generation 7 naming #45, due; one of generation 7 naming #43, backing off after a failed attempt;
+// one of generation 6 naming #47; and one of generation 7 naming #49, which ran and is gone. The
+// queued closes at generation 7 are #43 and #45, in number order.
+//
+// The fault it catches is a notice that hides a pull request of an earlier run's close, which
+// finishes without acting (its control: the read without its generation, which answers #47 too).
+func TestQueuedPullRequestClosesReadsTheUnfinishedRowsOfTheGeneration(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issueFixture(planIssue)))
+		for _, queued := range []struct {
+			generation uint64
+			number     int
+			failed     bool
+		}{{7, 45, false}, {7, 43, true}, {6, 47, false}, {7, 49, false}} {
+			row, err := NewOutboxRow(planIssue, TaskPullRequestsClose{Generation: queued.generation, Numbers: []int{queued.number}, Comment: "Merged in #2."}, now)
+			must(t, err)
+			if queued.failed {
+				row.Attempts, row.LastError, row.NextAt = 1, "GitHub answered 502", now.Add(time.Minute)
+			}
+			must(t, records.Enqueue(ctx, tx, row))
+		}
+		if _, err := tx.Exec(ctx, `delete from outbox where kind = $1 and payload->'numbers' @> '[49]'`, string(OutboxKindTaskPullRequestsClose)); err != nil {
+			t.Fatalf("finish the close of #49: %v", err)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := records.QueuedPullRequestCloses(ctx, tx, planIssue, 7)
+		must(t, err)
+		if !slices.Equal(got, []int{43, 45}) {
+			t.Fatalf("the queued closes of %s at generation 7 = %v, want [43 45]", planIssue, got)
+		}
+		if none, err := records.QueuedPullRequestCloses(ctx, tx, "LEGION-209", 7); err != nil || len(none) != 0 {
+			t.Fatalf("the queued closes of LEGION-209, which has none = %v, %v, want none", none, err)
+		}
+	})
 }
