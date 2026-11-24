@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,13 +125,13 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 // TestAStandbyTakesTheReleasedHold stops the holder as a serving process stops, by its context:
 // the batch in flight commits or rolls back and the hold is released, which notifies the standby
 // through its listener (duty.HoldReleasedChannel on a pglisten.Hub, as the server registers it).
-// The standby's retry is one the test never runs (Config.retry); its wake has given up the signal
-// of the hub's LISTEN (releasedWake), and the hub listened once; and nothing wakes the standby's
-// events until the row has seen it take the hold. So the notification is the one thing that can
-// make it take the hold: it takes the hold, and its first pass writes the next event. Each wait is
-// on its fact, bounded by the test binary's deadline alone: a fixed span from the stop would
-// include the pass's wait on the event horizon, which waits on the whole Postgres instance
-// (textversionstest.AwaitRows), not on the standby.
+// The standby's retry is one the test never runs (Config.retry), and its released wake is
+// signalled by a notification naming the fill's hold alone (releasedWake), so the notification is
+// the one thing that can make it take the hold: it takes the hold, and a pass writes the next
+// event. Its events are woken only once it is seen to hold the hold, so a standby that needs an
+// event's wake to take it fails. Each wait is on its fact, bounded by the test binary's deadline
+// alone: a fixed span from the stop would include the pass's wait on the event horizon, which
+// waits on the whole Postgres instance (textversionstest.AwaitRows), not on the standby.
 func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -138,7 +139,7 @@ func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database)
 	standbyStore := storetest.SecondProcess(t, database)
-	released, listens := releasedWake(t, standbyStore)
+	released := releasedWake(t, standbyStore)
 	second := startFillRetrying(t, standbyStore, released, make(chan time.Time), true)
 	second.AwaitLine(t, standingByMessage)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
@@ -165,9 +166,6 @@ func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 		return holdRow(t, database), false
 	})
 	took := time.Since(stopped)
-	if n := listens(); n != 1 {
-		t.Fatalf("the standby's listener hub listened %d times; want once, so that what woke the standby is the release's notification", n)
-	}
 	// The take can come before the event's commit, and its first pass with it, so the row wakes
 	// the standby's events now, as the event's commit does in production; the take is already
 	// seen, so the wake cannot have brought it.
@@ -374,23 +372,28 @@ func startFillRetrying(t *testing.T, db *store.Store, released <-chan struct{}, 
 	return process
 }
 
-// releasedWake runs a listener hub on db's listener pool, as the server runs its own, with a wake
-// on duty.HoldReleasedChannel, and answers that wake once the hub listens, with the signal the hub
-// gives every wake after each LISTEN (pglisten.Hub's onConnected, its first LISTEN included)
-// already taken, and how many times the hub has listened. A standby that read that signal would
-// try for the hold once more with nothing released, so while the hub has listened once, a signal
-// on the wake is a release's notification.
-func releasedWake(t *testing.T, db *store.Store) (<-chan struct{}, func() int64) {
+// releasedWake runs a listener hub on db's listener pool, as the server runs its own, and answers
+// a wake signalled by each notification on duty.HoldReleasedChannel that names the fill's hold,
+// once the hub listens. The server's own wake (pglisten.Hub.Wake) is signalled after each LISTEN
+// too, so that a standby catches up on a release sent while it had no connection; this one is
+// signalled by a notification alone, so a standby that takes the hold on it took it on the
+// release's notification.
+func releasedWake(t *testing.T, db *store.Store) <-chan struct{} {
 	t.Helper()
 	hub := &pglisten.Hub{Owner: "textversions test", Dial: db.Pool.Listener}
-	wake := hub.Wake(duty.HoldReleasedChannel)
-	listening := make(chan struct{})
-	var listens atomic.Int64
-	hub.OnConnected(func() {
-		if listens.Add(1) == 1 {
-			close(listening)
+	wake := make(chan struct{}, 1)
+	hub.Handle(duty.HoldReleasedChannel, func(payload string) {
+		if payload != fillHoldName {
+			return
+		}
+		select {
+		case wake <- struct{}{}:
+		default:
 		}
 	})
+	listening := make(chan struct{})
+	var once sync.Once
+	hub.OnConnected(func() { once.Do(func() { close(listening) }) })
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -402,10 +405,7 @@ func releasedWake(t *testing.T, db *store.Store) (<-chan struct{}, func() int64)
 		testwait.Receive(t, "the standby's listener hub to return", done)
 	})
 	testwait.Receive(t, "the standby's listener hub to listen", listening)
-	// The hub runs its OnConnected callbacks and then signals every wake, on its own goroutine, so
-	// the signal comes once listening has closed, and the row takes it here.
-	testwait.Receive(t, "the signal of the standby's listener hub for its LISTEN", wake)
-	return wake, listens.Load
+	return wake
 }
 
 // bothFillsWhy is why the two-fill row's pauses are spans: the absence of a takeover is no state

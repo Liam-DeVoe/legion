@@ -6,6 +6,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -29,9 +30,26 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain drops the databases the package's tests clone (storetest.Main) and removes the NATS
-// server they share (testnats.Main).
+// deliveryTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel. Every test calls t.Parallel except those that change or read back something
+// the whole process shares, which stay serial and run before the rest: a package variable a test
+// sets (callNATSWait, createDurable, decodeEnvelope and the like), the default logger
+// (captureLogs), t.Setenv, the process's goroutines, a select on a short time.After, or a read of
+// Postgres's whole-server views. Each parallel test has a database of its own (storetest.Open's
+// clone) and a JetStream account of its own (testnats.URL), and waits on NATS and Postgres far more
+// than on a core. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev
+// box, where every test's database and pools at once would open more connections than the test
+// server allows.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const deliveryTestParallelism = 8
+
+// TestMain sets the package's default -parallel, drops the databases the package's tests clone
+// (storetest.Main) and removes the NATS server they share (testnats.Main).
 func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(deliveryTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
 	os.Exit(storetest.Main(func() int { return testnats.Main(m.Run) }))
 }
 

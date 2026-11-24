@@ -37,6 +37,7 @@ import (
 // set once and forgotten, since the durable already exists: bind has to correct both without an
 // operator noticing a log line, which is what this holds.
 func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -836,6 +837,7 @@ var consumerGenerations = map[int]map[string]consumerGenerationRow{
 // delivery durable's config is the one an intake newIntake builds asks for, with the flow control
 // newIntake gives it, as production builds it.
 func TestTheConsumerConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
+	t.Parallel()
 	rows, ok := consumerGenerations[consumerConfigGeneration]
 	if !ok {
 		t.Fatalf("generation %d has no pinned rows; add them with the configs it ships", consumerConfigGeneration)
