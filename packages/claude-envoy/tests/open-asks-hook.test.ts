@@ -1489,7 +1489,8 @@ test("a hook whose jj and Dispatch answer at once writes its summary with no sta
 // census blind to them with every row still passing, so this row starts one of each kind under
 // the census and requires it to hold them.
 test("the census sees each child a script starts through node:child_process", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-census-routing-"))
+  // The script is a module Bun runs, and Bun loads none from a path that holds a `?`.
+  const scratch = await mkdtemp(join(moduleRoot(), "claude-envoy-census-routing-"))
   const script = join(scratch, "starts.ts")
   await writeFile(
     script,
@@ -1622,9 +1623,10 @@ function neverAnswers() {
 
 /** A preload that makes the hook's fetches of Google's security token service and IAM Credentials,
  *  whose addresses a pool identity takes from no variable, wait unanswered until their signal ends
- *  them, as a service that hangs does; every other fetch is the real one. */
-async function silentGooglePreload(directory: string): Promise<string> {
-  const preload = join(directory, "silent-google.preload.ts")
+ *  them, as a service that hangs does; every other fetch is the real one. The preload is a module,
+ *  and Bun loads none from a path that holds a `?`, so it is written under `preloadDir()`. */
+async function silentGooglePreload(): Promise<string> {
+  const preload = join(preloadDir(), "silent-google.preload.ts")
   await writeFile(
     preload,
     [
@@ -1799,7 +1801,7 @@ const BROKER_ROUTES: readonly {
       AGENT_SECRETS_POOL_ACCOUNT: "machine@example.iam.gserviceaccount.com",
     }),
     cpuMs: POOL_CPU_CEILING_MS,
-    preloads: async (scratch) => [await silentGooglePreload(scratch)],
+    preloads: async () => [await silentGooglePreload()],
     clockReads: 5 + 4,
     expected: [
       DISPATCH_READ,
