@@ -4,12 +4,13 @@
 -- the ranges the Evals tab offers, kept ahead of the read, so a paint of an offered range reads
 -- its figures by key where it would read and fold every day row of its range (eval_days, migration
 -- 20261117100006). A stored figure is a fold of day rows, and moves only with them: every write of
--- day rows rewrites, in its own transaction, the figures of the days whose rows it moved.
+-- day rows rewrites, in its own transaction, the figures of the days whose rows it moved. Each is
+-- a fold of the project's own rows alone (eval_days.repo '', its own and those of the owner keys
+-- its published default attributes), which a read that names no repository folds; a read that
+-- names a repository folds the day rows, and no row here holds a repository's fold.
 --
--- eval_range_figures holds one row per project, repository, range, eval and deploy repository:
+-- eval_range_figures holds one row per project, range, eval and deploy repository:
 --   project_key, eval_id  the eval, of its project, as eval_days holds them.
---   repo        '' for the fold of the project's own rows, and a repository's name for the fold of
---               that repository's rows, which a read naming that one repository folds.
 --   deploy_repo the deploy repository of the rows folded, as eval_days.deploy_repo keeps them: ''
 --               for an eval no deploy repository moves, and for an eval that reads it, the
 --               repository its rows are computed as if it were the deploy repository, one fold of
@@ -36,8 +37,8 @@
 --               older build folded that its folds move, and no other.
 -- A range that holds no listed row of the eval has no row: its fold is the fold of no parts.
 --
--- eval_day_figures holds one row per project, repository, day, eval and deploy repository that
--- holds a listed day row of the eval:
+-- eval_day_figures holds one row per project, day, eval and deploy repository that holds a listed
+-- day row of the eval:
 --   figures     the day's figures of each headline series that holds a row that day (the per-day
 --               array a read answers), encoded as eval_range_figures' are.
 --   fold_key, built_by
@@ -47,10 +48,10 @@
 --               no longer match it has moved, and its figures and every range that holds it are
 --               folded again.
 -- eval_day_figures_eval_day, (project_key, eval_id, day), is the stored figures' read of an eval's
--- stored day rows over a span of days, which names no repository: the moved-day test every write
--- of day rows makes (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
--- (evals.buildFigureEnds), one range of it for each eval, where the primary key bounds only the
--- project.
+-- stored day rows over a span of days: the moved-day test every write of day rows makes
+-- (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
+-- (evals.buildFigureEnds), one range of it for each eval, where the primary key, whose column
+-- after the project is the day, bounds only the project and the span of days.
 --
 -- eval_figures_built holds one row per project whose figures are built: the first whole walk of
 -- them, by any build, sets it, and a read of an offered range folds the stored figures from then
@@ -74,7 +75,6 @@
 -- image rollback alone.
 create table eval_range_figures (
     project_key text not null references projects (key) on delete cascade,
-    repo text not null,
     days integer not null check (days > 0),
     end_day date not null,
     eval_id text not null,
@@ -83,7 +83,7 @@ create table eval_range_figures (
     figures bytea not null,
     oldest_updated_at timestamptz not null,
     built_by text not null,
-    primary key (project_key, repo, days, end_day, eval_id, deploy_repo),
+    primary key (project_key, days, end_day, eval_id, deploy_repo),
     constraint eval_range_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 )
 -- fillfactor 80, as eval_days has (20261117100006): a rewrite after a change of the delivery
@@ -99,7 +99,6 @@ with (fillfactor = 80);
 
 create table eval_day_figures (
     project_key text not null references projects (key) on delete cascade,
-    repo text not null,
     day date not null,
     eval_id text not null,
     deploy_repo text not null default '',
@@ -107,7 +106,7 @@ create table eval_day_figures (
     figures bytea not null,
     rows_stamp bigint not null,
     built_by text not null,
-    primary key (project_key, repo, day, eval_id, deploy_repo),
+    primary key (project_key, day, eval_id, deploy_repo),
     constraint eval_day_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 )
 -- fillfactor 80, for eval_range_figures' reason: no update a rewrite sends, of a row whose fold

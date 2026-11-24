@@ -1010,35 +1010,32 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 	byID := entriesByID(entries)
 	scope := figureScope{build: rb.build, project: project, through: last}
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
-	cuts, err := readFigureCuts(ctx, pool, project, read)
+	deployRepos, err := readFigureDeployRepos(ctx, pool, project, read)
 	if err != nil {
 		return err
 	}
-	stagedCuts, err := pool.Query(ctx, `
-		select distinct s.repo, s.deploy_repo from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
-		where o.project_key = $2 and s.rebuild_id = $1 and s.op = 'u' and s.listed and s.day >= $3 and s.day < $4
+	staged, err := pool.Query(ctx, `
+		select distinct s.deploy_repo from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
+		where o.project_key = $2 and s.rebuild_id = $1 and s.op = 'u' and s.listed and s.repo = '' and s.day >= $3 and s.day < $4
 	`, rb.id, project, read.From, read.To)
 	if err != nil {
-		return fmt.Errorf("read the repositories of %s's staged rows: %w", project, err)
+		return fmt.Errorf("read the deploy repositories of %s's staged rows: %w", project, err)
 	}
-	more, err := pgx.CollectRows(stagedCuts, func(row pgx.CollectableRow) (figureCut, error) {
-		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
+	more, err := pgx.CollectRows(staged, pgx.RowTo[string])
 	if err != nil {
-		return fmt.Errorf("read the repositories of %s's staged rows: %w", project, err)
+		return fmt.Errorf("read the deploy repositories of %s's staged rows: %w", project, err)
 	}
-	for _, cut := range more {
-		if !slices.Contains(cuts, cut) {
-			cuts = append(cuts, cut)
+	for _, deployRepo := range more {
+		if !slices.Contains(deployRepos, deployRepo) {
+			deployRepos = append(deployRepos, deployRepo)
 		}
 	}
-	slices.SortFunc(cuts, compareFigureCuts)
+	slices.Sort(deployRepos)
 	evalIDs := slices.Sorted(maps.Keys(byID))
 	built := map[rangeFigureKey]rangeFigureRow{}
 	builtDays := map[dayFigureKey]dayFigureRow{}
-	for _, cut := range cuts {
-		groups, err := readOverlayGroups(ctx, pool, rb.id, scope, byID, evalIDs, cut, read)
+	for _, deployRepo := range deployRepos {
+		groups, err := readOverlayGroups(ctx, pool, rb.id, scope, byID, evalIDs, deployRepo, read)
 		if err != nil {
 			return err
 		}
@@ -1046,12 +1043,12 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 			group := groups[evalID]
 			for end := first; !end.After(last); end = end.AddDate(0, 0, 1) {
 				for _, n := range FigureLengths {
-					target := rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo}
+					target := rangeFigureKey{days: n, end: end, eval: evalID, deployRepo: deployRepo}
 					if figures, oldest, held := group.rangeFigure(n, end); held {
 						built[target] = rangeFigureRow{rangeFigureKey: target, key: group.key, figures: figures, oldest: oldest}
 					}
 				}
-				day := dayFigureKey{repo: cut.repo, day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: cut.deployRepo}
+				day := dayFigureKey{day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: deployRepo}
 				if figures, stamp, held := group.dayFigure(day.day); held {
 					builtDays[day] = dayFigureRow{dayFigureKey: day, key: group.key, figures: figures, stamp: stamp}
 				}
@@ -1133,7 +1130,7 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 // day figures of the evals evalIDs of the days before them, by their keys.
 func readStoredFigures(ctx context.Context, q delivery.Querier, project string, evalIDs []string, first, last time.Time) (map[rangeFigureKey]rangeFigureRow, map[dayFigureKey]dayFigureRow, error) {
 	rows, err := q.Query(ctx, `
-		select repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at from eval_range_figures
+		select days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at from eval_range_figures
 		where project_key = $1 and end_day >= $2 and end_day <= $3
 	`, project, first, last)
 	if err != nil {
@@ -1142,7 +1139,7 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 	ranges := map[rangeFigureKey]rangeFigureRow{}
 	var one rangeFigureRow
 	var n int32
-	if _, err := pgx.ForEachRow(rows, []any{&one.repo, &n, &one.end, &one.eval, &one.deployRepo, &one.key, &one.figures, &one.oldest}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&n, &one.end, &one.eval, &one.deployRepo, &one.key, &one.figures, &one.oldest}, func() error {
 		one.days, one.end, one.oldest = int(n), one.end.UTC(), one.oldest.UTC()
 		ranges[one.rangeFigureKey] = one
 		one.figures = nil
@@ -1151,7 +1148,7 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 		return nil, nil, fmt.Errorf("read %s's stored range figures: %w", project, err)
 	}
 	rows, err = q.Query(ctx, `
-		select repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
+		select day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
 		where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
 	`, project, first.AddDate(0, 0, -1), last, evalIDs)
 	if err != nil {
@@ -1159,7 +1156,7 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 	}
 	days := map[dayFigureKey]dayFigureRow{}
 	var day dayFigureRow
-	if _, err := pgx.ForEachRow(rows, []any{&day.repo, &day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
 		day.day = day.day.UTC()
 		days[day.dayFigureKey] = day
 		day.figures = nil
@@ -1174,7 +1171,7 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 // at most statementBytes of parameters.
 func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, ranges []stagedRange) error {
 	size := func(one *stagedRange) int {
-		bytes := 13*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 2*8 + 1
+		bytes := 12*4 + len(one.op) + len(one.key.eval) + len(one.key.deployRepo) + 2*8 + 1
 		if one.row != nil {
 			bytes += len(one.row.figures) + 2*8
 		}
@@ -1183,15 +1180,15 @@ func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, range
 		}
 		return bytes
 	}
-	for chunk := range statementChunks(ranges, paramBytes(13, project)+12, size) {
+	for chunk := range statementChunks(ranges, paramBytes(12, project)+12, size) {
 		count := len(chunk)
-		ops, repos, evalIDs, deployRepos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+		ops, evalIDs, deployRepos := make([]string, count), make([]string, count), make([]string, count)
 		ns, ends, held := make([]int32, count), make([]time.Time, count), make([]bool, count)
 		keys, wasKeys := make([]*int64, count), make([]*int64, count)
 		figures, wasFigures := make([][]byte, count), make([][]byte, count)
 		oldest, wasOldest := make([]*time.Time, count), make([]*time.Time, count)
 		for i, one := range chunk {
-			ops[i], repos[i], evalIDs[i], deployRepos[i] = one.op, one.key.repo, one.key.eval, one.key.deployRepo
+			ops[i], evalIDs[i], deployRepos[i] = one.op, one.key.eval, one.key.deployRepo
 			ns[i], ends[i], held[i] = int32(one.key.days), one.key.end, one.was != nil
 			if one.row != nil {
 				keys[i], figures[i], oldest[i] = new(one.row.key), one.row.figures, new(one.row.oldest)
@@ -1201,14 +1198,14 @@ func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, range
 			}
 		}
 		if _, err := tx.Exec(ctx, `
-			insert into eval_rebuild_range_figures (rebuild_id, op, project_key, repo, days, end_day, eval_id, deploy_repo, fold_key, figures,
+			insert into eval_rebuild_range_figures (rebuild_id, op, project_key, days, end_day, eval_id, deploy_repo, fold_key, figures,
 				oldest_updated_at, held, was_fold_key, was_figures, was_oldest_updated_at)
-			select $1, given.op, $2, given.repo, given.days, given.end_day, given.eval_id, given.deploy_repo, given.fold_key, given.figures,
+			select $1, given.op, $2, given.days, given.end_day, given.eval_id, given.deploy_repo, given.fold_key, given.figures,
 				given.oldest, given.held, given.was_key, given.was_figures, given.was_oldest
-			from unnest($3::text[], $4::text[], $5::int[], $6::date[], $7::text[], $8::text[], $9::bigint[], $10::bytea[], $11::timestamptz[],
-				$12::bool[], $13::bigint[], $14::bytea[], $15::timestamptz[])
-				as given(op, repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest, held, was_key, was_figures, was_oldest)
-		`, rb, project, ops, repos, ns, ends, evalIDs, deployRepos, keys, figures, oldest, held, wasKeys, wasFigures, wasOldest); err != nil {
+			from unnest($3::text[], $4::int[], $5::date[], $6::text[], $7::text[], $8::bigint[], $9::bytea[], $10::timestamptz[],
+				$11::bool[], $12::bigint[], $13::bytea[], $14::timestamptz[])
+				as given(op, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest, held, was_key, was_figures, was_oldest)
+		`, rb, project, ops, ns, ends, evalIDs, deployRepos, keys, figures, oldest, held, wasKeys, wasFigures, wasOldest); err != nil {
 			return fmt.Errorf("stage %d range figures of %s: %w", count, project, err)
 		}
 	}
@@ -1219,7 +1216,7 @@ func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, range
 // most statementBytes of parameters.
 func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, days []stagedDay) error {
 	size := func(one *stagedDay) int {
-		bytes := 12*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 8 + 1
+		bytes := 11*4 + len(one.op) + len(one.key.eval) + len(one.key.deployRepo) + 8 + 1
 		if one.row != nil {
 			bytes += len(one.row.figures) + 2*8
 		}
@@ -1228,14 +1225,14 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 		}
 		return bytes
 	}
-	for chunk := range statementChunks(days, paramBytes(12, project)+12, size) {
+	for chunk := range statementChunks(days, paramBytes(11, project)+12, size) {
 		count := len(chunk)
-		ops, repos, evalIDs, deployRepos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+		ops, evalIDs, deployRepos := make([]string, count), make([]string, count), make([]string, count)
 		dates, held := make([]time.Time, count), make([]bool, count)
 		keys, wasKeys, stamps, wasStamps := make([]*int64, count), make([]*int64, count), make([]*int64, count), make([]*int64, count)
 		figures, wasFigures := make([][]byte, count), make([][]byte, count)
 		for i, one := range chunk {
-			ops[i], repos[i], evalIDs[i], deployRepos[i] = one.op, one.key.repo, one.key.eval, one.key.deployRepo
+			ops[i], evalIDs[i], deployRepos[i] = one.op, one.key.eval, one.key.deployRepo
 			dates[i], held[i] = one.key.day, one.was != nil
 			if one.row != nil {
 				keys[i], figures[i], stamps[i] = new(one.row.key), one.row.figures, new(one.row.stamp)
@@ -1245,14 +1242,14 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 			}
 		}
 		if _, err := tx.Exec(ctx, `
-			insert into eval_rebuild_day_figures (rebuild_id, op, project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp,
+			insert into eval_rebuild_day_figures (rebuild_id, op, project_key, day, eval_id, deploy_repo, fold_key, figures, rows_stamp,
 				held, was_fold_key, was_figures, was_rows_stamp)
-			select $1, given.op, $2, given.repo, given.day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.stamp,
+			select $1, given.op, $2, given.day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.stamp,
 				given.held, given.was_key, given.was_figures, given.was_stamp
-			from unnest($3::text[], $4::text[], $5::date[], $6::text[], $7::text[], $8::bigint[], $9::bytea[], $10::bigint[],
-				$11::bool[], $12::bigint[], $13::bytea[], $14::bigint[])
-				as given(op, repo, day, eval_id, deploy_repo, fold_key, figures, stamp, held, was_key, was_figures, was_stamp)
-		`, rb, project, ops, repos, dates, evalIDs, deployRepos, keys, figures, stamps, held, wasKeys, wasFigures, wasStamps); err != nil {
+			from unnest($3::text[], $4::date[], $5::text[], $6::text[], $7::bigint[], $8::bytea[], $9::bigint[],
+				$10::bool[], $11::bigint[], $12::bytea[], $13::bigint[])
+				as given(op, day, eval_id, deploy_repo, fold_key, figures, stamp, held, was_key, was_figures, was_stamp)
+		`, rb, project, ops, dates, evalIDs, deployRepos, keys, figures, stamps, held, wasKeys, wasFigures, wasStamps); err != nil {
 			return fmt.Errorf("stage %d day figures of %s: %w", count, project, err)
 		}
 	}
@@ -1262,16 +1259,16 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 // readOverlayGroups is readFigureGroups over the stored rows overlaid with the rebuild rb's staged
 // ones: each stored row of a computed eval a staged row of its key stands for is left out, and
 // each staged `u` row that is listed takes its place or is added. A logged eval's rows are the
-// readings write's, which no rebuild stages. A cut is one repository's rows of one deploy
-// repository, so a key within it is an owner (the project's own key, or an owner key of the
-// repository it publishes, owners.go), an eval, a series and a day: a staged row of an owner key
-// stands for that owner's row alone, beside the project's own row of the same series and day.
-func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
+// readings write's, which no rebuild stages. The project's own rows of one deploy repository hold
+// one row of each owner (the project's own key, or an owner key of the repository it publishes,
+// owners.go), eval, series and day: a staged row of an owner key stands for that owner's row
+// alone, beside the project's own row of the same series and day.
+func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, deployRepo string, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
 	var computed []string
 	for _, evalID := range evalIDs {
-		if entry, held := entries[evalID]; held && KeyedByDeployRepo(entry.Definition) == (cut.deployRepo != "") {
+		if entry, held := entries[evalID]; held && KeyedByDeployRepo(entry.Definition) == (deployRepo != "") {
 			read = append(read, entry)
 			if entry.Definition.Computed() {
 				computed = append(computed, evalID)
@@ -1281,11 +1278,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	var repos []string
-	if cut.repo != "" {
-		repos = []string{cut.repo}
-	}
-	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, deployRepo, nil, r, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1301,8 +1294,8 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), s.via_repository, s.updated_at
 			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
 			where o.project_key = $2 and s.rebuild_id = $1 and o.project_key || substr(s.eval_id, length(o.owner) + 1) = any($3)
-				and s.repo = $4 and s.deploy_repo = $5 and s.day >= $6::date and s.day < $7::date
-		`, rb, scope.project, computed, cut.repo, cut.deployRepo, r.From.UTC(), r.To.UTC())
+				and s.repo = '' and s.deploy_repo = $4 and s.day >= $5::date and s.day < $6::date
+		`, rb, scope.project, computed, deployRepo, r.From.UTC(), r.To.UTC())
 		if err != nil {
 			return nil, fmt.Errorf("read the staged rows of %s: %w", scope.project, err)
 		}
@@ -1575,53 +1568,53 @@ var flipStatements = []struct{ what, sql string }{
 		where s.rebuild_id = $1 and s.op = 'd' and m.project_key = s.project_key and m.family = s.family
 			and m.deploy_repo = s.deploy_repo and m.row_key = s.row_key and m.day = s.from_day`},
 	{"range figures locked", `
-		select 1 from eval_range_figures f join eval_rebuild_range_figures s on s.project_key = f.project_key and s.repo = f.repo
+		select 1 from eval_range_figures f join eval_rebuild_range_figures s on s.project_key = f.project_key
 			and s.days = f.days and s.end_day = f.end_day and s.eval_id = f.eval_id and s.deploy_repo = f.deploy_repo
 		where s.rebuild_id = $1
-		order by f.project_key collate "C", f.repo collate "C", f.days, f.end_day, f.eval_id collate "C", f.deploy_repo collate "C"
+		order by f.project_key collate "C", f.days, f.end_day, f.eval_id collate "C", f.deploy_repo collate "C"
 		for update of f`},
 	{"range figures written", `
 		update eval_range_figures f
 		set fold_key = s.fold_key, figures = s.figures, oldest_updated_at = s.oldest_updated_at, built_by = b.built_by
 		from eval_rebuild_range_figures s join eval_rebuilds b on b.id = s.rebuild_id
-		where s.rebuild_id = $1 and s.op = 'u' and s.held and f.project_key = s.project_key and f.repo = s.repo and f.days = s.days
+		where s.rebuild_id = $1 and s.op = 'u' and s.held and f.project_key = s.project_key and f.days = s.days
 			and f.end_day = s.end_day and f.eval_id = s.eval_id and f.deploy_repo = s.deploy_repo
 			and (f.fold_key, f.figures, f.oldest_updated_at) = (s.was_fold_key, s.was_figures, s.was_oldest_updated_at)`},
 	{"range figures made", `
-		insert into eval_range_figures (project_key, repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by)
-		select s.project_key, s.repo, s.days, s.end_day, s.eval_id, s.deploy_repo, s.fold_key, s.figures, s.oldest_updated_at, b.built_by
+		insert into eval_range_figures (project_key, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by)
+		select s.project_key, s.days, s.end_day, s.eval_id, s.deploy_repo, s.fold_key, s.figures, s.oldest_updated_at, b.built_by
 		from eval_rebuild_range_figures s join eval_rebuilds b on b.id = s.rebuild_id join projects p on p.key = s.project_key
 		where s.rebuild_id = $1 and s.op = 'u' and not s.held
-		order by s.project_key collate "C", s.repo collate "C", s.days, s.end_day, s.eval_id collate "C", s.deploy_repo collate "C"
-		on conflict (project_key, repo, days, end_day, eval_id, deploy_repo) do nothing`},
+		order by s.project_key collate "C", s.days, s.end_day, s.eval_id collate "C", s.deploy_repo collate "C"
+		on conflict (project_key, days, end_day, eval_id, deploy_repo) do nothing`},
 	{"range figures deleted", `
 		delete from eval_range_figures f using eval_rebuild_range_figures s
-		where s.rebuild_id = $1 and s.op = 'd' and f.project_key = s.project_key and f.repo = s.repo and f.days = s.days
+		where s.rebuild_id = $1 and s.op = 'd' and f.project_key = s.project_key and f.days = s.days
 			and f.end_day = s.end_day and f.eval_id = s.eval_id and f.deploy_repo = s.deploy_repo
 			and (f.fold_key, f.figures, f.oldest_updated_at) = (s.was_fold_key, s.was_figures, s.was_oldest_updated_at)`},
 	{"day figures locked", `
-		select 1 from eval_day_figures f join eval_rebuild_day_figures s on s.project_key = f.project_key and s.repo = f.repo
+		select 1 from eval_day_figures f join eval_rebuild_day_figures s on s.project_key = f.project_key
 			and s.day = f.day and s.eval_id = f.eval_id and s.deploy_repo = f.deploy_repo
 		where s.rebuild_id = $1
-		order by f.project_key collate "C", f.repo collate "C", f.day, f.eval_id collate "C", f.deploy_repo collate "C"
+		order by f.project_key collate "C", f.day, f.eval_id collate "C", f.deploy_repo collate "C"
 		for update of f`},
 	{"day figures written", `
 		update eval_day_figures f
 		set fold_key = s.fold_key, figures = s.figures, rows_stamp = s.rows_stamp, built_by = b.built_by
 		from eval_rebuild_day_figures s join eval_rebuilds b on b.id = s.rebuild_id
-		where s.rebuild_id = $1 and s.op = 'u' and s.held and f.project_key = s.project_key and f.repo = s.repo and f.day = s.day
+		where s.rebuild_id = $1 and s.op = 'u' and s.held and f.project_key = s.project_key and f.day = s.day
 			and f.eval_id = s.eval_id and f.deploy_repo = s.deploy_repo
 			and (f.fold_key, f.figures, f.rows_stamp) = (s.was_fold_key, s.was_figures, s.was_rows_stamp)`},
 	{"day figures made", `
-		insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
-		select s.project_key, s.repo, s.day, s.eval_id, s.deploy_repo, s.fold_key, s.figures, s.rows_stamp, b.built_by
+		insert into eval_day_figures (project_key, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
+		select s.project_key, s.day, s.eval_id, s.deploy_repo, s.fold_key, s.figures, s.rows_stamp, b.built_by
 		from eval_rebuild_day_figures s join eval_rebuilds b on b.id = s.rebuild_id join projects p on p.key = s.project_key
 		where s.rebuild_id = $1 and s.op = 'u' and not s.held
-		order by s.project_key collate "C", s.repo collate "C", s.day, s.eval_id collate "C", s.deploy_repo collate "C"
-		on conflict (project_key, repo, day, eval_id, deploy_repo) do nothing`},
+		order by s.project_key collate "C", s.day, s.eval_id collate "C", s.deploy_repo collate "C"
+		on conflict (project_key, day, eval_id, deploy_repo) do nothing`},
 	{"day figures deleted", `
 		delete from eval_day_figures f using eval_rebuild_day_figures s
-		where s.rebuild_id = $1 and s.op = 'd' and f.project_key = s.project_key and f.repo = s.repo and f.day = s.day
+		where s.rebuild_id = $1 and s.op = 'd' and f.project_key = s.project_key and f.day = s.day
 			and f.eval_id = s.eval_id and f.deploy_repo = s.deploy_repo
 			and (f.fold_key, f.figures, f.rows_stamp) = (s.was_fold_key, s.was_figures, s.was_rows_stamp)`},
 	{"evals whose figures moved", `

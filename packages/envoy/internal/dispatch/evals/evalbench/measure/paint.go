@@ -108,7 +108,10 @@ func gzipSize(body []byte) int {
 
 // headCases are this head's first paint: the list read at 84 days with an 84-day compare range
 // and at 28 days with none, each with no repository and with the deploy repository, and the
-// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases).
+// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases). The
+// reads with no repository are answered from the stored figures, and those with the deploy
+// repository from the day rows (evals.FiguresOffered: the stored figures fold the project's own
+// rows alone), under the same database budget as the read of the same range with none.
 func headCases(project string, today time.Time) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
 	list := func(w window, compare *window, repo string) string {

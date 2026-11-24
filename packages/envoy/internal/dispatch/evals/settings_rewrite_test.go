@@ -1163,11 +1163,12 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 }
 
 // TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites: over a settled history of thirty
-// days, foldMovedDays folds the stored figures of every day of every eval and repository of a
-// project that holds a listed row, once on one worker and once on figureFoldWorkers, and the two
-// answer the same rows, byte for byte, in the order writeFigures sends them (sortByKey): a group's
-// folds share its rows and parts and write into neither (figurePlan.fold). Run it under -race, by
-// name, which fails a fold that writes into what the others read.
+// days, foldMovedDays folds the stored figures of every day of every eval and deploy repository of
+// a project that holds a listed row of its own (repo ""), once on one worker and once on
+// figureFoldWorkers, and the two answer the same rows, byte for byte, in the order writeFigures
+// sends them (sortByKey): a group's folds share its rows and parts and write into neither
+// (figurePlan.fold). Run it under -race, by name, which fails a fold that writes into what the
+// others read.
 func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
@@ -1182,7 +1183,7 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 		t.Fatalf("read the evals of %s: %v", project, err)
 	}
 	rows, err := r.database.Pool.Query(ctx, `
-		select distinct eval_id, deploy_repo, repo, day from eval_days where project_key = $1 and listed and day < $2
+		select distinct eval_id, deploy_repo, day from eval_days where project_key = $1 and listed and repo = '' and day < $2
 	`, project, scope.through)
 	if err != nil {
 		t.Fatalf("read the days of %s's listed rows: %v", project, err)
@@ -1190,7 +1191,7 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 	moved := map[figureGroupKey]map[time.Time]bool{}
 	var group figureGroupKey
 	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&group.eval, &group.deployRepo, &group.repo, &day}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&group.eval, &group.deployRepo, &day}, func() error {
 		if moved[group] == nil {
 			moved[group] = map[time.Time]bool{}
 		}
@@ -1222,7 +1223,7 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 	}
 	ranges := map[figureGroupKey]int{}
 	for _, row := range one.ranges {
-		ranges[figureGroupKey{eval: row.eval, deployRepo: row.deployRepo, repo: row.repo}]++
+		ranges[figureGroupKey{eval: row.eval, deployRepo: row.deployRepo}]++
 	}
 	most := 0
 	for _, count := range ranges {

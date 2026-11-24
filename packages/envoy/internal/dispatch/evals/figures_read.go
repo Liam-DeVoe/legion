@@ -17,12 +17,12 @@ import (
 // over the stored rows, with the answers equal byte for byte.
 
 // FiguresOffered reports whether the stored figures can answer a read of window and compare (nil
-// for none) of repos: window and compare each whole UTC days of one of FigureLengths, and at most
-// one repository, whose rows a stored row of that repository folds (none: the project's own). A
-// read of another length, or of two repositories, whose fold merges several repositories' rows
-// that no stored row holds, folds the day rows.
+// for none) of repos: window and compare each whole UTC days of one of FigureLengths, and no
+// repository named, since the stored figures fold the project's own rows alone (figures.go). A
+// read of another length, or one that names a repository, whose fold is of that repository's rows,
+// folds the day rows.
 func FiguresOffered(repos []string, window Range, compare *Range) bool {
-	if len(repos) > 1 || !figureRange(window) {
+	if len(repos) > 0 || !figureRange(window) {
 		return false
 	}
 	return compare == nil || figureRange(*compare)
@@ -56,9 +56,9 @@ type storedDay struct {
 	figures []byte
 }
 
-// StoredFigures is what a read of the stored figures read for one window, compare range and
-// repository (ReadStoredFigures): how far each project's figures are built, each eval's stored row
-// of the window and of the compare range, and each eval's stored day rows of the window.
+// StoredFigures is what a read of the stored figures read for one window and compare range
+// (ReadStoredFigures): how far each project's figures are built, each eval's stored row of the
+// window and of the compare range, and each eval's stored day rows of the window.
 type StoredFigures struct {
 	built           map[string]time.Time
 	window, compare map[string]storedRange
@@ -67,23 +67,22 @@ type StoredFigures struct {
 
 // ReadStoredFigures is ReadStoredFiguresIn on the pool, each of its statements reading the rows
 // that stand when it runs.
-func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
-	return ReadStoredFiguresIn(ctx, s.database.Pool, projects, entries, deployRepo, repo, window, compare)
+func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo string, window Range, compare *Range) (StoredFigures, error) {
+	return ReadStoredFiguresIn(ctx, s.database.Pool, projects, entries, deployRepo, window, compare)
 }
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
-// repo (the empty string for the projects' own rows) folds for entries, evals of projects, where
-// the rows are recorded under deployRepo ("" where none is set; DeployRepoIn): of an eval keyed
-// by the deploy repository the fold of that repository's rows, and of every other the fold of the
-// rows of none (DeployRepoOf). It reads, one after the other: the range rows of the window and of
-// the compare range, the `union all` of two ranges of eval_range_figures' primary key; how far
-// each project's figures are built (figuresThrough); and the day rows of the window of the evals
-// with a headline series, one range of eval_day_figures' primary key for each project. A
-// refresher pass rewrites the three in one transaction, so in one answer's snapshot
-// (BeginSnapshot), as the eval list reads them, an eval's window figures are the fold of the days
-// read beside them; on the pool each statement reads the rows that stand when it runs. The read
-// is FiguresOffered's to make.
-func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
+// the projects' own rows folds for entries, evals of projects, where the rows are recorded under
+// deployRepo ("" where none is set; DeployRepoIn): of an eval keyed by the deploy repository the
+// fold of that repository's rows, and of every other the fold of the rows of none (DeployRepoOf).
+// It reads, one after the other: the range rows of the window and of the compare range, the
+// `union all` of two ranges of eval_range_figures' primary key; how far each project's figures are
+// built (figuresThrough); and the day rows of the window of the evals with a headline series, one
+// range of eval_day_figures' primary key for each project. A refresher pass rewrites the three in
+// one transaction, so in one answer's snapshot (BeginSnapshot), as the eval list reads them, an
+// eval's window figures are the fold of the days read beside them; on the pool each statement
+// reads the rows that stand when it runs. The read is FiguresOffered's to make.
+func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, window Range, compare *Range) (StoredFigures, error) {
 	read := StoredFigures{window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}}
 	evalIDs := make([]string, len(entries))
 	var headlined []string
@@ -95,12 +94,12 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	}
 	keyed := keyedEvals(entries)
 	ranged := `select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
-		where project_key = any($1::text[]) and repo = $2 and eval_id = any($3::text[]) and days = $%d and end_day = $%d::date
-			and ` + deployRepoCase("deploy_repo", "$4", "$5")
-	query := fmt.Sprintf(ranged, 6, 7)
-	args := []any{projects, repo, evalIDs, keyed, deployRepo, rangeDays(window), window.To}
+		where project_key = any($1::text[]) and eval_id = any($2::text[]) and days = $%d and end_day = $%d::date
+			and ` + deployRepoCase("deploy_repo", "$3", "$4")
+	query := fmt.Sprintf(ranged, 5, 6)
+	args := []any{projects, evalIDs, keyed, deployRepo, rangeDays(window), window.To}
 	if compare != nil {
-		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(ranged, 8, 9)
+		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(ranged, 7, 8)
 		args = append(args, rangeDays(*compare), compare.To)
 	}
 	ranges, err := q.Query(ctx, query, args...)
@@ -135,9 +134,9 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	}
 	days, err := q.Query(ctx, `
 		select eval_id, day, fold_key, figures from eval_day_figures
-		where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
-			and `+deployRepoCase("deploy_repo", "$6", "$7")+`
-	`, projects, repo, window.From, window.To, headlined, keyed, deployRepo)
+		where project_key = any($1::text[]) and day >= $2::date and day < $3::date and eval_id = any($4::text[])
+			and `+deployRepoCase("deploy_repo", "$5", "$6")+`
+	`, projects, window.From, window.To, headlined, keyed, deployRepo)
 	if err != nil {
 		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
 	}
