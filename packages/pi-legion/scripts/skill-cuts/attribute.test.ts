@@ -373,6 +373,17 @@ const ORG1_OMEGA = copyRow("org1/legion", "skills/omega", "omega");
 const ORG2_OMEGA = copyRow("org2/legion", "skills/omega", "omega");
 const ROOT_SIGMA = copyRow("acme/rootskills", "sigma", "sigma");
 const KILN_ETA = copyRow("acme/kiln", "skills/eta", "eta");
+// Two repositories whose names one holds the other's, at one skill directory, as R4's list of the
+// three owners holds a proof repository and its `-internal` one, and a cut repository whose name
+// ends with the name of another repository.
+const PROOFS_ADDING = copyRow("acme/proofs", ".claude/skills/adding-a-proof", "adding-a-proof");
+const INTERNAL_ADDING = copyRow(
+  "acme/proofs-internal",
+  ".claude/skills/adding-a-proof",
+  "adding-a-proof"
+);
+const BINARY_FORGE_WIKI = copyRow("acme/binary-forge", ".claude/skills/forge-wiki", "forge-wiki");
+const FORGE_WIKI = copyRow("acme/forge", ".claude/skills/forge-wiki", "forge-wiki");
 
 function checkoutWorld(): R4Tables {
   const world = f7World();
@@ -388,6 +399,10 @@ function checkoutWorld(): R4Tables {
       ORG2_OMEGA,
       ROOT_SIGMA,
       KILN_ETA,
+      PROOFS_ADDING,
+      INTERNAL_ADDING,
+      BINARY_FORGE_WIKI,
+      FORGE_WIKI,
     ],
   };
 }
@@ -417,11 +432,28 @@ test.each([
     ORG2_OMEGA,
     "checkout: to org2/legion skills/omega: the path ends with skills/omega/, the skill directory of 2 repositories, and the path names org2/legion",
   ],
+  // Catches: R1 on R4's list of the three owners, where a workspace path naming the owner and the
+  // `-internal` repository tied it with the repository whose name it holds (1,434 read sessions
+  // of adding-a-proof), and a checkout of a cut repository tied it with the repository whose name
+  // its own ends with (75 read sessions of one of the cut's changed skills), each left
+  // unattributed.
   [
-    "a tie the path does not break is unattributed",
+    "the owner and the exact name in a row win over the owner and a directory that only holds the other's name",
+    "/legion/workspaces/acme/proofs-internal/p-526/.claude/skills/adding-a-proof/SKILL.md",
+    INTERNAL_ADDING,
+    "checkout: to acme/proofs-internal .claude/skills/adding-a-proof: the path ends with .claude/skills/adding-a-proof/, the skill directory of 2 repositories, and the path names acme/proofs-internal",
+  ],
+  [
+    "an exact name as a directory wins over a directory that only holds the other's name",
+    "/home/dev/src/binary-forge/.claude/skills/forge-wiki/SKILL.md",
+    BINARY_FORGE_WIKI,
+    "checkout: to acme/binary-forge .claude/skills/forge-wiki: the path ends with .claude/skills/forge-wiki/, the skill directory of 2 repositories, and the path names binary-forge in a directory",
+  ],
+  [
+    "a tie the path does not break, nor the context, which installs none of the tied copies, is unattributed",
     "/tmp/work/.claude/skills/delta/SKILL.md",
     undefined,
-    "unattributed: the path ends with .claude/skills/delta/, the skill directory of 2 repositories (acme/kiln, acme/other), and no directory of the path names just one of them",
+    "unattributed: the path ends with .claude/skills/delta/, the skill directory of 2 repositories (acme/kiln, acme/other), and no directory of the path names just one of them, and its context installs none of them",
   ],
   [
     "a one-segment skill directory counts when the path names its repository",
@@ -474,6 +506,114 @@ test.each([
   );
   // The context installs one alpha (acme/skills'), whose sessions stay H1's and H2's.
   expect(countOf(attribution, ALPHA).sessions).toBe(2);
+});
+
+// A repository and its fork each hold a copy at skills/dispatch, as cybermonklabs/legion and
+// theorem-labs/legion do; the worker image's path /opt/legion/pi-envoy/dist/skills/dispatch/
+// names neither (each repository is named legion), so the checkout rule ties. The parent's
+// package ships its dispatch and its agent-secrets, whose image path a prefix row maps; the
+// fork's marketplace plugin ships the fork's dispatch and brainstorm.
+const PARENT_SECRETS = copyRow("org/legion", "skills/agent-secrets", "agent-secrets");
+const PARENT_DISPATCH = copyRow("org/legion", "skills/dispatch", "dispatch");
+const FORK_DISPATCH = copyRow("fork-org/legion", "skills/dispatch", "dispatch", {
+  fork: "yes",
+  parent: "org/legion",
+});
+const FORK_BRAINSTORM = copyRow("fork-org/legion", "skills/brainstorm", "brainstorm", {
+  fork: "yes",
+  parent: "org/legion",
+});
+const PARENT_ENVOY: Unit = {
+  unit: "package:@org/pi-envoy",
+  manifest_repository: "org/legion",
+  manifest_path: "packages/pi-envoy/package.json",
+  kind: "omp-package",
+  action: "ships",
+  host: "omp",
+};
+const FORK_PLUGIN = plugin("claude-envoy", "fork-org/legion");
+
+// Catches: R1 on R4's list of the three owners, where a checkout tie of a fork and its parent
+// was unattributed at once and the installer rule never ran: 49,375 read sessions of
+// /opt/legion/pi-envoy/dist/skills/ and /opt/legion/pi-legion/dist/skills/.
+test("a checkout tie goes to the one tied copy the store's context installs, and stays unattributed when its context installs none or both of them", () => {
+  const stores = parseConfig({
+    ...(JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as object),
+    stores: [
+      { name: "store_a", context: "legion:ACME" },
+      { name: "store_b", context: "legion:BETA" },
+      { name: "store_c", context: "legion:GAMMA" },
+    ],
+  });
+  const world: R4Tables = {
+    copies: [PARENT_SECRETS, PARENT_DISPATCH, FORK_DISPATCH, FORK_BRAINSTORM],
+    installers: [
+      installs(PARENT_ENVOY, PARENT_SECRETS),
+      installs(PARENT_ENVOY, PARENT_DISPATCH),
+      installs(FORK_PLUGIN, FORK_DISPATCH),
+      installs(FORK_PLUGIN, FORK_BRAINSTORM),
+    ],
+    prefixes: [
+      prefixRow("/opt/legion/pi-envoy/dist/skills/agent-secrets/", PARENT_SECRETS, PARENT_ENVOY),
+      prefixRow(
+        "**/plugins/cache/m/claude-envoy/*/skills/brainstorm/",
+        FORK_BRAINSTORM,
+        FORK_PLUGIN
+      ),
+    ],
+    loaders: [],
+    repositories: [
+      repositoryRow("org/legion"),
+      { ...repositoryRow("fork-org/legion"), fork: "yes", parent: "org/legion" },
+    ],
+  };
+  const secrets = "/opt/legion/pi-envoy/dist/skills/agent-secrets/SKILL.md";
+  const dispatch = "/opt/legion/pi-envoy/dist/skills/dispatch/SKILL.md";
+  const outputs = [
+    // store_a's context installs the parent's package alone, through its agent-secrets read.
+    query("store_a", "2026-11-22", [
+      { skill: "agent-secrets", copy: secrets, hashes: ["5555555555555555"] },
+      { skill: "dispatch", copy: dispatch, hashes: ["6666666666666666"] },
+    ]),
+    // store_b has no step-1 read, so its context installs nothing.
+    query("store_b", "2026-11-22", [
+      { skill: "dispatch", copy: dispatch, hashes: ["7777777777777777"] },
+    ]),
+    // store_c's context installs the parent's package and the fork's plugin.
+    query("store_c", "2026-11-22", [
+      { skill: "agent-secrets", copy: secrets, hashes: ["8888888888888888"] },
+      {
+        skill: "brainstorm",
+        copy: "/home/x/.claude/plugins/cache/m/claude-envoy/1.0.0/skills/brainstorm/SKILL.md",
+        hashes: ["aaaaaaaaaaaaaaaa"],
+      },
+      { skill: "dispatch", copy: dispatch, hashes: ["9999999999999999"] },
+    ]),
+  ];
+  const attribution = attribute(stores, outputs, world);
+  const tie =
+    "the path ends with skills/dispatch/, the skill directory of 2 repositories (org/legion, fork-org/legion), and no directory of the path names just one of them";
+  expect(outcomesOf(attribution, "/opt/legion/pi-envoy/dist/skills/dispatch/")).toEqual([
+    {
+      outcome: `store_a: context: to org/legion skills/dispatch: ${tie}, and its context installs that one of them`,
+      sessions: 1,
+    },
+    {
+      outcome: `store_b: unattributed: ${tie}, and its context installs none of them`,
+      sessions: 1,
+    },
+    {
+      outcome: `store_c: unattributed: ${tie}, and its context installs 2 of them (org/legion skills/dispatch, fork-org/legion skills/dispatch)`,
+      sessions: 1,
+    },
+  ]);
+  expect(countOf(attribution, PARENT_DISPATCH)).toMatchObject({
+    sessions: 1,
+    unattributed: 2,
+    ties: [shownCopy(FORK_DISPATCH)],
+  });
+  expect(countOf(attribution, FORK_DISPATCH)).toMatchObject({ sessions: 0, unattributed: 2 });
+  expect(attribution.unattributedSessions).toBe(2);
 });
 
 // The prefix rows copies.ts gives a `github:` dependency of a plugins package.json and a pool an

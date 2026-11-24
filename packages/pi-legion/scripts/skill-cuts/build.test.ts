@@ -620,23 +620,26 @@ const readsUnder = (dir: string) => (lines: Record<string, unknown>[]) => {
   readByPathAt(3, `${dir}/references/x.md`)(lines);
 };
 
-/** The made-up sessions that read alpha by its path, in store_a at `/sessions/<name>.jsonl` (or
- *  their own path): each is F1 changed by its entry, as SESSIONS' are, and none is in the build
- *  over every made-up session. F1's reads of alpha (messages 1 and 3) become reads by path: of the
- *  copy F1 read, which the prefix table places at the cut's copy, by its absolute path
- *  (path-read), relative to F1's working directory (path-relative-read), or under `~` in a
- *  session whose transcript is under that home's `.omp/` (path-home); the relative ones in a
- *  session whose header names no working directory (path-no-cwd), and so the `@~dev/` ones, which
- *  are relative too (path-at-name), and the `~` ones in one whose
- *  transcript's path names no home (path-no-home); with a read selector (path-range); of
- *  acme/other's copy (path-other); or in a directory of `skills/alpha` that no directory of the
- *  path says the repository of, which three copies have (path-unattributed). path-mixed keeps
- *  F1's skill:// reads and reads acme/other's copy by path at message 5; path-form is path-read
- *  with a read at message 5 of a file that only the new text holds, in a form the arms do not
- *  answer (NEW_WIDE). */
+/** The made-up sessions that read alpha by its path, in store_a (or their own store) at
+ *  `/sessions/<name>.jsonl` (or their own path): each is F1 changed by its entry, as SESSIONS'
+ *  are, and none is in the build over every made-up session. F1's reads of alpha (messages 1 and
+ *  3) become reads by path: of the copy F1 read, which the prefix table places at the cut's copy,
+ *  by its absolute path (path-read), relative to F1's working directory (path-relative-read), or
+ *  under `~` in a session whose transcript is under that home's `.omp/` (path-home); the relative
+ *  ones in a session whose header names no working directory (path-no-cwd), and so the `@~dev/`
+ *  ones, which are relative too (path-at-name), and the `~` ones in one whose transcript's path
+ *  names no home (path-no-home); with a read selector (path-range); of acme/other's copy
+ *  (path-other); or in a checkout of `skills/alpha` whose path leaves the copies of several
+ *  repositories tied, among which the store's context decides: no directory of the path names
+ *  any of the three repositories that have that directory, and store_a's context installs one of
+ *  them, acme/skills's, the cut's copy (path-tie); or a directory `skills` names both acme/skills
+ *  and its fork forker/skills, and store_c's context installs neither, acme/other's alone
+ *  (path-unattributed). path-mixed keeps F1's skill:// reads and reads acme/other's copy by path
+ *  at message 5; path-form is path-read with a read at message 5 of a file that only the new text
+ *  holds, in a form the arms do not answer (NEW_WIDE). */
 const BY_PATH: Record<
   string,
-  { change: (lines: Record<string, unknown>[]) => void; path?: string }
+  { change: (lines: Record<string, unknown>[]) => void; path?: string; store?: string }
 > = {
   "path-read": { change: readsUnder(`${F1_SKILLS}/alpha`) },
   "path-relative-read": { change: readsUnder(F1_RELATIVE) },
@@ -669,7 +672,11 @@ const BY_PATH: Record<
     },
   },
   "path-other": { change: readsUnder("/elsewhere/other-skills/alpha") },
-  "path-unattributed": { change: readsUnder("/home/dev/notes/skills/alpha") },
+  "path-tie": { change: readsUnder("/home/dev/notes/skills/alpha") },
+  "path-unattributed": {
+    store: "store_c",
+    change: readsUnder("/home/dev/src/skills/skills/alpha"),
+  },
   "path-mixed": {
     change: readByPathAt(5, "/elsewhere/other-skills/alpha/SKILL.md", "# alpha of acme/other"),
   },
@@ -1978,7 +1985,7 @@ beforeAll(() => {
     store[sessionPath(name)] = sessionText(name);
   }
   for (const name of [...Object.keys(BY_PATH), ...Object.keys(MATERIAL)]) {
-    const store = files.store_a ?? {};
+    const store = files[BY_PATH[name]?.store ?? "store_a"] ?? {};
     store[sessionPath(name)] = sessionText(name);
   }
   // A subagent the good session started, one level below its directory, whose recorded prompt
@@ -2324,7 +2331,7 @@ function sessionsFile(
   extra: unknown[] = []
 ) {
   const lines = names.map((name) => {
-    const store = SESSIONS[name]?.store ?? "store_a";
+    const store = SESSIONS[name]?.store ?? BY_PATH[name]?.store ?? "store_a";
     const hash = fileHash(sessionPath(name));
     return withoutPath.includes(name) ? { store, hash } : { store, hash, path: sessionPath(name) };
   });
@@ -3684,6 +3691,22 @@ describe("build-cases over reads of the skill by path", () => {
     }
   });
 
+  test("a whole read by path in a checkout whose path leaves the copies of several repositories tied goes to the one of them the store's context installs: at the cut's copy, it builds a case that names the copy as read, with the context rule in its evidence", () => {
+    const c = caseNamed("path-tie");
+    expect(c?.pathCopy).toEqual({ dir: "/home/dev/notes/skills/alpha", cwd: F1_CWD });
+    expect(c?.skillReads).toEqual([2, 4]);
+    expect(c?.profile.skills).toContainEqual(
+      expect.objectContaining({ name: "alpha", repo: "acme/skills", path: "skills/alpha" })
+    );
+    expect(
+      c?.evidence?.find(
+        (each) => each.item === "unit user-skills:omp (acme/skills:installers/skills.sh)"
+      )?.source
+    ).toContain(
+      "message 2 reads /home/dev/notes/skills/alpha/SKILL.md by its path, which attribute.ts's context rule places at acme/skills skills/alpha (context: to acme/skills skills/alpha: the path ends with skills/alpha/, the skill directory of 3 repositories (acme/other, acme/skills, forker/skills), and no directory of the path names just one of them, and its context installs that one of them)"
+    );
+  });
+
   test("a session that reads alpha by path only with a selector, of another copy, at a path no rule places, or of the cut's copy at a relative or ~ path whose directory the session does not name is dropped under that reason, with no reader call", () => {
     const expected: Record<string, [DropReason, string]> = {
       "path-range": [
@@ -3694,9 +3717,10 @@ describe("build-cases over reads of the skill by path", () => {
         "other-copy",
         "message 2 answers the read of /elsewhere/other-skills/alpha/SKILL.md (other-copy: the prefix table rule places it at acme/other skills/alpha)",
       ],
+      // A tie the store's context does not decide: store_c's installs acme/other's alpha alone.
       "path-unattributed": [
         "unattributed",
-        "message 2 answers the read of /home/dev/notes/skills/alpha/SKILL.md (unattributed: the path ends with skills/alpha/, the skill directory of 3 repositories",
+        "message 2 answers the read of /home/dev/src/skills/skills/alpha/SKILL.md (unattributed: the path ends with skills/alpha/, the skill directory of 3 repositories (acme/other, acme/skills, forker/skills), and no directory of the path names just one of them, and its context installs none of them)",
       ],
       "path-no-cwd": [
         "path-relative",
@@ -3749,9 +3773,9 @@ describe("build-cases over reads of the skill by path", () => {
       "path-form": 1,
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
-    expect(summary.casesBuilt).toBe(4);
+    expect(summary.casesBuilt).toBe(5);
     expect(cases.map((each) => each.source.pathHash).sort()).toEqual(
-      ["path-read", "path-relative-read", "path-home", "path-mixed"]
+      ["path-read", "path-relative-read", "path-home", "path-tie", "path-mixed"]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
     );

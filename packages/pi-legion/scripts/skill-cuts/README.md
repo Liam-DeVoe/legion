@@ -1045,10 +1045,13 @@ the list, read as Oh My Pi 18.18.6 reads it:
   `skills` list declares, each inside the package, else its `skills/`, each scanned as Oh My Pi
   scans a skill directory (an entry holding no `SKILL.md` is read one level deeper, a skill with
   no description is left out, and a declared directory lists no skill through a link that leads
-  out of the package), and the skills a prepack script stages for it. It is installed at
-  `node_modules/<name>/`, and, for a package the worker image carries (one a prepack script
-  stages skills for, or whose directory holds the Claude Code build script), also at
-  `/opt/legion/<its last name>/`.
+  out of the package), and the skills its own repository's prepack script stages for it. It is
+  installed at `node_modules/<name>/`, and, for a package the worker image carries (one its own
+  repository's prepack script stages skills for, or whose directory holds that repository's
+  Claude Code build script), also at `/opt/legion/<its last name>/`. A prepack script copies its
+  own repository's `skills/<name>` into the package directory it runs in, so a fork's script
+  that stages the same package name stages into the fork's package, never its parent's, and the
+  plugin a build script generates holds its own repository's stages alone.
 - A `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins `package.json`: the package
   at the root of that repository, at that ref, installed under the dependency's name, whatever
   the repository's owner.
@@ -1115,8 +1118,8 @@ name the package's unit, so `build-cases` and `build-tasks` resolve that unit at
 commit as they resolve any. Under the script's line, `skill-copies.md` names each such path with
 the commits that staged it there (`from <commit> (<date>) until <commit> (<date>)`), and each
 path that gets no row, with why: the tree at `--at` holds no `SKILL.md` at the directory it was
-staged from (a skill renamed or removed since), or the package is no package unit of the trees
-read.
+staged from (a skill renamed or removed since), or the package is no package unit of the script's
+own repository.
 
 ### `attribute`
 
@@ -1128,9 +1131,17 @@ bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <coun
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
 copy by the prefix table, then by the repository-relative skill directory a checkout's path ends
-with, then by the copies the store's context installs; counts each session once across the
-count's queries; marks ties and loaded skills; states each store's span; ranks each cut's changed
-skills for the behaviour test and writes each ranked skill's reading sessions
+with, then by the copies the store's context installs. Copies of several repositories at the
+skill directory a checkout's path ends with are told apart by how the path names the repository,
+in this order: its owner and its name as two directories in a row; its name as a directory; its
+owner followed by a directory that holds its name; a directory that holds its name (`.dotfiles`
+holds `dotfiles`). So an exact name wins over a directory that only holds it:
+`/legion/workspaces/acme/kiln-extra/` names acme/kiln-extra, not acme/kiln. A checkout the path
+leaves tied (a repository and its fork, `skills/<name>` in both, neither named) goes on to the
+context, which places the read at the one of the tied copies the context installs, else leaves
+it unattributed with both reasons. It counts each session once across the count's queries; marks
+ties and loaded skills; states each store's span; ranks each cut's changed skills for the
+behaviour test and writes each ranked skill's reading sessions
 (`<out>/<cut or set id>/sessions/<skill>.jsonl`, file hashes only). With `--models`, it also
 counts each copy's reading sessions by model, and writes each ranked skill's
 `<out>/<cut or set id>/models/<skill>.json`: the counts by model of the sessions its sessions file
