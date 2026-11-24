@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"maps"
 	"slices"
 	"testing"
 
@@ -30,16 +31,6 @@ func ownedBlock(id string, needs ...string) plan.Task {
 // putOwnedVersion stores part(id, of) for the role implementer.
 func partBlock(id, of, role string) plan.Task {
 	return plan.Task{ID: id, Text: "Do " + id + ".", PartOf: of, Steps: []plan.Step{{Role: role, Key: id}}}
-}
-
-// taskIDs is the ids of tasks, in id order.
-func taskIDs(tasks map[string]record.PlanTask) []string {
-	ids := make([]string, 0, len(tasks))
-	for id := range tasks {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids
 }
 
 // Each task is its writer's to change: the owner of the issue writes the tasks of the top level,
@@ -129,7 +120,7 @@ func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
 					return
 				}
 				mustTake(t, "the owner's version 2", result)
-				if ids := taskIDs(tasksOf(t, pool, engine, root.Key)); !slices.Equal(ids, []string{"a", "h"}) {
+				if ids := slices.Sorted(maps.Keys(tasksOf(t, pool, engine, root.Key))); !slices.Equal(ids, []string{"a", "h"}) {
 					t.Fatalf("the tasks of %s after the owner removed f = %v, want a and h: f, f1 and f2 deleted", root.Key, ids)
 				}
 			})

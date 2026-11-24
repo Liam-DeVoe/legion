@@ -101,9 +101,9 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if given.stored, err = e.store.Plan(ctx, tx, fact.Issue, fact.Generation); err != nil {
 		return givenVersion{}, nil, err
 	}
-	giver, refusal, err := giverOf(fact, issue, given.stored)
-	if err != nil || refusal != nil {
-		return givenVersion{}, refusal, err
+	giver, refusal := giverOf(fact, issue, given.stored)
+	if refusal != nil {
+		return givenVersion{}, refusal, nil
 	}
 	if given.stored == nil && given.recorded && !beforeItsWork(*issue) {
 		return givenVersion{}, intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(issue.Key)}), nil
@@ -184,38 +184,28 @@ func refusalUnless(err error, refusal *intake.Refusal) *intake.Refusal {
 // that gave it and stored, the plan in force at the fact's generation (nil for none). An
 // architect's version is the owner's, "", whose claim requestRefusal judged. A sub-owner's
 // (intake.PlanGiven.SubOwner) is the task of stored that names a sub-owner and whose sub-owner's
-// claim, its agent (record.SubOwnerAgent) on issue, gave it: the agent's name alone does not give
-// the task back, since a long id is hashed. requestRefusal judges no sub-owner, so its version of a
-// run the issue has left is refused PLAN_STALE_GENERATION here, and one whose claim is the
-// sub-owner of no task of stored intake.NoSubOwnedTask. A sub-owner starts only once its task runs,
-// so its route gives its version at the generation of the recorded issue.
-func giverOf(fact intake.PlanGiven, issue *record.Issue, stored *record.StoredPlan) (plan.Giver, *intake.Refusal, error) {
+// agent (record.SubOwnerAgent) is the agent of the claim that gave it; the route held that claim to
+// fact's issue (SUB_OWNER_OUTSIDE_ISSUE), and a claim's issue never changes. requestRefusal judges
+// no sub-owner, so its version of a run the issue has left is refused PLAN_STALE_GENERATION here,
+// and one whose claim is the sub-owner of no task of stored intake.NoSubOwnedTask. A sub-owner
+// starts only once its task runs, so its route gives its version at the generation of the
+// recorded issue.
+func giverOf(fact intake.PlanGiven, issue *record.Issue, stored *record.StoredPlan) (plan.Giver, *intake.Refusal) {
 	agent, ok := fact.SubOwner()
 	if !ok {
-		return "", nil, nil
+		return "", nil
 	}
 	if issue != nil && fact.Generation != issue.Generation {
-		return "", intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation), nil
+		return "", intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation)
 	}
 	if issue != nil && stored != nil {
-		project, err := claim.ProjectToken(issue.Project)
-		if err != nil {
-			return "", nil, err
-		}
 		for _, task := range stored.Tasks {
-			if task.OwnerRole == "" {
-				continue
-			}
-			token, err := claim.AgentToken(project, issue.Key, record.SubOwnerAgent(task.Task))
-			if err != nil {
-				return "", nil, err
-			}
-			if token == fact.GivenBy {
-				return plan.Giver(task.Task), nil, nil
+			if task.OwnerRole != "" && record.SubOwnerAgent(task.Task) == agent {
+				return plan.Giver(task.Task), nil
 			}
 		}
 	}
-	return "", intake.PlanRefused([]plan.Refusal{intake.NoSubOwnedTask(fact.Issue, agent)}), nil
+	return "", intake.PlanRefused([]plan.Refusal{intake.NoSubOwnedTask(fact.Issue, agent)})
 }
 
 // writtenVersion is what writeVersion read of the version in force before it wrote fact's over

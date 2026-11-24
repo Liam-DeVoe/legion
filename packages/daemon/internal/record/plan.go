@@ -864,19 +864,26 @@ func versionsInForce(ctx context.Context, tx pgx.Tx, issue, order string) ([]ver
 
 // answeringGiver is who answers for a version given by givenBy, over the versions of its
 // generation given before it by earlier, the latest first: givenBy, but for a version a sub-owner
-// gave (IsSubOwnerAgent), the giver of the latest version before it that no sub-owner gave. A
+// gave (bySubOwner), the giver of the latest version before it that no sub-owner gave. A
 // sub-owner changes only the parts of its task in its owner's plan (the workflow's planGiven), so
 // its version is its owner's plan, carried to a later generation as the owner's. A sub-owner's
 // version with no such version before it answers for itself, and no owner is a sub-owner.
 func answeringGiver(givenBy claim.Token, earlier []string) claim.Token {
-	giver := givenBy
-	for _, before := range earlier {
-		if _, agent, named := giver.Cut(); !named || !IsSubOwnerAgent(agent) {
-			return giver
-		}
-		giver = claim.Token(before)
+	if !bySubOwner(givenBy) {
+		return givenBy
 	}
-	return giver
+	for _, before := range earlier {
+		if !bySubOwner(claim.Token(before)) {
+			return claim.Token(before)
+		}
+	}
+	return givenBy
+}
+
+// bySubOwner says whether token is the claim of a task's sub-owner (IsSubOwnerAgent).
+func bySubOwner(token claim.Token) bool {
+	_, agent, named := token.Cut()
+	return named && IsSubOwnerAgent(agent)
 }
 
 // OwnersNewestPlan is the newest plan in force that an owner of issue gave, of any generation,

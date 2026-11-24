@@ -214,9 +214,9 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 }
 
 // subOwnerGrant says whether grantID names a grant of role sub-owner (claim.RoleSubOwner) whose
-// claim is a task's sub-owner's: its agent is named for one (record.IsSubOwnerAgent). It reads the
-// grant without redeeming it (credential.Grants.Redeem writes nothing), so the rule it picks
-// redeems it once and answers an expired or revoked grant itself.
+// claim is a task's sub-owner's: its agent is named for one (record.IsSubOwnerAgent). It calls
+// credential.Grants.Redeem, which writes nothing, and answers no refusal: the rule it picks redeems
+// the grant through s.redeem and answers an expired or revoked one itself.
 func (s *server) subOwnerGrant(grantID string) bool {
 	held, err := s.grants.Redeem(grantID)
 	if err != nil || held.Controller || held.Role != claim.RoleSubOwner {
@@ -227,19 +227,17 @@ func (s *server) subOwnerGrant(grantID string) bool {
 }
 
 // subOwnerOfIssue authorizes register_plan for the grant of a task's sub-owner (subOwnerGrant)
-// whose claim is on issue: the token claim.AgentToken gives its agent on issue. A sub-owner's
-// grant for another issue is refused 403 SUB_OWNER_OUTSIDE_ISSUE. A sub-owner starts only once
-// its task runs, so its issue is recorded (404 ISSUE_NOT_FOUND otherwise), and its plan is given at
-// the issue's generation. Which task the agent is the sub-owner of is the workflow's to read, from
-// the plan in force in the fact's own transaction (planGiven): the agent's name does not give a long
-// task id back.
+// whose claim is on issue (credential.Grant.Issue, as phaseBackward holds a worker to its own
+// issue). A sub-owner's grant for another issue is refused 403 SUB_OWNER_OUTSIDE_ISSUE. A sub-owner
+// starts only once its task runs, so its issue is recorded (404 ISSUE_NOT_FOUND otherwise), and its
+// plan is given at the issue's generation. Which task the agent is the sub-owner of is the
+// workflow's to read, from the plan in force in the fact's own transaction (planGiven).
 func (s *server) subOwnerOfIssue(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
 	grant, ok := s.redeem(w, r, grantID)
 	if !ok {
 		return credential.Grant{}, 0, false
 	}
-	_, agent, _ := grant.Claim.Cut()
-	if token, err := claim.AgentToken(s.project, issue, agent); err != nil || token != grant.Claim {
+	if grant.Issue != issue {
 		s.writeFailure(w, r, http.StatusForbidden, "SUB_OWNER_OUTSIDE_ISSUE", fmt.Sprintf(
 			"a sub-owner of %s gives a version of the plan of %s alone.", grant.Issue, grant.Issue))
 		return credential.Grant{}, 0, false
