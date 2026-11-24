@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // launchReadCommit is the commit the launcher's read at the launch finds in trace a, other than the
@@ -184,5 +185,44 @@ func TestALaunchsVolumeActOverTheLivePodOfARoundsRecordTellsTheArchitectOnce(t *
 	}
 	if records := rig.replacementRecords(); records != 0 {
 		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
+	}
+}
+
+// The Legion reviewer's Important 2 on #5285 at acda4d1e: the replacement through a process has
+// recorded its act over a read that found nothing and waits for the pod's launch turn. The
+// implementer's process has committed in that wait, and a launch of it into the round's pod reads
+// the commit, replaces the pod as the round's own replacement and records its act. The replacement
+// through the process then finds the pod taken and asks no last word. The round ends as the
+// launch's replacement, and the architect is told once of the commit the launch's read found.
+func TestAReplacementThroughAProcessThatALaunchOvertookTellsTheLaunchsRead(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundClean)
+	token := rig.tokens[claim.RoleImplementer]
+	launched := false
+	rig.rt.HoldReplacePod(func() {
+		if launched {
+			return
+		}
+		launched = true
+		rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+		if ends, err := rig.s.roundPodEndsAtLaunch(rig.ctx, token, podUpdatePod); err != nil || !ends {
+			t.Errorf("the launch's reading of the round = %t, %v; want the pod replaced", ends, err)
+		}
+		rig.rt.ScriptSuspendedOver(podUpdatePod)
+	})
+	rig.answerRound(roundBreakingDrift, claim.RoleImplementer)
+	testwait.Eventually(t, "the replacement through the process to find the launch's in its place", func() bool {
+		if len(rig.rt.CallsOf("ReplacePodNoPod")) > 0 {
+			return true
+		}
+		rig.tick()
+		return len(rig.rt.CallsOf("ReplacePodNoPod")) > 0
+	})
+	rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+	rig.awaitSwept(claim.RoleImplementer, "its round to end as the launch's replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.wantToldOnceNaming("once the launch replaced the round's pod, told from the launch's read", passedOverCommit)
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records of the round's pod once its notice is queued, want none", records)
 	}
 }
