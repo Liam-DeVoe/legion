@@ -131,9 +131,9 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 // default, given now, with no document and no giver, and one task, default, whose block names no
 // steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act. Its
 // agents are named as a given version's are (record.NameAgents): from earlier, every plan_steps
-// row of the issue, and sessions, the names whose claims hold a key's session (keySessions), so no
-// agent of the default steps takes the name of a key an earlier plan gave, whatever release wrote
-// the rows that show it.
+// row of the issue, and sessions, the issue's stored claims by name (keySessions), so no agent of
+// the default steps takes the name of a key an earlier plan gave, whatever release wrote the rows
+// that show it, nor a name whose claim holds another role.
 func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, sessions record.KeySessions) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",

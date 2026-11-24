@@ -204,7 +204,8 @@ the key out no other agent takes that name, so the key's agent finds its session
 version names the key; the agent that would have taken the name takes a numbered one and a slot of
 its own, so its start can wait for the issue pod's update round. A name that only agents with no
 key held is free again once no agent of the version holds it: a later agent of their role can take
-it, in a session of its own, and an agent of another role never does. The architect writes the plan
+it, in a session of its own, and an agent of another role never does, since the name's claim, or
+an earlier row of it, shows the role it was held on. The architect writes the plan
 as the issue's `plan.md` document, with one
 `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and

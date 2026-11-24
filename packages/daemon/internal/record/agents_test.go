@@ -200,9 +200,10 @@ func TestANameAKeyHeldIsKeptForThatKey(t *testing.T) {
 // no key, and the claim implementer, whose session is key k's (KeySessionsOf), keeps implementer
 // for key k. Version 3's implementer takes implementer-2, which only version 2's step with no key
 // held, and version 4, `implementer:k reviewer`, gives key k implementer, the name whose claim
-// holds its session; another key is given a name of its own. A claim whose session is a step's
-// agent with no key, or the key owner's, or that records none, keeps no name. The fault: the rows
-// alone named version 3's implementer implementer, the claim of key k's session.
+// holds its session; another key is given a name of its own. Each claim is kept by its name with
+// its role; a claim whose session is a step's agent with no key, or the key owner's, or that
+// records none, holds no key. The fault: the rows alone named version 3's implementer implementer,
+// the claim of key k's session.
 func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 	token := func(name claim.Agent) claim.Token {
 		got, err := claim.AgentToken("legion", "LEGION-208", name)
@@ -217,7 +218,9 @@ func TestANameWhoseClaimHoldsAKeysSessionIsKeptForThatKey(t *testing.T) {
 		{Token: token("reviewer"), Role: "reviewer"},
 		{Token: token("tester"), Role: "tester", SessionAgent: "key:owner"},
 	})
-	if want := (KeySessions{"implementer": "k"}); !maps.Equal(sessions, want) {
+	want := KeySessions{"implementer": {Role: "implementer", Key: "k"}, "implementer-2": {Role: "implementer"},
+		"reviewer": {Role: "reviewer"}, "tester": {Role: "tester"}}
+	if !maps.Equal(sessions, want) {
 		t.Fatalf("the key sessions of the claims = %v, want %v", sessions, want)
 	}
 	v2 := []PlanStep{
