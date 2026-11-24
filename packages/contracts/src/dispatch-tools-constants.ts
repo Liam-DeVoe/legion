@@ -81,16 +81,55 @@ export const PATH_KEEPS_BYTES =
   "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
 
 /**
- * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
- * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's; the
- * API's own guard is the document token, which Dispatch checks under the write's lock where a
- * replacement names it, the Dispatch page's own upload among them. A replacement naming none is
- * taken unchecked for now and refused 400 PRECONDITION_REQUIRED in a later release (INFRA-4980),
- * so the rule names both.
+ * What `dispatch artifact` says of a name the owner already holds as a document, when the upload
+ * is a document too. The command refuses it before it uploads anything, because an upload of that
+ * name writes the document's next version and replaces its text. `force` is what asks for that
+ * version. The refusal is the command's; the API's own guard is the document token, which
+ * Dispatch checks under the write's lock where a replacement names it, the Dispatch page's own
+ * upload among them. A replacement naming none is taken unchecked for now and refused 400
+ * PRECONDITION_REQUIRED in a later release, so the rule names both. A name held as a file or a
+ * picture is refused by fileNameExistsRule, and an upload of another kind than the name holds by
+ * artifactKindConflictRule, both below.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
   'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
+
+/** An artifact's kind as a refusal names it: `doc` is a document and `image` a picture; any other
+ *  kind a later Dispatch states is named as it is. */
+function artifactKindWord(kind: string): string {
+  return { doc: "document", file: "file", image: "picture" }[kind] ?? kind;
+}
+
+/**
+ * What `dispatch artifact` says of a name the owner holds as a file or a picture, when the upload
+ * is of that kind too. A file holds no text dispatch doc-edit changes, so its one way to a next
+ * version is the upload. The rule prints no token: a conditional write names the version its
+ * writer read, so the writer sends the token its own `dispatch doc-read` printed, and a writer
+ * whose read is stale is refused 409 rather than handed the newest token to overwrite it with.
+ * Where the standing version states no token (`statesToken` false), an upload naming one is
+ * refused - by a Dispatch from before file tokens 400 INVALID_PRECONDITION, and for a version
+ * stored with no hash 409 PRECONDITION_FAILED - so the rule names `--force` alone, which both take.
+ */
+export function fileNameExistsRule(kind: string, statesToken: boolean): string {
+  const what = artifactKindWord(kind);
+  const head = `An upload under the name of a ${what} the owner already holds is refused: it writes that ${what}'s next version, over the bytes it holds.`;
+  if (!statesToken) {
+    return `${head} The version standing under the name states no token, so an upload naming one is refused: to write the next version, read the ${what} again with dispatch doc-read, then send the upload again with force (--force) alone.`;
+  }
+  return `${head} To write the next version, send the upload again with force (--force) and the token of the version you read: --precondition-json '{"document":"<the Document token your own dispatch doc-read of the ${what} printed>"}'. A version written since that read refuses it 409 PRECONDITION_FAILED: read the ${what} again before you replace it.`;
+}
+
+/**
+ * What `dispatch artifact` says of a name the owner holds as one kind of artifact when the upload
+ * is of another, decided as Dispatch decides it: a declared Markdown upload is a document, bytes
+ * that are a PNG, JPEG, GIF or WebP are a picture, and anything else is a file. Dispatch refuses
+ * such an upload under that name whatever it carries, `--force` and a token included (400
+ * ARTIFACT_KIND_MISMATCH, "give it another name"), so the rule names another name and nothing
+ * else.
+ */
+export function artifactKindConflictRule(held: string, upload: string): string {
+  return `This upload is a ${artifactKindWord(upload)}, and the name holds a ${artifactKindWord(held)}: Dispatch keeps one kind under one name, so this upload cannot be its next version, with force or without. Give the upload another name.`;
+}
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the

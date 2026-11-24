@@ -1,59 +1,99 @@
-# Notes for the CI caches workflow
+# Notes for the cache fills
 
-The derivations and the history of `.github/workflows/ci-caches.yaml`, which points into this
-file. Each `# why:` line of that workflow names the section below that holds the derivation or the
-record its head comment or its job rests on. A value's own arithmetic stays beside the value.
-In the text moved here, "this workflow" is `.github/workflows/ci-caches.yaml`, and a job "above"
-or "below" is a job of it.
+The derivations and the history behind `.github/workflows/ci-caches.yaml`, the workflow that fills
+the Actions caches ci.yaml's jobs restore. Each `# why:` line links to the notes for its step or
+job, here or in the notes for the workflow that restores the cache.
 
 ## The seven Go families, their keys and the runners each is filled on
 
-Seven Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
-architecture and on the Go version the family's own module installs (go-envoy-infra on the hash of
-its module files too, for the reason its job gives): go-notices (lint's notices step), go-daemon
-(typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build, envoy-go-checks,
-envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-envoy-session-stall), go-envoy-test (envoy-go, and envoy-go-claim-model, which builds the test
-binary of internal/dispatch/api out of that set), go-dispatch-browser (the binaries job of
-.github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
-dispatch-browser-pr jobs call: it builds the Dispatch server, the real broker's commands and the
-dev OIDC issuer for the whole run with CGO_ENABLED=0, and an entry filled with cgo on holds
-almost none of those objects, as the dispatch-browser job below says; no other job of that
-workflow runs a go command), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache
-is a directory of its own, the GOCACHE of that step's env) and go-envoy-infra
-(envoy-infra-build and envoy-infra-go, and the build job of release-envoy-infra.yaml). The key
-carries `runner.arch` because Go's build cache holds the objects of the architecture that
-compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of its
-objects. So each family is filled on every architecture one of its readers runs on, one matrix
-leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, go-dispatch-browser on
-ubuntu-24.04 alone, where the binaries job runs, go-envoy-darwin-vet on ubuntu-24.04 alone,
-where envoy-go-build runs, and go-daemon, go-envoy, go-envoy-test and go-envoy-infra on
-ubuntu-24.04-arm and on ubuntu-24.04 both, since each has a reader on each, as each reader's own
-`runs-on` decides (the envoy job's comment below names go-envoy's and go-envoy-test's readers by
-runner). A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is
-typecheck alone, so its arm64 leg runs typecheck's vet and leaves the test and race builds to
-the x86_64 leg. go-notices carries the architecture before the OS
-(go-notices-<arch>-<os>-go<version>) and the other six after it: the go-notices entry holds
-go-licenses, a program lint's notices step runs, and a run of a workflow file older than the
-architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key starts with
-(ci-job-lint.yaml's restore step says what that did). One Go setup per leg, since the key
-carries the version that module's go.mod names: the daemon's go.mod for go-daemon and for
-go-notices, which lint installs the daemon's Go for; the envoy module's for go-envoy,
-go-envoy-test, go-dispatch-browser and go-envoy-darwin-vet; the infra module's for
-go-envoy-infra.
+This workflow fills seven Go families that ci.yaml or a workflow it calls restores directly.
+go-daemon, go-envoy, go-envoy-test and go-envoy-infra fill on ubuntu-24.04 and ubuntu-24.04-arm.
+go-notices fills only on ubuntu-24.04-arm, and go-envoy-darwin-vet only on ubuntu-24.04.
+See the [go-dispatch-browser fill](dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml)
+for its runner and inputs.
 
-The dispatch-browser job's own notes are
-.github/ci-notes/dispatch-browser.md#the-fill-of-go-dispatch-browser-in-ci-cachesyaml, and the
-envoy job's reading of its readers' runners is the next section.
+Each key names the runner architecture and the Go version from the module its readers use.
+go-daemon and go-notices use the daemon module's go.mod. go-envoy, go-envoy-test and
+go-envoy-darwin-vet use the envoy module's go.mod. go-envoy-infra uses the infra module's
+go.mod and also keys on the workspace's module files. go-notices puts the architecture before
+the OS so an old OS-only restore prefix cannot match its architecture-specific go-licenses
+binary. The other six put it after the OS.
 
 ## Which runners the readers of go-envoy and go-envoy-test run on
 
-The envoy job fills one leg per runner its readers run on, which each reader's own `runs-on`
-decides. Read on 2026-11-19 in a tree holding main's 5f3d552e: envoy-go-checks
-(go-envoy, ci-job-envoy-go-checks.yaml), envoy-go-claim-model (go-envoy-test,
-ci-job-envoy-go-claim-model.yaml) and dispatch-browser-nightly.yaml's re-record job
-(go-envoy-test) run on ubuntu-24.04, and every other job that restores either family on
-ubuntu-24.04-arm; envoy-go-build (go-envoy, ci-job-envoy-go-build.yaml), which main's #5175
-split out of envoy-go-checks, runs on ubuntu-24.04 too. dispatch-browser.yaml's binaries job,
-which restored go-envoy-test on ubuntu-24.04 in that tree, restores go-dispatch-browser now,
-which this workflow's dispatch-browser job fills.
+On ubuntu-24.04, envoy-go-build and envoy-go-checks restore go-envoy. The cache workflow's
+darwin vet fill also restores it for its module cache. envoy-go-claim-model and the nightly
+browser workflow's re-record job restore go-envoy-test on that runner. The other CI readers
+of these two families run on ubuntu-24.04-arm, so the fill builds on both runner types.
+
+The [binaries job's restore](dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser)
+no longer reads go-envoy-test.
+
+## Why each fill builds on the newest entry of its family
+
+go-daemon, go-notices, go-envoy and go-envoy-test used to save only when their exact key was
+missing, so they were filled once per Go version. The go-daemon, go-envoy and go-envoy-test
+entries every job restored on 2026-11-22 had been saved on 2026-11-18 between 13:03 and 13:08Z
+(go-notices' on 2026-11-19), and at main's e7381b7d4c9 a job that restored them had to compile
+again 312 of the daemon module's 335 packages and 573 of the envoy module's 618 (`go list -test
+-deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and 321.
+
+The refill-superseded job keeps one entry per family, runner, Go version and ref. It deletes
+older commit-suffixed entries and any entry under the readers' bare key, which would otherwise
+win as an exact match. It deletes nothing until it finds the new key in that ref's list. Without
+this cleanup, old entries can pile up until GitHub evicts other families' live entries.
+A job downloading a deleted entry gets a cache miss. actions/cache/restore warns and the job
+goes on, compiling what the entry would have given it, so it is slower, not failed.
+
+## Why five Go refills keep only their working sets
+
+The five non-browser Go refills use `.github/scripts/go-cache-working-set.sh`. Before the
+build, the helper marks every restored build-cache entry unused. The build marks what it reads
+or writes, and the helper deletes the rest. go-envoy-test also keeps the entries go-envoy's
+build used because its readers restore the combined cache. The browser fill does not call
+the helper.
+
+Without pruning, an entry grew with each fill. A build adds the objects of every package that
+changed and keeps the old ones. Go's own trim deletes only what no build has used for five days,
+and every fill was within that.
+go-envoy-test grew from 690 MB on 2026-11-22 to 2,039 MB by 19:18Z on 2026-11-23, and its restore
+in what was then dispatch-browser's binaries job from 15.5 s to 59 s at the median. The module
+cache keeps every module version it has downloaded (Go removes none by itself), so it grows only
+with a change to a module file, until a Go bump starts the family again: after a bump the fill
+finds no entry of the new Go (unless an older version's text starts with the new one's, as the
+workflow's prefix note says) and builds from nothing.
+
+## Why a lookup's save takes the lookup's key
+
+The build can change a hashed file (a go command may add the checksums it fetched to go.sum or
+go.work.sum), so a hash taken after the build need not be the lookup's. go-envoy-infra's save
+hashed its files again, and its key drifted: in run 45088325195 the lookup asked for
+...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the lookup and built for
+seven to ten minutes a leg.
+
+## The architecture-check and spec-check families
+
+The architecture-check job fills architecture-check-<os>-<arch>-go<version>-<hash>, the family of
+the composite action .github/actions/architecture-check, and the spec-check job fills
+spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
+envoy-go-build runs both actions. Neither is a lookup step of the workflow: each action restores
+and saves its entry itself, keyed on the runner's architecture, on the Go version its own setup-go
+installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum, so both jobs run
+on ubuntu-24.04, the runner envoy-go-build runs on. On a miss it restores the newest entry of that
+Go version (restore-keys). It saves only on a miss of the exact key in a push, schedule or
+workflow_dispatch run: a run of any other event (pull_request, pull_request_target, merge_group,
+issue_comment, workflow_run and the rest) may hold another person's code, so it restores the entry
+and never saves it. The workflow's push to main is where the entry lands in the scope every later
+run reads. check-ci-filters.sh's cache-family rule reads the workflow's own actions/cache steps and
+not a composite action's, so it holds nothing of these two families; the "Caches" paragraph of
+.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the record
+of their restores and saves.
+
+## The two entries that went with the jobs that read them
+
+Two entries that were no Go family went with the jobs that read them - the Playwright browsers and
+the .deb files of the apt list the browser suite installed - because dispatch-browser.yaml's shard
+and alone jobs run in the image this repository builds, which carries the browsers and their host
+packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
+restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
+them.

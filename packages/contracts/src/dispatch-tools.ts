@@ -184,18 +184,22 @@ function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
     .optional();
 }
 
-/** The guard dispatch_artifact takes. An upload rewrites the whole document, so only the
- *  document token says which text it replaces: the server refuses a blocks guard on an upload
- *  (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. */
+/** The guard dispatch_artifact takes. An upload rewrites the whole document or file, so only the
+ *  token of the version it replaces says what it replaces: the server refuses a blocks guard on
+ *  an upload (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. A
+ *  file's or a picture's version has a token too, which dispatch doc-read prints in the same
+ *  line, so the one shape serves both. */
 function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
   return z
     .object({
       document: z
         .string({ min: 1 })
-        .describe("Token for the exact canonical document returned by dispatch doc-read."),
+        .describe(
+          "Token of the version this upload replaces, as dispatch doc-read prints it for a document, a file or a picture."
+        ),
     })
     .describe(
-      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+      "The token of the version this upload replaces, which an upload over a document, a file or a picture the owner already holds names; a first upload under a name replaces nothing and names none."
     )
     .optional();
 }
@@ -1696,6 +1700,7 @@ export const dispatchToolSpecs = [
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
+      "A read of an uploaded file or picture prints, in its header before the file's text, the latest version's token as a `Document token: sha256:…` line, which dispatch artifact's precondition takes for the next version, or a named version's hash as a `Content: sha256:…` line; the text after the header is the stored file unchanged, except that the dispatch command adds a line feed after a file that ends without one and, under Claude Code or Codex, cuts an output past 25,000 characters and writes the whole of it to a file it names. " +
       OWNER_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -2051,7 +2056,7 @@ export const dispatchToolSpecs = [
       `${ARTIFACT_SOURCE_RULE} ` +
       `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
-      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
+      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. An upload that replaces a file or a picture names the token of the version it replaces the same way, the `Document token:` line dispatch doc-read prints for its latest version, and any other token is refused with 409 PRECONDITION_FAILED; one naming none is taken unchecked. The command's refusal of a name the owner holds prints no token: for a file or a picture it names --force with the token your own dispatch doc-read printed, or --force alone where Dispatch states no token for the file, since such a Dispatch refuses a token on a file's upload; for an upload of another kind than the name holds (a declared Markdown upload is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch refuses it under that name with 400 ARTIFACT_KIND_MISMATCH. A first upload under a name replaces no version, so it names none. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
