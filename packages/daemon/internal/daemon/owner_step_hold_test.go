@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,31 +117,12 @@ func (r *ownerHoldRig) published() []string {
 // ownerStepStale is the line the executor logs for an owner-step that finished undelivered.
 const ownerStepStale = "outbox owner-step finished undelivered: its step no longer runs"
 
-// staleLines is each line of logged, a JSON log, that ownerStepStale is the message of, decoded.
-func staleLines(t *testing.T, logged string) []map[string]any {
-	t.Helper()
-	var lines []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(logged), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
-		}
-		if entry["msg"] == ownerStepStale {
-			lines = append(lines, entry)
-		}
-	}
-	return lines
-}
-
 // staleUnread fails the test unless logged holds one line of a stale owner-step: the executor
 // decided the step no longer runs. What the slot was asked is each test's own check (slotCalls),
 // so no attribute of the line that depends on the order of the executor's reads is asserted.
 func staleUnread(t *testing.T, logged, of string) {
 	t.Helper()
-	if lines := staleLines(t, logged); len(lines) != 1 {
+	if lines := loggedMessages(t, logged, ownerStepStale); len(lines) != 1 {
 		t.Fatalf("the log holds %d lines of %s, want one:\n%s", len(lines), of, logged)
 	}
 }

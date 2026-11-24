@@ -183,8 +183,6 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if got := slotCalls(rt, owner)[before:]; len(got) != 0 {
 			t.Fatalf("the stale notice asked the runtime %q of the owner's slot, want nothing", got)
 		}
-		if lines := staleLines(t, logged.String()); len(lines) != 1 {
-			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", len(lines), logged.String())
-		}
+		staleUnread(t, logged.String(), "the stale notice")
 	})
 }
