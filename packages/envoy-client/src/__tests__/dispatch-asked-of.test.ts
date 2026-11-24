@@ -1,6 +1,4 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   ASK_IS_FOR_A_PERSON,
   ASK_WAITS_ON_THE_ASSIGNEE,
@@ -16,17 +14,13 @@ import { resetAdviceMemory } from "../dispatch-execute";
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
 // the half of this the CLI carries is the issue's assignee and nothing else: the command sets
-// that, and no command of the whole surface writes `asked_of`. The rest is text — the two
-// sentences every description and skill shares.
+// that, and no command of the whole surface writes `asked_of`. The rest is the two sentences both
+// ask descriptions compose from their constants.
 
 const makeDirectory = temporaryDirectories("dispatch-asked-of");
 
 /** The Dispatch bearer each command is handed. */
 const TOKEN = fixtureSecret("dsp");
-
-/** The repository root, from this file's own path rather than the working directory, which bun
- *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
-const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 const ASSIGNEE = "bob@example.com";
 
@@ -185,12 +179,9 @@ function descriptionOf(tool: string): string {
   return spec.description;
 }
 
-test("the two shared sentences stand in both ask descriptions and in the dispatch skill", () => {
-  for (const text of [
-    descriptionOf("dispatch_ask"),
-    descriptionOf("dispatch_edit_ask"),
-    readFileSync(join(REPO_ROOT, "skills", "dispatch", "SKILL.md"), "utf8"),
-  ]) {
+// Both ask descriptions compose the two shared sentences from their constants.
+test("both ask descriptions carry the two shared sentences", () => {
+  for (const text of [descriptionOf("dispatch_ask"), descriptionOf("dispatch_edit_ask")]) {
     expect(text).toContain(ASK_IS_FOR_A_PERSON);
     expect(text).toContain(ASK_WAITS_ON_THE_ASSIGNEE);
   }

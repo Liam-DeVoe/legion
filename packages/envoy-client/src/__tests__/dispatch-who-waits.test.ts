@@ -13,8 +13,8 @@ import { resetAdviceMemory } from "../dispatch-execute";
 // `waiting_on_person`, and the three commands print them, so an agent learns who reads its
 // question without a second command.
 //
-// The rows read a printed line, and their titles carry the words the checks of
-// dispatch://INFRA-3090 filter on: `prints the person`.
+// The rows read a printed line, and their titles carry `prints the person`, the words a check of
+// the verification of this rule filters them on.
 // The shape is `dispatch-asked-of.test.ts`'s: one stub Dispatch server answering as the server
 // answers, driven through `runDispatchCli`, with a temporary state directory per row.
 

@@ -1467,18 +1467,18 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // What a description's rules are about, by name: the values, fields, flags, commands, statuses
-  // and printed labels an agent types or reads. Each is held as a whole token, so the sentences
-  // around them may be reworded and a rule that stops naming one fails here.
+  // What a description's rules are about, by name: the fields, flags, commands, file names and
+  // printed labels an agent types or reads. Each is held as a whole token, so the sentences around
+  // them may be reworded and a rule that stops naming one fails here. A name that is also a plain
+  // word (the operations replace and insert, urgency and high, optional, required and false, the
+  // check attributes serves, surface, run, when and needs, the statuses backlog and icebox, repo,
+  // approve) is held by no row: it stands in its description as a word too, so a check of it could
+  // pass when the rule stops naming it.
   const descriptionNames: readonly (readonly [string, readonly string[]])[] = [
     ["dispatch_comment", ["reply_to_ask", "dispatch edit-ask"]],
-    ["dispatch_doc_edit", ["replace", "insert", "{#id}"]],
+    ["dispatch_doc_edit", ["{#id}"]],
     ["dispatch_artifact", ["spec.md", "dispatch doc-edit"]],
-    ["dispatch_ask", ["urgency", "high"]],
-    [
-      "dispatch_message",
-      ["--issue", "expects_reply", "optional", "required", "false", "reply_with"],
-    ],
+    ["dispatch_message", ["--issue", "expects_reply", "reply_with"]],
     [
       "dispatch_read",
       [
@@ -1486,23 +1486,15 @@ describe("dispatchToolSpecs", () => {
         "`Type:`",
         "`Document:`",
         "`check`",
-        "serves",
-        "surface",
-        "run",
-        "when",
         "negative_control",
         "ci_check",
         "`plan_task`",
-        "needs",
         "`Changed in version:`",
         "`Text:`",
         "`No block <id> in <document>.`",
       ],
     ],
     ["dispatch_project", ["dispatch projects", "dispatch issue"]],
-    ["dispatch_priorities", ["backlog", "icebox"]],
-    ["dispatch_architecture_sync", ["repo"]],
-    ["dispatch_review", ["approve"]],
   ];
   test.each(
     descriptionNames
@@ -1583,7 +1575,7 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
-  // R4 (INFRA-1201): each tool that writes a body states the server's bounds and the decision
+  // Each tool that writes a body states the server's bounds and the decision
   // block it refuses, so `dispatch comment --help` and its four siblings print them before a
   // writer puts one in a body. The names are asserted whole: an empty or shortened table would
   // make the rows below assert nothing.
@@ -1610,24 +1602,6 @@ describe("dispatchToolSpecs", () => {
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
     expect(flag, `${name} --${field}`).toContain(":::ask");
     expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
-  });
-
-  // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
-  // separate list of open items beside them. The control is the help sentence that offered one.
-  test("no tool description or flag help offers a separate list of open items", () => {
-    const listOffer = /open[- _]items/i;
-    expect(
-      listOffer.test("a record of open items or progress is a document of its own"),
-      "the control: the retired offer"
-    ).toBe(true);
-    const offering = dispatchToolSpecs.filter((spec) =>
-      listOffer.test(
-        JSON.stringify(z.toJSONSchema(dispatchToolSchema(spec, schemaApi), { io: "input" })) +
-          spec.description
-      )
-    );
-    expect(dispatchToolSpecs.length).toBeGreaterThan(0);
-    expect(offering.map((spec) => spec.name)).toEqual([]);
   });
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {

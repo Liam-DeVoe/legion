@@ -5,7 +5,7 @@ import {
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
-import { namesMissing } from "@legion/test-fixtures/names-whole";
+import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { delivered } from "../../test/delivered";
 import { streamStores } from "../stream-topics";
@@ -116,7 +116,7 @@ describe("envoyToolSpecs", () => {
     expect(namesMissing(subscribe?.description ?? "", lifecycle)).toEqual([]);
     expect(subscribe?.description).toContain("<subject>.>");
     expect(subscribe?.description).toContain("workflow.<file>.<action>");
-    expect(subscribe?.description).not.toContain("pr.<n>.check,");
+    expect(namesWhole(subscribe?.description ?? "", "pr.<n>.check")).toBe(false);
     expect(subscribe?.description).not.toContain("pr.<n>.ci");
     expect(subscribe?.description).not.toContain("pr.<n>.checks.settled");
     expect(subscribe?.description).not.toContain("pr.<n>.merged");
@@ -144,7 +144,7 @@ describe("envoyToolSpecs", () => {
     expect(kinds.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual([]);
     for (const name of ["envoy_subscribe", "envoy_publish"]) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
-      expect(description, name).toContain(`(${kinds.join(", ")};`);
+      expect(namesMissing(description, kinds), name).toEqual([]);
       expect(namesMissing(description, ["200"]), name).toEqual([]);
     }
   });

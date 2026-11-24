@@ -6,7 +6,7 @@ import {
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
 } from "@legion/contracts/legion-api";
-import { namesWhole } from "@legion/test-fixtures/names-whole";
+import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
@@ -572,21 +572,20 @@ test("handoff_complete takes the retro's rating fields on the contract's scale, 
 });
 
 // The description is where every host's agent reads what the completion that ends the retro
-// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
-// a rating.
-test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
+// carries: the two fields, the skill that states the rule, and the daemon's refusals of a rating,
+// each by name. The scale's two numbers stand elsewhere in the description as well, so a check of
+// them here could not fail by its cause; the schema case above holds the scale.
+test("the description names the retro's rating fields, its skill and the daemon's refusals of a rating", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
+  const missing = namesMissing(description, [
     "`plan_rating`",
-    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
     "`plan_reason`",
     "skill://legion-retro",
     "PLAN_RATING_UNEXPECTED",
     "PLAN_RATING_INPUT",
     "PLAN_RATING_REQUIRED",
-  ]) {
-    expect(description).toContain(words);
-  }
+  ]);
+  expect(missing).toEqual([]);
 });
 
 // Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
@@ -619,17 +618,17 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
-// The description is where the tester reads what its fail may carry and what the daemon refuses.
-test("the description tells the tester its fail may name the step its task returns to", () => {
+// The description is where the tester reads what its fail may carry and what the daemon refuses:
+// the field and the daemon's three codes, each by name.
+test("the description names return_to and the daemon's three refusals of it", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
-    "`return_to`, the place of a step of the task its issue runs, 1 for its first",
+  const missing = namesMissing(description, [
+    "`return_to`",
     "RETURN_TO_NEEDS_FAIL",
     "INVALID_RETURN_TO",
     "RETURN_REFUSED",
-  ]) {
-    expect(description).toContain(words);
-  }
+  ]);
+  expect(missing).toEqual([]);
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
