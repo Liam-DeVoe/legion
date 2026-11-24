@@ -19,6 +19,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // What the server writes to one document socket, recorded on the server's end and read back as
@@ -149,7 +150,7 @@ func newRecordingServer(t *testing.T, service *Service) *recordingServer {
 	accepted := &recordingListener{Listener: server.Listener}
 	server.Listener = accepted
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return &recordingServer{Server: server, accepted: accepted}
 }
 
@@ -166,7 +167,7 @@ func (s *recordingServer) dialUnreadPage(t *testing.T, artifactID string, query 
 	if err != nil {
 		t.Fatalf("connect a page presenting %v with a receive buffer of %d bytes: response=%#v err=%v", query, receiveBuffer, response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	// ygo sends a joining peer the room's state only in answer to that peer's own sync step 1
 	// (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go, reearth/ygo#342), so a page that
 	// asks for nothing is owed nothing and the writes below would never fill its buffer. The
@@ -485,6 +486,7 @@ func serverFrame(opcode byte, payload []byte) []byte {
 // finished writing the document, and the frame a stream stops inside is the one the in-flight test
 // watches go out.
 func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
+	t.Parallel()
 	const head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
 	// hocuspocus is one Hocuspocus message of the document "document" of type kind
 	// (hocuspocusSync, or 2 for authentication), body after its type.

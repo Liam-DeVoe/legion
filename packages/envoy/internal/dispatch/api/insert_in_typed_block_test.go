@@ -49,6 +49,7 @@ func insertAfter(t *testing.T, handler http.Handler, artifactID, text, markdown 
 // anchor put it, and for the requirement and the check the coverage reading still finds the
 // requirement, holding the inserted words and served by its one check.
 func TestAnInsertAnchoredInsideATypedBlockLandsInsideIt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// verification is true where the insert is into the Verification document's check rather
@@ -118,6 +119,7 @@ func TestAnInsertAnchoredInsideATypedBlockLandsInsideIt(t *testing.T) {
 // was written after the typed block at the document's own level. Nothing settles the spec while
 // the row runs, so its versions are the ones the row read.
 func TestAnInsertATypedBlockCannotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, anchor, markdown string
 		wants                  []string
@@ -162,6 +164,7 @@ func TestAnInsertATypedBlockCannotHoldIsRefused(t *testing.T) {
 // has: after a paragraph, and after a typed block named by its own id rather than by a block
 // inside it.
 func TestAnInsertAnchoredOnATopLevelBlockLandsBesideIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TYPED", "Top-level insert", typedInsertSpec)
 	if status, code, refusal := insertAfter(t, handler, issue.PrimaryArtifactID, "After.", "Closing."); status != http.StatusOK {

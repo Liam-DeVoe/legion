@@ -171,6 +171,7 @@ func TestDocumentEditReadBackStopsAtItsBound(t *testing.T) {
 // the edit or the block was cut: an agent read `cut N characters in 1 blocks` as text its edit
 // lost, and reverted a correct edit over it (dispatch://INFRA-4749).
 func TestDocumentEditReadBackOfAGrownBlockSaysWhatItDoesNotShow(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Grown block", "Alpha.\n\nBravo.\n")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -215,6 +216,7 @@ func TestDocumentEditReadBackOfAGrownBlockSaysWhatItDoesNotShow(t *testing.T) {
 // blocks are not shown here, and the document holds them`, counting the two deleted paragraphs'
 // lines as blocks the document held, so an agent could read its deletes as not done.
 func TestDocumentEditReadBackPastItsBoundCountsTheRemovedBlocksApart(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Grown, then two deleted", "Alpha.\n\nBravo.\n\nCharlie.\n\nDelta.\n")
 	grown := strings.TrimSpace(strings.Repeat("alpha ", 400))
@@ -245,6 +247,7 @@ func TestDocumentEditReadBackPastItsBoundCountsTheRemovedBlocksApart(t *testing.
 // fewer than the line naming the deleted paragraph after it holds: the read-back leaves that line
 // out and counts it in its closing line, as it counts the block after it.
 func TestDocumentEditReadBackLeavesOutTheNamedLineItsBoundFallsIn(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Grown, deleted, grown", "Alpha.\n\nBravo.\n\nCharlie.\n")
 	blocks := listedBlocks(t, handler, issue.PrimaryArtifactID)

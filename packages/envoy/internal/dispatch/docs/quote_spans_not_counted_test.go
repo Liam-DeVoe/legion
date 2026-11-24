@@ -34,6 +34,7 @@ const (
 // ambiguity. At version 50 each was refused TARGET_AMBIGUOUS, `"v46). The" matches 2 places`,
 // the second place the join of the two list items (dispatch://INFRA-4345, R1).
 func TestAQuoteWithOneMatchInsideABlockAppliesWhateverSpansItAlsoHas(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		op   model.EditOp
@@ -81,6 +82,7 @@ func TestAQuoteWithOneMatchInsideABlockAppliesWhateverSpansItAlsoHas(t *testing.
 // A quote whose only matches run across blocks is refused as spanning blocks, as it was: at
 // version 51 neither `v46). The` nor `v46). The errors` is inside one block.
 func TestAQuoteWhoseOnlyMatchesSpanBlocksIsRefusedAsSpanningThem(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput(planAtVersion51)
 	if err != nil {
 		t.Fatal(err)
@@ -112,6 +114,7 @@ func TestAQuoteWhoseOnlyMatchesSpanBlocksIsRefusedAsSpanningThem(t *testing.T) {
 // two, besides the list's join; and an occurrence counts the matches inside blocks, so the
 // paragraph's match is occurrence 0 and there is no occurrence 1.
 func TestAQuoteWithSeveralMatchesInsideBlocksNamesThoseAlone(t *testing.T) {
+	t.Parallel()
 	twoInside := planAtVersion50 + "\nAgain the gate holds (the gate on v46). The end.\n"
 	for _, test := range []struct {
 		name, markdown, quote string

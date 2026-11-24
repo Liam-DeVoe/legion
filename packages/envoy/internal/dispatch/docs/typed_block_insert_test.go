@@ -26,6 +26,7 @@ const typedInsertFixture = ":::requirement{#r1}\nThe read succeeds.\n:::\n\n" +
 // on an ask's option joins the options. An anchor at the document's own level, or on a typed
 // block's own block, lands where it always did.
 func TestAnInsertLandsInsideTheTypedBlockHoldingItsAnchor(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		op   func(t *testing.T, tree *pmdoc.Node) model.EditOp
@@ -129,6 +130,7 @@ func TestAnInsertLandsInsideTheTypedBlockHoldingItsAnchor(t *testing.T) {
 // anchored on the options list's own block: one anchored on an option's text lands in that
 // option's item, beside its text (TestAnInsertLandsInsideTheListItemOrQuoteHoldingItsAnchor).
 func TestAnInsertATypedBlocksRuleCannotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, text, markdown, holder string
 		// list anchors the insert on the list holding text, where text's own block is anchored
@@ -219,6 +221,7 @@ const listAndQuoteFixture = "- one\n- two\n\n> Quoted.\n\nAfter.\n"
 // item; anchored on a quote's paragraph, it lands in the quote, as a paragraph does, where it was
 // written after the quote.
 func TestAnInsertLandsInsideTheListItemOrQuoteHoldingItsAnchor(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, text, markdown string
 		before               bool
@@ -283,6 +286,7 @@ func TestAnInsertLandsInsideTheListItemOrQuoteHoldingItsAnchor(t *testing.T) {
 // what breaks it, and the anchor on the list item itself, which writes the markdown before the
 // whole list. Such an insert was written before the whole list.
 func TestAnInsertAListItemCannotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput(listAndQuoteFixture)
 	if err != nil {
 		t.Fatal(err)
@@ -313,6 +317,7 @@ func TestAnInsertAListItemCannotHoldIsRefused(t *testing.T) {
 // indentation alone, which a read of the stored markdown drops, so the stored text and the tree
 // it came from would disagree (INFRA-341, testing round 17, at 1808df5f).
 func TestABlockInsertedAfterAListItemsTextWritesNoEmptyParagraph(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, markdown, firstLine, blockType string
 	}{
@@ -388,6 +393,7 @@ const insertParentsFixture = ":::callout{#c1 kind=\"note\"}\nFirst.\n\nSecond.\n
 // requirement, whose rule is paragraph+, and anything but a paragraph ahead of a list item's
 // text, whose rule is paragraph block* (INFRA-341).
 func TestAnInsertIntoATypedBlockAListItemOrAQuoteWritesOnlyItsBlocks(t *testing.T) {
+	t.Parallel()
 	parents := []struct {
 		name string
 		// children are the texts of the parent's two paragraphs, which the anchors name.

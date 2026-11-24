@@ -21,6 +21,7 @@ const listAnchorFixture = "- a\n  - x\n  - y\n- b\n\n" + askFixture
 // text, where it was written after the whole list, and one anchored on a block of a decision lands
 // in the decision, beside that block (dispatch://INFRA-3142).
 func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		op   func(t *testing.T, tree *pmdoc.Node) model.EditOp
@@ -101,6 +102,7 @@ func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
 // A move of a list item anchored outside every list is still the move no list can take: the item
 // cannot stand at document level.
 func TestApplyOperationMoveOfAListItemOutsideEveryListIsRefused(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput(listAnchorFixture)
 	if err != nil {
 		t.Fatal(err)

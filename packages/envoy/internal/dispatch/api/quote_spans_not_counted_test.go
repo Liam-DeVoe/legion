@@ -13,6 +13,7 @@ import (
 // its only match is that join, and it and `v46). The errors` are 400 TARGET_SPANS_BLOCKS as they
 // were; and `(the gate on v46).`, inside three blocks of each, is 409 TARGET_AMBIGUOUS naming three.
 func TestTheEditRouteCountsNoQuoteMatchThatSpansBlocks(t *testing.T) {
+	t.Parallel()
 	const lists = "- The first check passes (the gate on v46).\n- The errors are read last.\n"
 	const version50 = "Release plan for the gate.\n\n" +
 		"The release waits on its check (the gate on v46). The workflows run after it.\n\n" +

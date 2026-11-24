@@ -44,6 +44,7 @@ func listIDOf(t *testing.T, handler http.Handler, artifactID string) string {
 // not carry, 404 TARGET_NOT_FOUND (dispatch://INFRA-4517). Nothing settles the spec while the row
 // runs, so its versions are the ones the row read.
 func TestAnOperationWhoseBlockAnEarlierOperationRemovedIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "BATCH", "Removed in the batch", removedInBatchSpec)
 	list := listIDOf(t, handler, issue.PrimaryArtifactID)
@@ -72,6 +73,7 @@ func TestAnOperationWhoseBlockAnEarlierOperationRemovedIsRefused(t *testing.T) {
 // removes all the list holds but what the insert wrote. Version 336 of
 // dispatch://INFRA/artifact/superfan-fans-log-md lost both lists (dispatch://INFRA-4517).
 func TestAListInsertedAfterAListTheSameEditDeletesIsKept(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "BATCH", "Kept in the batch", removedInBatchSpec)
 	list := listIDOf(t, handler, issue.PrimaryArtifactID)
@@ -89,6 +91,7 @@ func TestAListInsertedAfterAListTheSameEditDeletesIsKept(t *testing.T) {
 // A delete naming both a block and a find is refused before either is read, as it always was:
 // 400 INVALID_OP on find, whatever the block names, even one the document does not carry.
 func TestADeleteNamingBothABlockAndAFindIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "BATCH", "Both fields", removedInBatchSpec)
 	status, code, refusal := postEdits(t, handler, issue.PrimaryArtifactID, []map[string]any{

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // What a room answers a browser's SyncStep1 with. ygo cuts the room's state into frames of at
@@ -185,6 +186,7 @@ var pastedItem = strings.Repeat("prose a browser pasted as one item of text. ", 
 // others have already written - and holds one pasted item longer than the cap, which no V1 update
 // can carry whole and the cut has to cut inside (crdt.SplitUpdateV1, cuttableContent).
 func TestEveryFrameOfTheAnswerToABrowsersSyncStep1FitsTheFrameCap(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# The room\n")
@@ -221,7 +223,7 @@ func TestEveryFrameOfTheAnswerToABrowsersSyncStep1FitsTheFrameCap(t *testing.T) 
 	if err != nil {
 		t.Fatalf("open a reader's document socket: response=%v err=%v", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	// What the room sends a browser as it joins - its own SyncStep1, and the room's awareness -
 	// is read off before the ask, so what follows the ask is the answer to it.
 	readToPong(t, connection, artifactID)
@@ -370,8 +372,10 @@ const chainedClientsSamples = 3
 // against a bound of 24 (pmdoc's sampleCount records the same finding against the same mistake).
 // With the draw made even it failed at 24.5 again, in envoy-go-docs-finalizers, because the
 // collector's time was still in the reading (the comment over the row's timed window has that
-// account). No test in this package calls t.Parallel.
+// account).
 func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *testing.T) {
+	// Not parallel: it stops the collector for the whole process (cputest.TimedWithoutCollections)
+	// and times its answers in the process's CPU, which the tests beside it would spend.
 	service, small := newTestService(t)
 	service.settle = time.Hour
 	large := createDocument(t, service.store, "# A room people append to")
@@ -401,7 +405,7 @@ func TestAnsweringASyncStep1CostsNoMoreThanLinearlyInTheRoomsChainedClients(t *t
 		if err != nil {
 			t.Fatalf("open a reader's socket on the room of %d chained clients: response=%v err=%v", rung.clients, response, err)
 		}
-		t.Cleanup(func() { _ = connection.Close() })
+		testcleanup.Add(t, func() { _ = connection.Close() })
 		readToPong(t, connection, rung.room)
 		answers[i] = func() time.Duration {
 			// A collection's CPU time is the heap's and not the answer's: it marks everything the

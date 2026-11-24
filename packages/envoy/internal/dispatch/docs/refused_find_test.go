@@ -44,6 +44,7 @@ import (
 // too, or in the item before it, where the find named counts only the items it selects. One more
 // is a link whose text starts on a space, which a with of blocks drops before the find.
 func TestARefusedFindNamesTheFindThatKeepsItsRange(t *testing.T) {
+	t.Parallel()
 	const (
 		plain   = "I wrote [one two](https://a.example/1) today.\n"
 		titled  = "I wrote [one two](https://a.example/1 \"Spec\") today.\n"
@@ -502,6 +503,7 @@ func TestARefusedFindNamesTheFindThatKeepsItsRange(t *testing.T) {
 // moved out (`**ab** c *d* *e*`), the same find is refused naming the find that spells both spans,
 // which is taken there.
 func TestARefusalNamingNoFindGivesTheAdviceOfTheSpanThatStopsIt(t *testing.T) {
+	t.Parallel()
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// refused is the refusal of a replace of find with NEW in a document seeded with markdown,
 	// which it leaves as it was.

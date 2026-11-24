@@ -492,6 +492,7 @@ func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.
 // only token the refusal ever has it send, and the delete is refused again on that list's stale
 // token, with the other writer's change still in the document (INFRA-341).
 func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeIsRefusedThenStaleWithTheListAsRead(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete guard", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
@@ -535,6 +536,7 @@ func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeIsRefusedThenS
 // list added to the guard at the token that read listed, the delete is taken, removes the item
 // with its nested item, and its answer names no block.
 func TestAMarkerDeleteGuardedOnItsParagraphAloneIsRefusedThenTakenWithTheListAsRead(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete refusal", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
@@ -566,6 +568,7 @@ func TestAMarkerDeleteGuardedOnItsParagraphAloneIsRefusedThenTakenWithTheListAsR
 // A marker delete under no guard removes the whole item it selects, its nested item with it: an
 // edit naming no precondition is taken unchecked, as it always was (INFRA-341).
 func TestAMarkerDeleteUnderNoGuardRemovesTheWholeItem(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete unguarded", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
@@ -586,6 +589,7 @@ func TestAMarkerDeleteUnderNoGuardRemovesTheWholeItem(t *testing.T) {
 // every nested item, the other writer's change included, as main does, and its answer names no
 // block (INFRA-341).
 func TestATextDeleteThatHoistsANestedListIsTakenUnderAGuardOnItsParagraph(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, change, want string }{
 		{name: "the nested list as it was read", want: "- Child\n- Other\n"},
 		{name: "after another writer changed a nested item", change: "Child, changed by another writer", want: "- Child, changed by another writer\n- Other\n"},
@@ -689,6 +693,7 @@ func refusedUnguarded(t *testing.T, response *httptest.ResponseRecorder, documen
 // changed a nested item, is stale, and nothing is written; a guard on both read after that change
 // takes the delete (INFRA-341).
 func TestAMarkerDeleteIsGuardedOnTheWholeItemItRemoves(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete coverage", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
@@ -729,6 +734,7 @@ func TestAMarkerDeleteIsGuardedOnTheWholeItemItRemoves(t *testing.T) {
 // alone it is refused naming the typed block it would remove, with the token it carries now, the
 // changed one. Each refusal writes nothing (INFRA-341).
 func TestADeleteThatRemovesATypedBlockIsRefusedUnlessItsGuardNamesItAsItStands(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Typed block delete coverage",
 		":::callout{#c1 kind=\"note\" title=\"T\"}\nAlpha.\n\nBeta.\n:::\n\n"+

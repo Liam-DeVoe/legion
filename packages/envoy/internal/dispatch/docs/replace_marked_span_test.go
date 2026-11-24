@@ -41,6 +41,7 @@ import (
 // Each row writes one replace and reads it back three ways: the markdown the version stored, the
 // document a caller reads, and the text of the paragraph the replace wrote in.
 func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, find, with, want, text string }{
 		{
 			name:     "the repro's find over a bold span's whole text",
@@ -362,6 +363,7 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // part of a link that spells it with another URL or title, whose replace removes only that part,
 // is taken (TestARefusedFindNamesTheFindThatKeepsItsRange).
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
+	t.Parallel()
 	// acrossAnotherLink is what the refusal of a longer find spelling a link with another URL or
 	// title says: why it crosses the link, not what text written over it would do.
 	const acrossAnotherLink = "text outside it, and it spells the link with another URL or title than the one it has"
@@ -463,6 +465,7 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 // link with another title over the part it covers, whose replace removes only that part, writes
 // the with outside the link, which keeps the document's URL and title.
 func TestAReplaceFindThatSpellsASpansOwnMarkupOverThePartItCoversIsTaken(t *testing.T) {
+	t.Parallel()
 	const (
 		plain  = "I wrote [one two](https://a.example/1) today.\n"
 		titled = "I wrote [one two](https://a.example/1 \"Spec\") today.\n"
@@ -545,6 +548,7 @@ var linkSpellings = []struct{ name, quote, deleted string }{
 // text before it, whatever URL or title it spells the link with, since that delete removes only
 // that part, and the rest of the link keeps the document's URL and title.
 func TestADeleteOfAFindThatSpellsALinkDeletesWhatItNamed(t *testing.T) {
+	t.Parallel()
 	for _, spelling := range linkSpellings {
 		if spelling.deleted == "" {
 			continue
@@ -567,6 +571,7 @@ func TestADeleteOfAFindThatSpellsALinkDeletesWhatItNamed(t *testing.T) {
 // is taken, the insert and the moved block land after the paragraph, and the link stays as the
 // document holds it.
 func TestAnAnchorFindsItsBlockWhateverItSpellsALinkWith(t *testing.T) {
+	t.Parallel()
 	const markdown = "Moved.\n\n" + linkDocument
 	for _, op := range []struct {
 		op string
@@ -628,6 +633,7 @@ func spanMarkup(t *testing.T, service *Service, artifactID string, span pmdoc.Sp
 // to end on a space keeping its delimiter with a character reference; the insert and the moved
 // block land after the paragraph, which keeps its spans.
 func TestADeleteOrAnAnchorAcrossASpansEdgeIsTaken(t *testing.T) {
+	t.Parallel()
 	shapes := []struct {
 		name, paragraph, quote string
 		// deleted is the paragraph the delete of quote leaves.
@@ -689,6 +695,7 @@ func TestADeleteOrAnAnchorAcrossASpansEdgeIsTaken(t *testing.T) {
 // does, accepts it, and reads the document back three ways: the markdown the store holds, the
 // document a caller reads, and the text of the paragraph the accept wrote in.
 func TestAcceptedSuggestionInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, quote, accepted, want, text string }{
 		{
 			name:     "a suggestion inside a bold span",
