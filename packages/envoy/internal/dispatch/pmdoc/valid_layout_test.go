@@ -2,10 +2,11 @@ package pmdoc
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
@@ -16,25 +17,28 @@ import (
 // RenderWithLayout's, which validates first: the same markdown, block offsets and layout, byte for
 // byte, over every fixture, every corpus file, a generated document of 400 KB holding every kind
 // of block and, where DISPATCH_RENDER_CORPUS names a directory, every document of it the test
-// takes, read through corpustest, which judges each refusal of Parse.
+// takes, read through corpustest, which judges each refusal of Parse and fails the test on a
+// render's refusal of a document Parse took.
 func TestValidDocumentRenderWithLayoutIsTheValidatingRender(t *testing.T) {
 	rendered := 0
-	check := func(name string, doc *Node) {
+	// check compares the two renders of doc and answers the render's refusal where both refuse
+	// it, which a corpus document hands to corpustest as a step after the parse.
+	check := func(name string, doc *Node) error {
 		want, wantOffsets, wantLayout, wantErr := RenderWithLayout(doc)
 		valid, err := ValidateDocument(doc, "RenderWithLayout")
 		if err != nil {
 			if wantErr == nil {
 				t.Errorf("%s: Validate refuses the tree (%v) and RenderWithLayout renders it", name, err)
 			}
-			return
+			return wantErr
 		}
 		got, gotOffsets, gotLayout, gotErr := valid.RenderWithLayout()
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Errorf("%s: the validated render's error is %v, the validating render's %v", name, gotErr, wantErr)
-			return
+			return nil
 		}
 		if wantErr != nil {
-			return
+			return wantErr
 		}
 		if got != want {
 			t.Errorf("%s: the validated render's markdown (%d bytes) is not the validating render's (%d bytes)", name, len(got), len(want))
@@ -46,6 +50,7 @@ func TestValidDocumentRenderWithLayoutIsTheValidatingRender(t *testing.T) {
 			t.Errorf("%s: the validated render's layout is not the validating render's", name)
 		}
 		rendered++
+		return nil
 	}
 
 	docs := map[string]*Node{"generated": generatedDocument(t, 400<<10)}
@@ -71,12 +76,7 @@ func TestValidDocumentRenderWithLayoutIsTheValidatingRender(t *testing.T) {
 		}
 		docs[path] = doc
 	}
-	names := make([]string, 0, len(docs))
-	for name := range docs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(docs)) {
 		check(name, docs[name])
 	}
 	// Each corpus document is checked as it is parsed, so the test holds one corpus tree at a time.
@@ -87,7 +87,8 @@ func TestValidDocumentRenderWithLayoutIsTheValidatingRender(t *testing.T) {
 			doc, err = Parse(document.Markdown)
 			return err
 		}) {
-			check("corpus "+document.Name, doc)
+			// The render is a step after the parse: its refusal fails the test.
+			corpus.Later(document, check("corpus "+document.Name, doc))
 		}
 	}
 	if rendered == 0 {
