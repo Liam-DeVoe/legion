@@ -27,9 +27,9 @@ func TestACallerAboveTheDaemonsOwnContractIsLogged(t *testing.T) {
 		lowest, highest int
 		warned          bool
 	}{
-		{name: "a caller above this daemon's own", lowest: DaemonAPIVersion + 1, highest: DaemonAPIVersion + 1, warned: true},
-		{name: "a pod whose newest process is above this daemon's own", lowest: DaemonAPIVersion, highest: DaemonAPIVersion + 1, warned: true},
-		{name: "a caller at this daemon's own", lowest: DaemonAPIVersion, highest: DaemonAPIVersion},
+		{name: "a caller above this daemon's own", lowest: DaemonAPIVersion() + 1, highest: DaemonAPIVersion() + 1, warned: true},
+		{name: "a pod whose newest process is above this daemon's own", lowest: DaemonAPIVersion(), highest: DaemonAPIVersion() + 1, warned: true},
+		{name: "a caller at this daemon's own", lowest: DaemonAPIVersion(), highest: DaemonAPIVersion()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -39,8 +39,8 @@ func TestACallerAboveTheDaemonsOwnContractIsLogged(t *testing.T) {
 
 			restore, strip := s.servedContracts(request, tc.lowest, tc.highest, "")
 
-			if restore != DaemonAPIVersion || strip != DaemonAPIVersion {
-				t.Errorf("a caller at %d to %d is served %d and %d, want this daemon's own %d on both sides", tc.lowest, tc.highest, restore, strip, DaemonAPIVersion)
+			if restore != DaemonAPIVersion() || strip != DaemonAPIVersion() {
+				t.Errorf("a caller at %d to %d is served %d and %d, want this daemon's own %d on both sides", tc.lowest, tc.highest, restore, strip, DaemonAPIVersion())
 			}
 			var lines []map[string]any
 			for line := range strings.Lines(logs.String()) {
@@ -61,7 +61,7 @@ func TestACallerAboveTheDaemonsOwnContractIsLogged(t *testing.T) {
 			}
 			want := map[string]any{
 				"level": "WARN", "msg": "api: serving a caller above this daemon's own contract",
-				"pluginContract": float64(tc.highest), "daemonApiVersion": float64(DaemonAPIVersion), "caller": caller,
+				"pluginContract": float64(tc.highest), "daemonApiVersion": float64(DaemonAPIVersion()), "caller": caller,
 			}
 			for key, value := range want {
 				if lines[0][key] != value {
@@ -126,8 +126,8 @@ func TestANumberBelowOneIsNoContract(t *testing.T) {
 		if lowest, highest, recorded := podContracts(none, statePodUID); lowest != 0 || highest != 0 || recorded != "" {
 			t.Errorf("a pod whose claims record 0 reports %d, %d and %q, want nothing on all three", lowest, highest, recorded)
 		}
-		if placed := s.contractsFor(stating(""), none); placed != ownBody {
-			t.Errorf("the caller of a pod whose claims record 0 is placed at %+v, want this daemon's own body %+v", placed, ownBody)
+		if placed := s.contractsFor(stating(""), none); placed != ownBody() {
+			t.Errorf("the caller of a pod whose claims record 0 is placed at %+v, want this daemon's own body %+v", placed, ownBody())
 		}
 		one := claimInPod("legion-legion-legion-208-planner", statePodUID, 1)
 		if !recordsContract(one) {
