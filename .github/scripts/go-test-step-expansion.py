@@ -121,7 +121,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci.yaml", "envoy-smoke"),
-            (".github/workflows/ci.yaml", "envoy-infra-go"),
+            (".github/workflows/ci.yaml", "go-envoy"),
         }),
         package="github.com/sjawhar/envoy/infra/host",
         functions=None,
@@ -129,8 +129,8 @@ EXCEPTIONS = (
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
             "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
-            "tests would otherwise run nowhere. Each is a leg of ci.yaml's (go-envoy-held's and "
-            "go-envoy's), keyed by the step that runs its action."
+            "tests would otherwise run nowhere. Each is a leg of ci.yaml's (go-envoy-held's, and "
+            "go-envoy's envoy-infra-build), keyed by the step that runs its action."
         ),
     ),
     Exception_(
@@ -220,7 +220,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "go-envoy"),
             (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
@@ -240,7 +240,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "go-envoy"),
             (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
@@ -258,7 +258,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "go-envoy"),
             (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
@@ -274,8 +274,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
-            (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
+            (".github/workflows/ci.yaml", "envoy-go"),
+            (".github/workflows/ci.yaml", "go-envoy"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
         functions=None,
@@ -286,7 +286,8 @@ EXCEPTIONS = (
             "readers through an interface Go's initialization order does not look through, so a "
             "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
             "table failed to read there while it passed in envoy-go's unit step. The two runs "
-            "answer different questions."
+            "answer different questions; envoy-go-build is a leg of go-envoy, keyed by the step "
+            "that runs its action."
         ),
     ),
 )

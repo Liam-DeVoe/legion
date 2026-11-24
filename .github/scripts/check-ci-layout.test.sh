@@ -92,7 +92,7 @@ ci=$root/.github/workflows/ci.yaml
 replace "$ci" "if: matrix.leg == 'dispatch-two-builds'" \
   "if: matrix.leg == 'dispatch-two-builds' && needs.changes.outputs.go-envoy-held == 'true'"
 # kind kept to pull requests in ci-ok's list
-replace "$ci" "CI_OK_PULL_REQUEST_ONLY: '[\"worker-image\"]'" "CI_OK_PULL_REQUEST_ONLY: '[\"worker-image\", \"kind\"]'"
+replace "$ci" "CI_OK_PULL_REQUEST_ONLY: '[\"worker-image\", \"dispatch-browser-pr\"]'" "CI_OK_PULL_REQUEST_ONLY: '[\"worker-image\", \"dispatch-browser-pr\", \"kind\"]'"
 # the search job's condition tests an output
 replace "$ci" $'github.run_attempt == \'1\') }}\n    name: ${{ matrix.name }}\n    runs-on: ${{ matrix.runner }}' \
   $'github.run_attempt == \'1\') && needs.changes.outputs.scripts == \'true\' }}\n    name: ${{ matrix.name }}\n    runs-on: ${{ matrix.runner }}'
@@ -199,7 +199,7 @@ replace "$ci" $'leg-verdict.sh \'envoy-go (1/3)\' \'envoy-go (2/3)\' \'envoy-go 
   $'leg-verdict.sh \'envoy-go (1/3)\' \'envoy-go (2/3)\' \'envoy-go (3/3)\'\n      - run: echo a fourth step\n'
 replace "$ci" $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: \'${{ toJSON(needs.changes) }}\', job-status: \'${{ job.status }}\'}}\n' \
   $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n'
-replace "$ci" '  # why: .github/ci-notes/ci.md#the-airlock-arm-job' \
+replace "$ci" $'  airlock-arm:\n' \
   "  plugin-pack-carrier:
     name: \${{ 'plugin-pack / plugin-pack' }}
     needs: [changes, plugin-pack]
@@ -213,13 +213,14 @@ replace "$ci" '  # why: .github/ci-notes/ci.md#the-airlock-arm-job' \
         run: .github/scripts/leg-verdict.sh 'plugin-pack / plugin-pack'
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '\${{ toJSON(needs.changes) }}', job-status: '\${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-airlock-arm-job"
+  airlock-arm:
+"
 replace "$ci" "name: \${{ 'worker-image' }}" 'name: worker-image'
 replace "$ci" "name: \${{ format('agent-harness / {0}', matrix.leg) }}" 'name: agent-harness'
 replace "$root/.github/workflows/dispatch-browser.yaml" "    name: \${{ 'visual' }}"$'\n' ''
 replace "$ci" $'    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - {leg: lint,' \
   $'    strategy:\n      matrix:\n        include:\n          - {leg: lint,'
-replace "$ci" '[text-checks / text-checks]' '[text-check / text-check]'
+replace "$ci" "name: \${{ 'text-checks / text-checks' }}" "name: \${{ 'text-check / text-check' }}"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the carrier with a fourth step (rule 32)" "$(has "$out" "carrier envoy-go holds 4 step(s)")"
@@ -277,6 +278,46 @@ check "names the install that lost its bound (rule 31)" \
 check "names the timed installs folded into one (rule 31)" \
   "$(has "$out" "holds 2 step(s) with if matrix.x64, uses ./.github/actions/install-elan bound to 11 minutes, where 3 kept")"
 check "names the second merge-group workflow (rule 14)" "$(has "$out" ".github/workflows/extra.yaml runs on merge_group")"
+
+echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"
+# On a dispatch of another ref every other ci-ok of the head is a pull request's or the queue's,
+# and the step would set each posted one to that run's verdict; `if: always()` alone was the shape
+# before, and the expression's comparison of github.ref read refs/heads/Main as main. The third
+# shape, rule 7's text before main's #5186, runs the step on a merge group's first attempt whose
+# verdict failed too, after the hold step, which must end the job so its check run concludes the
+# moment the group is the front.
+reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}"
+n=0
+for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}" \
+  "\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"; do
+  n=$((n + 1))
+  root=$(fresh "reconcile-if-$n")
+  replace "$root/.github/workflows/ci.yaml" "        if: $reconcile_if" "        if: $given"
+  run_check "$root"
+  check "if: $given: fails (rule 7)" "$(is "$status" 1)"
+  check "if: $given: names the step and the if: it must carry" \
+    "$(has "$out" "job ci-ok's step \"Set every other ci-ok on this head to this job's conclusion\" must carry \`if: $reconcile_if\`")"
+done
+
+echo "case: a carrier of main's race job name, and one whose name its pin no longer gives"
+# daemon-go-race's legs are `daemon-go-race (i/2)`, and their carrier keeps main's name
+# `daemon-go / daemon-go-race` by ci_pins.CARRIER_NAMES; without the pin it names no split job.
+root=$(fresh carrier-names)
+pins "$root" 'CARRIER_NAMES = {}'
+run_check "$root"
+check "fails without the pin (rule 32)" "$(is "$status" 1)"
+check "names the carrier whose name is no split job's" \
+  "$(has "$out" "job daemon-go-race runs .github/scripts/leg-verdict.sh, a carrier, and carries \`daemon-go / daemon-go-race\`")"
+check "and the split job left with no carrier" \
+  "$(has "$out" "job go-daemon splits daemon-go-race into 2 legs, and 0 carrier(s) carry \`daemon-go-race / daemon-go-race\`")"
+
+echo "case: the hold step of ci-ok without its event gate"
+root=$(fresh hold-gate)
+pins "$root" 'EVENT_GATES = [g for g in EVENT_GATES if g[2] != "Hold a failing verdict until this group is the front of the queue"]'
+run_check "$root"
+check "fails (rule 28)" "$(is "$status" 1)"
+check "names the hold step's merge_group gate" \
+  "$(has "$out" "job ci-ok step \"Hold a failing verdict until this group is the front of the queue\" has")"
 
 echo "case: the notes"
 root=$(fresh notes)

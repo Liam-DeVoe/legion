@@ -3,8 +3,8 @@ description: >-
   The pi-envoy leg of ci.yaml's pi job, which carries that old check-run name: the typecheck, the
   tests and the release's pack of packages/pi-envoy. The leg runs on ubuntu-24.04, after the job's
   checkout, its Bun (.github/actions/setup-bun), and the Oh My Pi the pin .omp-pin names
-  (.github/actions/install-jj for its mise, then .github/actions/install-omp, steps of ci.yaml
-  because install-omp writes LEGION_TEST_OMP into $GITHUB_ENV), which
+  (.github/actions/install-omp, a step of ci.yaml because it writes LEGION_TEST_OMP into
+  $GITHUB_ENV), which
   extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
   extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run against
   stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub Actions without.
@@ -42,8 +42,12 @@ runs:
     - name: Test pi-envoy
       shell: bash
       working-directory: packages/pi-envoy
+      # LEGION_E2E runs the docker-backed reply-grant row of extensions/envoy.test.ts, which starts
+      # a NATS server with an authorization of its own from the image the job's nats service
+      # pulled (packages/envoy-client/test/nats-server.ts, NATS_IMAGE).
       env:
         LEGION_TEST_NATS_URL: nats://127.0.0.1:${{ inputs.nats-port }}
+        LEGION_E2E: "1"
       run: bun run test
 
     # The release's pack (release.yaml's pi_envoy_build job), which is also this leg's build: the

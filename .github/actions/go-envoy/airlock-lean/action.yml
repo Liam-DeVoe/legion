@@ -5,7 +5,7 @@ description: >-
   the seed corpus and fuzzed against it, and each mutant of the airlock and of its proxy caught.
   The leg runs on ubuntu-24.04-arm. AIRLOCK_MODEL is the built model the two Go runs compare the
   Go code against: naming no file makes FuzzAirlock, TestModelAgreesOnHostShapes and
-  TestTheModelReadsAHostlessEntryWithGuidance skip
+  TestTheModelRefusesAHostlessEntry skip
   (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build step
   checks the binary is there before those runs read it.
 # why: .github/ci-notes/ci.md#the-lean-model-of-the-airlock-and-why-its-fuzz-run-is-two-minutes
@@ -58,7 +58,7 @@ runs:
       working-directory: packages/envoy
       env:
         AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
-      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-airlock-lean-corpus.json --packages ./internal/cipher/proxyrules/ -- -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$'
+      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-airlock-lean-corpus.json --packages ./internal/cipher/proxyrules/ -- -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$'
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:

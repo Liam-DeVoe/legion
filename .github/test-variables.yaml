@@ -54,6 +54,10 @@ variables:
     jobs: [dispatch-browser]
     set_by_script: packages/dispatch/e2e/visual-run.sh
     why: The seed file visual-run.sh writes and hands its container, which the visual job runs.
+  DISPATCH_XID_REQUIRE_GAP_JUDGMENT:
+    class: set
+    jobs: [go-envoy-held]
+    why: Makes the xid window tests fail, naming why, on a runner whose kernel hides a thread's scheduler clocks, where they would pass on the window's shape alone (storetest.XidRequireGapsEnv); envoy-go's race-impossible step and the finalizers legs set it.
   DISPATCH_EDIT_PROFILE_OUT:
     class: tool
     why: Where BenchmarkProfileTheColdEditOfTheHeaviestDocuments writes its profile.
@@ -141,11 +145,11 @@ variables:
     why: The pinned Claude Code tarballs the kind job's setup fetches, which the rig's npm stand-in serves to its pods.
   LEGION_TEST_NATS_URL:
     class: set
-    jobs: [pi]
-    why: The NATS service of pi's pi-envoy and pi-legion legs, which run the Oh My Pi extension tests.
+    jobs: [pi, pi-held]
+    why: The NATS service of pi's pi-envoy leg and of pi-held, which run the Oh My Pi extension tests.
   LEGION_TEST_OMP:
     class: set
-    jobs: [go-daemon, plugin-pack, agent-harness, pi, go-envoy]
+    jobs: [go-daemon, plugin-pack, agent-harness, pi, pi-held, go-envoy]
     why: The Oh My Pi binary install-omp puts in the job's environment.
   LEGION_TEST_PG_DSN:
     class: set

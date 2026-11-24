@@ -108,16 +108,23 @@ runs:
     # that read raceEnabled. 10 minutes each is ample: the
     # documents package took 92 to 127 s on a two-vCPU pod, and the API's xid window tests 134 s.
     # It runs in the last leg, whose share leaves it room, not in the `rest` leg.
+    # It judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps): with
+    # DISPATCH_XID_REQUIRE_GAP_JUDGMENT set, a runner whose kernel stops showing a thread's
+    # scheduler clocks, or refuses to hold a thread out of NUMA balancing, fails those tests naming
+    # why, rather than passing them on the window's shape alone (storetest.XidRequireGapsEnv).
     - name: Test what the race build cannot run at all or at full size
       if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
+      env:
+        DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
       run: |
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-delivery.json" --packages ./internal/dispatch/delivery -- -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$'
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-storetest.json" --packages ./internal/dispatch/store/storetest -- -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$'
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-bus.json" --packages ./internal/bus -- -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$'
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-natscallout.json" --packages ./internal/cipher/natscallout -- -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$'
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-api.json" --packages ./internal/dispatch/api -- -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$'
-        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-docs.json" --packages ./internal/dispatch/docs -- -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$'
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-docs.json" --packages ./internal/dispatch/docs -- -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$'
     - if: always() && inputs.part == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:

@@ -83,9 +83,13 @@ runs:
     # share's predicted time takes at most half of it: the package's tests but the corpus tests
     # took 977 s together in run 45197837366, about 326 s a third, and 442 s for the slowest of
     # three shares that the hash of the test names may give.
+    # DISPATCH_XID_REQUIRE_GAP_JUDGMENT: the package's xid window tests judge their statement-free
+    # gaps here too, and fail naming why on a runner that cannot (storetest.XidRequireGapsEnv).
     - name: Test the document service under the cleanup detector
       shell: bash
       working-directory: packages/envoy
+      env:
+        DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
       run: |
         run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" ./internal/dispatch/docs/)
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-docs-finalizers-${{ inputs.part }}-docs.json" --packages ./internal/dispatch/docs/ -- -count=1 -timeout 15m -exec 'env GODEBUG=checkfinalizers=1' -run "$run" -skip '^(TestAMarginWriteMatchesTheWholeDocumentWrite|TestStatementTimings|TestWriteCorpusReadsOnce)$'

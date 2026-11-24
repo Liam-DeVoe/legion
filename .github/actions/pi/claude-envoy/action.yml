@@ -47,9 +47,20 @@ runs:
       shell: bash
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
 
+    # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), as the
+    # envoy-client leg pulls it: tests/agent-stream-reply-grant.test.ts starts it with an
+    # authorization of its own (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The
+    # registry is this repository's own, so a failed pull is a fault of this repository.
+    - name: Pre-pull the NATS image the reply-grant row runs
+      shell: bash
+      run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+
+    # LEGION_E2E runs that docker-backed reply-grant row.
     - name: Test Claude Envoy plugin
       shell: bash
       working-directory: packages/claude-envoy
+      env:
+        LEGION_E2E: "1"
       run: bun run test
 
     - name: Pack Claude Envoy plugin
