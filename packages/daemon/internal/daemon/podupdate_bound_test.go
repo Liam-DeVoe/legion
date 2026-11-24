@@ -1122,12 +1122,13 @@ func TestPodUpdateBoundLineIsNotWrittenForAnAnswerReadWhileItsMachineDecides(t *
 }
 
 // podUpdateWalkWaitsLine is the line the walk logs where the sweep's snapshot reads every worker
-// as answered and its own fresh read, masked, finds one that has not (completePodUpdate).
-const podUpdateWalkWaitsLine = "supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one unanswered; the replacement waits for the next sweep or for the round's bound"
+// as answered and its own fresh read, masked, finds one that has not answered or whose machine was
+// deciding (completePodUpdate).
+const podUpdateWalkWaitsLine = "supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one that has not answered or whose machine was deciding something; the replacement waits for the next sweep or for the round's bound"
 
-// podUpdateRereadWaitsLine is the line the replacement logs where its own read again finds a
-// worker that has not answered (replacePodForRound).
-const podUpdateRereadWaitsLine = "supervise: a worker of this update round has not answered now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open"
+// podUpdateRereadWaitsLine is the line the replacement logs where its own read again, masked,
+// finds a worker that has not answered or whose machine was deciding (replacePodForRound).
+const podUpdateRereadWaitsLine = "supervise: a worker of this update round has not answered, or its machine was deciding something, now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open"
 
 // answeredBeforeTheBound is a rig whose round both workers have answered, before its bound, with
 // every machine deciding nothing.
@@ -1159,8 +1160,12 @@ func TestPodUpdateWalkWaitsWhileAnAnsweredRolesMachineDecides(t *testing.T) {
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times while the tester's machine was deciding, want none", len(calls))
 	}
-	if lines := loggedLines(t, rig.logs.String(), podUpdateWalkWaitsLine); len(lines) != 1 {
+	lines := loggedLines(t, rig.logs.String(), podUpdateWalkWaitsLine)
+	if len(lines) != 1 {
 		t.Fatalf("the walk logged its wait %d times, want once: the walk must read the deciding tester as not having answered", len(lines))
+	}
+	if waiting := fmt.Sprint(lines[0]["waiting"]); waiting != fmt.Sprintf("[%s]", claim.RoleTester) {
+		t.Fatalf("the walk's wait names %s, want the tester alone, whose machine was deciding", waiting)
 	}
 	if lines := loggedLines(t, rig.logs.String(), podUpdateRereadWaitsLine); len(lines) != 0 {
 		t.Fatalf("the replacement's read again logged %+v, want nothing: the walk hands no replacement on", lines)
@@ -1189,6 +1194,7 @@ func TestPodUpdateLastWordRefusesWhileAnAnsweredRolesMachineDecides(t *testing.T
 	if refused, made := len(rig.rt.CallsOf("ReplacePodNotDue")), len(rig.replacements()); refused != 1 || made != 0 {
 		t.Fatalf("the last word refused %d and the runtime replaced %d, want 1 and 0: the deciding tester has not answered for a deletion", refused, made)
 	}
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it, or its machine was deciding something", claim.RoleTester))
 	rig.awaitReplacement(1, "once the tester's machine has decided")
 }
 

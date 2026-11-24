@@ -542,7 +542,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // below keeps the round recorded on every claim. The snapshot is kept for one thing only:
 // saying, in the log line, that the fresh read differs from it rather than that a worker never
 // answered. The snapshot is read by the same rule (unansweredClaims), so the line says that only
-// where the fresh read alone finds a claim that has not answered.
+// where the fresh read alone finds a claim that has not answered, and it says that the claim has
+// not answered or its machine was deciding: the masked read cannot tell the two apart.
 //
 // The activity report is the one exception. The activity route writes it to the store and posts
 // nothing to a machine, so the live read takes it from the group's own store rows (roundGroup),
@@ -599,7 +600,7 @@ func (s *supervision) completePodUpdate(ctx context.Context, issue string, snaps
 		return nil, false
 	case waitsForAnswer:
 		if len(unansweredClaims(snapshot, round, clock)) == 0 {
-			s.log.Info("supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one unanswered; the replacement waits for the next sweep or for the round's bound",
+			s.log.Info("supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one that has not answered or whose machine was deciding something; the replacement waits for the next sweep or for the round's bound",
 				"issue", issue, "round", round, "waiting", namesOf(reading.unanswered))
 		}
 		return nil, false
@@ -1101,7 +1102,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod)
 		return
 	case waitsForAnswer:
-		s.log.Info("supervise: a worker of this update round has not answered now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open",
+		s.log.Info("supervise: a worker of this update round has not answered, or its machine was deciding something, now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open",
 			"issue", issue, "round", round, "pod", pod, "waiting", namesOf(reading.unanswered))
 		return
 	case waitsForProcessInItsPod:
@@ -1622,7 +1623,7 @@ func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(
 		*ended = readRoundEnd(told, round, clock)
 		unanswered, working, background := readRoundEnd(group, round, clock).holding()
 		if len(unanswered) > 0 {
-			return fmt.Errorf("%w: %s has not answered it", errReplacementNotDue, strings.Join(namesOf(unanswered), ", "))
+			return fmt.Errorf("%w: %s has not answered it, or its machine was deciding something", errReplacementNotDue, strings.Join(namesOf(unanswered), ", "))
 		}
 		if len(working) > 0 {
 			return fmt.Errorf("%w: the turn of %s runs now", errReplacementNotDue, strings.Join(working, ", "))
