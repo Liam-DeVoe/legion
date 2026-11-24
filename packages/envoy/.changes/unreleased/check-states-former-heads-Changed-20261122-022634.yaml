@@ -10,7 +10,7 @@ body: |-
     `pull_request_former_heads` keeps each head an open pull request left. Each write of
     `pull_request_heads` that can move a pull request's history appends a record of it, by a
     trigger, in the transaction of the write, whichever build wrote it
-    (`pull_request_former_heads_moves`, migration `20261122071001`, one transaction with the tables
+    (`pull_request_former_heads_moves`, migration `20261123233128`, one transaction with the tables
     and the seed), and the settler applies a pull request's records, under that pull request's lock,
     before it reads its former heads (`pull_request_former_heads_fold`), and each pass applies the
     records no settle reached, so a head is kept whether or not a settle ran while the pull request
