@@ -189,6 +189,9 @@ type lockGraph struct {
 	constants map[string]string
 	functions []*lockFunction
 	named     map[string]*lockFunction
+	// sources are the parsed files the graph was built from, which the route guards read every
+	// route declaration off (keyedRouteHandlers).
+	sources []moduleSource
 	declared  map[*types.Func]*lockFunction
 	literals  map[*ast.FuncLit]*lockFunction
 	// stored are the functions this module assigns to each variable or struct field, which a
@@ -321,6 +324,7 @@ func buildCopyLockGraph() (*lockGraph, error) {
 	graph := &lockGraph{
 		root:            root,
 		info:            modules.info,
+		sources:         modules.sources,
 		constants:       constants,
 		named:           map[string]*lockFunction{},
 		declared:        map[*types.Func]*lockFunction{},

@@ -1,0 +1,129 @@
+// Command dispatch-route-adopt carries a branch made before Dispatch's routes moved into a file
+// each across main's change, which leaves a merge of main into such a branch with routes_table.go
+// and routes_shapes.go in conflict.
+//
+// Before the change every route of internal/dispatch/api was one row of routes() in
+// routes_table.go, and what else was known of it stood in four maps beside the table, keyed
+// "<method> <pattern>" (writeClasses, idRoutes, routeScopes, readScopeRoutes), and in a fifth in
+// routes_shapes.go (routeShapes). Now each route is one file of its own, route_<path>+<method>.go
+// (routeFileName says how a pattern is written), whose one declaration states every one of those
+// facts, so two branches that add different routes touch no file in common.
+//
+// Usage, from anywhere in the checkout, while `git merge origin/main` (or any merge of a commit
+// with the new layout) has stopped:
+//
+//	go run ./cmd/dispatch-route-adopt            (from packages/envoy)
+//
+// One side of the merge holds the old layout and the other the new one. The tool splits the old
+// layout at the merge base and at the old-layout side into one file per route, with the splitter
+// that wrote main's route files, and compares the two splits route by route:
+//
+//   - a route the branch added is written;
+//   - a route the branch changed is merged into the file the new side holds (git merge-file), and
+//     a file the merge leaves in conflict carries git's markers and is named among what is left;
+//   - a route the branch removed is deleted, where the new side's file is still the one the
+//     merge base held, and is named among what is left where main has changed it since.
+//
+// routes_table.go and routes_shapes.go are then taken whole from the new side. An edit the
+// branch made to either outside the moved entries - a type, a helper, a comment, routes() itself -
+// is printed as a diff for the person to carry by hand, since nothing can place it mechanically.
+// testdata/routes.txt, which the new layout no longer commits, is removed. Every file it writes or
+// removes is staged; it changes no other file. It ends by listing what is left: route files merged
+// with conflicts, edits to carry by hand, the other paths git still holds in conflict, and every
+// line of package api's other files that still names one of the old maps.
+//
+// It exits 0 when nothing is left, 2 when it resolved what it could and something is left for the
+// person, and 1 when it could not run.
+//
+//	go run ./cmd/dispatch-route-adopt split -rev <commit> -out <dir>
+//
+// writes the route files the old layout at <commit> splits into, and nothing else, into <dir>. It
+// is how main's route files were made: splitting main's old table again reproduces them byte for
+// byte, which is what lets the adopt step above find a route the branch did not touch unchanged
+// on main's side.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+)
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run is the command, with its exit status.
+func run(args []string, stdout, stderr io.Writer) int {
+	working, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(stderr, "dispatch-route-adopt:", err)
+		return 1
+	}
+	repo, err := findRepo(working)
+	if err != nil {
+		fmt.Fprintln(stderr, "dispatch-route-adopt:", err)
+		return 1
+	}
+	if len(args) > 0 && args[0] == "split" {
+		return runSplit(repo, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 {
+		fmt.Fprintf(stderr, "dispatch-route-adopt: unknown argument %q: run it with none during a merge, or as `split -rev <commit> -out <dir>`\n", args[0])
+		return 1
+	}
+	report, err := adopt(repo)
+	if err != nil {
+		fmt.Fprintln(stderr, "dispatch-route-adopt:", err)
+		return 1
+	}
+	report.print(stdout)
+	if report.left() {
+		return 2
+	}
+	return 0
+}
+
+// runSplit writes the route files of the old layout at one commit into a directory.
+func runSplit(repo gitRepo, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("split", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	rev := flags.String("rev", "", "the commit whose old layout to split")
+	out := flags.String("out", "", "the directory to write the route files into")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if *rev == "" || *out == "" || flags.NArg() > 0 {
+		fmt.Fprintln(stderr, "dispatch-route-adopt split: -rev and -out are both required, and nothing else")
+		return 1
+	}
+	files, err := splitOldLayout(gitTree{repo: repo, rev: *rev})
+	if err == nil {
+		err = writeFiles(*out, files)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "dispatch-route-adopt split:", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "wrote %d route files into %s\n", len(files), *out)
+	return 0
+}
+
+// writeFiles writes files into dir, in name order.
+func writeFiles(dir string, files map[string][]byte) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var problems []error
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		if err := os.WriteFile(filepath.Join(dir, name), files[name], 0o644); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	return errors.Join(problems...)
+}

@@ -1,0 +1,416 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"maps"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+)
+
+// routesFixture is the route index the old layout committed, which the new one does not.
+const routesFixture = "testdata/routes.txt"
+
+// oldNames are the declarations the new layout removed: a line of package api that still names
+// one was written against the old layout.
+var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScopeRoutes|routeShapes|routeRow|withIDRoute|scopedRoutesNotMounted|shapedRoutesNotMounted|readRoutesNotMountedAsGET|routeIndexGolden)\b`)
+
+// adoptReport is what one run did and what it leaves for the person.
+type adoptReport struct {
+	newSide, oldSide, base string
+
+	written, updated, merged, removed []string
+	fixtureRemoved                    bool
+
+	// conflicted are route files the three-way merge left markers in.
+	conflicted []string
+	// decide are routes main and the branch each changed in a way no merge settles: one side
+	// removed the route the other changed.
+	decide []string
+	// carry are the branch's edits to routes_table.go and routes_shapes.go outside the moved
+	// entries, each a diff of that file's shared code from the merge base to the branch.
+	carry []string
+	// unmerged are the paths git still holds in conflict once the run is done.
+	unmerged []string
+	// stale are the lines of package api that still name a declaration the old layout had.
+	stale []string
+}
+
+// left reports whether anything is left for the person.
+func (r *adoptReport) left() bool {
+	return len(r.conflicted)+len(r.decide)+len(r.carry)+len(r.unmerged)+len(r.stale) > 0
+}
+
+func (r *adoptReport) print(w io.Writer) {
+	fmt.Fprintf(w, "dispatch-route-adopt: the old layout is %s's, the new one %s's, the merge base %s\n", r.oldSide, r.newSide, r.base)
+	for _, list := range []struct {
+		what  string
+		names []string
+	}{
+		{"wrote the route the branch added", r.written},
+		{"wrote the branch's change to a route main left as the merge base had it", r.updated},
+		{"merged the branch's change into main's changed route", r.merged},
+		{"removed the route the branch removed", r.removed},
+	} {
+		for _, name := range list.names {
+			fmt.Fprintf(w, "  %s: %s\n", list.what, path.Join(apiDir, name))
+		}
+	}
+	fmt.Fprintf(w, "  took %s and %s from %s\n", path.Join(apiDir, tableFile), path.Join(apiDir, shapesFile), r.newSide)
+	if r.fixtureRemoved {
+		fmt.Fprintf(w, "  removed %s, which the new layout does not commit\n", path.Join(apiDir, routesFixture))
+	}
+	if !r.left() {
+		fmt.Fprintln(w, "dispatch-route-adopt: nothing is left")
+		return
+	}
+	fmt.Fprintln(w, "dispatch-route-adopt: left for you:")
+	for _, name := range r.conflicted {
+		fmt.Fprintf(w, "  resolve the conflict markers in %s\n", path.Join(apiDir, name))
+	}
+	for _, line := range r.decide {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+	for _, diff := range r.carry {
+		fmt.Fprintf(w, "  %s\n", strings.ReplaceAll(strings.TrimRight(diff, "\n"), "\n", "\n    "))
+	}
+	for _, name := range r.unmerged {
+		fmt.Fprintf(w, "  still in conflict: %s\n", name)
+	}
+	for _, line := range r.stale {
+		fmt.Fprintf(w, "  names a declaration the old layout had: %s\n", line)
+	}
+}
+
+// adopt resolves the merge in progress in repo (see the package comment).
+func adopt(repo gitRepo) (*adoptReport, error) {
+	mergeHead, err := repo.line("rev-parse", "-q", "--verify", "MERGE_HEAD")
+	if err != nil || mergeHead == "" {
+		return nil, errors.New("no merge is in progress: run this while `git merge origin/main` has stopped")
+	}
+	head, err := repo.line("rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	headOld, err := hasOldLayout(gitTree{repo, head})
+	if err != nil {
+		return nil, fmt.Errorf("read HEAD's %s: %w", tableFile, err)
+	}
+	mergeOld, err := hasOldLayout(gitTree{repo, mergeHead})
+	if err != nil {
+		return nil, fmt.Errorf("read MERGE_HEAD's %s: %w", tableFile, err)
+	}
+	report := &adoptReport{}
+	switch {
+	case headOld && mergeOld:
+		return nil, errors.New("HEAD and MERGE_HEAD both hold the old route table: neither side has the layout to adopt")
+	case !headOld && !mergeOld:
+		return nil, errors.New("HEAD and MERGE_HEAD both hold the route files already: there is nothing to adopt")
+	case headOld:
+		report.oldSide, report.newSide = "HEAD", "MERGE_HEAD"
+	default:
+		report.oldSide, report.newSide = "MERGE_HEAD", "HEAD"
+	}
+	revs := map[string]string{"HEAD": head, "MERGE_HEAD": mergeHead}
+	oldRev, newRev := revs[report.oldSide], revs[report.newSide]
+	base, err := repo.line("merge-base", head, mergeHead)
+	if err != nil {
+		return nil, err
+	}
+	report.base = base
+	if baseOld, err := hasOldLayout(gitTree{repo, base}); err != nil {
+		return nil, fmt.Errorf("read the merge base's %s: %w", tableFile, err)
+	} else if !baseOld {
+		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split", base)
+	}
+
+	baseFiles, err := splitOldLayout(gitTree{repo, base})
+	if err != nil {
+		return nil, fmt.Errorf("split the merge base's routes: %w", err)
+	}
+	branchFiles, err := splitOldLayout(gitTree{repo, oldRev})
+	if err != nil {
+		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
+	}
+	dir := filepath.Join(repo.root, apiDir)
+	var stage, remove []string
+	labels := [3]string{"main (" + report.newSide + ")", "merge base", "branch (" + report.oldSide + ")"}
+	names := slices.Sorted(maps.Keys(baseFiles))
+	for name := range branchFiles {
+		if _, inBase := baseFiles[name]; !inBase {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		baseContent, inBase := baseFiles[name]
+		branchContent, inBranch := branchFiles[name]
+		if inBase && inBranch && bytes.Equal(baseContent, branchContent) {
+			continue
+		}
+		file := filepath.Join(dir, name)
+		current, err := os.ReadFile(file)
+		inTree := err == nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		switch {
+		case !inBase: // the branch added it
+			switch {
+			case !inTree:
+				report.written = append(report.written, name)
+			case bytes.Equal(current, branchContent):
+				continue
+			default:
+				merged, conflict, err := repo.mergeFile(current, nil, branchContent, labels)
+				if err != nil {
+					return nil, err
+				}
+				branchContent = merged
+				if conflict {
+					report.conflicted = append(report.conflicted, name)
+				} else {
+					report.merged = append(report.merged, name)
+				}
+			}
+		case !inBranch: // the branch removed it
+			switch {
+			case !inTree:
+				continue
+			case bytes.Equal(current, baseContent):
+				report.removed = append(report.removed, name)
+				remove = append(remove, name)
+				continue
+			default:
+				report.decide = append(report.decide, fmt.Sprintf("the branch removes the route of %s, which main has changed since the merge base: delete it or keep main's", path.Join(apiDir, name)))
+				continue
+			}
+		default: // the branch changed it
+			switch {
+			case !inTree:
+				report.decide = append(report.decide, fmt.Sprintf("main removed the route of %s, which the branch changes: the branch's version is not written", path.Join(apiDir, name)))
+				continue
+			case bytes.Equal(current, baseContent):
+				report.updated = append(report.updated, name)
+			default:
+				merged, conflict, err := repo.mergeFile(current, baseContent, branchContent, labels)
+				if err != nil {
+					return nil, err
+				}
+				branchContent = merged
+				if conflict {
+					report.conflicted = append(report.conflicted, name)
+				} else {
+					report.merged = append(report.merged, name)
+				}
+			}
+		}
+		if err := os.WriteFile(file, branchContent, 0o644); err != nil {
+			return nil, err
+		}
+		if !slices.Contains(report.conflicted, name) {
+			stage = append(stage, name)
+		}
+	}
+
+	for _, name := range []string{tableFile, shapesFile} {
+		mainContent, err := gitTree{repo, newRev}.read(name)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), mainContent, 0o644); err != nil {
+			return nil, err
+		}
+		stage = append(stage, name)
+		carried, err := sharedCodeChange(repo, name, gitTree{repo, base}, gitTree{repo, oldRev})
+		if err != nil {
+			return nil, err
+		}
+		if carried != "" {
+			report.carry = append(report.carry, carried)
+		}
+	}
+
+	if len(stage) > 0 {
+		if _, err := repo.run(append([]string{"add", "--"}, prefixed(stage)...)...); err != nil {
+			return nil, err
+		}
+	}
+	if len(remove) > 0 {
+		if _, err := repo.run(append([]string{"rm", "-q", "--"}, prefixed(remove)...)...); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := (gitTree{repo, oldRev}).read(routesFixture); err == nil {
+		if _, err := (gitTree{repo, newRev}).read(routesFixture); err != nil {
+			if _, err := repo.run("rm", "-q", "--ignore-unmatch", "--", path.Join(apiDir, routesFixture)); err != nil {
+				return nil, err
+			}
+			report.fixtureRemoved = true
+		}
+	}
+
+	if report.unmerged, err = repo.unmerged(); err != nil {
+		return nil, err
+	}
+	if report.stale, err = staleLines(dir); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// prefixed names each route file from the repository's root.
+func prefixed(names []string) []string {
+	paths := make([]string, len(names))
+	for index, name := range names {
+		paths[index] = path.Join(apiDir, name)
+	}
+	return paths
+}
+
+// sharedCodeChange is the branch's change to one old-layout file outside the entries the route
+// files took over - the rows of routes() and the side maps' entries - as a diff from the merge
+// base, and empty where the branch changed nothing else of it.
+func sharedCodeChange(repo gitRepo, name string, base, branch tree) (string, error) {
+	baseContent, err := base.read(name)
+	if err != nil {
+		return "", err
+	}
+	branchContent, err := branch.read(name)
+	if err != nil {
+		return "", err
+	}
+	if bytes.Equal(baseContent, branchContent) {
+		return "", nil
+	}
+	baseShared, err := sharedCode(name, baseContent)
+	if err != nil {
+		return "", fmt.Errorf("read the merge base's %s: %w", name, err)
+	}
+	branchShared, err := sharedCode(name, branchContent)
+	if err != nil {
+		return "", fmt.Errorf("read the branch's %s: %w", name, err)
+	}
+	if baseShared == branchShared {
+		return "", nil
+	}
+	diff, err := repo.diffText(baseShared, branchShared)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("carry by hand the branch's edit to %s outside the moved entries (the moved entries are cut out, as …):\n%s",
+		path.Join(apiDir, name), diff), nil
+}
+
+// sharedCode is an old-layout file with every moved entry cut out: the elements of the side maps
+// and of readScopeRoutes, the rows of routes() and the test hooks' rows, each list left as {…}.
+func sharedCode(name string, content []byte) (string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, name, content, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	type cut struct{ from, to int }
+	var cuts []cut
+	offset := func(pos token.Pos) int { return fset.Position(pos).Offset }
+	for _, mapName := range []string{writeClassesName, idRoutesName, routeScopesName, readScopeRoutesName, routeShapesName} {
+		if literal := packageLiteral(file, mapName); literal != nil {
+			cuts = append(cuts, cut{offset(literal.Lbrace) + 1, offset(literal.Rbrace)})
+		}
+	}
+	if body := routesBody(file); body != nil {
+		ast.Inspect(body, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.CompositeLit:
+				if isRowSlice(n.Type) {
+					cuts = append(cuts, cut{offset(n.Lbrace) + 1, offset(n.Rbrace)})
+					return false
+				}
+			case *ast.IfStmt:
+				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) == "s.deps.TestHooksEnabled" {
+					cuts = append(cuts, cut{offset(n.Body.Lbrace) + 1, offset(n.Body.Rbrace)})
+					return false
+				}
+			}
+			return true
+		})
+	}
+	slices.SortFunc(cuts, func(a, b cut) int { return a.from - b.from })
+	var out strings.Builder
+	at := 0
+	for _, c := range cuts {
+		if c.from < at {
+			continue
+		}
+		out.Write(content[at:c.from])
+		out.WriteString("…")
+		at = c.to
+	}
+	out.Write(content[at:])
+	return out.String(), nil
+}
+
+// diffText is a unified diff of two texts, its hunks alone.
+func (g gitRepo) diffText(from, to string) (string, error) {
+	dir, err := os.MkdirTemp("", "dispatch-route-adopt-diff-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	fromPath, toPath := filepath.Join(dir, "merge-base"), filepath.Join(dir, "branch")
+	if err := os.WriteFile(fromPath, []byte(from), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(toPath, []byte(to), 0o644); err != nil {
+		return "", err
+	}
+	output, err := g.run("diff", "--no-index", "--no-color", "--exit-code", "-U3", fromPath, toPath)
+	if err == nil {
+		return "", nil
+	}
+	if len(output) == 0 {
+		return "", err
+	}
+	text := string(output)
+	if at := strings.Index(text, "\n@@"); at >= 0 {
+		text = text[at+1:]
+	}
+	return text, nil
+}
+
+// staleLines is every line of package api, route files and the two resolved files aside, that
+// names a declaration the old layout had, as file:line: text.
+func staleLines(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || isRouteFile(name) || name == tableFile || name == shapesFile {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		number := 0
+		for line := range strings.Lines(string(content)) {
+			number++
+			if oldNames.MatchString(line) {
+				lines = append(lines, fmt.Sprintf("%s:%d: %s", path.Join(apiDir, name), number, strings.TrimSpace(line)))
+			}
+		}
+	}
+	return lines, nil
+}

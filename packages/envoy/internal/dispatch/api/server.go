@@ -642,8 +642,8 @@ type RouteMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
-// same table answers GET /api/v1.
+// Register mounts every native-workspace route on mux. Each route is declared in a file of its
+// own (routeDecl, routes_table.go); the same table answers GET /api/v1.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -658,8 +658,9 @@ type RouteMux interface {
 // or DELETE - that names its presser in Dispatch-Login runs only as that person
 // (refuseChangedLogin).
 //
-// Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
-// read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).
+// Every route the read list does not name (routeDecl.ReadScope), GET /ws/live among them,
+// answers a read-only broker token 403 READ_ONLY_TOKEN before anything else it does
+// (refuseReadOnlyToken).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -807,22 +808,22 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
 		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
 	}
-	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
-		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
-		// deleted and its entry left behind — so the table is refused rather than mounted
-		// (routeScopes).
-		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
-	}
-	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) > 0 {
-		// A read list naming a route nothing serves opens nothing while it reads as though it
-		// did, and one naming a write would open that write to a token minted only to read, so
-		// the table is refused rather than mounted (readScopeRoutes).
+	if refused := readRoutesNotGET(routes); len(refused) > 0 {
+		// A route that a read-only token may call and that is not a GET is a write, which would
+		// be opened to a token minted only to read, so the table is refused rather than mounted
+		// (routeDecl.ReadScope).
 		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
 	}
-	// After the check above, so the list it names is one the table mounts, and before the first
-	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
+	// After the check above, so the list it names is GET routes alone, and before the first row
+	// is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
+	var readList []string
+	for _, route := range routes {
+		if route.ReadScope {
+			readList = append(readList, route.Method+" "+route.Pattern)
+		}
+	}
 	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
-		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+		strings.Join(readList, ", ") + "): nothing ran"
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -836,12 +837,6 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// one definition of the API would stop being one; the table is refused rather than
 		// mounted (routes_shapes.go).
 		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
-	}
-	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
-		// A shape for a route nothing serves is a shape the document would describe and no
-		// caller could reach — a row renamed or deleted and its entry left behind — so the
-		// table is refused rather than mounted (routeShapes).
-		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
@@ -1060,7 +1055,7 @@ func (credentialExpired) CloseCode() (int, string) {
 // bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
 // either: resolved here, it would hold the socket open for the token's whole life after the cookie
 // ended, a read-only token's included, which the read list lets read no document at all
-// (readScopeRoutes).
+// (routeDecl.ReadScope).
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
@@ -1404,7 +1399,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs. What each credential holds is said once, above routeScopes.
+// needs. What each credential holds is said once, on routeDecl.OAuthScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1432,11 +1427,12 @@ func missingScopeError(scope, message string) *apiError {
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
-// that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. What each credential holds is said once,
-// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
-// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
-// through writeAuthenticationError, as every gate on this server does.
+// that declares any (routeDecl.OAuthScopes) in it, ahead of the keyed, project and session
+// layers, so the declaration is what decides and a handler restates nothing. What each
+// credential holds is said once, on routeDecl.OAuthScopes. The first scope the credential lacks,
+// in the order the row declares them, is 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller
+// that does not resolve at all answers through writeAuthenticationError, as every gate on this
+// server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
 // same bearer twice or presents the same DPoP proof twice.
@@ -1461,7 +1457,7 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 
 // refuseReadOnlyToken is the one place a read-only token is held to the read list: register wraps
 // every row of the table in it, listed being the row's apiRoute.ReadScope, and GET /ws/live with
-// listed false. On a route the list does not name (readScopeRoutes), a caller decideBrokerToken
+// listed false. On a route the list does not name (routeDecl.ReadScope), a caller decideBrokerToken
 // resolved to a read-only credential (model.Credential.ReadOnly) is answered 403 READ_ONLY_TOKEN
 // and next does not run; every other request runs next as it always did. A row the list names is
 // handed back as it is, so it pays nothing for the gate.
@@ -1699,9 +1695,9 @@ func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
 
 // idPathProblem is how a route refuses a path id that names nothing, worded once so every route
 // that reads one says the same thing. An ask's, a comment's and a message's id is resolved from
-// a prefix before a handler sees it (idRoutes), so their rule is a whole uuid or a prefix of one
-// long enough to name a single item. A handoff's and a thread's is not, so theirs is the whole
-// uuid it has always been.
+// a prefix before a handler sees it (routeDecl.ID), so their rule is a whole uuid or a prefix of
+// one long enough to name a single item. A handoff's and a thread's is not, so theirs is the
+// whole uuid it has always been.
 func idPathProblem(kind string) string {
 	switch kind {
 	case "ask", "comment", "message":

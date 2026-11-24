@@ -1,10 +1,11 @@
 // read_only_token_test.go holds Dispatch to its read list: a read-only token — one the secrets
 // broker minted from a read entry, the scope read alone beside the project scope none, a service
-// and no person — reaches the routes readScopeRoutes names and nothing else. Every other row of
-// the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's handler, before the
-// sign-in check and before its Idempotency-Key is read (refuseReadOnlyToken), register refuses a
-// list that names anything but a GET row it mounts, and the route the list names writes nothing
-// for such a caller but its proof's replay row and the caches Dispatch rebuilds.
+// and no person — reaches the routes whose declarations state ReadScope and nothing else. Every
+// other row of the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's
+// handler, before the sign-in check and before its Idempotency-Key is read (refuseReadOnlyToken),
+// register refuses a table where a route that is not a GET states it, and the route the list
+// names writes nothing for such a caller but its proof's replay row and the caches Dispatch
+// rebuilds.
 //
 // A token that names a service and no person is already refused every write, SIGN_IN_REQUIRED or
 // OAUTH_SCOPE_REQUIRED, so each refusal here is read by its code: a bare 403 would prove nothing.
@@ -142,8 +143,8 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
-	if listed != len(readScopeRoutes) {
-		t.Fatalf("%d rows carry the read list's mark, want the list's %d (%v)", listed, len(readScopeRoutes), readScopeRoutes)
+	if listed != len(readListAnswers) {
+		t.Fatalf("%d rows carry the read list's mark, want the %d readListAnswers names", listed, len(readListAnswers))
 	}
 	t.Logf("walked %d rows of the table (test hooks in) and GET %s: %d listed, %d refused, every refusal %s",
 		walked, liveSocketPattern, listed, walked-listed+1, contracts.DispatchReadOnlyToken)
@@ -223,56 +224,65 @@ func registerRefusal(t *testing.T) (refusal string) {
 	return ""
 }
 
-// TestRegisterRefusesAReadOnlyListOfNoMountedGETRow: a read list naming a write would open that
-// write to a token minted only to read, and one naming no row reads as though it opened a route
-// that is not there, so Register refuses either and names the route. It replaces the package's
-// list for its length, so it is not parallel.
+// withRouteRegistry replaces the package's route declarations for the length of a test, so a
+// negative control can mount a table no route file declares. It is not parallel with anything
+// that reads the registry.
+func withRouteRegistry(t *testing.T, routes []routeDecl) {
+	t.Helper()
+	kept := routeRegistry
+	routeRegistry = routes
+	t.Cleanup(func() { routeRegistry = kept })
+}
+
+// TestRegisterRefusesAReadOnlyListOfNoMountedGETRow: a route that is not a GET and states
+// ReadScope would open that write to a token minted only to read, so Register refuses it and
+// names the route. It replaces the package's declarations for its length, so it is not parallel.
 func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
-	kept := readScopeRoutes
-	t.Cleanup(func() { readScopeRoutes = kept })
 	if refusal := registerRefusal(t); refusal != "" {
 		t.Fatalf("api.Register refused the read list as it stands: %s", refusal)
 	}
-	for why, name := range map[string]string{
-		"a POST row":    "POST /api/v1/issues/{key}/comments",
-		"no row at all": "GET /api/v1/projects/{key}/architecture/no-such-route",
-	} {
-		t.Run(why, func(t *testing.T) {
-			readScopeRoutes = []string{name}
-			refusal := registerRefusal(t)
-			if !strings.Contains(refusal, "read list") || !strings.Contains(refusal, name) {
-				t.Fatalf("api.Register with %s on the read list refused %q, want a refusal of the read list naming it", name, refusal)
-			}
-		})
+	const name = "POST /api/v1/issues/{key}/comments"
+	planted := slices.Clone(routeRegistry)
+	index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == name })
+	if index < 0 {
+		t.Fatalf("no route declares %s", name)
+	}
+	planted[index].ReadScope = true
+	withRouteRegistry(t, planted)
+	refusal := registerRefusal(t)
+	if !strings.Contains(refusal, "read list") || !strings.Contains(refusal, name) {
+		t.Fatalf("api.Register with %s on the read list refused %q, want a refusal of the read list naming it", name, refusal)
 	}
 }
 
-// TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET: the check register runs on the read
-// list names, sorted, each name that is no row of the table and each row that is a write, and
-// passes a GET row whether the deployment serves it or only a server with its test hooks in does.
+// TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET: the check register runs names,
+// sorted, each route that states ReadScope and is a write, and passes a GET route whether the
+// deployment serves it or only a server with its test hooks in does.
 func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 	t.Parallel()
-	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) != 0 {
+	if refused := readRoutesNotGET(readOnlyTable()); len(refused) != 0 {
 		t.Fatalf("the read list as it stands is refused: %v", refused)
 	}
-	got := readRoutesNotMountedAsGET([]string{
-		"GET /api/v1/projects/{key}/architecture",
-		"GET /api/v1/artifacts/_test/rooms",
-		"POST /api/v1/issues/{key}/comments",
-		"DELETE /api/v1/projects/{key}/legion/daemon",
-		"PUT /api/v1/me/asks/{id}/snooze",
-		"GET /api/v1/projects/{key}/architecture/no-such-route",
-		"get /api/v1/projects/{key}/architecture",
+	listed := func(method, pattern string) apiRoute {
+		return apiRoute{routeDecl: routeDecl{Method: method, Pattern: pattern, ReadScope: true}}
+	}
+	got := readRoutesNotGET([]apiRoute{
+		listed(http.MethodGet, "/api/v1/projects/{key}/architecture"),
+		listed(http.MethodGet, "/api/v1/artifacts/_test/rooms"),
+		listed(http.MethodPost, "/api/v1/issues/{key}/comments"),
+		listed(http.MethodDelete, "/api/v1/projects/{key}/legion/daemon"),
+		listed(http.MethodPut, "/api/v1/me/asks/{id}/snooze"),
+		{routeDecl: routeDecl{Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}"}},
+		listed("get", "/api/v1/projects/{key}/architecture"),
 	})
 	want := []string{
 		"DELETE /api/v1/projects/{key}/legion/daemon",
-		"GET /api/v1/projects/{key}/architecture/no-such-route",
 		"POST /api/v1/issues/{key}/comments",
 		"PUT /api/v1/me/asks/{id}/snooze",
 		"get /api/v1/projects/{key}/architecture",
 	}
 	if !slices.Equal(got, want) {
-		t.Fatalf("readRoutesNotMountedAsGET named %q, want %q", got, want)
+		t.Fatalf("readRoutesNotGET named %q, want %q", got, want)
 	}
 }
 
