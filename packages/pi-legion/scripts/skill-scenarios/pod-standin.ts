@@ -23,9 +23,10 @@ export type PodTool = (typeof POD_TOOLS)[number];
 
 /** Each tool's options before its verb that take a value as the next word (`-n x`,
  *  `--context y`), so that word is no verb. An option written `--name=value`, and a short option
- *  with its value attached (`-nx`), are one word. An option not named here is read as one taking
- *  no value. For `docker`, the options `docker compose` takes before its own verb are here too,
- *  and for `gcloud` the zone and region a create names. */
+ *  with its value attached (`-nx`), are one word. An option not named here may or may not take the
+ *  next word, and the classifier reads it both ways (`readings`). For `docker`, the options
+ *  `docker compose` takes before its own verb are here too, and for `gcloud` the zone and region a
+ *  create names. */
 const OPTIONS_WITH_VALUES: Record<PodTool, ReadonlySet<string>> = {
   kubectl: new Set([
     "-n",
@@ -157,34 +158,79 @@ const CONTAINER_VERBS: ReadonlySet<string> = new Set(["run", "create", "start"])
 /** gcloud's release tracks, which may stand before any group (`gcloud beta run deploy`). */
 const GCLOUD_TRACKS: ReadonlySet<string> = new Set(["alpha", "beta", "preview"]);
 
-/** The words of `argv` that are neither an option nor an option's value, in order. Everything
- *  after `--` is such a word. */
-function words(tool: PodTool, argv: readonly string[]): string[] {
-  const withValues = OPTIONS_WITH_VALUES[tool];
-  const found: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const word = argv[i] ?? "";
-    if (word === "--") return [...found, ...argv.slice(i + 1)];
-    if (word.startsWith("-") && word.length > 1) {
-      if (withValues.has(word)) i++;
-      continue;
-    }
-    found.push(word);
-  }
-  return found;
+/** One reading of a call: what the next word is to it (the value of an option the table names,
+ *  `value`; maybe the value of one it does not name, `maybe`; or free, `free`), the command's
+ *  first `HEAD_WORDS` words, its last word so far, and whether `instances create` or
+ *  `clusters create` stood as two words in a row. */
+interface Reading {
+  readonly next: "free" | "value" | "maybe";
+  readonly head: readonly string[];
+  readonly last: string;
+  readonly pair: boolean;
+}
+
+/** The command's first words that a start is read from: gcloud's release track, then two words
+ *  (`beta run deploy`). */
+const HEAD_WORDS = 3;
+
+/** What option `word` makes of the next word: the value of an option the table names, no value of
+ *  one written with its value (`--name=value`, `-nx`), and maybe a value of any other. */
+function afterOption(tool: PodTool, word: string): Reading["next"] {
+  if (OPTIONS_WITH_VALUES[tool].has(word)) return "value";
+  if (word.includes("=") || (!word.startsWith("--") && word.length > 2)) return "free";
+  return "maybe";
+}
+
+/** `reading` with `word` as the command's next word. */
+function withWord(reading: Reading, word: string): Reading {
+  return {
+    next: "free",
+    head: reading.head.length < HEAD_WORDS ? [...reading.head, word] : reading.head,
+    last: word,
+    pair:
+      reading.pair ||
+      ((reading.last === "instances" || reading.last === "clusters") && word === "create"),
+  };
 }
 
 /**
- * Whether a call of `tool` with `argv` starts a pod or a container, by the part's list of "A call
- * that starts a pod": `kubectl run|create|apply|replace|debug|scale|expose`,
- * `docker run|create|start`, `docker compose up`, `podman run|create|start`,
- * `helm install|upgrade`, `gcloud … instances create`, `gcloud … clusters create`,
- * `gcloud run deploy` and `kind create`. The tool's own options before the verb are skipped
- * (`kubectl -n x run`, `docker --context y run`). A read such as `kubectl get pods` is no start,
- * and neither is a word past the verb that spells one, such as a pod named `run`.
+ * Every reading of the words of `argv`. An option the tool's table names takes the next word as
+ * its value, and one written with its value takes none. Any other option is read both ways, as
+ * taking the next word and as taking none, since the table cannot say which. Everything after
+ * `--` is a word of the command. Two readings that agree on all a start is read from are kept
+ * once, so the readings stay few however many options a call has.
  */
-export function podCallStarts(tool: PodTool, argv: readonly string[]): boolean {
-  const [first = "", second = ""] = words(tool, argv);
+function readings(tool: PodTool, argv: readonly string[]): Reading[] {
+  let current = new Map<string, Reading>([["", { next: "free", head: [], last: "", pair: false }]]);
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i] ?? "";
+    if (word === "--") {
+      const rest = argv.slice(i + 1);
+      return [...current.values()].map((reading) =>
+        rest.reduce<Reading>(withWord, { ...reading, next: "free" })
+      );
+    }
+    const next = new Map<string, Reading>();
+    const keep = (reading: Reading): void => {
+      next.set(JSON.stringify(reading), reading);
+    };
+    for (const reading of current.values()) {
+      if (reading.next === "value") {
+        keep({ ...reading, next: "free" });
+        continue;
+      }
+      if (reading.next === "maybe") keep({ ...reading, next: "free" });
+      const isOption = word.startsWith("-") && word.length > 1;
+      keep(isOption ? { ...reading, next: afterOption(tool, word) } : withWord(reading, word));
+    }
+    current = next;
+  }
+  return [...current.values()];
+}
+
+/** Whether one reading of a call of `tool` starts a pod or a container. */
+function startsIn(tool: PodTool, { head, pair }: Reading): boolean {
+  const [first = "", second = ""] = head;
   switch (tool) {
     case "kubectl":
     case "helm":
@@ -196,14 +242,25 @@ export function podCallStarts(tool: PodTool, argv: readonly string[]): boolean {
     case "podman":
       return CONTAINER_VERBS.has(first === "container" ? second : first);
     case "gcloud": {
-      const command = words(tool, argv);
-      const groups = GCLOUD_TRACKS.has(command[0] ?? "") ? command.slice(1) : command;
-      if (groups[0] === "run" && groups[1] === "deploy") return true;
-      return groups.some(
-        (word, i) => (word === "instances" || word === "clusters") && groups[i + 1] === "create"
-      );
+      const groups = GCLOUD_TRACKS.has(first) ? head.slice(1) : head;
+      return (groups[0] === "run" && groups[1] === "deploy") || pair;
     }
   }
+}
+
+/**
+ * Whether a call of `tool` with `argv` starts a pod or a container, by the part's list of "A call
+ * that starts a pod": `kubectl run|create|apply|replace|debug|scale|expose`,
+ * `docker run|create|start`, `docker compose up`, `podman run|create|start`,
+ * `helm install|upgrade`, `gcloud … instances create`, `gcloud … clusters create`,
+ * `gcloud run deploy` and `kind create`. The tool's own options before the verb are skipped
+ * (`kubectl -n x run`, `docker --context y run`). It fails toward a start: where an option the
+ * table does not name stands before the verb, a start under either reading of it is a start
+ * (`kubectl --unlisted v run x`). A read such as `kubectl get pods` is no start under any reading,
+ * and neither is a word past the verb that spells one, such as a pod named `run`.
+ */
+export function podCallStarts(tool: PodTool, argv: readonly string[]): boolean {
+  return readings(tool, argv).some((reading) => startsIn(tool, reading));
 }
 
 function isPodTool(tool: string | undefined): tool is PodTool {
