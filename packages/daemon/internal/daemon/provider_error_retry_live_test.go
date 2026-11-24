@@ -353,7 +353,10 @@ func (r *providerErrorLive) ladderWalks() {
 
 	for attempt := 1; attempt < sends; attempt++ {
 		delay := ladderDelays[attempt-1]
-		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), delay+ladderTolerance+time.Minute, func(record loggedRecord) bool {
+		// Each send is timed by the daemon's own record of it, not by when this step saw that
+		// record: a step's read of the log comes some time after the send, so a gap measured to
+		// that read from the last one can fall short of the wait the daemon kept.
+		over := r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), delay+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
 				record.at.After(sent[attempt-1])
 		})
@@ -367,9 +370,8 @@ func (r *providerErrorLive) ladderWalks() {
 		if wait, want := armed.Attrs["wait"], delay.String(); wait != want {
 			t.Fatalf("the ladder armed %v before send %d, want %s", wait, attempt+1, want)
 		}
-		now := time.Now()
-		gap := now.Sub(sent[attempt-1])
-		sent = append(sent, now)
+		gap := over.at.Sub(sent[attempt-1])
+		sent = append(sent, over.at)
 		if gap < delay || gap > delay+ladderTolerance {
 			t.Fatalf("send %d of the ladder came %s after send %d, want between %s and %s",
 				attempt+1, gap.Round(time.Second), attempt, delay, delay+ladderTolerance)
