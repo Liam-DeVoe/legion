@@ -273,7 +273,7 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			after: `{"op":"start","tree":"LEGION-2","role":"implementer","task":"Implement it.","generation":3,"phase":"implementing","entry":5}`},
 		{name: "the carried root's cleanup", issue: carried, payload: record.Fenced(record.IssueSuspend{Tree: root, TreeGeneration: 2}, carriedFence),
 			refused: true, after: `{"tree":"LEGION-2","generation":3,"treeGeneration":3}`},
-		{name: "a save", issue: root, payload: record.Fenced(record.IssueBundle{Tree: root, TreeGeneration: 2, Role: claim.RoleImplementer}, fence),
+		{name: "a workspace check", issue: root, payload: record.Fenced(record.IssueWorkspaceCheck{Tree: root, TreeGeneration: 2, Role: claim.RoleImplementer}, fence),
 			refused: true, after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2,"role":"implementer"}`},
 		{name: "a release", issue: root, payload: record.Fenced(record.IssueRelease{Tree: root, TreeGeneration: 2}, fence), refused: true,
 			after: `{"tree":"LEGION-1","generation":2,"treeGeneration":2}`},

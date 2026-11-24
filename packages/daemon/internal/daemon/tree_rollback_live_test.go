@@ -192,7 +192,7 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 		string(record.OutboxKindRoleMessage):        {w, record.RoleMessage{Role: string(architect), Body: body}},
 		string(record.OutboxKindHookPrompt):         {w, record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: body}},
 		string(record.OutboxKindUpdateAsk):          {w, record.UpdateAsk{Role: claim.RoleImplementer, Round: "round-1", Text: body}},
-		string(record.OutboxKindIssueBundle):        {w, record.IssueBundle{Tree: w, TreeGeneration: generation, Role: claim.RoleArchitect}},
+		string(record.OutboxKindIssueBundle):        {w, record.IssueWorkspaceCheck{Tree: w, TreeGeneration: generation, Role: claim.RoleArchitect}},
 		string(record.OutboxKindIssueRelease):       {w, record.IssueRelease{Tree: w, TreeGeneration: generation}},
 		string(record.OutboxKindGatedStepsPublish):  {project, record.GatedStepsPublish{Project: project, Steps: []record.DesignStep{}}},
 		string(record.OutboxKindClaimRelease):       {w, record.ClaimRelease{}},

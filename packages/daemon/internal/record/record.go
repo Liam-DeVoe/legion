@@ -299,10 +299,10 @@ type Issue struct {
 	// RetainedUntil is when a linger the release before converted ends for this issue (decision
 	// 17 of dispatch://INFRA-4730): the first boot's conversion copies a root's linger deadline
 	// still ahead onto the root and onto each issue of its stored tree out of Legion's work, and
-	// the `retention_end` row queued for that moment retires the issue's suspended claims,
-	// deletes its bundle and removes its tmux workspace, as the linger's expiry did, if the issue
-	// is still out of Legion's work then. Nil for every other record: an issue this release
-	// stops gets no deadline, and its claims and bundle stay until it returns or closes (R20).
+	// the `retention_end` row queued for that moment retires the issue's suspended claims and
+	// removes its tmux workspace, as the linger's expiry did, if the issue is still out of
+	// Legion's work then. Nil for every other record: an issue this release stops gets no
+	// deadline, and its claims stay until it returns or closes (R20).
 	RetainedUntil *time.Time
 	// CarriedGeneration and CarriedGate are what a hand-over of the release before carried into
 	// the root it made, copied off that release's handed_over_roots row by the first boot's
@@ -2840,9 +2840,9 @@ type Store interface {
 	// conditional update: false is another holder's lease, a lifecycle row of its issue since
 	// leased, or a row no longer due, in order, or in the outbox. leaseFor must be positive.
 	ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.Time, leaseFor time.Duration) (OutboxRow, bool, error)
-	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; false is a
-	// lease no longer the caller's.
-	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (bool, error)
+	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; renewed false
+	// is a lease no longer the caller's, and gone is a row finished rather than leased by another.
+	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (renewed, gone bool, err error)
 	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)

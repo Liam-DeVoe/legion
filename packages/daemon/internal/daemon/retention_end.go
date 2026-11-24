@@ -18,13 +18,14 @@ import (
 // (record.Issue.RetainedUntil), for that issue while it stays out of Legion's work, and after any
 // production check it owes, it does what that linger's expiry did for it alone — each suspended or
 // failed claim of it retires with its session kept (supervise.RequestIssueClose), as that expiry's
-// close retired every claim it could stop, the workspace bundle a release saved for it goes, and
-// its workspace on the daemon's own host is removed (removeRetainedWorkspace), called here
-// directly, with no workspace_remove row, which waits for every claim of the issue to retire. A
-// failed claim left standing would hold that removal, and the row, for good. Nothing of any other
-// issue is touched. The row is fenced by the run and the phase entry it was queued at
-// (record.FenceOf, run): an issue that came back to work since stands at a later entry, and the
-// row finishes there without acting; one in Legion's work at this entry finishes too.
+// close retired every claim it could stop, the decline of an idle release of it goes
+// (forgetIdleRelease), and its workspace on the daemon's own host is removed
+// (removeRetainedWorkspace), called here directly, with no workspace_remove row, which waits for
+// every claim of the issue to retire. A failed claim left standing would hold that removal, and
+// the row, for good. Nothing of any other issue is touched. The row is fenced by the run and the
+// phase entry it was queued at (record.FenceOf, run): an issue that came back to work since stands
+// at a later entry, and the row finishes there without acting; one in Legion's work at this entry
+// finishes too.
 func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload record.RetentionEnd) error {
 	if r.supervisor == nil {
 		return errors.New("retention end executor has no claim supervisor")
@@ -61,11 +62,11 @@ func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload
 			return fmt.Errorf("retire claim %s at the end of its issue's retention: %w", token, err)
 		}
 	}
-	r.dropReleasedWork(ctx, row.Issue)
+	r.forgetIdleRelease(ctx, row.Issue)
 	if err := r.removeRetainedWorkspace(ctx, *issue); err != nil {
 		return err
 	}
-	r.log.Info("outbox retention end: the issue's suspended and failed claims retired, its bundle and workspace removed", "row", row.ID, "issue", issue.Key,
+	r.log.Info("outbox retention end: the issue's suspended and failed claims retired, its idle release's decline forgotten and its workspace removed", "row", row.ID, "issue", issue.Key,
 		"generation", payload.Generation, "entry", payload.Entry)
 	return nil
 }

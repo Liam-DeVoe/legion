@@ -163,7 +163,7 @@ func FenceOf(payload OutboxPayload) (Fence, bool) {
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	case IssueSuspend:
 		return Fence{Generation: value.Generation, Entry: value.Entry, PodUID: value.PodUID}, true
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		return Fence{Generation: value.Generation, Entry: value.Entry, PodUID: value.PodUID}, true
 	case IssueRelease:
 		return Fence{Generation: value.Generation, Entry: value.Entry, PodUID: value.PodUID}, true
@@ -198,7 +198,7 @@ func actsOnPod(payload OutboxPayload) bool {
 	switch value := payload.(type) {
 	case SuperviseRequest:
 		return value.Stops()
-	case IssueSuspend, IssueBundle, IssueRelease:
+	case IssueSuspend, IssueWorkspaceCheck, IssueRelease:
 		return true
 	}
 	return false
@@ -233,7 +233,7 @@ type FenceKeys struct {
 // later is listed here before any row of it is stamped (FencedKinds).
 var fencedPayloads = []OutboxPayload{
 	StatusWrite{}, MessagePost{}, Notice{}, ControllerNotice{}, GateSeed{}, PendingBasisSeed{}, RetentionEnd{},
-	IssueSuspend{}, IssueBundle{}, IssueRelease{}, IssueBranch{}, CheckWakeDue{}, CheckLook{}, CheckBound{},
+	IssueSuspend{}, IssueWorkspaceCheck{}, IssueRelease{}, IssueBranch{}, CheckWakeDue{}, CheckLook{}, CheckBound{},
 	RoleMessage{}, PhaseEnded{}, HookPrompt{}, UpdateAsk{}, MergeForwardMessage{}, MergeQueueRemoval{}, ClaimRelease{},
 }
 
@@ -328,7 +328,7 @@ func fenced(payload OutboxPayload, fence Fence) (OutboxPayload, fenceStamp) {
 		entry(&value.Entry)
 		pod(&value.PodUID)
 		return value, stamp
-	case IssueBundle:
+	case IssueWorkspaceCheck:
 		generation(&value.Generation)
 		entry(&value.Entry)
 		pod(&value.PodUID)

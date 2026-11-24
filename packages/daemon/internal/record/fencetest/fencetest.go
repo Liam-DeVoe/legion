@@ -68,7 +68,7 @@ func Unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	case record.IssueSuspend:
 		value.Entry, value.PodUID = 0, ""
 		return value
-	case record.IssueBundle:
+	case record.IssueWorkspaceCheck:
 		value.Entry, value.PodUID = 0, ""
 		return value
 	case record.IssueRelease:

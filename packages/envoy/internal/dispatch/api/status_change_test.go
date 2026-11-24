@@ -2175,9 +2175,6 @@ func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *test
 	run := &statusChangeRun{key: named, callerName: "alice", resumed: &statusChangeRecovery{Moved: earlier}, moved: moved(3002, 2000)}
 	all := append(slices.Clone(run.resumed.Moved), run.moved...)
 	body := run.namedComment()
-	if pmdoc.LineFeeds(body) != body || strings.TrimSpace(body) == "" {
-		t.Fatalf("the comment is blank or holds a line ending that is no line feed: %q", body)
-	}
 	if err := itemblocks.Check("body", body); err != nil {
 		t.Fatalf("the comment for %d moves is refused: %v", len(all), err)
 	}

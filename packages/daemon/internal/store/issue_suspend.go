@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,11 +16,13 @@ import (
 // IssueClose is one workflow close of an issue, as its issue_suspend outbox row names it: the run
 // it closed (the issue's own generation) and the row, written after the close's per-role stops. A
 // later start supersedes it even within the same generation. Nothing of the tree the issue's record
-// stores is read: a close is the issue's own (R17 of dispatch://INFRA-3320).
+// stores is read: a close is the issue's own (R17 of dispatch://INFRA-3320). TurnStart is the turn
+// start a left pod's close fences on (record.IssueSuspend.TurnStart), nil for every other close.
 type IssueClose struct {
 	Issue      string
 	Generation uint64
 	Row        int64
+	TurnStart  *time.Time
 }
 
 // IssueSuspension decides whether a workflow close may suspend its issue's Sandbox now, in one
@@ -45,6 +48,14 @@ type IssueClose struct {
 // start in the same transaction, so that start stands above them, and a suspension that acted
 // there would delete the Sandbox and the pod immediately before the look resumed its role in
 // them.
+//
+// A left pod's close that fences on a turn start (IssueClose.TurnStart) finishes without acting
+// too where a claim of the issue started a turn after it (claims.last_turn_start, compared on the
+// database's own precision): the stop of that claim's role held for the same turn, and that turn
+// may have made work the close's read did not see. The claim may stop later by another route, an
+// operator's suspension or its relaunches running out, and a suspension still waiting would then
+// delete the disk with no read; finished now, nothing of the close outlives the hold, and the next
+// idle pass decides the close again (workflow.LeftPodClose).
 func (s *Store) IssueSuspension(ctx context.Context, project string, close IssueClose, outOfWorkflow func(status string) bool) (bool, error) {
 	if close.Issue == "" || close.Generation == 0 || close.Row <= 0 {
 		return false, errors.New("issue suspension requires the issue, its generation and its outbox row")
@@ -78,6 +89,17 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		}
 		if restarted {
 			return nil
+		}
+		if close.TurnStart != nil {
+			var turned bool
+			if err := tx.QueryRow(ctx, `select exists (
+				select 1 from claims where project = $1 and issue = $2 and last_turn_start > $3)`,
+				project, close.Issue, *close.TurnStart).Scan(&turned); err != nil {
+				return err
+			}
+			if turned {
+				return nil
+			}
 		}
 		may, err := issueStopFences(ctx, tx, project, close.Issue, "suspension", close.Row, close.Generation)
 		if err != nil {

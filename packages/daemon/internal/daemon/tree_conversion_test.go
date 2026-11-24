@@ -256,7 +256,7 @@ func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
 		record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2,
 			Ask: "ask-1", Generation: 1},
 		record.IssueSuspend{Tree: key, Generation: 2, TreeGeneration: 2},
-		record.IssueBundle{Tree: key, Generation: 2, TreeGeneration: 2, Role: claim.RoleImplementer},
+		record.IssueWorkspaceCheck{Tree: key, Generation: 2, TreeGeneration: 2, Role: claim.RoleImplementer},
 		record.IssueRelease{Tree: key, Generation: 2, TreeGeneration: 2},
 		record.IssueBranch{},
 		record.CheckWakeDue{Look: 1, Reason: "the agent's own wake"},

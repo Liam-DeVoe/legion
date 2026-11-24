@@ -467,11 +467,11 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // was released: it drops the open backstops the path has taken over, so no later backstop acts on
 // a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
 // (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
-// nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
-// (dropReleasedWork), and drop every backstop of the issue, since the issue's work is over. The
-// claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
-// is what takes it out of every released-claim read; this drops what is left behind in the
-// record.
+// nothing but its own backstop to bring it back. An issue's close and the end of its retention
+// name no role (forgetIdleRelease), and drop every backstop of the issue, since the issue's work
+// is over. The claim's own suspension source is re-stamped by the machine (supervise's
+// suspendedAgain), which is what takes it out of every released-claim read; this drops what is
+// left behind in the record.
 //
 // A runner with no tree store does nothing here. Every runner the daemon builds has one
 // (newOutbox), so this is the test that builds a runner by hand for a path of its own, as the
@@ -486,16 +486,16 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or the retention a linger of the release before left it has ended, so
-// nothing will restore that bundle and nothing should. A stop keeps it, because its issue comes
-// back. A runner with no tree store does nothing, as takeOverRelease says.
-func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
+// forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
+// of it (store.ForgetIdleDecline): the issue is done, or the retention a linger of the release
+// before left it has ended, so no idle release of its pod is coming. A stop keeps it, because its
+// issue comes back. A runner with no tree store does nothing, as takeOverRelease says.
+func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
+		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
 	}
 }

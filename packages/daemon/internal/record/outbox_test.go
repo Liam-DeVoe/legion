@@ -95,6 +95,21 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
+		// A release's workspace check, and a left pod's close's, which names the roles it closes and
+		// the newest turn start of the pass that queued it (IssueWorkspaceCheck.TurnStart).
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RoleImplementer},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RolePlanner,
+			CloseRoles: []claim.Role{claim.RolePlanner}, TurnStart: now.Add(-40 * time.Minute)},
+		// The stop and the Sandbox suspension that close queues after a clean read carry the same
+		// moment (SuperviseRequest.TurnStart, IssueSuspend.TurnStart), and the zero moment where no
+		// claim had had a turn: a fence any turn passes, which is no fence at all only where the row
+		// names none.
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(now.Add(-40 * time.Minute))},
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(time.Time{})},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
@@ -383,8 +398,8 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindLingerClose:     "",
 		OutboxKindIssueSuspend:    "",
 		OutboxKindWorkspaceRemove: "",
-		// The end of a converted linger's retention retires suspended claims, deletes a bundle and
-		// removes a workspace, which starts no turn, as a stop does (dispatch://INFRA-4730).
+		// The end of a converted linger's retention retires suspended claims and removes a
+		// workspace, which starts no turn, as a stop does (dispatch://INFRA-4730).
 		OutboxKindRetentionEnd:       "",
 		OutboxKindIssueBranch:        "",
 		OutboxKindIssueBundle:        "",
@@ -452,9 +467,9 @@ func carries(field string) fencePart { return fencePart{field: field} }
 // lacks is a fence part the kind carries none of, and why.
 func lacks(why string) fencePart { return fencePart{why: why} }
 
-// podUIDField is the field a stop, a suspend, a bundle or a release names its pod's incarnation in.
-// It may be empty, which fences no pod: a tmux claim runs in no pod, and a claim with no locator
-// names none.
+// podUIDField is the field a stop, a suspend, a workspace check or a release names its pod's
+// incarnation in. It may be empty, which fences no pod: a tmux claim runs in no pod, and a claim
+// with no locator names none.
 const podUIDField = "PodUID"
 
 // declaredOutboxKinds is every kind the outbox's lanes run (OutboxLanes, LaneKinds), which
@@ -567,12 +582,12 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		// so it names the run and the entry the conversion queued it at (decision 17 of
 		// dispatch://INFRA-4730).
 		OutboxKindRetentionEnd: {carries("Generation"), carries("Entry"),
-			lacks("it acts on the one issue: it retires every suspended claim of it, deletes its bundle and removes its workspace, and no single pod or claim is what it fences"),
+			lacks("it acts on the one issue: it retires every suspended claim of it and removes its workspace, and no single pod or claim is what it fences"),
 			RetentionEnd{}},
 		OutboxKindIssueSuspend: {carries("Generation"), carries("Entry"), carries(podUIDField),
 			IssueSuspend{Tree: "LEGION-208", TreeGeneration: 7}},
 		OutboxKindIssueBundle: {carries("Generation"), carries("Entry"), carries(podUIDField),
-			IssueBundle{Tree: "LEGION-208", TreeGeneration: 7, Role: claim.RoleImplementer}},
+			IssueWorkspaceCheck{Tree: "LEGION-208", TreeGeneration: 7, Role: claim.RoleImplementer}},
 		OutboxKindIssueRelease: {carries("Generation"), carries("Entry"), carries(podUIDField),
 			IssueRelease{Tree: "LEGION-208", TreeGeneration: 7}},
 		// The branch is the run's and stays across a stop (R20), and the start of the entry a
@@ -818,6 +833,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
 		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start fenced on a turn start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
+		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
