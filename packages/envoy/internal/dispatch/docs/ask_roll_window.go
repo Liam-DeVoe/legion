@@ -502,6 +502,7 @@ func askBlocksWithAnAsk(ctx context.Context, tx pgx.Tx, document string, tree *p
 // once the fleet is one build only those a version keeps (keptAskState).
 func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	keep := rollWindowAskAttributes(twoBuilds, ask, copied)
 	if keep == nil {
 		// kept for one release: stored-ask-state

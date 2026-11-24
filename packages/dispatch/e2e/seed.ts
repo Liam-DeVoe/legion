@@ -95,7 +95,7 @@ const tables = [
 // so a reset that took them would leave the instance with no block type at all. `source_event`
 // tells them apart for nothing: the kind does, and that is what these predicates keep.
 //
-// The lens catalogue stays too (migrations 20261116123354 and 20261116123355): each `lens_kind`
+// The lens catalogue stays too (migrations 20261123174710 and 20261123174720): each `lens_kind`
 // node with its tuples, its `constrained_by` to its source among them, and each `constraint` node
 // at the far end of one of those with its own tuples, so a driver finds the seeded kinds after a
 // reset. A constraint under an issue, and a lens's `has_kind` into a kind, go with everything else.

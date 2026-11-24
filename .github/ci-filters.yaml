@@ -2110,6 +2110,7 @@ dispatch_multiprocess:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/attribute_removal_test.go'
+  - '!packages/envoy/cmd/dispatch/block_index_lease_test.go'
   - '!packages/envoy/cmd/dispatch/document_gone_test.go'
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
@@ -2221,6 +2222,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+  - '!packages/envoy/cmd/dispatch/block_index_lease_test.go'
   - '!packages/envoy/cmd/dispatch/document_gone_test.go'
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
@@ -2329,6 +2331,7 @@ dispatch_two_builds:
   - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+  - '!packages/envoy/cmd/dispatch/block_index_lease_test.go'
   - '!packages/envoy/cmd/dispatch/document_gone_test.go'
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/graph_cost_test.go'

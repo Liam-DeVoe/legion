@@ -1,4 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
+import { CONTAINER_MARKER_PATTERN } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -13,11 +14,12 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
  * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
- * containers' quote and list markers, opens the directive, outside fenced code and outside the
- * front matter a document opens with. A line that quotes an opener in code - a fence, or an inline
- * span, which never starts the line - opens no block, and nor does a line of front matter, which
- * is no markdown, so a document's writer cannot make it read as an answer Dispatch recorded. A
- * document of this release with no ask block opens none, and reads no ask.
+ * containers' quote, list and footnote markers, opens the directive, outside fenced code and
+ * outside the front matter a document opens with. A line that quotes an opener in code - a fence,
+ * one opened on a footnote's label line too, or an inline span, which never starts the line -
+ * opens no block, and nor does a line of front matter, which is no markdown, so a document's
+ * writer cannot make it read as an answer Dispatch recorded. A document of this release with no
+ * ask block opens none, and reads no ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
@@ -33,11 +35,15 @@ type CodeFence = { readonly char: string; readonly run: number };
 /** A line that opens or closes a document's front matter. */
 const FRONT_MATTER_FENCE = /^---[ \t]*$/;
 
+/** One container marker at the start of a line (`CONTAINER_MARKER_PATTERN`). */
+const CONTAINER_MARKER = new RegExp(`^${CONTAINER_MARKER_PATTERN}`);
+
 /**
  * Each line of `markdown` that opens an ask block, past its containers' markers, outside fenced
  * code and front matter, as CommonMark and pmdoc's parser read the canonical rendering a text
- * route serves, which writes every code block fenced (the server's refs.questionBlocks makes the
- * same scan, but reads the lines of front matter too).
+ * route serves, which writes every code block fenced. The server's refs.questionBlocks makes the
+ * same scan past the same markers (trimContainerMarkers), but reads the lines of front matter
+ * too, and takes only spaces and tabs after a closing fence, where this scan takes any blank.
  */
 function askOpenerLines(markdown: string): string[] {
   const openers: string[] = [];
@@ -92,14 +98,16 @@ function fenceRun(text: string): CodeFence | undefined {
   return { char, run };
 }
 
-/** `line` without the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`, or a number
- *  and `.` or `)`, each followed by a space) a block nested in a quote or a list item is written
- *  after. */
+/** `line` without the indentation and the container markers (`CONTAINER_MARKER_PATTERN`: quote
+ *  markers, list markers followed by a space or a tab, and footnote labels, as askgate-new-asks.ts
+ *  reads pmdoc's footnote definition), each with every space and tab after it, that a block nested
+ *  in a quote, a list item or a footnote is written after. The lines are split at each line break
+ *  first, so no label holds one. */
 function withoutContainerMarkers(line: string): string {
   let rest = line;
   for (;;) {
     rest = rest.replace(/^[ \t]+/, "");
-    const marker = /^(?:>|[-*+][ \t]|\d+[.)][ \t])/.exec(rest);
+    const marker = CONTAINER_MARKER.exec(rest);
     if (marker === null) return rest;
     rest = rest.slice(marker[0].length);
   }

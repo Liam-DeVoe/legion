@@ -3409,7 +3409,8 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of 217 or 219 reads that state as before, since it parses the three names, and the boot
+// A plugin of the release before (220, the number main declares at 58251571dd) reads that state
+// as before, since it parses the three names, and the boot
 // gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
 // file before it pins an image of this release.

@@ -209,7 +209,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		}
 		return append(append(params, nodeArgs...), write.mark, baseSlot, write.sentinel), nil
 	}
-	stated := orderedTuples(1, tupleArrayCount+1)
+	stated := orderedTuples(tupleArrayCount + 1)
 	if len(nodes) == 0 {
 		counted(b.QueueBuilt("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
@@ -296,7 +296,7 @@ func queueChangedByRun(b *store.WriteBatch, changes []Tuple, run string, appende
 	runParam := "$" + strconv.Itoa(majorsAt+1)
 	counted(b.QueueBuilt("append graph tuples", `
 		with changes as (
-			`+orderedTuples(1, majorsAt)+`
+			`+orderedTuples(majorsAt)+`
 		),
 		changes_held as (
 			select from_kind, from_id from (
@@ -328,12 +328,12 @@ func queueChangedByRun(b *store.WriteBatch, changes []Tuple, run string, appende
 	}), appended)
 }
 
-// orderedTuples is the select of the tuples an append binds from the parameter first on
+// orderedTuples is the select of the tuples an append binds from the first parameter on
 // (tupleParams, tupleArrays), each at the place in the append the bigint array bound at majors
 // names, and first among the rows that share that place.
-func orderedTuples(first, majors int) string {
+func orderedTuples(majors int) string {
 	return `select ` + tupleSelect + `, major, 0::bigint as minor
-		from unnest(` + tupleArrays(first) + `, $` + strconv.Itoa(majors) + `::bigint[])
+		from unnest(` + tupleArrays(1) + `, $` + strconv.Itoa(majors) + `::bigint[])
 			as tuple(` + tupleWriteColumns + `, major)`
 }
 

@@ -100,7 +100,7 @@ func blockKindList(kinds ...string) string {
 	for _, item := range itemKinds {
 		listed = append(listed, item.BlockKind())
 	}
-	return `(` + quotedKinds(listed) + `)`
+	return `(` + store.QuoteLiterals(listed) + `)`
 }
 
 // heldByABlock is true of a document's, comment's, message's or ask's mention edge (graph_edges
@@ -424,8 +424,8 @@ func keyedMentionArm(blockKind string) string {
 // constraint, and an issue's duplicate_of and filed_from.
 func storeClass(alias string) string {
 	return `((not (` + alias + `.from_kind = '` + BlockNodeKind + `' and ` + graphstore.FindingIDSQL(alias+`.from_id`) + `)
-				  and (` + alias + `.kind in (` + quotedKinds(storeArmPointers) + `)
-				       or (` + alias + `.kind in (` + quotedKinds(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy})) + `)
+				  and (` + alias + `.kind in (` + store.QuoteLiterals(storeArmPointers) + `)
+				       or (` + alias + `.kind in (` + store.QuoteLiterals(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy})) + `)
 				           and ` + alias + `.from_kind in ('` + graphstore.KindInteraction + `', '` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` + graphstore.KindConstraint + `'))))
 				or (` + alias + `.from_kind = '` + graphstore.KindIssue + `' and ` + alias + `.kind in ('` + graphstore.TupleDuplicateOf + `', '` + graphstore.TupleFiledFrom + `')))`
 }
@@ -649,7 +649,12 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
-// over the same ends (BacklinkCounts).
+// over the same ends (BacklinkCounts). Each predicate is bound through the gate (authorOnlyGate),
+// so it reads `graph_nodes` only for an end that can be reserved for its author: the far end of
+// an edge, whose kind is a column, is tested on its kind in SQL first, and an end whose kind is a
+// literal of the build - a block of the node read, or the block holding an edge out of it - binds
+// its kind's predicate only where the gate keeps it (andGatedKind): a document's block does, and a
+// block of an ask, a comment or a message, which the store reserves for nobody, binds none.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
 // the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
@@ -711,7 +716,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
 		// artifact by its uuid (edgeFrom).
 		from := edgeFrom("g")
-		source += ` and ` + VisibleEnd(AnyKind, "g.from_kind", from, false, seen)
+		source += andGatedEnd(AnyKind, "g.from_kind", from, false, seen)
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
@@ -730,14 +735,13 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			// node the address resolves to and listed at that node.
 			arms += `
 			union all
-			` + keyedBlockArm("block", documentBlockIDs(id), VisibleKind("block", "g.to_id", seen)+` and `+source) + `
+			` + keyedBlockArm("block", documentBlockIDs(id), source+andGatedKind("block", "g.to_id", seen)) + `
 			union all
 			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, resolved.node_id
 			from (` + keyedBlockArm("block", documentRoomBlockAddresses(id), source) + `
 			) g (kind, from_kind, from_id, created_at, source_seq, to_id)
 			cross join lateral (select ` + ResolvedBlockSQL("g.to_id") + ` as node_id) resolved
-			where resolved.node_id = any(` + documentBlockIDArray(id) + `)
-			  and ` + VisibleKind("block", "resolved.node_id", seen)
+			where resolved.node_id = any(` + documentBlockIDArray(id) + `)` + andGatedKind("block", "resolved.node_id", seen)
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -750,7 +754,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), VisibleKind(item.BlockKind(), "g.to_id", seen)+` and `+source)
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source+andGatedKind(item.BlockKind(), "g.to_id", seen))
 		}
 	case query.Direction == "out" && document:
 		// The document's own edges name it by its uuid, but the one the store states out of it
@@ -758,31 +762,31 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// that ref_key. Its blocks' links are the block_refs rows of the room it is edited in whose
 		// block it holds (DocumentRoomBlocksSQL): an issue born converted keys them under its tree.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.kind = '` + graphstore.TupleChangedByRun + `'
-			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)` +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where ` + DocumentRoomBlocksSQL("b", blocks+"::uuid") + ` and ` + blockRefListed("b", "b.to_id") + `
-			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
+			from block_refs b where ` + DocumentRoomBlocksSQL("b", blocks+"::uuid") + ` and ` + blockRefListed("b", "b.to_id") +
+			andGatedKind("block", "b.from_node", seen) + andGatedEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + itemBlockLinks(item) + `
-			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent + `
-			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
+			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent +
+			andGatedKind(item.BlockKind(), "r.from_node", seen) + andGatedEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
 	}

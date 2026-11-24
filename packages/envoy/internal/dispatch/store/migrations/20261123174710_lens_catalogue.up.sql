@@ -1,4 +1,4 @@
--- 20261116123354_lens_catalogue.up.sql
+-- 20261123174710_lens_catalogue.up.sql
 --
 -- The lens catalogue is nodes of the store (spec requirement r-lens-catalogue).
 -- This migration writes three things, each the way 20261113230000 writes a type node: as rows,
@@ -34,6 +34,14 @@
 -- migration's writer. A constraint's id is a uuid fixed here. A kind added later is
 -- `envoy-dispatch lens-kind-add`, which writes the same shape (graphstore.AddLensKind).
 --
+-- It is a type migration written after the store's backfill, as
+-- 20261123174700_graph_supertags_decision_reading is: it is numbered above backfillVersion
+-- (cmd/dispatch/supertag_nodes_test.go), the newest migration of the releases that may have run
+-- `backfill-graph-store` over graph_nodes and graph_tuples, so a store of those releases applies
+-- it after the backfill, as a fresh store applies it after 20261123174700. cmd/dispatch's
+-- TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs it over a backfilled
+-- store with the census at a one-byte limit.
+--
 -- Each statement is one insert of literal `values` rows, every row written out whole: graph_nodes
 -- and graph_tuples are above the census's size limit in production, and on a table above it the
 -- census admits only literal `values` rows, each statement with a fixed row count. So no row is
@@ -41,9 +49,14 @@
 -- it (no `on conflict`, no `not exists`): the file runs once, as the runner runs every migration,
 -- and a second run is refused on graph_nodes' primary key and writes nothing. The nodes stand in
 -- ascending (kind, id), all before any tuple, and the tuples in the order of their node, then
--- their kind and far end. Every row is dated '2026-11-16 12:33:54+00', a literal at this
--- migration's version, and signed by the catalogue's writer,
--- `{"kind": "system", "id": "lens-catalogue"}`.
+-- their kind and far end. Every row is dated '2026-11-16 12:33:54+00', a literal, and signed by
+-- the catalogue's writer, `{"kind": "system", "id": "lens-catalogue"}`. The stamp is not now(),
+-- as 20261123174700's is, since no later `at` has to win over one of these: a reader at a moment
+-- (graphstore.AsOfOut) orders a node's tuples by `at` first, which matters where two writers state
+-- one attribute of one node, as 20261123174700 and 20261123080000 both state each block type's
+-- `version`. Nothing else states a tuple out of a node this file writes: no route or command
+-- writes a type node, each constraint's id is one only this file writes, and
+-- `envoy-dispatch lens-kind-add` refuses a kind whose id the catalogue holds.
 -- The migration records no event, so every row carries the `source_event` sentinel 0. The
 -- triggers of 20261109051232 announce the supertag and attribute rows once, at commit, and the
 -- server installs the block schema those nodes build, which is the one it installed before.
@@ -180,7 +193,7 @@ values
 -- tuple from the first to the second. The words, the sources and the references are this change's
 -- research task's reading of each source itself (the pull request body names each), and
 -- `second-order` takes Bastiat, whose essay states the idea, where that lens research cited
--- Chesterton's fence, which the further kinds of 20261116123355 hold as a kind of its own.
+-- Chesterton's fence, which the further kinds of 20261123174720 hold as a kind of its own.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
 values
   ('constraint', '5eed0000-1e45-4000-8000-000000000001', 'constraint', 'project', 'live', '{"standard": "Gary Klein, \"Performing a Project Premortem\", Harvard Business Review, September 2007 (Forethought section)", "reference": "Harvard Business Review vol. 85, September 2007; HBR reprint F0709A; https://hbr.org/2007/09/performing-a-project-premortem"}', '2026-11-16 12:33:54+00', '{"id": "lens-catalogue", "kind": "system"}', 0),

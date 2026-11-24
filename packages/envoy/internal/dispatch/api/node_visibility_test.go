@@ -843,11 +843,10 @@ func privateNodePeer(held, absent privateNodeFixture, id string) string {
 }
 
 // dispatchReferences reads one address through GET /api/v1/references, the route a
-// `dispatch://` address is read by.
+// `dispatch://` address is read by: the edges into it (referencesAt's `to`).
 func dispatchReferences(t *testing.T, handler http.Handler, reference, login string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodGet,
-		"/api/v1/references?to="+url.QueryEscape(reference), nil, login)
+	return referencesAt(t, handler, "to", reference, login)
 }
 
 // seedPrivateNode builds the fixture, with the private nodes or without them ever having been

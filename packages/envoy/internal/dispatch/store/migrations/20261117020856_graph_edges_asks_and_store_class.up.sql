@@ -53,7 +53,7 @@
 --
 -- It drops no arm of 20261116094101 and changes no row an arm answered before: the rows it adds
 -- are tuples of the class `store` and relations out of a finding, which only this child writes -
--- its writers, the lens catalogue its migrations 20261116123354 and 20261116123355 seed, and the
+-- its writers, the lens catalogue its migrations 20261123174710 and 20261123174720 seed, and the
 -- `authored_by` of the interaction node `envoy-dispatch backfill-graph-store` gives each run
 -- recorded before this release - and every other row of every arm is answered as it was. So a
 -- build of the release before, which reads the view this one states, reads every row it read, and

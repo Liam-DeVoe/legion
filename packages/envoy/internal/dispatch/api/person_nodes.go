@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -225,7 +226,7 @@ var personNodesQuery = personNodesHeld + `, items as (
 			       h.from_kind as stored_kind
 			from held h
 			join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
-			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `')
+			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in (` + store.QuoteLiterals(refs.StandingKinds()) + `)
 			offset 0
 		) standing
 		where standing.issue_key is not null

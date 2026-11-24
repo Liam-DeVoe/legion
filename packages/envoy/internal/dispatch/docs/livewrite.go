@@ -372,7 +372,7 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target live
 	if err != nil {
 		return nil, err
 	}
-	if err := retiredWriteRefusal(room, owner); err != nil {
+	if err := retiredWriteRefusal(ctx, ledger.tx, room, owner); err != nil {
 		return nil, err
 	}
 	if err := refuseRetiredFragment(ctx, ledger.tx, target); err != nil {
@@ -391,9 +391,10 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target live
 
 // refuseRetiredFragment refuses a live write into target's document where that document is a
 // fragment of an issue room and is retired (RetireDocument): a RetiredDocumentError naming the
-// document, not the room, logged as joinLiveWrite logs a retired room's. The issue's room reloads
-// without a retired document's fragment (roomLayoutSQL), so text written into it would be stored
-// where no version and no index reads it.
+// document, not the room, and the document's latest saved version (savedVersionNumber), logged as
+// joinLiveWrite logs a retired room's. The issue's room reloads without a retired document's
+// fragment (roomLayoutSQL), so text written into it would be stored where no version and no index
+// reads it.
 //
 // It reads the document's own artifacts.retired_at under the owner lock joinLiveWrite took for the
 // transaction's write to the room (lockArtifactOwner on the room), which is the lock
@@ -419,8 +420,12 @@ func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) er
 	case err != nil:
 		return fmt.Errorf("read whether the document is retired: %w", err)
 	}
+	latest, err := savedVersionNumber(ctx, tx, target.document)
+	if err != nil {
+		return err
+	}
 	slog.Warn("dispatch: refuse a write into a retired document", "document", target.document, "room", target.room)
-	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug, IssueKey: issueKey}
+	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug, IssueKey: issueKey, LatestVersion: latest}
 }
 
 // openLiveWrite takes artifactID's writer slot for the transaction, first waiting for the

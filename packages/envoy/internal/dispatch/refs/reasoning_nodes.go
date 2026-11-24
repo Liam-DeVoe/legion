@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -87,7 +88,7 @@ func standingIssueSQL(kindExpr, idExpr string, documentIssue func(address string
 	return `(` + standingWalkSQL(`standing`, kindExpr, idExpr, nil) + `
 		select ` + issueOfSQL(`standing.kind`, `standing.id`, documentIssue) + `
 		from standing
-		where ` + address + ` not in (` + quotedKinds(standingKinds) + `)
+		where ` + address + ` not in (` + store.QuoteLiterals(standingKinds) + `)
 		limit 1)`
 }
 
@@ -116,7 +117,7 @@ func standingWalkSQL(name, kindExpr, idExpr string, carried *walkColumn) string 
 			cross join lateral (
 				` + CurrentFarEndSQL(storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
 			) placed
-			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + quotedKinds(standingKinds) + `)
+			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + store.QuoteLiterals(standingKinds) + `)
 		)`
 }
 
@@ -160,7 +161,7 @@ func StaleSQL(kindExpr, idExpr string) string {
 			where stale_lens.kind = '` + graphstore.KindLens + `' and stale_lens.id = stale_foot.below
 			offset 0
 		) stale_lens
-		where ` + foot + ` not in (` + quotedKinds(standingKinds) + `)
+		where ` + foot + ` not in (` + store.QuoteLiterals(standingKinds) + `)
 		  and stale_lens.recorded is not null
 		  and (select stale_row.id::text from artifacts stale_row
 		       where stale_row.ref_key = split_part(stale_foot.id, '#', 1)) is distinct from stale_lens.recorded)`
@@ -171,7 +172,7 @@ func StaleSQL(kindExpr, idExpr string) string {
 // node without reading anything. The planner charges the walk to every row even so, so a
 // predicate over a column that can hold no standing kind binds none of it (NodeKinds).
 func staleOfKindSQL(kindExpr, idExpr string) string {
-	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + quotedKinds(standingKinds) + `)
+	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + store.QuoteLiterals(standingKinds) + `)
 		then ` + StaleSQL(kindExpr, idExpr) + ` else false end)`
 }
 

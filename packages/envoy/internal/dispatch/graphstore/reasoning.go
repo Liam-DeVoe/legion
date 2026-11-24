@@ -62,7 +62,7 @@ const LensKindPreMortem = "pre-mortem"
 
 // The attributes the reads of those nodes answer as each node's text, as the tuple that states
 // each value spells it. A lens's verdict and a risk's heading are attributes of their types
-// (migration 20261116123354 declares both), carried on the node's row as the catalogue's words
+// (migration 20261123174710 declares both), carried on the node's row as the catalogue's words
 // are, and so are the early warning a risk is seen coming by and the prevention that keeps it
 // from happening, which the same migration declares on risk. A finding's text is a value tuple
 // of the finding's block node and no attribute of any type: the block supertag's attributes

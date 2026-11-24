@@ -332,9 +332,13 @@ func DocumentRoomSQL(document string) string {
 // an issue room, whose versions render that query. No fragment of any room holds it, so no socket
 // opens on it (docs.Service.ServeHTTP), no upload or edit writes it (api's decisionsQueryRefusal),
 // and it is no backlink of its issue (issueOwnArtifact). It is the one SQL of that test, kept in
-// refs, which docs and api both import, so that every reader of it reads this one.
+// refs, which docs and api both import, so that every reader of it reads this one. Its probe of
+// document_rooms ends in `offset 0`, which keeps it a probe of that table's key per row: without
+// it Postgres may read the probe as a hashed subplan over the whole table, as the issue's backlink
+// count did under its generic plan once its attached_to arms bound no predicate of their own
+// (TestBacklinkCountStatementReadsEveryArmThroughAnIndex).
 func DecisionsQuerySQL(alias string) string {
-	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
+	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id offset 0)
 		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
 		            and node.supertag = '` + graphstore.SupertagQuery + `'
 		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
@@ -3007,7 +3011,7 @@ type heldLink struct{ kind, toKind, toID string }
 // TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
 // (graphcensus's blockRefKinds and tieKinds).
 func heldLinkKinds(blockRefKinds string) string {
-	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + store.QuoteLiterals(typedKinds) + `))`
 }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by

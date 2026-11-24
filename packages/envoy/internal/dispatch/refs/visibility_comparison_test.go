@@ -87,7 +87,7 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 	// a finding of a lens and a risk are flagged and compare the author a credential proved, the
 	// one rule of cybermonklabs/legion#3178, an interaction is flagged and compares the whole
 	// credential, and a lens kind of the catalogue is registered unflagged. The first two are
-	// written by migration 20261116123354, the next three by the reasoning write and an
+	// written by migration 20261123174710, the next three by the reasoning write and an
 	// interaction by the going POST, which is where they register. A finding is stored as a
 	// block, so its entry reads the store under that kind, and every other entry under its own.
 	for _, kind := range []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk} {

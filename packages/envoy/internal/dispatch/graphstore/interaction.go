@@ -22,7 +22,7 @@ import (
 // (WriteRun), which the frame path and the backfill share.
 
 // The attributes of an interaction beside its words (AttributeWords), as the tuple that states
-// each value spells it and as migrations 20261116123354 and 20261122230406 declare them on the
+// each value spells it and as migrations 20261123174710 and 20261122230406 declare them on the
 // interaction type: the moment the run is over, each frame of its stream, and the table that
 // projects the node. Its project is the base attribute project, which no attribute node declares.
 const (

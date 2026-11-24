@@ -58,9 +58,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
 const (
@@ -395,16 +392,17 @@ func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, log
 }
 
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,
-// then every reading it took. Both are printed for every path, because a reader has to see the
-// spread a percentile came out of - and for the write paths, whose 20 readings make the p99
-// their maximum, that spread is the whole of what a single swinging reading means.
+// its nearest-rank p50, p95 and p99, then every reading it took. Both are printed for every path,
+// because a reader has to see the spread a percentile came out of - and for the write paths,
+// whose 20 readings make the p99 their maximum, that spread is the whole of what a single
+// swinging reading means.
 func costTableOf(t *testing.T, readings []costReading) {
 	t.Helper()
-	t.Log("reading\tshape\tarm\tp50 ms\tp99 ms\truns")
+	t.Log("reading\tshape\tarm\tp50 ms\tp95 ms\tp99 ms\truns")
 	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%d",
-			reading.operation, costShapeName(reading.shape), reading.arm,
-			costMilliseconds(reading.p50()), costMilliseconds(reading.p99()), len(reading.runs))
+		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
+			reading.operation, costShapeName(reading.shape), reading.arm, costMilliseconds(reading.p50()),
+			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
 	}
 	t.Log("every reading, in the order it was taken, in milliseconds:")
 	for _, reading := range readings {
@@ -455,59 +453,16 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	}
 }
 
-// costLeaseNamespace is the first key every loop lease is taken under - duty's leaseNamespace,
-// which stays unexported - the four bytes of "LOOP". The second key is the lease's own name,
-// which Postgres hashes with hashtext. memory_harness_test.go states the same two for the same
-// lease, behind the `memory` build tag, which these two measurements do not carry.
-const costLeaseNamespace int32 = 0x4C4F4F50
-
 // costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
 // it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
 const costLeaseWait = 5 * time.Minute
 
 // costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease).
+// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease,
+// block_index_lease_test.go).
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
-	return holdBlockIndexLease(t, arm.name, arm.pool, arm.server)
-}
-
-// holdBlockIndexLease takes the block-index pass's own lease over pool, the test's own connections
-// to the database server serves, and answers the call that gives it back. It is
-// memory_harness_test.go's memoryServer.holdBlockIndexLease over any pool: duty.Exclusive takes
-// that lease before every pass and skips the pass where another session holds it. name is what a
-// failure calls the build, and server's output is printed where the lease stays held too long.
-func holdBlockIndexLease(t *testing.T, name string, pool *pgxpool.Pool, server *dispatchProcess) func() {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", name, err)
-	}
-	deadline := time.Now().Add(costLeaseWait)
-	for {
-		var held bool
-		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
-			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", name, err)
-		}
-		if held {
-			break
-		}
-		if time.Now().After(deadline) {
-			conn.Release()
-			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				name, docs.BlockIndexLease, costLeaseWait, server.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", name, err)
-		}
-	}
+	return holdBlockIndexLease(t, arm.pool, arm.name, costLeaseWait, arm.server.Output.String)
 }
 
 // costRunBackfill runs `envoy-dispatch backfill-graph-store` on this child's arm and waits for

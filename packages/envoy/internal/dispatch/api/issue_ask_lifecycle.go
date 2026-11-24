@@ -383,10 +383,13 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 		return nil, err
 	}
 	marked, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
+	if err != nil {
+		return nil, err
+	}
 	// The blocks it hands back are the ones it marked resolved, which only a write while another
 	// build serves marks.
 	// kept for one release: roll-window-attributes
-	return marked, err
+	return marked, nil
 }
 
 // readIssueAsks reads the asks query selects (askRowColumns from askRowFrom), with their opening

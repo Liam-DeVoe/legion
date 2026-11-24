@@ -102,8 +102,11 @@ For each gated step, once every child is filed:
 6. End your turn. The person's review brings your next task (the `design-approved` row of
    `skill://legion-architect/references/wake-routing.md`).
 
-- A newer version moves the open request to it and to your turn, and the person stops seeing it:
-  once they have agreed to that version, run `dispatch request-approval` again to give it back.
+- A newer version you write moves the open request to it and to your turn, and the person stops
+  seeing it: once they have agreed to that version, run `dispatch request-approval` again to give
+  it back.
+  A version Dispatch saves for the person's own answer, resolve or decline of an ask, or one that
+  saves the requested text again, keeps the request with the person.
 - `already approved at version <N>`: still `register_gate` that id and version.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
   `GATE_STEP_REQUIRED` (name the step), `GATE_STEP_NOT_CONFIGURED` (register only gated steps),

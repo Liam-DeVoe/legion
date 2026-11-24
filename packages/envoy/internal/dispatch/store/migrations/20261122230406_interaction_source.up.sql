@@ -9,16 +9,17 @@
 -- `going_requests`, so a later release's interaction node of another source is never swept at
 -- one hour.
 --
--- This declares the attribute on the interaction type, as 20261116123354 declares `words`,
--- `ends_at` and `frame` there: one `attribute` node, `interaction/source`, holding its kind, its
--- name, its store name and the next position among the type's attributes, and tied to the
--- `interaction` supertag by an `attribute_of` tuple, so a reader of the store reads what an
--- interaction holds from the store and not from Go. `source` is no base attribute, so it is stored
--- under its own name. The interaction type declares no block type, so the block schema the server
--- installs reads past the node and its version does not move.
+-- This declares the attribute on the interaction type: one `attribute` node, `interaction/source`,
+-- holding its kind, its name, its store name and its position among the type's attributes, 3,
+-- after the positions 0 to 2 that 20261123174710, a migration that runs after this file, declares
+-- for `words`, `ends_at` and `frame` the same way; and tied to the `interaction` supertag by an
+-- `attribute_of` tuple, so a reader of the store reads what an interaction holds from the store
+-- and not from Go. `source` is no base attribute, so it is stored under its own name. The
+-- interaction type declares no block type, so the block schema the server installs reads past the
+-- node and its version does not move.
 --
 -- Each statement is one insert of literal `values` rows, every row written out whole, as
--- 20261116123354 writes its own: graph_nodes and graph_tuples are above the census's size limit in
+-- 20261123174710 writes its own: graph_nodes and graph_tuples are above the census's size limit in
 -- production, and on a table above it the census admits only literal `values` rows, each statement
 -- with a fixed row count. So no row is read back off another (no `select`, no CTE) and none is
 -- skipped where the store already holds it (no `on conflict`, no `not exists`): the file runs
@@ -34,7 +35,7 @@ insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made
 values
   ('attribute', 'interaction/source', 'attribute', 'project', 'live', '{"kind": "string", "name": "source", "position": 3, "store_name": "source"}', '2026-11-22 23:04:06+00', '{"id": "interaction-source", "kind": "system"}', 0);
 
--- The facts it carries, the tuples its row is the projection of, as 20261116123354 writes an
+-- The facts it carries, the tuples its row is the projection of, as 20261123174710 writes an
 -- attribute node's: its two base attributes, each value its attributes column holds (a string as
 -- itself, the position as its JSON text), and the attribute_of tuple that ties it to its type.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)

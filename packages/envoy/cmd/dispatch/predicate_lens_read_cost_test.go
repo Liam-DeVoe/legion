@@ -467,23 +467,6 @@ func predicateCostReads() []predicateCostRead {
 	}
 }
 
-// predicateCostTable prints every reading of the run: the nearest-rank p50, p95 and p99 of each
-// read over each shape on each build, then every reading it took, in the order it was taken, so
-// a reader sees the spread each percentile came out of.
-func predicateCostTable(t *testing.T, readings []costReading) {
-	t.Helper()
-	t.Log("read\tshape\tbuild\tp50 ms\tp95 ms\tp99 ms\treadings")
-	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
-			reading.operation, reading.shape, reading.arm, costMilliseconds(reading.p50()),
-			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
-	}
-	t.Log("every reading, in the order it was taken, in milliseconds:")
-	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%s", reading.operation, reading.shape, reading.arm, reading.printed())
-	}
-}
-
 // predicateCostCount is a count as the check writes one, with a comma between each three digits.
 func predicateCostCount(count int) string {
 	digits := strconv.Itoa(count)
@@ -679,7 +662,7 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			}
 		}
 	}
-	predicateCostTable(t, readings)
+	costTableOf(t, readings)
 
 	t.Logf("the bound: a read whose p50 at %s is more than %.2f times its p50 at %s fails; the p95 and the p99 are printed and bind nothing",
 		head.name, predicateCostRatio, base.name)
