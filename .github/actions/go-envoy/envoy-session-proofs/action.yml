@@ -1,15 +1,14 @@
 name: envoy-session-proofs
 description: >-
-  The envoy-session-proofs leg of ci.yaml's envoy-held job: three proofs this change brought into
-  CI against envoy and Dispatch stacks built from this tree, on the job's Postgres - claimant
-  delivery of Dispatch's outbox (scripts/e2e/dispatch-claimant-delivery.sh), the verification
-  results of Dispatch (scripts/e2e/verification-results.sh) and the session title of claude-envoy
+  The envoy-session-proofs leg of ci.yaml's envoy-held job: three proofs against envoy and
+  Dispatch stacks built from this tree, on the job's Postgres - claimant delivery of Dispatch's
+  outbox (scripts/e2e/dispatch-claimant-delivery.sh), the verification results of Dispatch
+  (scripts/e2e/verification-results.sh) and the session title of claude-envoy
   (packages/claude-envoy/scripts/smoke-session-title.sh) - which the merge queue runs, and a pull
   request with full-ci or a lane label of the job. They ran in envoy-session-stall's leg, which
-  passed the 10 minutes a pull request's job is held to with them (14.7 to 16.5 minutes in the
-  head's dispatch runs). The leg runs on ubuntu-24.04, with the setup that leg gives them.
-  LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK select the suites that start the envoy and
-  Dispatch stacks, and DISPATCH_TEST_DATABASE_URL names the job's Postgres; each step carries them.
+  passed the 10 minutes a pull request's job is held to with them (16.2 minutes in CI run
+  45292147224). The leg runs on ubuntu-24.04, with the setup that leg gives them.
+  DISPATCH_TEST_DATABASE_URL names the job's Postgres, and each step carries it.
 inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
@@ -63,8 +62,6 @@ runs:
     - name: Claimant delivery of Dispatch's outbox
       shell: bash
       env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/claimant_delivery?sslmode=disable" bash scripts/e2e/dispatch-claimant-delivery.sh
     # A recorded check result says where its commit stands against the commits its check compares
@@ -74,8 +71,6 @@ runs:
     - name: Verification results of Dispatch
       shell: bash
       env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/verification_results?sslmode=disable" bash scripts/e2e/verification-results.sh
     # The name a person gave a Claude Code session is what claude-envoy registers, a rename
@@ -84,7 +79,5 @@ runs:
     - name: Session title of claude-envoy
       shell: bash
       env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bash packages/claude-envoy/scripts/smoke-session-title.sh

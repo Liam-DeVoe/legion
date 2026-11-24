@@ -5,9 +5,9 @@ description: >-
   three claim-refresh periods, of the real sender's locked sections, statements and timers with two
   comments' attempt rows, the delivery sweep and the outbox, the sender as built and its blind
   control; and the test that holds the four claim rules the model restates to the SQL they restate
-  (TestTheClaimModelsRulesAreTheSQLsRules), which opens the store (storetest.Open) and skips
-  without DISPATCH_TEST_DATABASE_URL, the job's Postgres, which the job gives every step. The leg
-  runs on ubuntu-24.04.
+  (TestTheClaimModelsRulesAreTheSQLsRules), which opens the store (storetest.Open) and on GitHub
+  Actions fails without DISPATCH_TEST_DATABASE_URL (testprereq.Require), the job's Postgres, which
+  the job gives every step. The leg runs on ubuntu-24.04.
 # why: .github/ci-notes/ci.md#the-mention-senders-claim-model-alone-on-a-runner-of-its-own
 runs:
   using: composite

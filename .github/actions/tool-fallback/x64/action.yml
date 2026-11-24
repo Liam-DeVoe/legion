@@ -127,7 +127,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome "$OUTCOME" --row crane --expect-source github-release --expect-untried ghcr-mirror
 
-    # Case 2 of 16: crane's second source serves one byte changed, after the primary - the real
+    # Case 2 of 18: crane's second source serves one byte changed, after the primary - the real
     # host, which the fault holds - did not serve them at all.
     - name: Corrupt crane for its second-source case
       if: inputs.after == 'crane-primary'
@@ -142,7 +142,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome "$OUTCOME" --row crane --expect-source ghcr-mirror
 
-    # Case 3 of 16: changie's primary serves one byte changed.
+    # Case 3 of 18: changie's primary serves one byte changed.
     - name: Corrupt changie for its primary case
       if: inputs.after == 'crane-second-source'
       shell: bash
@@ -156,7 +156,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome "$OUTCOME" --row changie --expect-source github-release --expect-untried ghcr-mirror
 
-    # Case 4 of 16: changie's second source serves one byte changed.
+    # Case 4 of 18: changie's second source serves one byte changed.
     - name: Corrupt changie for its second-source case
       if: inputs.after == 'changie-primary'
       shell: bash
@@ -239,7 +239,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome "$OUTCOME" --row bun-linux-x64 --expect-source npm
 
-    # Case 9 of 16: elan's primary serves one byte changed, and the copy must stay untried.
+    # Case 9 of 18: elan's primary serves one byte changed, and the copy must stay untried.
     - name: Take elan away for its primary case
       if: inputs.after == 'bun-second-source'
       shell: bash
@@ -258,7 +258,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome "$OUTCOME" --row elan --expect-source github-release --expect-untried ghcr-mirror
 
-    # Case 10 of 16: elan's copy serves one byte changed, after the primary - the real host,
+    # Case 10 of 18: elan's copy serves one byte changed, after the primary - the real host,
     # which the fault holds - did not serve them at all.
     - name: Take elan away for its second-source case
       if: inputs.after == 'elan-primary'
@@ -306,7 +306,7 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome "$OUTCOME" --row uv --expect-source pypi
 
-    # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
+    # Case 13 of 18: the docker provider plugin's release asset serves one byte changed, and
     # get.pulumi.com must stay untried.
     - name: Corrupt the docker provider plugin for its primary case
       if: inputs.after == 'uv-second-source'

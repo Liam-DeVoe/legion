@@ -105,8 +105,8 @@ runs:
           exit 1
         fi
     # These five packages need no database, so they run here on every push. This is their one run:
-    # envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list naming the
-    # same packages.
+    # envoy-go's unit step leaves them out, its `--module-except` and this step's package list
+    # naming the same packages.
     - name: Test the architecture-note and spec-file rules and their commands
       shell: bash
       working-directory: packages/envoy
@@ -118,7 +118,7 @@ runs:
     # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
     # type-checks the daemon's listener clients, so they run here, their one run, and a change to
     # only those daemon packages starts this leg rather than envoy-go's: envoy-go's unit step
-    # leaves both packages out, its `grep -Ev` and this step's package list naming the same
+    # leaves both packages out, its `--module-except` and this step's package list naming the same
     # packages.
     - name: Test the listener's wire package, its clients and wirecheck
       shell: bash
@@ -136,8 +136,8 @@ runs:
       shell: bash
       working-directory: packages/envoy
       run: go run ./cmd/dispatch openapi --check
-    # No CI job compares the spec files with the approved spec: R2 of The Spec gives that
-    # comparison at each push to Dispatch. The guard reads every file under .github/workflows,
+    # No CI job compares the spec files with the approved spec: that comparison is Dispatch's, made
+    # at each push of the spec to it. The guard reads every file under .github/workflows,
     # .github/actions, .github/scripts and scripts as text, names each place where the command's
     # name and then the word compare follow each other, a comment or a quoted text too, and fails
     # on it. It does not find a command that an expansion, an escape or an alias builds, or one

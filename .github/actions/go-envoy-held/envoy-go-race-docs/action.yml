@@ -7,9 +7,10 @@ description: >-
   `envoy-go-race-docs / envoy-go-race-docs` and passes only when every leg passed
   (.github/scripts/leg-verdict.sh). The legs run on ubuntu-24.04-arm. DISPATCH_TEST_DATABASE_URL,
   which the job gives every step, is load-bearing: this package's TestMain is storetest.Main
-  (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that opens
-  the store when it is unset (internal/dispatch/store/storetest/storetest.go:67-71); a skip is a
-  pass, so without the service the leg would be green having run almost nothing.
+  (internal/dispatch/docs/persistence_test.go:26), and storetest.Open fails every test that opens
+  the store when it is unset on GitHub Actions (internal/dispatch/store/storetest/storetest.go:99,
+  testprereq.Require; elsewhere it skips them), so without the service the leg fails rather than
+  pass having run almost nothing.
 inputs:
   part:
     description: This leg's number, 1 to `legs`.

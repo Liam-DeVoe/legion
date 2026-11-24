@@ -3,9 +3,9 @@ description: >-
   The opening steps of the tool-fallback leg of ci.yaml's tool-fallback job (x64): the merge base
   the negative control installs from, the package reads, the staged bytes, the origin that stands
   in for all four sources (its four base URLs are this action's outputs), the machine watch, and
-  case 5 of 16, which runs before the fault. Every install of the proof is a step of ci.yaml with
+  case 5 of 18, which runs before the fault. Every install of the proof is a step of ci.yaml with
   its own 11-minute bound; .github/actions/tool-fallback/x64 holds the steps between them.
-# why: .github/ci-notes/tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-a-file-of-their-own
+# why: .github/ci-notes/tool-fallback.md#the-steps-of-ciyamls-tool-fallback-job-in-actions-of-their-own
 # The job holds the router's own scopes and no packages scope:
 # why: .github/ci-notes/ci.md#why-the-tool-fallback-job-needs-no-packages-scope
 outputs:

@@ -15,7 +15,7 @@ description: >-
   with the NATS service started and the checkout (15 s), setup-bun (2), install-jj (3),
   install-omp (6), setup-go and the go-daemon cache restore (26), the workspace install and
   contracts' build (14), the test step (300), the ci-ok report (4), the post steps with the
-  containers stopped (5) and the job clock's own seconds (5): 396 s, 6 m 36 s. The test step runs
+  containers stopped (5) and the job clock's own seconds (5): 380 s, 6 m 20 s. The test step runs
   the package's files in one worker per CPU (`bun test --parallel`, package.json), so it lasts as
   long as its slowest worker, which runs legion-stall-watchdog-omp.test.ts alone: its eight cases
   took 241.3 s, 281.5 s and 296.4 s of the step's 241.4 s, 281.8 s and 296.7 s in jobs

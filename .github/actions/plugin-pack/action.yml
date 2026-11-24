@@ -18,11 +18,11 @@ description: >-
   Everything here is what those tests need: Bun and a frozen install, since `bun pm pack` is the
   pack test's first act and each prepack builds its bundle from the installed workspace and fails
   rather than skips without it; Oh My Pi at the pin .omp-pin names, which the tests install their
-  plugins on (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
-  through the mise install-jj leaves at ~/.local/bin/mise; setup-go and the go-daemon cache
-  restore, since the step compiles internal/daemon's test binary, the same build the go-daemon race
-  step makes; and gotestsum. No database, no tmux, no uv and no container image: the tests start
-  none of them.
+  plugins on (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), fetched
+  from the release and held to the worker image's digest (.github/actions/install-omp); setup-go
+  and the go-daemon cache restore, since the step compiles internal/daemon's test binary, the same
+  build the go-daemon race step makes; and gotestsum. No database, no tmux, no jj, no uv and no
+  container image: the tests start none of them.
 # why: .github/ci-notes/ci.md#the-plugin-pack-job
 runs:
   using: composite
@@ -54,13 +54,9 @@ runs:
         key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
         restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-    # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
-    # no test of this job runs jj.
-    - uses: ./.github/actions/install-jj
-
     # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without one
-    # (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of it,
-    # installed through the mise above (.github/actions/install-omp).
+    # (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of it, and
+    # the release archive is held to the worker image's digest (.github/actions/install-omp).
     - uses: ./.github/actions/install-omp
 
     - uses: ./.github/actions/install-gotestsum

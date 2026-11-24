@@ -5,9 +5,10 @@ description: >-
   or lease, the airlock stack's pod session outliving its lease
   (packages/envoy/scripts/dev-airlock-lease.test.sh). Both run on ubuntu-24.04-arm as the
   broker-multiprocess job ran them. They ran there behind step gates on `merge_group` and the
-  `full-ci` label; here the job's own gate holds them to the merge queue, to a pull request with
-  `full-ci` and to a dispatched run, as it holds every held suite, and the steps carry no gate of
-  their own but the leg's.
+  `full-ci` label; here the job's own gate holds them to the merge queue, to a dispatched run and
+  to a pull request with `full-ci` or `lane:airlock_arm`, as each held job's gate holds it
+  (.github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request), and the steps
+  carry no gate of their own but the leg's.
 
   Each stack (packages/envoy/scripts/dev-airlock.sh) starts as the runner's user in a step of its
   own, which builds its binaries and so fills the module cache, and stays up for the steps after

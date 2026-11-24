@@ -283,8 +283,7 @@ runs:
     # test runner's fixture module, none of which a cache family is filled for. The daemon's
     # go.mod is the one Go pin of this repository's three modules that a job without one of its
     # own reads.
-    - id: setup-go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
         go-download-base-url: https://go.dev/dl

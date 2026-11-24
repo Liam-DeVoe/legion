@@ -21,8 +21,7 @@ runs:
     # setup builds the checkout's agent-secrets in packages/envoy; and the tree rig
     # (kind_tree_rig_live_test.go) builds the `legion` every pod's launcher and the fence's
     # worker-shim are, and Dispatch, the Envoy listener and natsd from packages/envoy.
-    - id: setup-go
-      if: inputs.leg != 'leak-guard'
+    - if: inputs.leg != 'leak-guard'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod

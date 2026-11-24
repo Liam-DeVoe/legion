@@ -2,10 +2,10 @@ name: dispatch-ui
 description: >-
   The dispatch-ui leg of ci.yaml's ts job, which carries that old check-run name: the proof
   editor's typecheck and tests, and the Dispatch dashboard's typecheck, unit tests (each lane),
-  build and checks. The web lane once more with each lazy load held back, a mode this change
-  brought into CI, is the web-cold job's (.github/actions/ts/web-cold): with it this leg took 9.5
-  to 10.5 minutes in the head's dispatch runs, past the 10 a pull request's job is held to. The
-  leg runs on ubuntu-24.04-arm, after the job's checkout and its Bun (.github/actions/setup-bun).
+  build and checks. The web lane once more with each lazy load held back is the web-cold job's
+  (.github/actions/ts/web-cold): with it this leg took 10.1 minutes in CI run 45292147224, past
+  the 10 a pull request's job is held to. The leg runs on ubuntu-24.04-arm, after the job's
+  checkout and its Bun (.github/actions/setup-bun).
 # why: .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
 runs:
   using: composite

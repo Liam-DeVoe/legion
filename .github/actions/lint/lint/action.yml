@@ -102,8 +102,7 @@ runs:
     # No setup-go cache: gofmt needs none, and neither do the workflow checks at the end of this
     # leg. The third-party-notices step that used this Go is ci.yaml's notices job
     # (.github/actions/notices), on a filter of its own.
-    - id: setup-go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
         go-download-base-url: https://go.dev/dl
@@ -171,9 +170,9 @@ runs:
       shell: bash
       run: .github/scripts/check-workflow-files.sh
 
-    # The shell R9 moved out of the workflow files, into the run: bodies of the composite actions
-    # and the scripts of .github/scripts, which actionlint below does not read: shellcheck at
-    # warning severity, the shellcheck of the same actionlint image.
+    # The shell the CI layout moved out of the workflow files, into the run: bodies of the
+    # composite actions and the scripts of .github/scripts, which actionlint below does not read:
+    # shellcheck at warning severity, the shellcheck of the same actionlint image.
     - name: Check the shell of every composite action and script at warning severity
       if: ${{ !cancelled() }}
       shell: bash

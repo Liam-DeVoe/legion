@@ -119,8 +119,8 @@ runs:
     # which it installs under $TMPDIR, and its block-nesting bound against what pmdoc.Parse and
     # pmdoc.ParseForWrite refuse, through the pmdoc test binary it builds: one CHECK line per
     # check. A tenth of its default document counts keeps it to minutes; its full counts are a
-    # person's run (packages/proof-editor/scripts/parity-fuzz.ts's header). A test this change
-    # brought into CI, it runs here rather than in envoy-go-build, whose leg passed 10 minutes with
+    # person's run (packages/proof-editor/scripts/parity-fuzz.ts's header). It runs here rather
+    # than in envoy-go-build, whose leg passed the 10 minutes a pull request's job is held to with
     # it (12.3 in run 45292147224).
     - name: Parity fuzz of the proof editor's markdown patches and nesting bound
       shell: bash

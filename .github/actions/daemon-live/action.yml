@@ -11,11 +11,11 @@ description: >-
   scripts/e2e/completion-head.ts under bun, and step_records_live_test.go and
   plan_ratings_live_test.go the CLI, which load the installed workspace, the second also
   scripts/e2e/plan-ratings-read.sh, and with them in go-daemon a change to the lockfile or to the
-  CLI's sources would run the daemon's whole Go suite. Five came from main's hosted scripts
-  (departure 11): conflict_merger_live_test.go, owner_steps_live_test.go,
-  owner_steps_client_live_test.go (which runs scripts/e2e/owner-steps-client.ts under bun and reads
-  main's history from the job's whole checkout), plan_experiment_live_test.go and part one of
-  approved_version_news_live_test.go.
+  CLI's sources would run the daemon's whole Go suite. Five were scripts of main's scripts/e2e
+  before they became tests of this package (#4979, #4611, #4930 and #3995):
+  conflict_merger_live_test.go, owner_steps_live_test.go, owner_steps_client_live_test.go (which
+  runs scripts/e2e/owner-steps-client.ts under bun and reads main's history from the job's whole
+  checkout), plan_experiment_live_test.go and part one of approved_version_news_live_test.go.
 
   Everything here is what those tests need: the job's pgvector Postgres service and
   LEGION_TEST_PG_DSN, the store every daemon the tests boot migrates and runs on and the server the
@@ -83,8 +83,8 @@ runs:
     # The fifteen tests, by name, under gotestsum (.github/scripts/go-test.sh). This -run and the
     # go-daemon race step's -skip name the same tests, which check-ci-layout.sh's rule 22 holds. The
     # -timeout of 30 minutes bounds the package's run of all fifteen, so a hung test prints the
-    # goroutine dump that names it before the job's 40 minutes cancel it; the five main's hosted
-    # scripts brought are not yet measured here (.github/ci-notes/ci.md#the-daemon-live-job).
+    # goroutine dump that names it before the job's 40 minutes cancel it: the run took 400 s in CI
+    # run 45359337842 (.github/ci-notes/ci.md#the-daemon-live-job).
     - name: Run the whole-daemon live tests
       shell: bash
       working-directory: packages/daemon
