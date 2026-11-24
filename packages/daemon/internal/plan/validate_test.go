@@ -311,11 +311,11 @@ func TestATaskWithASubOwnerNamesNoSteps(t *testing.T) {
 // not wait for its own task.
 //
 // The fault it catches is a plan whose part never starts taken, or a part that needs a part of
-// another task taken (its controls: neverStarted that answers nothing fails each row of a need that
-// never ends; neverStarted with its second pass alone names a's need of f in the row of the ids
-// whose task of the top level sorts first, and that row fails; the need of a part read as a need of
-// a task outside its own alone takes the part of a part that needs a part of the task above it, and
-// that row fails).
+// another task taken (its controls: needReasons with no waits answers nothing for the rows of a
+// need that never ends; needReasons with its second pass alone names a's need of f in the row of
+// the ids whose task of the top level sorts first, and that row fails; the need of a part read as a
+// need of a task outside its own alone takes the part of a part that needs a part of the task above
+// it, and that row fails).
 func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 	f, f1 := partBlock("f", "", "owner", "architect"), partBlock("f1", "f", "steps", "implementer")
 	needing := func(id, parent string, needs ...string) Block {
