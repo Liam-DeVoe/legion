@@ -38,6 +38,7 @@ permissions:
 env:
   # why: .github/ci-notes/ci.md#the-go-jobs-module-proxy
   GOPROXY: https://proxy.golang.org|direct
+  GO_TEST_RETRY: "on"
   # why: .github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it
   CI_OK_SELECTED_BY: '{"tool-fallback-arm":"tool-fallback","daemon-go":"go-daemon","daemon-go-race":"go-daemon","claude-envoy-names":"pi","kind-image":"kind","envoy-go":"go-envoy-held","envoy-go-race":"go-envoy-held","envoy-go-race-api":"go-envoy-held","envoy-go-race-docs":"go-envoy-held","envoy-go-docs-finalizers":"go-envoy-held","dispatch-memory":"go-envoy-held"}'
   CI_OK_PULL_REQUEST_ONLY: '["worker-image", "dispatch-browser-pr"]'
@@ -664,7 +665,7 @@ jobs:
       matrix:
         leg: [envoy-go-1, envoy-go-2, envoy-go-3, race-1, race-2, envoy-go-race-api-1, envoy-go-race-api-2, envoy-go-claim-model, envoy-go-race-docs-1, envoy-go-race-docs-2, finalizers-1, finalizers-2, finalizers-3, dispatch-memory-1, dispatch-memory-2, dispatch-multiprocess, dispatch-two-builds, dispatch-two-builds-same, envoy-smoke]
         exclude:
-          - leg: ${{ github.event_name != 'merge_group' && 'dispatch-two-builds-same' || '' }}
+          - leg: ${{ github.event_name == 'pull_request' && 'dispatch-two-builds-same' || '' }}
         include:
           - {leg: envoy-go-1, suite: envoy-go, part: 1, name: envoy-go (1/3), runner: ubuntu-24.04-arm, timeout: 40}
           - {leg: envoy-go-2, suite: envoy-go, part: 2, rest: true, name: envoy-go (2/3), runner: ubuntu-24.04-arm, timeout: 55}

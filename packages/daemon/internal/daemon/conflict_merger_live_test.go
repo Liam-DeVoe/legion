@@ -117,6 +117,8 @@ func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
 	r.step("step4-a-red-check-in-merging-reaches-the-merger-and-not-the-implementer", r.redCheckReachesTheMerger)
 	r.step("step5-githubs-merge-closes-the-issue-which-never-entered-implementing", r.mergeClosesTheIssue)
 	r.step("step6-the-mergers-prompt-as-its-launch-carries-it", r.mergerPromptAsLaunched)
+	// c-ci-retry's control, never for merge: daemon-live's second-longest test fails once at its end.
+	retryControlFailsFirstAttempt(t, "conflict-past-the-review")
 }
 
 // newConflictMergerLive boots the daemon over the package's broker (newLiveProof) with the issue

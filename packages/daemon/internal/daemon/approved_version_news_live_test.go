@@ -210,6 +210,8 @@ func TestAnApprovedVersionReachesItsHolderLive(t *testing.T) {
 	r.d.stop()
 	r.boot("off", config.DesignGateOff.Steps(), "acme/gadgets", r.offFixture)
 	r.run(versionNewsOff, r.off)
+	// c-ci-retry's control, never for merge: daemon-live's longest test fails once at its end.
+	retryControlFailsFirstAttempt(t, "approved-version-reaches-its-holder")
 }
 
 // newVersionNewsLive takes the package's broker with the stream the daemon's intake consumes

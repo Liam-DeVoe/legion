@@ -918,6 +918,9 @@ func (r *stage4bLive) restartMidTree() {
 		t.Errorf("the restart at the same addresses logged %d stale-address replacements", n-stale)
 	}
 	r.note("the daemon restarted and re-adopted %d live claims as they were", len(before))
+	// c-ci-retry's control, never for merge: the test's last checkpoint fails on its first attempt
+	// alone, so the retry runs the whole test again, every checkpoint with it.
+	retryControlFailsFirstAttempt(t, "restart-mid-tree")
 }
 
 // addressMoved restarts the daemon with what move changes of the rig's addresses, and holds every
