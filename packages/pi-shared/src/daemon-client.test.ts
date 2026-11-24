@@ -425,7 +425,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
-    // The controller's set_status answers each status write it queued (contract 242), and takes
+    // The controller's set_status answers each status write it queued (contract 253), and takes
     // the children argument with a backlog or icebox and the parent argument with a todo, which
     // Dispatch's parent rule asks for.
     [
@@ -502,7 +502,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "gate-register.json",
     ],
     // A registration on an ancestor's basis carries the ancestor's document id, its version and
-    // the architect's reason beside the root's own document (contract 239).
+    // the architect's reason beside the root's own document (contract 249).
     [
       "gateRegister",
       "/legion/v1/gates/register",

@@ -3542,7 +3542,51 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 239: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 249: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -3580,7 +3624,7 @@ package api
 // whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 239 — one
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 249 — one
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and two value strips to that serving, and a word to a third strip, 219's
@@ -3592,8 +3636,8 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193, 202, 220 and 228 stand between them (232 adds none), so a caller at 202 through 238 is
-// served the pause, the keys 193 added and the repositories block 202 writes, and none of this
+// of 193, 202, 220, 228 and 246 stand between them (232 adds none), so a caller at 202 through 248
+// is served the pause, the keys 193 added and the repositories block 202 writes, and none of this
 // entry's keys and words (a caller that states 203 or 204 is served 202's records, the nearest
 // recorded contract at or below it, one that states 205 to 212 is served 205's, which are 202's
 // under its own number, as 205's entry says, one that states 213 to 216 is served 213's, which
@@ -3603,10 +3647,12 @@ package api
 // routes, fields and words, as 219's entry says, one that states 220 to 227 is served 220's,
 // which are 219's with each assignment's `plan`, as 220's entry says, one that states 228 to 231
 // is served 228's, which are 220's with `intakeGiveUps` and the two give-up answers, as 228's
-// entry says, and one that states 232 to 238 is served 232's, whose answer records are 228's
-// under its own number, since 232 adds two fields to a request and moves no answer's shape, so a
-// caller below 228 is served no `intakeGiveUps`, one below 220 no assignment's `plan` either, and
-// one below 219 none of 219's additions either), a
+// entry says, one that states 232 to 245 is served 232's, whose answer records are 228's under
+// its own number, since 232 adds two fields to a request and moves no answer's shape, and one
+// that states 246 to 248 is served 246's, which are 232's with each issue's `podHold`, as 246's
+// entry says, so a caller below 246 is served no `podHold`, one below 228 no `intakeGiveUps`
+// either, one below 220 no assignment's `plan` either, and one below 219 none of 219's additions
+// either), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3621,7 +3667,7 @@ package api
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
 // states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 239 on takes `treeRuns` and `basis` as optional and reads the
+// `gatedSteps`. Every reader from 249 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
 // `20261122154643_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
@@ -3632,7 +3678,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 239 knows neither word — its phase enum and its held
+// `LEGION_HELD_REASONS` names. A caller below 249 knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
 // `children_first`, the word a started parent's wait took over. Both are value strips, rows of
@@ -3641,7 +3687,7 @@ package api
 // `withoutUnadmittedPhases` and `withoutUnadmittedHeldWords`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 239; the daemon writes the word in neither, since `heldFrom` is null
+// the word for a caller below 249; the daemon writes the word in neither, since `heldFrom` is null
 // in the phase and a hold never comes from it, and no task is queued for a phase no role works.
 // The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
 // and the parent's held start to the issues table; it moves the daemon's own record and is no part
@@ -3802,12 +3848,18 @@ package api
 // d27405712c7c, which carries 232 (dispatch://INFRA-4508, the entry above), a census of the 479
 // open heads (2026-11-24T12:41:23Z to 12:47:35Z) found 239 declared by this change's pull request
 // alone, so this change keeps 239, above main's 232
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-e-md). From this entry answers.go's
-// SupportedContracts names `gateBasisContract` after 232. Read the base's own number and every
-// open head again, by a REST raw read of each head's file, at the next forward merge rather than
-// from this line.)
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-e-md). At the merge of main
+// 25cbe2b315fb, which carries 246 (#4960's pod hold, the entry above), above this change's 239, a
+// census of the 478 open heads (2026-11-24T15:55:25Z to 16:01:06Z, against main 7e75126fae6d; the
+// two main commits after it declare no contract) found 247 (#4580 and #5384) and 248 (#3993)
+// declared by other pull requests and 249 by none, so this change moved 239 → 249, the lowest
+// number above main's 246 that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-g-md). From this entry answers.go's
+// SupportedContracts names `gateBasisContract` after `podHoldContract`, 246's constant. Read the
+// base's own number and every open head again, by a REST raw read of each head's file, at the next
+// forward merge rather than from this line.)
 //
-// 242: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
+// 253: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
 // from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.
 // The status calls decide over that copy and queue their writes. `POST /legion/v1/issues/status`
 // (`api.IssueStatusRequest`) takes two optional fields, the arguments Dispatch's parent rule asks
@@ -3834,7 +3886,7 @@ package api
 // `chain_unknown`, an issue not at work on a chain the copy cannot read to its top, and
 // `awaiting_todo`, an issue whose run starts as a root's does and that waits for a person's todo,
 // as a root a person moved to `in_progress` before its first start does, and a root whose merge
-// closed it and that a person reopened straight to `in_progress`. A caller below 242 is served the
+// closed it and that a person reopened straight to `in_progress`. A caller below 253 is served the
 // state without `daemon.convertedAt` (`withoutConvertedAt`, the row of `chainContract` in
 // shaping.go's `stateNarrowings`) and each `chain_unknown` or `awaiting_todo` row as
 // `unclassified` (the value strip `withoutUnadmittedHeldWords`, which reads each word's arrival
@@ -3868,7 +3920,13 @@ package api
 // declared 239. A read of `packages/daemon/internal/api/version.go` at each of the 521 open heads
 // between 2026-11-24T02:52:01Z and 02:54:10Z found 239 declared by #4592, 240 by #3831, #5271 and
 // this change, 241 by #4771 and #5307, and nothing above 241; this change took 242, the lowest
-// number above every number another open head declares.
+// number above every number another open head declares. At the forward merge of 2026-11-24 that
+// brought legion/INFRA-4728 in at 98a5271d1bd6, which carries main at 25cbe2b315fb, main carried
+// 246 (#4960's pod hold, the entry above) and legion/INFRA-4728 declared 249 (the entry right
+// above). A read of `packages/daemon/internal/api/version.go` at each of the 492 open heads at
+// 2026-11-24T15:54Z found 243 to 248, 250 to 252, 254, 255 and 261 declared by other heads, and
+// INFRA-4728's census of the 478 open heads, ending at 16:01Z, found 249 and 253 declared by none;
+// this change moved 242 → 253, the lowest number above 249 that no other open head declares.
 // Read the base's own number and every open head again at the next forward merge rather than from
 // this line.)
-const DaemonAPIVersion = 242
+const DaemonAPIVersion = 253

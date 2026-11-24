@@ -108,7 +108,7 @@
       "POST /legion/v1/issues/status",
       "POST /legion/v1/children/rerun"
     ],
-    "since": 242,
+    "since": 253,
     "noBody": false
   },
   {

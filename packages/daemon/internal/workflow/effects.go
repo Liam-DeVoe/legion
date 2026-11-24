@@ -739,7 +739,9 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 // nothing would send. The start is marked a resume task, so the outbox still hands no second
 // prompt to a claim that holds its phase's task (record.SuperviseRequest.ResumeTask), and it sends
 // the task enter stored (startMarks.stored). The entry it raises is of no move back: the promotion
-// hands the role the phase it already stands in, and moves the issue nowhere.
+// hands the role the phase it already stands in, and moves the issue nowhere. R9 has judged the
+// start before it runs (StartCarriedRun's carriedStartHeld): a root an open Dispatch child holds
+// waits in awaiting_children instead, and reaches no start here.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

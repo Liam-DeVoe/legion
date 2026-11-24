@@ -163,7 +163,7 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionHandoffCompleteResponse>>;
   /** The controller's `set_status`: Dispatch's status of `issue` to `todo`, `backlog` or `icebox`,
    * with the `children` argument a `backlog` or `icebox` takes and the `parent` argument a `todo`
-   * takes where Dispatch's parent rule asks for one (contract 242). The answer names each status
+   * takes where Dispatch's parent rule asks for one (contract 253). The answer names each status
    * write the call queued. */
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
@@ -181,7 +181,7 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
   /** The `register_gate` of the architect of an issue that holds its own gate: its document for a
    * design-gate step at a version and, on a basis, the ancestor's document id (`basisArtifactId`),
-   * its `basisVersion` and the architect's `reason` (contract 239), which the daemon takes
+   * its `basisVersion` and the architect's `reason` (contract 249), which the daemon takes
    * together or not at all. */
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
@@ -237,7 +237,7 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** An architect's `rerun_child`: a todo on an issue under its own, with the `parent` argument
-   * where the todo would put it in work under a parent that is not (contract 242). The answer
+   * where the todo would put it in work under a parent that is not (contract 253). The answer
    * names each status write the call queued. */
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>

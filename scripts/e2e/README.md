@@ -6297,7 +6297,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it, with `require_loopback_env`.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
-The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_dsn` in `services_up` and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
+The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6386,7 +6386,7 @@ The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it thr
 - `run_database_url_env VAR NAME DATABASE WHAT`
 
   is `run_database_url` on the DSN the variable NAME holds, read inside the function rather than passed by its caller, as `require_loopback_env` reads it.
-  [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it.
+  [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it, and so does the skill-scenario rig's `services_up`, for the placeholder database it checks a batch's URL against.
 
 - `psql_env NAME ARG…`
 
