@@ -656,18 +656,35 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
       { interval: 0.0004, expiresIn: 1 },
       `a device code that lives 1 s, with a poll interval of 0.0004 s, so one of 1 s${lapses} its codes live longer than 1 s, the least poll interval this machine keeps`,
     ],
+    // An interval under a millisecond past the floor is the floor in the poll's whole
+    // milliseconds, so its code needs the lifetime a code polled at 1 s needs.
+    [
+      { interval: 1.0005, expiresIn: 1 },
+      `a device code that lives 1 s, with a poll interval of 1.0005 s${lapses} its codes live longer than 1 s, the least poll interval this machine keeps`,
+    ],
     [
       { interval: 2, expiresIn: 1e-9 },
       `a device code that lives 0.000000001 s, with a poll interval of 2 s${lapses} its codes live longer than its poll interval`,
     ],
+    // A code of 1.0005 s ends 1000 ms on, which no interval reaches, the least being 1 s: only a
+    // longer lifetime helps, whatever interval the broker names, or none.
+    [
+      { interval: 2, expiresIn: 1.0005 },
+      `a device code that lives 1.0005 s, with a poll interval of 2 s${lapses} its codes live longer than its poll interval`,
+    ],
+    [
+      { interval: null, expiresIn: 1.0005 },
+      `a device code that lives 1.0005 s, with no poll interval, so one of 5 s${lapses} its codes live longer than 5 s, or than both 1 s and a poll interval it names`,
+    ],
     // Shorter than the code by half a millisecond, which the code's end, a `Date`, does not hold:
-    // the poll would refuse it at once, so it is refused here, before its code is shown.
+    // the poll would refuse it at once, so it is refused here, before its code is shown. Any
+    // interval under the end's 5000 ms would poll it, 4.9997 s too.
     [
       { interval: 5, expiresIn: 5.0005 },
-      "a device code that lives 5.0005 s, with a poll interval of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its poll interval is a millisecond or more shorter than its codes' lifetime",
+      "a device code that lives 5.0005 s, with a poll interval of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its poll interval is shorter than its codes' lifetime in whole milliseconds",
     ],
-    // The same, where the interval used is the floor of 1 s, whether the broker named less or 1 s
-    // itself, and the 5 s of a broker that names none.
+    // The same, where the interval used is 1 s in whole milliseconds, the floor, whether the
+    // broker named less, 1 s itself or 1.0002 s, and the 5 s of a broker that names none.
     [
       { interval: 0.5, expiresIn: 1.0005 },
       "a device code that lives 1.0005 s, with a poll interval of 0.5 s, so one of 1 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
@@ -677,8 +694,12 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
       "a device code that lives 1.0005 s, with a poll interval of 1 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
     ],
     [
+      { interval: 1.0002, expiresIn: 1.0005 },
+      "a device code that lives 1.0005 s, with a poll interval of 1.0002 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
+    ],
+    [
       { interval: null, expiresIn: 5.0005 },
-      "a device code that lives 5.0005 s, with no poll interval, so one of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until it names a poll interval a millisecond or more shorter than its codes' lifetime, or its codes live a millisecond or more longer than 5 s",
+      "a device code that lives 5.0005 s, with no poll interval, so one of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until it names a poll interval shorter than its codes' lifetime in whole milliseconds, or its codes live a millisecond or more longer than 5 s",
     ],
   ] as const) {
     const stub = broker(options);
@@ -713,8 +734,11 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
     for (const [interval, expiresIn, reached] of [
       [5, 5, false],
       [5, 5.0005, false],
+      [4.9997, 5.0005, true],
       [5, 5.002, true],
       [4.9995, 5, true],
+      [1.0002, 1.0005, false],
+      [2, 1.0005, false],
       [0.25, 1, false],
       [599, 600, true],
     ] as const) {
@@ -760,10 +784,10 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
 // poll, or have lapsed. It is refused at once, naming the code, not waited out and said to have
 // expired before the person approved it; asking again starts a code `startDeviceLogin` checks.
 test("a code handed to the poll that lapses no later than its first poll is refused at once", async () => {
+  const stub = broker();
   // The wall clock stands still, so each row's time left is what the row set, to the millisecond.
   const now = Date.now();
   const still = spyOn(Date, "now").mockReturnValue(now);
-  const stub = broker();
   try {
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
     for (const [handed, says] of [

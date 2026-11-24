@@ -371,47 +371,56 @@ function codeLeft(
 /**
  * What must change at the broker before a device code it answers can be polled, for a broker that
  * named the interval `named`, or none where it is undefined, that this machine polls at
- * `intervalSeconds`, and a code that lives `lifetimeSeconds` here, past no hour (the caller names
- * the hour where it ends the code). This machine polls at the interval named, 1 s at least, so
- * where that is 1 s, or the code lives 1 s or less, no interval the broker names helps, and only a
- * longer lifetime does. `by` is the words before each `shorter` and `longer`, with their trailing
- * space: none, or `a millisecond or more ` where the code's end, whole milliseconds, misses a
- * lifetime less than one past the interval.
+ * `intervalSeconds`, and a code whose end holds `left` milliseconds here ({@link codeLeft}), past
+ * no hour (the caller names the hour where it ends the code). It decides on the whole milliseconds
+ * the poll's test reads: an interval reaches a code only where its own whole milliseconds are
+ * fewer than those the code's end holds. This machine polls at the interval named, 1 s at least,
+ * so where that is 1 s in whole milliseconds, or the code's end holds 1 s or less, no shorter
+ * interval alone helps: the code must live longer, and where the interval is an hour or more, the
+ * interval must also be shorter than an hour. `underAMillisecond` is the interval used shorter
+ * than its code by less than a millisecond: there a lifetime must pass its limit by a millisecond
+ * or more, and an interval be shorter than the lifetime's whole milliseconds.
  */
 function unpollableRemedy(
   named: number | undefined,
   intervalSeconds: number,
-  lifetimeSeconds: number,
-  by = ""
+  left: number,
+  underAMillisecond = false
 ): string {
+  const longer = underAMillisecond ? "a millisecond or more longer" : "longer";
+  const lifetime = underAMillisecond
+    ? "its codes' lifetime in whole milliseconds"
+    : "its codes' lifetime";
+  const outlivesLeast = left > LEAST_POLL_SECONDS * 1000;
   if (named === undefined) {
-    return lifetimeSeconds > LEAST_POLL_SECONDS
-      ? `it names a poll interval ${by}shorter than its codes' lifetime, or its codes live ${by}longer than ${DEFAULT_POLL_SECONDS} s`
-      : `its codes live ${by}longer than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
+    return outlivesLeast
+      ? `it names a poll interval shorter than ${lifetime}, or its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s`
+      : `its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
   }
-  if (intervalSeconds === LEAST_POLL_SECONDS) {
-    return `its codes live ${by}longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
+  if (Math.floor(intervalSeconds * 1000) === LEAST_POLL_SECONDS * 1000) {
+    return `its codes live ${longer} than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
   }
-  if (lifetimeSeconds > LEAST_POLL_SECONDS)
-    return `its poll interval is ${by}shorter than its codes' lifetime`;
-  return named >= MOST_LIFETIME_SECONDS
-    ? `its poll interval is shorter than an hour and its codes live ${by}longer than it`
-    : `its codes live ${by}longer than its poll interval`;
+  if (outlivesLeast) return `its poll interval is shorter than ${lifetime}`;
+  return intervalSeconds >= MOST_LIFETIME_SECONDS
+    ? `its poll interval is shorter than an hour and its codes live ${longer} than it`
+    : `its codes live ${longer} than its poll interval`;
 }
 
 /**
  * What {@link startDeviceLogin}'s refusal of `answered` says the broker answered, for a code no
- * poll `intervalSeconds` apart reaches that lives `lifetimeSeconds` here: the interval the broker
- * named, or none, with the one used where this machine's bounds set it; the code's lifetime, that
- * it had already lapsed, or the hour this machine polls a code at most where that ends it first;
- * and what must change at the broker, worded from what ends the code, since asking again would
- * meet the same answer. A broker's interval shorter than its code's life by less than a
- * millisecond, which the code's end does not hold ({@link codeLeft}), is said to be so.
+ * poll `intervalSeconds` apart reaches that lives `lifetimeSeconds` here, its end holding `left`
+ * milliseconds ({@link codeLeft}): the interval the broker named, or none, with the one used where
+ * this machine's bounds set it; the code's lifetime, that it had already lapsed, or the hour this
+ * machine polls a code at most where that ends it first; and what must change at the broker,
+ * worded from what ends the code, since asking again would meet the same answer. An interval used
+ * shorter than its code's life by less than a millisecond, which the code's end does not hold, is
+ * said to be so.
  */
 function unpollableAnswer(
   answered: DeviceAuthorizationResponse,
   intervalSeconds: number,
-  lifetimeSeconds: number
+  lifetimeSeconds: number,
+  left: number
 ): string {
   const named = answered.interval;
   const interval =
@@ -423,7 +432,7 @@ function unpollableAnswer(
   const lapses = "the code would lapse before its first poll";
   const verdict = "no device login works at that broker until";
   if (lifetimeSeconds <= 0) {
-    return `a device code that had already lapsed, with ${interval}; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds)}`;
+    return `a device code that had already lapsed, with ${interval}; ${verdict} ${unpollableRemedy(named, intervalSeconds, left)}`;
   }
   const hour = lifetimeSeconds < answered.expires_in;
   const answer = hour
@@ -432,11 +441,11 @@ function unpollableAnswer(
   // The hour is whole seconds and the end whole milliseconds, so only a lifetime the broker named
   // can fall under a millisecond past the interval.
   if (intervalSeconds < lifetimeSeconds) {
-    return `${answer}, under a millisecond apart: ${lapses}, as this machine counts a code's time in whole milliseconds; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds, "a millisecond or more ")}`;
+    return `${answer}, under a millisecond apart: ${lapses}, as this machine counts a code's time in whole milliseconds; ${verdict} ${unpollableRemedy(named, intervalSeconds, left, true)}`;
   }
   const remedy = hour
     ? "its poll interval is shorter than an hour"
-    : unpollableRemedy(named, intervalSeconds, lifetimeSeconds);
+    : unpollableRemedy(named, intervalSeconds, left);
   return `${answer}: ${lapses}; ${verdict} ${remedy}`;
 }
 
@@ -506,9 +515,10 @@ export async function startDeviceLogin(options: {
   // One reading of the clock, so the test sees the whole milliseconds the end holds.
   const now = Date.now();
   const expiresAt = new Date(now + lifetimeSeconds * 1000);
-  if (!codeLeft(expiresAt, intervalSeconds, now).reached) {
+  const code = codeLeft(expiresAt, intervalSeconds, now);
+  if (!code.reached) {
     throw new BrokerTradeFailedError(
-      `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered ${unpollableAnswer(answered, intervalSeconds, lifetimeSeconds)}`
+      `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered ${unpollableAnswer(answered, intervalSeconds, lifetimeSeconds, code.left)}`
     );
   }
   return {
