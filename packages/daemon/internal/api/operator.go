@@ -484,7 +484,8 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 // claimRequest is one operator request on an existing claim: event builds the request the claim's
 // machine is posted, or answers the caller itself and reports false. A suspension the machine holds
 // for the agent's turn (supervise.ErrSuspendHeld) is not a refusal: it answers 202 with the claim as
-// it is, still working.
+// it is, still working. A stop the machine holds for the report of the claim's take's turn answers
+// the same (stopEvent, supervise's holdStop), with the claim as it is, idle.
 //
 // Both reads of the claim are the machine's published view (supervise.Machine.View), never
 // Machine.Claim: a claim whose launch is running holds its machine's lock for as long as the
@@ -577,8 +578,13 @@ func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise
 	return supervise.RequestResume{Claim: c.Token}, true
 }
 
+// stopEvent is the operator's stop of one claim, the one stop that asks the machine to wait for the
+// report of the claim's take's turn where the take's turn has ended and the report has not come
+// (supervise.RequestStop.WaitForReport, holdStop): the route answers that held stop 202 with the
+// claim as it is (claimEvent), and `legion claims stop` waits for it. The close of a tree stops the
+// tree's other claims at once instead (closeTree).
 func stopEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
-	return supervise.RequestStop{Claim: c.Token}, true
+	return supervise.RequestStop{Claim: c.Token, WaitForReport: true}, true
 }
 
 // readOptionalBody decodes a request body the route reads when there is one: an operator command
@@ -892,6 +898,9 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 			unstopped = append(unstopped, fmt.Sprintf("%s (the daemon supervises no machine for it, so legion claims stop cannot reach it until the daemon restarts)", other))
 			continue
 		}
+		// The stop asks for no hold (supervise.RequestStop.WaitForReport): the close ends the
+		// tree's work for good, and a stop held for a take's report would answer an error this
+		// loop counts as a claim not stopped.
 		if err := m.Handle(ctx, supervise.RequestStop{Claim: other}); err != nil {
 			s.logFailure("api: stop a claim of a tree the operator closed", "claim", other, "error", err)
 			unstopped = append(unstopped, fmt.Sprintf("%s (%v)", other, err))

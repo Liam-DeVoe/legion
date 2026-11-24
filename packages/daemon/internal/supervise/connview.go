@@ -512,10 +512,21 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 // charged (replacementAtDeadline). The relaunch of a hello no answer followed that the pacing
 // parks is held at its turn the same way, and so is bounded by a deadline only where one stands
 // then (replacementHolds): the park took this one (waitOnMachine).
+//
+// A claim holding the operator's stop for the report of its take's turn (heldStop) reaches this
+// deadline as that wait's bound too, read before every path below, a held suspension's among them:
+// the task is taken back with the note of a cut turn and the operator's own stop runs, uncharged
+// (stopAtDeadline), rather than the no-hello path's retirement, which charges
+// CauseNeverReconnected, or a held suspension's stop, whose let-go would drop the stop the route
+// answered 202 for, as at the report's finish (settleThenAfterTurn).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	askedTurn := m.askTurn && !m.askedAt.IsZero()
 	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
 		m.askTurn, m.unansweredAsks, askedTurn = false, 0, false
+	}
+	if m.heldStop {
+		m.markTurnUnseen()
+		return m.stopAtDeadline(ctx)
 	}
 	helloed := askedTurn || m.connSeen == viewAsked
 	if (m.held != nil && !helloed) || m.heldRunsNow() {

@@ -9265,6 +9265,14 @@ each issue's pod (every role of it alike) and the image probe's.
   the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 
+- **A stop held for a task's report.**
+  A `legion claims stop` that reaches a worker after the turn of a task it took ended and before that turn's report reached the daemon waits for the report rather than stop the process at once, which would take the report with it and leave the task to run again in the claim's next session:
+  the daemon answers 202, logs `supervise: the report of the take's turn is still to come; what is held for that turn waits for it` at Info with `held=stop`, the `task`, the `bound` and when it comes (`due`), and stops the claim once the report finishes the task.
+  With no report by that bound, the report wait's own (`worker_turn_start_timeout_seconds` after the turn's end) while the worker's connection shows the daemon every frame of its turns and the reconnect deadline while it does not, the daemon takes the task back as a cut turn and then stops the claim, charging nothing.
+  The command says the stop is held, naming the task and the bound, and waits for the stop inside its `--wait`, one minute unless you give a longer one; a stop during a running turn cuts that turn off at once, as before.
+  The daemon holds the stop in memory only, so a restart forgets it, and so does a death or relaunch of the process before the report: run `legion claims stop` again then.
+  The operator's close of a tree, the workflow's close of one and the daemon's stop of a controller it no longer runs stop their claims at once, with no wait.
+
 - **The Legion machine-user sign-in.**
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
   the [operator route README](../deploy/kubernetes/operator-route/README.md) shows the line and what the command does.

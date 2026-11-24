@@ -10,7 +10,9 @@ import (
 
 // ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn: the
 // machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
-// that keeps the request durably asks again, and the claim answers nil once it is suspended.
+// that keeps the request durably asks again, and the claim answers nil once it is suspended. It
+// answers the operator's stop held for the report of the claim's take's turn too (holdStop), which
+// the stop route answers 202 as it answers a held suspension.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once

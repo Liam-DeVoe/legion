@@ -539,7 +539,21 @@ type RequestRuleResume struct {
 // the close is what says whether TreeClosable is asked. A flag has an unsafe default, and the
 // caller that never thought about it gets that default; these two make a new caller name which
 // close it is making, and the table holds a row for each.
-type RequestStop struct{ Claim claim.Token }
+//
+// WaitForReport is the one flag it carries, and its default is the stop at once: it asks that the
+// stop wait for the report of the claim's take's turn where it reaches the claim after that turn
+// ended and before the report came (holdStop; rule two of T3 of dispatch://INFRA-2811's plan).
+// Only the operator's stop of one claim asks it (api's stopEvent). The stops that end the work for
+// good or must not wait leave it false and stop at once, which is what a caller that never thought
+// about it gets: the operator's close of a tree, whose stops of the tree's other claims count any
+// error as a claim not stopped (api's closeTree), and the controller's stop at a boot that leaves
+// the controller to its operator (internal/daemon's stopLaunchedController). The workflow's close
+// of the tree and the operator's close of a claim are events of their own (RequestTreeClose,
+// RequestOperatorClose), and stop at once too.
+type RequestStop struct {
+	Claim         claim.Token
+	WaitForReport bool
+}
 
 // RequestTreeClose is the workflow closing a tree: every claim of a tree whose linger expired,
 // the root's included. It is the workflow's own decision and is not put to TreeClosable — the
@@ -2203,7 +2217,15 @@ func (m *Machine) backAtEnd(back ClaimState) (id string, ran bool) {
 // stale-plugin relaunch behind it finds the claim launching or its wake waiting and raises nothing
 // of its own (refreshPlugin). A replacement whose recheck refuses it leaves the process, as a
 // refused one does wherever it is raised, and the sweep raises a repoint again at its next pass.
+//
+// The operator's stop held for that report (heldStop) runs before all of it and instead of it
+// (runHeldStop): it ends the claim for good, and the let-go it makes drops the held replacement
+// and the held relaunch with the process they were for (letGo), and a retired claim is offered
+// nothing.
 func (m *Machine) afterTurn(ctx context.Context) error {
+	if m.heldStop {
+		return m.runHeldStop(ctx)
+	}
 	if held := m.heldReplacement; held != nil {
 		m.heldReplacement = nil
 		if err := held(ctx); err != nil {
@@ -2693,8 +2715,19 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 // sweep's known set, which would then take whatever the runtime holds for the root issue — under a
 // sandbox, its Sandbox, and with it the pod and the disk that pod owns. Any other stop of it is
 // refused, naming the operator's close when it is that close which ends the tree.
-func stop(m *Machine, ctx context.Context, _ Event) error {
+//
+// The operator's stop of one claim (RequestStop.WaitForReport) that reaches it after its take's
+// turn ended and before that turn's report reached the daemon waits for the report instead, as a
+// suspension does, with the held repoint's bound (replacementHolds, holdStop): stopped here, the
+// process would take the report with it, and settle would take back as a cut turn a task whose turn
+// ran whole, which a retry of the stopped claim's session would run again. A stop during a running
+// turn cuts that turn off as before, since the hold begins only once the turn is over. Every other
+// stop ends the claim here at once.
+func stop(m *Machine, ctx context.Context, ev Event) error {
 	if !m.claim.treeRoot() {
+		if ev.(RequestStop).WaitForReport && m.replacementHolds() {
+			return m.holdStop()
+		}
 		return m.end(ctx, endStopped)
 	}
 	closable, err := m.treeClosable(ctx)

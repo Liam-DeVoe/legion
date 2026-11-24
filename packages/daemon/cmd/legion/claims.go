@@ -27,14 +27,15 @@ import (
 // compact shortens a running claim's session and sends it whatever task it owes again, which is
 // what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
 // the tree's close, through its root claim, for a tree no workflow issue backs: the root, then
-// every other claim of the tree.
+// every other claim of the tree. stop retires one claim, and waits out a stop the daemon holds for
+// the report of a turn its take has ended (claimsStop).
 func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "claims", Short: "the operator's hand on the daemon's claims"},
 		claimsCommand("spawn", "create a claim on a role of an issue and launch it", claimsSpawn, stdout, stderr),
 		claimsCommand("deliver", "give a claim a task", claimsDeliver, stdout, stderr),
 		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
-		claimsCommand("stop", "stop a claim's agent", claimRequest("stop"), stdout, stderr),
+		claimsCommand("stop", "stop a claim's agent, once the report of a turn its take has ended comes", claimsStop, stdout, stderr),
 		claimsCommand("retry", "retry a failed claim, or every failed claim; a claim with no process whose launch waits its paced turn launches now", claimsRetry, stdout, stderr),
 		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
 		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
@@ -506,7 +507,8 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	return code
 }
 
-// suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
+// suspendPoll is how often claimsSuspend and claimsStop read the claims while a suspension or a
+// stop is held.
 const suspendPoll = 250 * time.Millisecond
 
 // claimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
@@ -587,6 +589,121 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
 				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+			return nil, false
+		}
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), ctx.Err())
+			return nil, false
+		case <-time.After(suspendPoll):
+		}
+	}
+}
+
+// claimsStop stops --claim. The daemon stops a claim at once (200), except one whose take's turn
+// has ended with the report of that turn still to come: it holds that stop for the report (202;
+// supervise's holdStop) and stops the claim at the report's finish, or at the wait's bound once it
+// has taken the task back as a cut turn. The command then says the stop is held, naming the task
+// and the bound (stopHeldLine), on stderr, since stdout carries the claim the command ends with and
+// --json keeps that one line; and it waits for the stop (awaitStopped) inside its --wait, as
+// claimsSuspend waits out a held suspension. It prints the claim as it ends, retired.
+func claimsStop(c *claimsCall) action {
+	token := c.flags.String("claim", "", "the claim's token (required)")
+	return func(ctx context.Context, _ []string) int { return c.stop(ctx, *token) }
+}
+
+func (c *claimsCall) stop(ctx context.Context, token string) int {
+	if code, ok := c.check("claim"); !ok {
+		return code
+	}
+	op, ok := c.connect()
+	if !ok {
+		return 1
+	}
+	path := claimsRoute + "/" + url.PathEscape(token) + "/stop"
+	status, answer, ok := c.request(ctx, op, http.MethodPost, path, nil)
+	if !ok {
+		return 1
+	}
+	if status == http.StatusAccepted {
+		var held api.OperatorClaim
+		if err := decodeAnswer(answer, &held); err != nil {
+			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
+			return 1
+		}
+		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), stopHeldLine(held))
+		if answer, ok = c.awaitStopped(ctx, op, held); !ok {
+			return 1
+		}
+		path = claimsRoute
+	}
+	return c.printAnswer(op, path, answer, c.printer(printClaim))
+}
+
+// stopHeldLine is what the command says of a stop the daemon holds for the report of the claim's
+// take's turn: the task, by the id of the delivery the claim's view names (the view carries no
+// number), and the bound, by name, since the view carries no timer — the report wait's own while
+// the worker's connection shows the daemon every frame of its turns, and the reconnect deadline
+// while it does not.
+func stopHeldLine(held api.OperatorClaim) string {
+	task := "its task"
+	if held.Pending != nil {
+		task += " " + held.Pending.ID
+	}
+	return fmt.Sprintf("the stop of %s is held for the report of the turn of %s, which has ended: the daemon stops the claim once that report comes, "+
+		"or, with no report, takes the task back as a cut turn and stops it at the report wait's bound (worker_turn_start_timeout_seconds), "+
+		"counted from that turn's end, or, while the worker's connection is cut, at the reconnect deadline; waiting for the stop", held.Token, task)
+}
+
+// awaitStopped reads the claims until the claim held names is retired, and answers it as the list
+// served it. Every other end stops the wait, reported as what it is and answering false: the claim
+// left the daemon; it failed or was suspended — a held suspension's deadline stopped its process
+// first — or the process the stop waited on was let go with the claim still live, a death or a
+// relaunch, either of which drops the held stop with that process (supervise's letGo); or the
+// command's --wait ran out while the stop is still held. The claim's view says nothing of a held
+// stop, so a daemon restart, which forgets one, and a release the runtime refused at the report,
+// which drops it, are read only at that bound, which names them. The bound is the call's own, shared
+// with the stop request (operatorCall.bound), as awaitSuspended's is.
+func (c *claimsCall) awaitStopped(ctx context.Context, op operator, held api.OperatorClaim) ([]byte, bool) {
+	for {
+		_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
+		if !ok {
+			return nil, false
+		}
+		var list api.OperatorClaims
+		if err := decodeAnswer(answer, &list); err != nil {
+			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+			return nil, false
+		}
+		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == held.Token })
+		if i < 0 {
+			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds %s, which was not stopped\n", c.name(), held.Token)
+			return nil, false
+		}
+		seen := list.Claims[i]
+		switch supervise.ClaimState(seen.State) {
+		case supervise.StateRetired:
+			stopped, err := json.Marshal(seen)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+				return nil, false
+			}
+			// One line, as the daemon's own answers are.
+			return append(stopped, '\n'), true
+		case supervise.StateFailed, supervise.StateSuspended:
+			fmt.Fprintf(c.stderr, "%s: %s is %s, so the held stop was dropped and it is not stopped; run legion claims stop again to stop it\n",
+				c.name(), held.Token, seen.State)
+			return nil, false
+		}
+		if held.Locator != nil && (seen.Locator == nil || seen.Locator.Incarnation != held.Locator.Incarnation) {
+			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the stop of %s, which is %s: the process the stop waited on was let go before the "+
+				"report came, and the held stop with it; run legion claims stop again to stop it\n", c.name(), held.Token, seen.State)
+			return nil, false
+		}
+		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its stop held for the report of its take's turn: that report has "+
+				"not come and its bound has not passed, the runtime refused the release, which the daemon logs, or the daemon restarted, which "+
+				"forgets a held stop; read legion claims list, and run legion claims stop again if it is not retired\n", c.name(), held.Token, seen.State, *c.wait)
 			return nil, false
 		}
 		select {

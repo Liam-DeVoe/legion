@@ -100,6 +100,7 @@ func (m *Machine) holdReplacement(by string, run func(context.Context) error, at
 // reconnect hello arm over a pending take (connview.go), and which a launch the pacing parked
 // takes from the process it waits over (waitOnMachine): a replacement no bound would reach lets
 // the process go as before. While a turn runs it does not hold, so a turn is cut off as before.
+// The operator's stop of the claim is held by the same rule, with the same bound (stop, holdStop).
 func (m *Machine) replacementHolds() bool {
 	if !m.reportHolds() {
 		return false
@@ -139,20 +140,18 @@ const (
 // of its take's turn (reconnectDeadline): over a view not whole, as when the stale address is the
 // worker stream's, that deadline is the wait's bound, since the report wait's own bound judges only
 // a whole view (reportBounded). With no report by it, the task is taken back with the note of a
-// cut turn (reportMissed), and the replacement then runs: the repoint's own relaunch, uncharged,
-// rather than the no-hello path's retirement, which charges CauseNeverReconnected, since a stale
-// observation is never charged. The take-back comes first, as at the report wait's own bound, so a
-// relaunch the pacing parks finds no report to wait for at its turn. A take-back the store refuses,
-// and a replacement that let nothing go — its lifecycle recheck refused (EndNotMade) — keep the
-// replacement held and the process, and the deadline is tried again at the probe interval, as the
-// deadline's other refusals are.
+// cut turn (reportMissedAtDeadline), and the replacement then runs: the repoint's own relaunch,
+// uncharged, rather than the no-hello path's retirement, which charges CauseNeverReconnected, since
+// a stale observation is never charged. The take-back comes first, as at the report wait's own
+// bound, so a relaunch the pacing parks finds no report to wait for at its turn. A take-back the
+// store refuses, and a replacement that let nothing go — its lifecycle recheck refused
+// (EndNotMade) — keep the replacement held and the process, and the deadline is tried again at the
+// probe interval, as the deadline's other refusals are. The operator's stop held for the report
+// takes the same deadline the same way (stopAtDeadline).
 func (m *Machine) replacementAtDeadline(ctx context.Context) error {
 	held := m.heldReplacement
-	if m.reportWaitNow().reportToCome() {
-		if err := m.reportMissed(ctx, "the reconnect deadline"); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return err
-		}
+	if err := m.reportMissedAtDeadline(ctx); err != nil {
+		return err
 	}
 	found := ""
 	if loc := m.claim.Locator; loc != nil {

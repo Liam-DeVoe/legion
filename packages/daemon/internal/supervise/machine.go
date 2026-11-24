@@ -1694,6 +1694,18 @@ type Machine struct {
 	// is: the sweep observes a stale address again at its next pass after a restart, and letGo
 	// drops it with the process it was made for.
 	heldReplacement func(context.Context) error
+	// heldStop is the operator's stop of the claim held for the report of its take's turn
+	// (holdStop, RequestStop.WaitForReport), false for none. It is held as the replacement above
+	// is and read in the same places, with the same bound (replacementHolds), and is a mark of its
+	// own rather than one more replacement, because it ends the claim rather than replace its
+	// process: it runs before a held replacement and a held stale-plugin relaunch and drops them
+	// with the process (afterTurn, runHeldStop), before a held suspension that waits with it
+	// (settleThenAfterTurn), and before the reconnect deadline's other paths (reconnectDeadline,
+	// stopAtDeadline), where a held replacement keeps its own place. It counts as held work
+	// (workHeld), so the report wait's bound arms over a take a daemon start restored, too
+	// (reportBounded). It is memory only: a restart forgets it, and the operator asks the stop
+	// again; letGo drops it with the process it waited on.
+	heldStop bool
 	// turnsTask is the number of the task the turn now running is the turn of, as that turn's own
 	// start line named it, and 0 for a turn that is no task's. It is set where the machine learns a
 	// turn started (startTurn), read where that turn ends (endTurn), and cleared with the turn, so
@@ -2244,11 +2256,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		m.reparkWake(ctx, dropped)
 		return refusal
 	}
-	// A row ends only in a state it names, except that a held suspension may end in suspended from
-	// whichever row the end comes through (holdSuspension); a claim that holds none may not.
-	from, held := m.claim.State, m.held != nil
+	// A row ends only in a state it names, except that a held suspension may end in suspended, and a
+	// held stop in retired, from whichever row the end comes through (holdSuspension, holdStop); a
+	// claim that holds neither may not.
+	from, held, stopping := m.claim.State, m.held != nil, m.heldStop
 	err := errors.Join(r.act(m, ctx, ev), m.settle(ctx))
-	if to := m.claim.State; to != from && !slices.Contains(r.to, to) && (!held || to != StateSuspended) {
+	if to := m.claim.State; to != from && !slices.Contains(r.to, to) && (!held || to != StateSuspended) && (!stopping || to != StateRetired) {
 		err = errors.Join(err, fmt.Errorf("supervise: row %q moved %s from %s to %s, outside %v",
 			r.name, m.claim.Token, from, to, r.to))
 	}
@@ -4502,7 +4515,8 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // wake went (endRefreshLane, dispatch://INFRA-2712 R1) — no take's turn is awaited from it, no
 // suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin), nor any replacement for the
-// report of its take's turn (heldReplacement) — the process they were to replace is gone — no
+// report of its take's turn (heldReplacement) — the process they were to replace is gone — nor the
+// operator's stop held for that report (heldStop), whose process is gone too, no
 // compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
 // nothing: ownsCompaction), and none that a gone verdict dropped with it is kept for this
@@ -4541,7 +4555,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.setView(viewWhole)
 	m.helloAsked = false
 	m.dropHeld()
-	m.staleRelaunch, m.heldReplacement = nil, nil
+	m.staleRelaunch, m.heldReplacement, m.heldStop = nil, nil, false
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
