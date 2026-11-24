@@ -793,6 +793,7 @@ check_k2() {
 check_k3() {
 	expect "S gets the real value only in Authorization and X-Key of GET /read"
 	expect "X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder"
+	expect "a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not"
 	expect "POST /read and GET /other get an error that names the rule, and S records neither"
 	expect "T records the placeholder"
 	expect "the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value"
@@ -802,7 +803,12 @@ check_k3() {
 
 	start_stack
 	stack_facts
-	local scoped_value s_before t_before log_before
+	local scoped_value s_before t_before log_before minted
+	# A string of a minted placeholder's form: the prefix, a minted kind's word and a hyphen, then
+	# 32 letters and digits (placeholder.MintedPrefix). No grant holds it; what it tests is that
+	# the leftover scan reads that form, as it reads a release's. It is written in two parts so no
+	# file holds it whole.
+	minted="agent-secrets-placeholder-""results-k3mintedk3mintedk3mintedk3minted"
 	scoped_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-scoped-token")"
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
@@ -820,6 +826,8 @@ say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_
 say "xother_error=\$(curl -sS -H "X-Other: \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
 say "query_error=\$(curl -sS "$AIRLOCK_S_URL/read?k=\$P" 2>&1 | tr '\n' ' ')"
+say "minted=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: $minted" $AIRLOCK_S_URL/read)"
+say "minted_error=\$(curl -sS -H "X-Other: $minted" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -849,15 +857,16 @@ EOF
 	body_hits="$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.body | contains($v))] | length')"
 	post_records="$(printf '%s' "$recs" | jq '[.[] | select(.method == "POST")] | length')"
 	other_records="$(printf '%s' "$recs" | jq '[.[] | select(.path == "/other")] | length')"
-	local xother_records query_records body_ph
+	local xother_records query_records body_ph minted_records
 	xother_records="$(printf '%s' "$recs" | jq '[.[] | select(.header["X-Other"] != null)] | length')"
+	minted_records="$(printf '%s' "$recs" | jq --arg m "$minted" '[.[] | .header["X-Other"] // [] | .[] | select(contains($m))] | length')"
 	query_records="$(printf '%s' "$recs" | jq '[.[] | select(.query != "")] | length')"
 	body_ph="$(printf '%s' "$recs" | jq -r '[.[] | select(.body != "") | .body] | .[0] // ""')"
 	local t_recs t_ph
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
 	t_ph="$(printf '%s' "$t_recs" | jq -r '[.[] | .header.Authorization // [] | .[]] | .[0] // ""')"
 
-	observe "status by step: Authorization ${K3[authorization]}, X-Key ${K3[xkey]}, X-Other ${K3[xother]}, query ${K3[query]}, GET /read with a body ${K3[getbody]}, POST /read with a body ${K3[postbody]}, POST /read ${K3[post]}, GET /other ${K3[other]}, T ${K3[t]}"
+	observe "status by step: Authorization ${K3[authorization]}, X-Key ${K3[xkey]}, X-Other ${K3[xother]}, query ${K3[query]}, X-Other with a minted placeholder's form ${K3[minted]}, GET /read with a body ${K3[getbody]}, POST /read with a body ${K3[postbody]}, POST /read ${K3[post]}, GET /other ${K3[other]}, T ${K3[t]}"
 	observe "S recorded $(printf '%s' "$recs" | jq length) requests: the real value (by SHA-256 and length, $(shape "$scoped_value")) in $auth_hits Authorization and $key_hits X-Key of GET /read, and in $other_hits X-Other, $query_hits queries and $body_hits bodies"
 	observe "S recorded $xother_records requests with an X-Other header and $query_records with a query; the body carried $(shape "$body_ph") — the placeholder, not the value"
 	observe "S recorded $post_records POST and $other_records /other requests"
@@ -876,6 +885,11 @@ EOF
 	judge "$([ "${K3[xother]}" = 403 ] && [ "${K3[query]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[xother_error]}" && contains "still carries a placeholder after the swap" "${K3[query_error]}" && [ "$left_lines" -ge 4 ] && [ "$xother_records" = 0 ] && [ "$query_records" = 0 ] && contains "agent-secrets-placeholder" "$body_ph" && echo 0 || echo 1)" \
 		"X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder" \
 		"X-Other answered ${K3[xother]} and the query ${K3[query]}, each naming the placeholder left after the swap, with $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for their four requests; S recorded $xother_records with X-Other and $query_records with a query; the body carried $(shape "$body_ph")"
+	# The minted form is read as a placeholder too: in a build whose scan reads a release's form
+	# alone (the proxy mutant proxy-leftover-stored-form-only) it reaches S, and this fails.
+	judge "$([ "${K3[minted]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[minted_error]}" && [ "$minted_records" = 0 ] && [ "$left_lines" -ge 6 ] && echo 0 || echo 1)" \
+		"a GET of /read carrying a minted placeholder's form in X-Other is refused 403 PLACEHOLDER_NOT_SWAPPED, and S records it not" \
+		"it answered ${K3[minted]}, saying ${K3[minted_error]}; S recorded $minted_records requests carrying it, and the brokers logged $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for the six requests that carry a placeholder left after the swap"
 	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
 		"POST /read and GET /other get an error that names the rule, and S records neither" \
 		"both answered ${K3[post]} and ${K3[other]} with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
@@ -888,7 +902,7 @@ EOF
 		"the request that already carries the value is refused with an error that names it, and S records nothing" \
 		"it was refused: ${K3[carries]}"
 
-	# Fifteen of the sixteen requests this command makes reach the proxy on a CONNECT to a
+	# Seventeen of the eighteen requests this command makes reach the proxy on a CONNECT to a
 	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
 	# handshake fails before a request exists. A carried call logs its call line and a refused
 	# one its refusal record in that line's place, so the two are counted together
@@ -903,9 +917,9 @@ EOF
 	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
 	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
-	judge "$([ "$((log_after - log_before))" -ge 15 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$((log_after - log_before))" -ge 17 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 15 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
+		"$((log_after - log_before)) lines for the 17 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
 	# block with its allow removed: the same host and the authorization header, and no allow list.
@@ -1411,6 +1425,51 @@ EOF
 	K6_AWS_BOTO3_LOG="$(tail -n 3 "$d/boto3.log" 2>/dev/null | tr '\n' ' ')"
 }
 
+# k6_second_aws starts a second stand-in AWS service that holds a second fake key pair with no
+# session token, which no kind binds and no proxy reaches, and sends it, outside agent-secrets,
+# aws sts get-caller-identity signed with that pair and the same call with the pair's key id and
+# a wrong secret key. It reads what that service recorded and why it refused (its refusals
+# route), so the check can see the stand-in refuse a bad signature after it has passed the key id
+# and the session token. It is a second dev-airlock-stands process of its own, killed on return.
+k6_second_aws() {
+	local d="$WORK_DIR/k6/second-aws"
+	mkdir -p "$d"
+	local key_id="AKIA""SECONDSTANDIN000" secret="the-second-stand-in-aws-secret-key"
+	"$STANDS_BIN" --dir "$d/files" --aws-key "$key_id=$secret" >"$d/report.json" 2>"$d/stands.log" &
+	local pid=$!
+	HELPER_PIDS+=("$pid")
+	local _
+	for _ in $(seq 1 100); do
+		grep -q 'stands listening' "$d/stands.log" 2>/dev/null && break
+		sleep 0.1
+	done
+	local url ca records_url
+	url="$(jq -r '.stands.aws.url' "$d/report.json")"
+	ca="$(jq -r '.ca_cert_file' "$d/report.json")"
+	records_url="$(jq -r '.records_url' "$d/report.json")"
+	declare -gA K6SECOND
+	local name secret_used out exit_code
+	for name in signed wrong; do
+		secret_used="$secret"
+		[ "$name" = wrong ] && secret_used="not-the-second-stand-in-secret-key"
+		exit_code=0
+		# --debug writes the exchange to standard error, where the status line of each answer is
+		# read: the CLI's own error for a refusal whose body is no XML names no status.
+		out="$(env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u AWS_SESSION_TOKEN -u AWS_PROFILE \
+			AWS_ACCESS_KEY_ID="$key_id" AWS_SECRET_ACCESS_KEY="$secret_used" AWS_DEFAULT_REGION=us-east-1 \
+			AWS_CA_BUNDLE="$ca" AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true \
+			aws --debug --endpoint-url "$url" sts get-caller-identity --output text 2>"$d/$name.debug")" || exit_code=$?
+		K6SECOND["${name}_exit"]="$exit_code"
+		K6SECOND["${name}_status"]="$(grep -oE 'HTTP/1\.1" [0-9]{3}' "$d/$name.debug" | tail -n 1 | grep -oE '[0-9]{3}$')"
+		K6SECOND["${name}_said"]="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
+	done
+	K6SECOND[records]="$(curl -sS "$records_url/records/aws" | jq 'length')"
+	K6SECOND[refusals]="$(curl -sS "$records_url/refusals/aws" | jq -r 'map(split("\n")[0]) | join(" | ")')"
+	K6SECOND[refusal_count]="$(curl -sS "$records_url/refusals/aws" | jq 'length')"
+	kill "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
+}
+
 check_k6() {
 	expect "the stand-in token endpoint gets the real federated token"
 	expect "az gets a placeholder access token"
@@ -1419,6 +1478,7 @@ check_k6() {
 	expect "the list is answered, not only signed: aws s3 ls exits 0 through the airlock"
 	expect "the chunk-signed upload and the presigned URL get an error that names them"
 	expect "the negative control, with the exchange and the signing turned off (dev-airlock.sh --no-kind), gives the token endpoint the placeholder, and refuses each AWS call 403 PLACEHOLDER_NOT_SWAPPED, because X-Amz-Security-Token keeps its placeholder, so the stand-in AWS service records nothing"
+	expect "the second stand-in AWS service, which holds a second key pair with no session token and which no kind binds, records both of its calls, answers the call signed with its pair 2xx, and refuses the call with the wrong secret key 403 because the signature is not the one its pair makes"
 
 	k6_clients
 	start_stack
@@ -1501,6 +1561,16 @@ check_k6() {
 	judge "$(contains "agent-secrets-placeholder" "$K6_AZ_ASSERTION" && [ "$K6_AWS_CALLS" = 0 ] && [ "$aws_left" -ge 3 ] && [ "${K6AWS[ls_exit]}" != 0 ] && echo 0 || echo 1)" \
 		"negative control: with the exchange and the signing turned off the token endpoint gets the placeholder, and each AWS call is refused 403 PLACEHOLDER_NOT_SWAPPED and reaches no stand-in" \
 		"the assertion the endpoint got was the grant's placeholder; the stand-in AWS service recorded $K6_AWS_CALLS calls, and $aws_left calls to $aws_host were refused PLACEHOLDER_NOT_SWAPPED, where the same runs with the kinds on are signed again and accepted"
+
+	# The second stand-in AWS service: the control that the stand-in refuses a bad signature
+	# after its key id and session token checks pass, so the acceptance above is the signature's.
+	# In a stand-in build whose VerifySigV4 skips its last comparison, the wrong-key call is
+	# answered 2xx and this fails.
+	k6_second_aws
+	control "the second stand-in AWS service recorded ${K6SECOND[records]} calls: the one signed with its pair was answered ${K6SECOND[signed_status]} and exited ${K6SECOND[signed_exit]} saying '${K6SECOND[signed_said]}', and the one with a wrong secret key was answered ${K6SECOND[wrong_status]} and exited ${K6SECOND[wrong_exit]}; its ${K6SECOND[refusal_count]} refusals: ${K6SECOND[refusals]}"
+	judge "$([ "${K6SECOND[records]}" = 2 ] && [ "${K6SECOND[signed_status]}" = 200 ] && [ "${K6SECOND[signed_exit]}" = 0 ] && contains "arn:aws:iam" "${K6SECOND[signed_said]}" && [ "${K6SECOND[wrong_status]}" = 403 ] && [ "${K6SECOND[wrong_exit]}" != 0 ] && [ "${K6SECOND[refusal_count]}" = 1 ] && contains "the signature is" "${K6SECOND[refusals]}" && echo 0 || echo 1)" \
+		"the second stand-in AWS service, which holds a second key pair with no session token and which no kind binds, records both of its calls, answers the call signed with its pair 2xx, and refuses the call with the wrong secret key 403 because the signature is not the one its pair makes" \
+		"it recorded ${K6SECOND[records]} calls; the signed call was answered ${K6SECOND[signed_status]} and the wrong-key call ${K6SECOND[wrong_status]}; it refused ${K6SECOND[refusal_count]}: ${K6SECOND[refusals]}"
 
 	stop_stack
 }
