@@ -37,7 +37,8 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // nats_nkey_seed_file — the seed every pane receives — so a daemon boots against a server whose one
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	seed, public := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, public)
 	user, err := nkeys.FromSeed([]byte(seed))
@@ -61,14 +62,14 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 		cfg := workflowConfig(t, url)
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, seed+"\n")
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		if err := bootsOrExits(t, cfg, tokens, 60*time.Second); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, quietLogger()); err != nil {
 			t.Fatalf("boot with the seed = %v, want the daemon serving", err)
 		}
 	})
 	t.Run("without one", func(t *testing.T) {
 		cfg := workflowConfig(t, url)
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		err := bootsOrExits(t, cfg, tokens, 60*time.Second)
+		err := bootsOn(t, cfg, tokens, calls, 60*time.Second, quietLogger())
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
 			t.Fatalf("boot without a seed = %v, want the server's authorization violation", err)
 		}
@@ -80,7 +81,8 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // a server whose one user is the daemon seed's admits a daemon configured with both seeds, and
 // refuses one configured with the pane seed alone, which it then connects as.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
+	calls := quickAppMints()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, daemonUser)
@@ -107,7 +109,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		cfg.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, daemonSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
 			t.Fatalf("boot with both seeds = %v, want the daemon serving", err)
 		}
 		logged := out.String()
@@ -126,7 +128,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil)))
+		err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil)))
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
 			t.Fatalf("boot with the pane seed alone = %v, want the server's authorization violation", err)
 		}
@@ -141,6 +143,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // pane seed, else none, and its one line says which user that is and whether it is the pane user,
 // the daemon seed naming the pane user included: for the token, the account it names.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
+	t.Parallel()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	const account = "system:serviceaccount:legion-pub:legion-daemon"
@@ -277,7 +280,7 @@ func TestTheTokenConnectionReconnectsOnTheBootsSchedule(t *testing.T) {
 // token: the stand-in refuses a connection with no credential, and the boot fails naming the
 // server's authorization violation.
 func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
-	quickAppMints(t)
+	calls := quickAppMints()
 	const account = "system:serviceaccount:legion-pub:legion-daemon"
 	s := testnats.StartCallout(t, 0, ">")
 	if _, err := jetstreamOf(t, s.Connect(t)).CreateStream(t.Context(), jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}}); err != nil {
@@ -294,7 +297,7 @@ func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
 		cfg.NatsDaemonServiceTokenFile = tokenFile
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+		if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
 			t.Fatalf("boot with the service token = %v, want the daemon serving", err)
 		}
 		if presented := s.Presented(); len(presented) == 0 || presented[0] != token {
@@ -311,7 +314,7 @@ func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
 	t.Run("control: without it", func(t *testing.T) {
 		cfg := workflowConfig(t, s.URL)
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		err := bootsOrExits(t, cfg, tokens, 60*time.Second)
+		err := bootsOn(t, cfg, tokens, calls, 60*time.Second, quietLogger())
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
 			t.Fatalf("boot without a credential = %v, want the server's authorization violation", err)
 		}
@@ -325,7 +328,7 @@ func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
 // until then. The control is today's boot, which refuses an authorization violation at once: make
 // natsConnection.waitsOut natsauth.Unreachable alone, and the boot exits naming the violation.
 func TestTheWorkflowWaitsOutARefusalOfItsServiceToken(t *testing.T) {
-	quickAppMints(t)
+	calls := quickAppMints()
 	const account = "system:serviceaccount:legion-pub:legion-daemon"
 	s := testnats.StartCallout(t, 3, ">")
 	if _, err := jetstreamOf(t, s.Connect(t)).CreateStream(t.Context(), jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}}); err != nil {
@@ -356,7 +359,7 @@ func TestTheWorkflowWaitsOutARefusalOfItsServiceToken(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
-	if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+	if err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
 		t.Fatalf("boot whose token the auth service refuses three times = %v, want the daemon serving once it is admitted", err)
 	}
 	<-probing
@@ -387,6 +390,7 @@ func jetstreamOf(t *testing.T, conn *nats.Conn) jetstream.JetStream {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
+	t.Parallel()
 	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string

@@ -38,6 +38,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -55,6 +56,13 @@ const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033
 // nats:2.15.1-alpine (.github/ci-images.yaml). The envoy-go and envoy-infra-go CI jobs read this
 // declaration and pull the image before their tests run; keep it a single-line string constant.
 const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+
+// ClusteredHubImage is the NATS server image the clustered hub runs: ghcr.io/cybermonklabs/legion/ci,
+// the copy of nats:2.15.3-alpine (.github/ci-images.yaml), where HubImage is the VM hub's 2.15.1. A
+// test that holds a grant to what both servers the deployment runs answer starts it beside
+// HubImage. The envoy-go CI job reads this declaration and pulls the image before its tests run;
+// keep it a single-line string constant.
+const ClusteredHubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a"
 
 // Images are the NATS server images the real-server tests run Envoy on, each with the short name
 // its subtest takes: the hub's alone, since Envoy requires a server whose scan of a consumer's
@@ -255,7 +263,7 @@ func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
@@ -304,6 +312,11 @@ func (s *Server) URL() string { return s.url }
 // Name is the server_name of a cluster member (StartCluster), the name JetStream reports it by in
 // a stream's or a consumer's cluster information. A lone server has none and answers "".
 func (s *Server) Name() string { return s.name }
+
+// StoreDir is the server's store directory, the same across every Stop and Start: JetStream keeps
+// a stream's files under jetstream/<account>/streams/<stream> in it, and a consumer's state at
+// obs/<consumer>/o.dat below that, which a forced-order test reads (hooks.go).
+func (s *Server) StoreDir() string { return s.store }
 
 // MonitorURL is the server's monitoring endpoint, where /varz and /connz are. The monitoring
 // listener is the server's own rather than the relay's, so a Stop and a Start give it a new port
@@ -506,6 +519,10 @@ func (s *Server) Log() string { return s.log.String() }
 // of them. It returns the block's size before the cut and after it, for the test's log, and fails
 // the test when the block or the index is not there.
 //
+// Before the stop it waits until the state file of every consumer of stream holds the position the
+// server reports for it (awaitConsumersStored), so the restarted server recovers each consumer from
+// the position a test read before the cut: the server's stop can keep an earlier one on disk.
+//
 // It works for a server whose streams are in the global account ($G), which is where the streams
 // of a server one Start made are: the shared server (URL) keeps each test's streams in the
 // directory of that test's account instead. The store survives the cut as it survives every Stop
@@ -513,6 +530,7 @@ func (s *Server) Log() string { return s.log.String() }
 // cut left of them.
 func (s *Server) CutStream(t testing.TB, stream string, keep func(size int64) int64) (before, after int64) {
 	t.Helper()
+	s.awaitConsumersStored(t, stream)
 	s.Stop(t)
 	messages := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "msgs")
 	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
@@ -1166,6 +1184,42 @@ func waitForJetStream(t testing.TB, check func(context.Context) error) {
 		}
 		bound.pause()
 	}
+}
+
+// MaxWait is the option every legacy JetStream context a test makes takes
+// (conn.JetStream(testnats.MaxWait(t))). nats.go's legacy context bounds each request made without
+// a nats.Context option, a KeyValue operation's among them, by its own wait, five seconds on the
+// wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
+// So a server that answers late on a loaded machine, or a relay a reload holds, would fail the
+// test with "nats: timeout" or "context deadline exceeded". With this option such a request waits
+// as long as requestWait says, which reaches testDeadline, the end of every wait of this package
+// on a server's own fact, so a late answer costs the test time and not its result. The same wait
+// is the default expiry of a pull subscription's Fetch and the time a KV watcher waits for its
+// initial values, so neither ends early either. A wait that sends a request again when it draws no
+// answer bounds each send by a step of its own instead (Connect's jetStreamStep): with this option
+// a send the server never answers would hold that wait until the deadline.
+func MaxWait(t testing.TB) natsgo.JSOpt {
+	return natsgo.MaxWait(requestWait(t))
+}
+
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answers late on a loaded machine would fail the test with "context
+// deadline exceeded". With this option such a request waits as long as one of a MaxWait context.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	return jetstream.WithDefaultTimeout(requestWait(t))
+}
+
+// requestWait is how long a request of a context MaxWait or RequestTimeout made waits for its
+// answer: what is left until testDeadline, never under a millisecond (waitEnd.step), and at most
+// noDeadline, a day, which is also its wait under -timeout 0 (no deadline). It is measured once,
+// when the option is made, and nats.go gives every request of the context that same span: a
+// request a test sends long after it made the context can wait past testDeadline by that much,
+// and is then still ended by the binary's own -timeout.
+func requestWait(t testing.TB) time.Duration {
+	return boundOf(t).step(noDeadline)
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,

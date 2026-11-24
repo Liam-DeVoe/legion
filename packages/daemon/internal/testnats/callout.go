@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/server"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -55,11 +55,11 @@ func StartCallout(t testing.TB, refusals int, subscribe ...string) *CalloutServe
 	// in the source.
 	s := &CalloutServer{authUser: "auth", authPassword: rand.Text(), subscribe: subscribe,
 		refusals: refusals, attempts: map[string]int{}}
-	ns, err := server.NewServer(&server.Options{
-		Host: "127.0.0.1", Port: server.RANDOM_PORT, NoLog: true, NoSigs: true,
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: natsserver.RANDOM_PORT, NoLog: true, NoSigs: true,
 		JetStream: true, StoreDir: t.TempDir(),
-		Users:       []*server.User{{Username: s.authUser, Password: s.authPassword}},
-		AuthCallout: &server.AuthCallout{Issuer: issuerPublic, Account: "$G", AuthUsers: []string{s.authUser}},
+		Users:       []*natsserver.User{{Username: s.authUser, Password: s.authPassword}},
+		AuthCallout: &natsserver.AuthCallout{Issuer: issuerPublic, Account: "$G", AuthUsers: []string{s.authUser}},
 	})
 	if err != nil {
 		t.Fatal(err)
