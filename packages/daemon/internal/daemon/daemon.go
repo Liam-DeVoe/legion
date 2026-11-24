@@ -1859,6 +1859,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -3054,10 +3058,11 @@ type source struct {
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
+// tree's close and its root's re-admission among them — asks for one read of the live records once
+// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
+// repository caches and legion state follow the records without a timer. live is nil where no
+// refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3090,6 +3095,15 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	s.liveOnCommit(ctx)
+	return released, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
