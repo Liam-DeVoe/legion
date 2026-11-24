@@ -55,10 +55,10 @@ import (
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
+// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
-// for the issue's admission slot in a phase up to the review and for none past it. A role a start
+// for the issue's admission slot in a phase that keeps one and for none in accepting, retro or merging. A role a start
 // already covers (StartFor) gets no second.
 //
 // A level claim that finished the last task written to it, in the session it still holds
@@ -250,7 +250,7 @@ func (e *Engine) suspendedAndLivePhaseOwners(ctx context.Context, tx pgx.Tx) (ph
 // names, and says whether the claim stands behind that entry. A claim behind it (OwedEntry, which
 // reads the owner's root for a tree close) is sent the work of that entry at that entry
 // (sendOwedEntry), under a phase start's origin. A claim level with it is sent the phase's resume
-// task (ResumePhaseTask) at entry 0, under levelOrigin: that start hands the role the work of the
+// task (ResumeTask) at entry 0, under levelOrigin: that start hands the role the work of the
 // phase it stands in rather than a new entry, so it moves no phases row either. The boot's resume
 // by rule (booted) and the cutover's repair of a merger the `awaiting_merge` cutover left
 // (oweCutoverMerger) both build their start here, so the two are built alike. Neither hands it a
@@ -282,7 +282,11 @@ func (e *Engine) startPhaseOwner(ctx context.Context, tx pgx.Tx, owner phaseOwne
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, supervise.OriginPhaseStart, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), levelOrigin, 0,
+	resume, err := e.ResumeTask(ctx, tx, owner.issue)
+	if err != nil {
+		return false, err
+	}
+	return false, e.started(ctx, tx, owner.issue, owner.role, resume, levelOrigin, 0,
 		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 

@@ -196,6 +196,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
+		"POST /legion/v1/plans/register":                         reads("artifactId"),
+		"POST /legion/v1/tasks/stop":                             reads("task"),
 		"POST /legion/v1/waves/release":                          {body: map[string]any{"issues": []string{nulText}}, refusal: nulError("issues[0]", 2)},
 		"POST /legion/v1/phase/backward":                         reads("reason"),
 		"POST /legion/v1/phase/retry":                            reads("issue"),

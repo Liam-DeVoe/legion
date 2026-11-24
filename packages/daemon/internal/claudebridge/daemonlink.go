@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -58,6 +57,9 @@ type daemonLink struct {
 	// attempts is met as a refused connection rather than as a pooled one it closed.
 	calls  daemonCalls
 	client *http.Client
+	// clock is the bridge's (Config.Clock), which each attempt's bound and each wait before an
+	// attempt is sent again run on.
+	clock Clock
 }
 
 // daemonCalls is the timing and the network of the requests the bridge sends. Its zero value is
@@ -104,6 +106,7 @@ func dialDaemon(cfg Config, logger *log.Logger) *daemonLink {
 		log:        logger,
 		calls:      calls,
 		client:     &http.Client{Transport: transport},
+		clock:      cfg.clock(),
 	}
 }
 
@@ -158,21 +161,30 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 			told = true
 			d.log.Printf("%s %s; it is sent again until it is answered", what, why)
 		}
-		if err := backoff.Sleep(ctx, delay); err != nil {
-			return 0, nil, err
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-d.clock.After(delay):
 		}
 		delay = min(delay*2, d.calls.resendMax)
 	}
 }
 
-// attempt is one post of body to the route at path, bounded by calls.answerTimeout, with the
-// daemon's answer read whole, up to maxTaskAnswerBytes. An attempt the bound ended fails with
-// errNoAnswerInTime, whatever the transport made of it: a dial or a read the bound cut off reads
-// to the transport as a timeout, as one that timed out on its own does, and the two are told
-// apart by the bound's cause.
+// attempt is one post of body to the route at path, bounded by calls.answerTimeout on the bridge's
+// clock, with the daemon's answer read whole, up to maxTaskAnswerBytes. An attempt the bound ended
+// fails with errNoAnswerInTime, whatever the transport made of it: ending the request's context
+// ends its dial, its wait for an answer and its read of the body alike, which read to the
+// transport as a cancel, and the two are told apart by the bound's cause.
 func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (status int, answer []byte, err error) {
-	ctx, cancel := context.WithTimeoutCause(ctx, d.calls.answerTimeout, errNoAnswerInTime)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		select {
+		case <-d.clock.After(d.calls.answerTimeout):
+			cancel(errNoAnswerInTime)
+		case <-ctx.Done():
+		}
+	}()
 	defer func() {
 		if err != nil && context.Cause(ctx) == errNoAnswerInTime {
 			err = errNoAnswerInTime

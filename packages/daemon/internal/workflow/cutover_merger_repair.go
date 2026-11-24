@@ -91,7 +91,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // merger's phases row and builds the start with the builder of booted's resume by rule
 // (startPhaseOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
 // sent the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent
-// the merging resume task (ResumePhaseTask) at entry 0. Both carry a phase start's origin, since
+// the merging resume task (ResumeTask) at entry 0. Both carry a phase start's origin, since
 // the merging work is new to the merger. It builds the start that way, and not as one fixed
 // request, for the reason booted gives: the resume task tells a claim to carry on the work of
 // the phase it stands in, so a merger behind its entry would spend its first turn on the wrong
@@ -109,15 +109,15 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // holding a task or covered by a queued start of its phase (queuedRowCovers), which is the
 // relaunched live merger's ready. The silence repair reads no suspended claim and no claim a
 // queued start covers (unpromptedPhaseWorker). A later start through StartOrOwe that carries the
-// same slot mark, which a start of merging or of another phase past the review does, takes the
-// owed start out while it is still queued and unleased (held by a closed design gate, or not yet
-// run) and writes its own in its place (Store.EnqueueStart). A later start of a phase that holds
-// a slot, such as implementing after the merger's own move back, leaves it queued, and the
-// outbox's phase fence ends it, since it serves a phase the issue has left. It starts no other
-// role. Once the fact commits, it logs one line per merger with whether it was stopped and the
-// slot mark of the queued start, and one line with the count and each issue, zero included. It
-// owes nothing without the daemon's pod records (Config.Pods), since it cannot read a backstop
-// without them.
+// same slot mark, which a start of merging or of another phase that holds no slot (accepting,
+// retro) does, takes the owed start out while it is still queued and unleased (held by a closed
+// design gate, or not yet run) and writes its own in its place (Store.EnqueueStart). A later start
+// of a phase that holds a slot, such as implementing after the merger's own move back, leaves it
+// queued, and the outbox's phase fence ends it, since it serves a phase the issue has left. It
+// starts no other role. Once the fact commits, it logs one line per merger with whether it was
+// stopped and the slot mark of the queued start, and one line with the count and each issue, zero
+// included. It owes nothing without the daemon's pod records (Config.Pods), since it cannot read
+// a backstop without them.
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
 	if e.cfg.Pods != nil {

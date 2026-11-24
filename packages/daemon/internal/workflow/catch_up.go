@@ -226,10 +226,10 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // this run. That row reads no slot and carries no entry, the claim being on the entry its row
 // names already; the owed entry's start takes the slot mark the slot rule gives its phase, as
 // every start Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot
-// in a phase up to the review and for none past it (record.KeepsSlot). Most often an issue up to
-// its review holds that slot already: a claim whose agent has just said it is ready is running,
-// and admission has long since given its tree a slot. The one such issue at work that holds none
-// is one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
+// in a phase that keeps a slot and for none in accepting, retro or merging (record.KeepsSlot).
+// Most often such an issue holds that slot already: a claim whose agent has just said it is ready
+// is running, and admission has long since given its tree a slot. The one such issue at work that
+// holds none is one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
 // record.Issue.ReleasedForWaitAt), and the two branches still hold for it: the wait stops none of
 // its work, so a level claim's resume is no new work and goes at once, while an owed entry's work
 // is work the claim does not have, and its start waits until the issue holds a slot again, as the
@@ -302,8 +302,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"session", held.Session)
 		return nil
 	}
+	resume, err := e.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), Origin: supervise.OriginResume,
+		Generation: issue.Generation, Phase: issue.Phase, Task: resume, Origin: supervise.OriginResume,
 		ResumeTask: true}); err != nil {
 		return err
 	}

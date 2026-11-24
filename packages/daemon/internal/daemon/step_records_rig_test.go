@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -138,7 +139,8 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 
 // walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
 // title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
-var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated",
+	"Fifth ticket runs reordered"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
@@ -177,7 +179,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	t.Helper()
 	ctx := context.Background()
 	approved := 1
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: "One issue walks to done", Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -861,22 +863,27 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 
 // take takes the claim's next task and starts the turn that works it, its model answering first:
 // the claim's machine reads a connection's frames in order, so once the turn's start shows the
-// claim working, the answer before it has been read too.
-func (c *stepClaimant) take() {
+// claim working, the answer before it has been read too. It answers the take, whose text is what
+// the claim was told, which a walk reads where it holds that.
+func (c *stepClaimant) take() takenTask {
 	c.r.t.Helper()
-	c.receive()
+	taken := c.receive()
 	c.answer()
 	c.driver.mustStartTurn(c.r.t)
 	c.waitState(supervise.StateWorking)
+	return taken
 }
 
 // receive waits for the claim's next task and takes it, as the pane's plugin does once its host
-// is idle: the daemon accepts the take, and the take's turn has not started yet.
-func (c *stepClaimant) receive() {
+// is idle: the daemon accepts the take, and the take's turn has not started yet. It answers the
+// take.
+func (c *stepClaimant) receive() takenTask {
 	c.r.t.Helper()
-	if _, err := c.driver.takeWithin(stepRecordsWait); err != nil {
+	taken, err := c.driver.takeWithin(stepRecordsWait)
+	if err != nil {
 		c.r.t.Fatalf("%s took no task within %s: %v", c.token, stepRecordsWait, err)
 	}
+	return taken
 }
 
 // endTurnUnseen ends the task the pane took with no daemon of this release there to read it, as
@@ -1028,6 +1035,13 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
+}
+
+// opened says whether the walk opened pull request number (find).
+func (g *stepRecordsGitHub) opened(number int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.find(number) != nil
 }
 
 // merged is GitHub's merge of pull request number: every read from now on answers it merged. A

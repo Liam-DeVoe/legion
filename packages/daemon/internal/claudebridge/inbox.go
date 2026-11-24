@@ -112,8 +112,9 @@ const (
 // inside the 107 bytes Linux holds.
 const InboxLongestPath = inboxDirPrefix + "0123456789" + "/" + inboxSocketName
 
-// listenInbox opens the inbox and serves it until close, handing each delivery to the loop.
-func listenInbox(events chan<- event, stop <-chan struct{}, logger *log.Logger) (*inbox, error) {
+// listenInbox opens the inbox and serves it until close, handing each delivery to the loop; clock
+// is the bridge's (Config.Clock), which the flush of what a client is owed runs on.
+func listenInbox(events chan<- event, stop <-chan struct{}, clock Clock, logger *log.Logger) (*inbox, error) {
 	dir, err := os.MkdirTemp("", inboxDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("make the inbox directory: %w", err)
@@ -139,7 +140,7 @@ func listenInbox(events chan<- event, stop <-chan struct{}, logger *log.Logger) 
 			in.wg.Add(1)
 			go func() {
 				defer in.wg.Done()
-				serveInbox(conn, events, stop, logger)
+				serveInbox(conn, events, stop, clock, logger)
 			}()
 		}
 	}()
@@ -181,19 +182,25 @@ type inboxReply struct {
 // arrives, and answers them in the order they came, each once the loop has answered it: a line
 // waits for the answers of the lines ahead of it on its connection, so claude-envoy writes its
 // take-pending query down a connection of its own. The loop answers every line it took before the
-// inbox closes, so those answers are written then too, within inboxFlushTimeout. The watcher of
-// the inbox's close ends with the connection too: claude-envoy dials a connection for every
-// take-pending query, so a watcher left parked on stop would hold one goroutine and one closed
-// connection for each of them until the bridge exits.
-func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger *log.Logger) {
+// inbox closes, so those answers are written then too, within inboxFlushTimeout on clock: once that
+// has passed, a write the client has not taken fails at once. The watcher of the inbox's close ends
+// with the connection too: claude-envoy dials a connection for every take-pending query, so a
+// watcher left parked on stop would hold one goroutine and one closed connection for each of them
+// until the bridge exits.
+func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, clock Clock, logger *log.Logger) {
 	defer conn.Close()
 	served := make(chan struct{})
 	defer close(served)
 	go func() {
 		select {
 		case <-stop:
-			_ = conn.SetReadDeadline(time.Now())
-			_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		case <-served:
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now())
+		select {
+		case <-clock.After(inboxFlushTimeout):
+			_ = conn.SetWriteDeadline(time.Now())
 		case <-served:
 		}
 	}()

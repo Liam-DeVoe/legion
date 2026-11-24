@@ -2,6 +2,7 @@ package claudebridge
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,59 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// reportClock is a Config.Clock on which only the bound of an attempt of a request to the daemon
+// passes (taskAnswerTimeout, daemonLink.attempt), and only once the row releases it: every other
+// timer of the bridge's, its stop's and the wait before an attempt is sent again, never fires on
+// it.
+type reportClock struct {
+	release chan struct{}
+}
+
+func (c reportClock) After(d time.Duration) <-chan time.Time {
+	fires := make(chan time.Time, 1)
+	if d == taskAnswerTimeout {
+		go func() {
+			<-c.release
+			fires <- time.Unix(0, 0).Add(d)
+		}()
+	}
+	return fires
+}
+
+// A turn report the daemon takes and never answers is cut at the attempt's bound,
+// taskAnswerTimeout, which passes on the bridge's clock once the daemon has the report, and the
+// pane's line says that bound, not the cancel that carried it: the attempt's context ends with
+// errNoAnswerInTime as its cause, and the report is sent again until it is answered
+// (daemonLink.untilAnswered).
+func TestATurnReportCutByItsBoundNamesTheBound(t *testing.T) {
+	taken, hang := make(chan struct{}, 1), make(chan struct{})
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		taken <- struct{}{}
+		select {
+		case <-hang:
+		case <-request.Context().Done():
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	t.Cleanup(func() { close(hang) }) // runs before daemon.Close, which waits for the handler
+	tokenFile := filepath.Join(t.TempDir(), "boot-token")
+	if err := os.WriteFile(tokenFile, []byte(testBootToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clock := reportClock{release: make(chan struct{})}
+	r := startRig(t, []string{"LEGION_DAEMON_URL=" + daemon.URL, "LEGION_BOOT_TOKEN_FILE=" + tokenFile, "LEGION_GENERATION=4"},
+		daemonCalls{}, clock, "-p", "--resume", sessionID)
+	r.handReady()
+	r.turn("p1", "say hello")
+	r.untilTurnEnds()
+	testwait.Receive(t, "the daemon to take the turn's report", taken)
+	close(clock.release)
+	want := fmt.Sprintf("claims/turn-outcome of turn 1 got no answer from the daemon (no answer within %v); it is sent again until it is answered", taskAnswerTimeout)
+	r.waitFor("the bridge to log the report cut at its bound: "+want, func() bool { return strings.Contains(r.log.String(), want) })
+}
 
 // reportingRig is a rig whose pane names a daemon: every turn the bridge ends is reported to the
 // stub, which answers as the daemon's route does. The pane's claim is ready, as claude-envoy says
@@ -66,14 +119,15 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 	return r
 }
 
-// reported is the next turn the bridge reported.
+// reported is the next turn the bridge reported, waited for until deadlineMargin before the test
+// binary's deadline (deadlineWait).
 func (r *reportingRig) reported() claim.TurnOutcomeRequest {
 	r.t.Helper()
 	select {
 	case report := <-r.reports:
 		return report
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("the bridge reported no turn within 10s")
+	case <-time.After(deadlineWait(r.t)):
+		r.t.Fatalf("the bridge reported no turn, %s before the test binary's deadline; the bridge logged:\n%s", deadlineMargin, r.log)
 		return claim.TurnOutcomeRequest{}
 	}
 }

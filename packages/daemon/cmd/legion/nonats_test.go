@@ -61,10 +61,10 @@ func TestCheckConfigSaysADaemonOnThePaneSeedIsRefusedItsBoot(t *testing.T) {
 	for _, row := range []struct {
 		name, projects, daemonSeed, want string
 	}{
-		{"the pane seed alone", withNATS, "", ok + "\n" + paneSeedLine + demoProductionCheck},
-		{"a daemon seed that is the pane seed", withNATS, paneSeed, ok + " nats-daemon-nkey-user=" + paneUser + "\n" + paneSeedLine + demoProductionCheck},
-		{"a daemon seed of its own", withNATS, daemonSeed, ok + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck},
-		{"the pane seed and no NATS", withoutNATS, "", ok + "\n" + noNATSLine + demoProductionCheck},
+		{"the pane seed alone", withNATS, "", ok + "\n" + paneSeedLine + demoProjectLines},
+		{"a daemon seed that is the pane seed", withNATS, paneSeed, ok + " nats-daemon-nkey-user=" + paneUser + "\n" + paneSeedLine + demoProjectLines},
+		{"a daemon seed of its own", withNATS, daemonSeed, ok + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines},
+		{"the pane seed and no NATS", withoutNATS, "", ok + "\n" + noNATSLine + demoProjectLines},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			legionState(t)
