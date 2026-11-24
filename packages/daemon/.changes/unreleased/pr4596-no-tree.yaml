@@ -11,7 +11,10 @@ body: |-
   the chain is unknown: the daemon starts nothing new on it, refuses an architect's call on it with
   `CHAIN_UNKNOWN`, lists the issue held `chain_unknown` when it has not started, and reads the
   chain again until it is known. The adoption of a closed tree's members, orphan roots, the stored
-  ancestry and the hand-over of a lingering tree's children go.
+  ancestry and the hand-over of a lingering tree's children go. This release replaces #5303's
+  return of a re-admitted root's members: a root's leave stops only its own claims and its return
+  resumes its own phase, so no member waits for its root's re-admission; #5303's
+  `20261123224717_members_owed` stays in the store, and this release neither reads nor writes it.
 time: 2026-11-22T22:26:12Z
 custom:
     Issue: pr4596
