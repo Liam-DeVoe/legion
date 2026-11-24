@@ -71,14 +71,14 @@ const (
 
 // The issues of the corpus that advance no priority: newestEventBystanderRoots roots, each with
 // newestEventBystanderChildren children, 1,000 issues in all. Each has events, and they are many
-// times the member rows the read joins, so a plan that probes the events of every issue before it
-// joins the members runs its probe many more times than a plan that probes once for each member
-// row (requireOneEventOfEachMember). Most of them have a parent. The planner sizes the walk over
-// the members from the 1,000 rows it plans for every seed (priorityMemberTerms) and from how many
-// issues have a parent, so it plans many more member rows than there are issues: 16,498 against
-// 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue first is then the cheaper
-// one by its costs. When none of these issues had a parent, the planner probed once for each
-// member row even where the probe named the issue alone, so the check passed such a probe.
+// times the member issues the read joins, so a plan that probes the events of every issue before
+// it joins the members runs its probe many more times than a plan that probes once for each
+// member issue (requireOneEventOfEachMember). Most of them have a parent. The planner sizes the
+// walk over the members from the 1,000 rows it plans for every seed (priorityMemberTerms) and from
+// how many issues have a parent, so it plans many more member rows than there are issues: 16,498
+// against 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue first is then the
+// cheaper one by its costs. When none of these issues had a parent, the planner probed once for
+// each member row even where the probe named the issue alone, so the check passed such a probe.
 const (
 	newestEventBystanderRoots    = 40
 	newestEventBystanderChildren = 24
@@ -105,6 +105,10 @@ type newestEventCorpus struct {
 //     events;
 //   - one more child of the depth-2 tree's root also states the depth-4 priority, so one issue
 //     advances two priorities;
+//   - the depth-3 tree's root also states the depth-1 and the depth-2 priorities, so each issue
+//     of that tree, in both projects, advances three. In each read the member issues are then
+//     fewer than the member rows, the (issue, priority) pairs, so a plan that probes once for
+//     each member row probes more times than the check permits (requireOneEventOfEachMember);
 //   - newestEventSilentPriority is stated on one issue of its own, which has no event;
 //   - newestEventUnstatedPriority is stated on no issue;
 //   - the issues of newestEventBystanderRoots trees advance no priority. Each holds 1 to 5
@@ -163,6 +167,7 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 	addIssue(new(roots[3]), 0)
 	shared := addIssue(new(roots[2]), eventsOf())
 	tuples = append(tuples, seededAdvancesTuple(shared, corpus.trees[3], base))
+	tuples = append(tuples, seededAdvancesTuple(roots[3], corpus.trees[0], base), seededAdvancesTuple(roots[3], corpus.trees[1], base))
 	tuples = append(tuples, seededAdvancesTuple(addIssue(nil, 0), newestEventSilentPriority, base))
 	eventsFrom = base.Add(24 * time.Hour)
 	for range newestEventBystanderRoots {
@@ -298,14 +303,16 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 }
 
 // TestPriorityNewestEventReadsOneEventOfEachMember holds the newest event under each priority to
-// one read of events for each member row it joins (requireOneEventOfEachMember). The plans are
+// one read of events for each member issue it joins (requireOneEventOfEachMember), and not one
+// for each member row: an issue that advances three priorities is read once. The plans are
 // three, each run and measured: the generic plan that a prepared statement settles on
 // (explaintest.AnalyzedGenericPlan) and a plan made for the values of the read, both with
 // sequential scans off and no other setting, as the package's plan tests read them
 // (explaintest.GenericPlan), and a plan made for the values with the planner's default settings.
 // Each is read with no project named and with one. The corpus holds many more issues with events
-// than member rows (seedNewestEventCorpus), so a plan that probes the events of every issue
-// before it joins the members reads events more times than the check permits.
+// than member issues, and fewer member issues than member rows (seedNewestEventCorpus), so a plan
+// that probes the events of every issue before it joins the members, or that probes once for each
+// member row, reads events more times than the check permits.
 //
 // The control is main's text, which joins every event of every member issue: the same check run
 // on it must fail under each plan, and the test fails when it passes, since the check would then
@@ -331,7 +338,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 		{"main's newest event", mainPriorityNewestEventQuery, true},
 	}
 	for scopeNumber, scope := range newestEventScopes {
-		members := newestEventMemberRows(t, corpus.database, seedKeys, seedIDs, scope.projects, scope.name)
+		members := newestEventMemberIssues(t, corpus.database, seedKeys, seedIDs, scope.projects, scope.name)
 		arguments := []any{seedKeys, seedIDs, scope.projects}
 		parameters, literals := benchtime.PreparedArguments(t, "the newest event over "+scope.name, arguments...)
 		for textNumber, text := range texts {
@@ -360,40 +367,52 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	}
 }
 
-// newestEventMemberRowsQuery counts, over the seed and projects of a read, the member rows that
-// the newest event under each priority joins: the distinct (issue, priority) rows of the walk
+// newestEventMembersQuery counts, over the seed and projects of a read, the member rows of the
+// newest event under each priority: the distinct (issue, priority) rows of the walk
 // (priorityMemberTerms) whose issue the project filter keeps (priorityProjectFilter). Beside them
-// it counts the issues with an event that the project filter keeps, which are what a read that
-// probes the events of every issue probes.
-var newestEventMemberRowsQuery = `with recursive ` + priorityMemberTerms + `
+// it counts the member issues of those rows, the distinct issues, which the read joins and
+// probes the events of, and the issues with an event that the project filter keeps, which are
+// what a read that probes the events of every issue probes.
+var newestEventMembersQuery = `with recursive ` + priorityMemberTerms + `
 	select
 		(select count(*) from members m join issues i on i.key = m.key where ` + priorityProjectFilter + `),
+		(select count(distinct m.key) from members m join issues i on i.key = m.key where ` + priorityProjectFilter + `),
 		(select count(*) from issues i where i.last_seq > 0 and ` + priorityProjectFilter + `)`
 
-// newestEventMemberRows is how many member rows the newest event under each priority joins over
-// the seed and projects of a read, scope (newestEventMemberRowsQuery). It logs them beside the
-// issues with an event in the same projects.
-func newestEventMemberRows(t *testing.T, database *store.Store, seedKeys, seedIDs, projects []string, scope string) int {
+// newestEventMemberIssues is how many member issues the newest event under each priority joins
+// over the seed and projects of a read, scope (newestEventMembersQuery). It logs them beside the
+// member rows and the issues with an event in the same projects. A corpus whose member issues
+// are as many as its member rows fails the test: there no issue advances two priorities, and the
+// bound on the member issues (requireOneEventOfEachMember) would pass a plan that probes once
+// for each member row.
+func newestEventMemberIssues(t *testing.T, database *store.Store, seedKeys, seedIDs, projects []string, scope string) int {
 	t.Helper()
-	var members, issues int
-	if err := database.Pool.QueryRow(context.Background(), newestEventMemberRowsQuery, seedKeys, seedIDs, projects).
-		Scan(&members, &issues); err != nil {
-		t.Fatalf("count the member rows over %s: %v", scope, err)
+	var rows, members, issues int
+	if err := database.Pool.QueryRow(context.Background(), newestEventMembersQuery, seedKeys, seedIDs, projects).
+		Scan(&rows, &members, &issues); err != nil {
+		t.Fatalf("count the member issues over %s: %v", scope, err)
 	}
-	t.Logf("over %s the read joins %d member rows, and %d issues with an event stand in its projects", scope, members, issues)
+	t.Logf("over %s the read joins %d member issues in %d member rows, and %d issues with an event stand in its projects",
+		scope, members, rows, issues)
+	if members >= rows {
+		t.Fatalf("over %s the read joins %d member issues in %d member rows, so no issue advances two priorities and the check would pass a probe for each member row",
+			scope, members, rows)
+	}
 	return members
 }
 
 // requireOneEventOfEachMember holds plan, an analyzed plan of a newest event statement, to reading
-// one event of each member row it joins, the member's event of last_seq, and no other event.
+// one event of each member issue it joins, the member's event of last_seq, and no other event.
 // Every scan of events is an Index Scan of newestEventIndex whose Index Cond names both columns
 // of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each such scan
 // answers at most one row each time it runs, and at least one of them ran, so a plan that read no
 // event shows nothing. A scan of events of any other kind is a read beyond the one event of a
-// member. The scans of events run at most members times in all, the member rows the read joins
-// (newestEventMemberRows): a plan that probes the events of an issue before it joins the issue to
-// the members probes every issue the project filter keeps. Each failure names subject and prints
-// the plan through t.Errorf, which is what a control reads (explaintest.RequireControlFails).
+// member. The scans of events run at most members times in all, the member issues the read joins
+// (newestEventMemberIssues): a plan that probes the events of an issue before it joins the issue
+// to the members probes every issue the project filter keeps, and a plan that probes once for
+// each member row, an (issue, priority) pair, probes an issue once for every priority it
+// advances. Each failure names subject and prints the plan through t.Errorf, which is what a
+// control reads (explaintest.RequireControlFails).
 func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, members int) {
 	t.Helper()
 	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
@@ -419,9 +438,9 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 	if loops == 0 {
 		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
 	}
-	t.Logf("%s reads events %v times in all, for the %d member rows it joins", subject, loops, members)
+	t.Logf("%s reads events %v times in all, for the %d member issues it joins", subject, loops, members)
 	if loops > float64(members) {
-		t.Errorf("%s reads events %v times in all, more than the %d member rows it joins, want at most one read for each member row:\n%s",
+		t.Errorf("%s reads events %v times in all, more than the %d member issues it joins, want at most one read for each member issue:\n%s",
 			subject, loops, members, plan)
 	}
 }
