@@ -41,8 +41,8 @@ func (s *server) gateDocuments(r *http.Request, artifactIDs ...string) (*http.Re
 	return r.WithContext(ctx), release, nil
 }
 
-// gateComment takes, for r's write to comment id, the writer gate of the document the comment is
-// anchored to (commentDocuments).
+// gateComment takes, for r's write to comment id, the writer gate of the document the write's
+// margin projection rewrites (commentDocuments).
 func (s *server) gateComment(r *http.Request, id string) (*http.Request, func(), error) {
 	documents, err := s.commentDocuments(r.Context(), id)
 	if err != nil {
@@ -130,15 +130,22 @@ func optionalDocument(row pgx.Row) ([]string, error) {
 	return []string{*artifactID}, nil
 }
 
-// commentDocuments is the document comment id is anchored to, whose marks projection its
-// mutations rewrite, or none for an unanchored comment or an id no comment has (the write answers
-// that under its lock). A comment's anchor never moves to another document.
+// commentDocuments is the document whose marks projection a mutation of comment id rewrites
+// (projectThreadMark): the document the comment is anchored to, or, for a reply anchored nowhere,
+// the one the comment it replies to is anchored to, whose mark records the text of each reply.
+// None for a comment of an unanchored thread or an id no comment has (the write answers that
+// under its lock). A comment's anchor never moves to another document, and its reply_to never
+// changes.
 func (s *server) commentDocuments(ctx context.Context, id string) ([]string, error) {
 	q := s.documentQueryer()
 	if q == nil || uuid.Validate(id) != nil {
 		return nil, nil
 	}
-	return optionalDocument(q.QueryRow(ctx, `select anchor->>'artifact_id' from comments where id = $1`, id))
+	return optionalDocument(q.QueryRow(ctx, `
+		select coalesce(c.anchor->>'artifact_id', parent.anchor->>'artifact_id')
+		from comments c left join comments parent on parent.id = c.reply_to
+		where c.id = $1
+	`, id))
 }
 
 // askDocuments is the document a block ask's block lives in, which its edits and transitions

@@ -201,7 +201,7 @@ func TestARecoveredReplayKeepsNothingOfARefusal(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/messages", nil)
-	(&server{}).writeRefreshed(response, request, stored, map[string]any{"id": "m1"})
+	(&server{}).writeRefreshed(response, request, http.StatusCreated, stored, map[string]any{"id": "m1"})
 	var answer map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
@@ -230,10 +230,11 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 	}
 }
 
-// Every route the keyed layer's one remaining table names - the answers a key never keeps - is a
-// POST or PATCH route the server registers: a pattern spelled wrong would silently turn its rule
-// off. The layer's other per-route rules are on the route's own row (apiRoute.Replay,
-// apiRoute.BodyLimit), where no pattern is spelled twice.
+// Every route the keyed layer's own tables name - those that read the post a kept answer holds
+// again and those whose answers a key never keeps - is a POST or PATCH route the server
+// registers: a pattern spelled wrong would silently turn its rule off. The layer's other
+// per-route rules are on the route's own row (apiRoute.Replay, apiRoute.BodyLimit), where no
+// pattern is spelled twice.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
@@ -245,6 +246,9 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	tables := map[string][]string{}
 	for route := range answerHoldsSecret {
 		tables["answerHoldsSecret"] = append(tables["answerHoldsSecret"], route)
+	}
+	for route := range keyedRereads {
+		tables["keyedRereads"] = append(tables["keyedRereads"], route)
 	}
 	for table, routes := range tables {
 		for _, route := range routes {

@@ -28,9 +28,12 @@ No write updates or deletes a tuple, so the count rises with each commit of a wr
 It is a count and not the newest `seq`, because two writes of one issue's runs do not wait for each other, and the write that drew the earlier `seq` can commit after the other.
 
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
-`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and no row is ever updated.
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask; a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
 The keyword fill (`dispatch-textversions`) is the one writer of both tables, and no migration writes them.
+Rows are updated in one case: the fill's re-read, after a fill of a lower rules version wrote, writes again the rows that version decided otherwise.
+The cursor row's `rules` is the lowest rules version that wrote the rows up to the cursor, which only that re-read raises.
+The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
