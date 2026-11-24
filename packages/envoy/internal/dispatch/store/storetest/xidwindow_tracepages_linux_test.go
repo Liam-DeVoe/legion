@@ -140,7 +140,7 @@ func xidTracerFound(named bool) string {
 	if named {
 		return "found by the runtime's names"
 	}
-	return "found as what was mapped since the trace started, this kernel naming no anonymous mapping"
+	return "found as what was mapped since the trace started, no mapping carrying the runtime's names"
 }
 
 // xidRequireFaultCounter stops the calling test where the kernel does not count the calling

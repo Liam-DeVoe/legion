@@ -335,8 +335,9 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 // any goroutine it starts - a broadcast delivers to each session on a goroutine of its own. A
 // thread the rig could not hold is not recorded as held, so its gaps are read off no thread's
 // clocks and are a rig problem (analyzeXidWindows). Nor is one whose BEGIN could not hold the
-// memory - a hold that found none of the execution tracer's memory to make present among them -
-// and it answers why (unheld), which the BEGIN's statement keeps, so the window is UNKNOWN by name.
+// process's memory, as when the hold found none of the execution tracer's memory to make present:
+// lockTransaction answers why (unheld), the BEGIN's statement keeps it, and that window is UNKNOWN
+// by that reason.
 func (x *XidTracer) lockTransaction(pid uint32) (unheld string) {
 	runtime.LockOSThread()
 	held := xidHeldThread{thread: xidThread()}

@@ -346,7 +346,7 @@ func xidHoldWindowMemory() (unheld string) {
 	if !tracing || len(tracer) > 0 {
 		return ""
 	}
-	searched := "this kernel names no anonymous mapping, and no anonymous writable mapping but the Go heap's and threads' stacks was mapped since the rig started the trace"
+	searched := "no mapping carries the runtime's names, and no anonymous writable mapping but the Go heap's and threads' stacks was mapped since the rig started the trace"
 	if xidRuntimeNamesMappings(maps) {
 		searched = "no mapping is named the tracer's ([anon: Go: trace buffer] or [anon: Go: trace arena alloc])"
 	}
