@@ -105,8 +105,11 @@ func TestAMergeOwedToARoleWhoseClaimEndedStillHoldsTheWorker(t *testing.T) {
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer})
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
-	if issue.Phase != phase.Testing || pr.MergeForward == nil || !pr.MergeForward.Waits {
-		t.Fatalf("after the implementer's claim failed the issue is in %s and the ask is %+v, want testing and the ask waiting", issue.Phase, pr.MergeForward)
+	if issue.Phase != phase.Testing || pr.MergeForward == nil {
+		t.Fatalf("after the implementer's claim failed the issue is in %s and the ask is %+v, want testing and the ask", issue.Phase, pr.MergeForward)
+	}
+	if !pr.MergeForward.Waits {
+		t.Errorf("after the implementer's claim failed the ask is %+v, want it waiting for the implementer's next start", pr.MergeForward)
 	}
 	if worker, held := heldWorker(issue, pr); !held || worker != claim.RoleTester {
 		t.Errorf("the fence's held rule names %q (held %t), want the tester: the merge is still owed", worker, held)
