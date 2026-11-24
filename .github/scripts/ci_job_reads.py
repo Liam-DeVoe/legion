@@ -1453,9 +1453,9 @@ hold_infra_race_unit_script()
 # put back on the shared handle, and a run without the detector passes it.
 # internal/shimwire: the shim's two pumps, the goroutines internal/shim reads the daemon's stream
 # and the wrapped process's stdout on, share the dedupe's delivery record under Dedupe.mu, and a
-# Writer writes each frame whole under a lock of its own (Writer.mu). Under the detector,
-# TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a run
-# without the detector passes it.
+# Writer writes each frame whole while the frame holds the writer's slot (Writer.slot). Under the
+# detector, TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a
+# run without the detector passes it.
 # One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
 # in ci-job-daemon-go.yaml differs from the text built here, so the two steps cannot name different
 # sets. internal/record is not among them: its product code starts no goroutine and uses no sync,

@@ -162,8 +162,8 @@ func TestEachFrameIsOneNewlineTerminatedLine(t *testing.T) {
 }
 
 // A frame that waits for the writer while another frame holds it answers to its own context. A
-// wait no context can end would hold a request with a bound past that bound, for as long as the
-// peer leaves the other frame unread.
+// wait that no context can end holds a request past its bound. It waits as long as the peer
+// leaves the other frame unread.
 func TestAFrameWaitingForTheWriterEndsWithItsContext(t *testing.T) {
 	dst := &heldWriter{entered: make(chan struct{}), release: make(chan struct{})}
 	writer := NewWriter(dst)
@@ -175,7 +175,15 @@ func TestAFrameWaitingForTheWriterEndsWithItsContext(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	second := returnOf(func() error { return writer.WriteFrameContext(ctx, AgentEnd{}) })
+	waiting := newDoneWatch(ctx)
+	second := returnOf(func() error { return writer.WriteFrameContext(waiting, AgentEnd{}) })
+	// The context is ended only once the second write waits on it, so no check made before the
+	// wait can end the write in its place.
+	select {
+	case <-waiting.asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write did not wait on its context while another frame held the writer")
+	}
 	cancel()
 	err := awaitReturn(t, second, "the write did not return after its context ended")
 	if !errors.Is(err, context.Canceled) {
@@ -222,6 +230,23 @@ func (w *heldWriter) lines() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.writes)
+}
+
+// doneWatch is a context that says when its Done is first asked for. A frame asks for it as it
+// starts to wait for the writer.
+type doneWatch struct {
+	context.Context
+	asked chan struct{}
+	once  sync.Once
+}
+
+func newDoneWatch(ctx context.Context) *doneWatch {
+	return &doneWatch{Context: ctx, asked: make(chan struct{})}
+}
+
+func (c *doneWatch) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.asked) })
+	return c.Context.Done()
 }
 
 // returnOf runs call on a goroutine of its own and hands back what it returns.

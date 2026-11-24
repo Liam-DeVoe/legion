@@ -142,8 +142,9 @@ type Conn interface {
 	// error is transport.
 	AgentSecretsToken(ctx context.Context) (string, error)
 	// ModelTotals reads what the agent's shim counted of its launch's calls, by model, since its
-	// harness started. Only ctx bounds the read: its wait for the connection's writer, its write
-	// and its wait for the answer. A read of a shim that does not count fails at once.
+	// harness started. ctx bounds the whole read: its wait for the connection's writer, its write
+	// and its wait for the answer. The transport's own write bound can end the write sooner. A
+	// read of a shim that does not count fails at once.
 	ModelTotals(ctx context.Context) (LaunchTotals, error)
 	// Sequence is the order the connection was registered in: one registered later has a larger
 	// sequence, so a caller can tell a connection newer than another.

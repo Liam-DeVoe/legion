@@ -26,10 +26,10 @@ var (
 	// ErrClosed is the transport failing under a request: the connection closed before the
 	// answer came, or a write to it failed. It is never an acknowledgement and never a refusal.
 	ErrClosed = errors.New("worker stream closed")
-	// ErrNoAnswer is a request whose bound ran out before its answer arrived: the RPC timeout
-	// (worker_rpc_timeout_seconds), the bound the shipped client puts on every request
-	// (worker-rpc.ts:407-421), or the request's own. The bound counts from the request's start, so
-	// it covers the wait for the writer and the write too.
+	// ErrNoAnswer is a request whose bound ran out before its answer arrived. The bound is the RPC
+	// timeout (worker_rpc_timeout_seconds) or the request's own. The shipped client puts the RPC
+	// timeout on every request (worker-rpc.ts:407-421). The bound counts from the request's start,
+	// so it covers the wait for the writer and the write too.
 	ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
 	// ErrNoModelTotals is a read of a launch's model totals on a connection whose hello did not say
 	// that its shim counts them. An older shim would forward the frame to its harness. A stand-in
@@ -413,10 +413,11 @@ func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 }
 
 // ModelTotals reads what the shim counted of its launch's calls, by model, since its harness
-// started. The shim answers the frame itself, so no negotiation goes first. Only ctx bounds the
-// read, and never the RPC timeout: the caller sets the bound of its reads. A shim whose hello did
-// not offer its totals fails the read at once, with nothing written (ErrNoModelTotals). A shim
-// built before the read forwards the frame to OMP, whose unknown-command answer is a refusal.
+// started. The shim answers the frame itself, so no negotiation goes first. The caller's ctx is
+// the read's one bound, and no RPC timeout bounds its wait for the answer. Its write also ends at
+// the RPC timeout, as every write does. A shim whose hello did not offer its totals fails the read
+// at once, with nothing written (ErrNoModelTotals). A shim built before the read forwards the
+// frame to OMP, whose unknown-command answer is a refusal.
 func (c *Conn) ModelTotals(ctx context.Context) (runtime.LaunchTotals, error) {
 	if !c.modelTotals {
 		return runtime.LaunchTotals{}, fmt.Errorf("worker-stream: %s %s: %w", c.claim, shimwire.TypeModelTotals, ErrNoModelTotals)
@@ -788,14 +789,12 @@ func (c *Conn) finish() {
 	close(c.done)
 }
 
-// connWriter is the connection as the frame writer sees it. A write that fails closes the
+// connWriter is the connection as the frame writer sees it. Every write ends at the RPC timeout
+// at the latest, since a shim that stops reading must not hold the writer. A request's write also
+// ends with the request's context, whichever comes first. A write that fails closes the
 // connection: a line written in part leaves the peer mid-frame, and nothing after it could be
 // read as the frame it is. The frame writer makes exactly one write per frame, while the frame
 // holds the writer's slot, so the deadline set here is that frame's alone.
-//
-// A request's frame is written by WriteContext, which the request's context bounds. Any other
-// frame is written by Write, which the RPC timeout bounds, since a shim that stops reading must
-// not hold the writer forever.
 type connWriter struct {
 	nc      net.Conn
 	timeout time.Duration
@@ -806,20 +805,20 @@ var _ shimwire.ContextWriter = connWriter{}
 // aLongTimeAgo is a write deadline already past. Setting it ends a write that waits on the peer.
 var aLongTimeAgo = time.Unix(1, 0)
 
-// WriteContext writes p within ctx. It clears the deadline an earlier Write set. While p's own
-// bytes are written, a cut is armed on ctx, which sets a deadline already past and so ends the
+// WriteContext writes p within the RPC timeout and within ctx, whichever ends first. While p's own
+// bytes are written, a cut is armed on ctx. The cut sets a deadline already past, which ends the
 // blocked write. A cut write returns ctx's cause and closes the connection, as any failed write
-// does. A cut that fires after the write returned is waited for, and its deadline cleared, before
-// the next frame can write. A context that can never end arms no cut, so its write is Write.
+// does. A cut that fires after the write returned is waited for, so its deadline is set before the
+// next frame sets its own. A context that can never end arms no cut.
 func (w connWriter) WriteContext(ctx context.Context, p []byte) (int, error) {
-	if ctx.Done() == nil {
-		return w.Write(p)
-	}
 	if ctx.Err() != nil {
 		return 0, context.Cause(ctx)
 	}
-	if err := w.nc.SetWriteDeadline(time.Time{}); err != nil {
+	if err := w.nc.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrClosed, err)
+	}
+	if ctx.Done() == nil {
+		return w.closeOnError(w.nc.Write(p))
 	}
 	cutDone := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
@@ -827,30 +826,24 @@ func (w connWriter) WriteContext(ctx context.Context, p []byte) (int, error) {
 		_ = w.nc.SetWriteDeadline(aLongTimeAgo)
 	})
 	n, err := w.nc.Write(p)
-	if cut := !stop(); cut {
+	if !stop() {
 		<-cutDone
 		if err != nil {
 			w.nc.Close()
 			return n, fmt.Errorf("%w: the write was cut: %w", ErrClosed, context.Cause(ctx))
 		}
-		// The frame went whole before the cut, and the cut's deadline must not end the next
-		// frame's write. A connection that cannot clear it is closed, and the next write says so.
-		_ = w.nc.SetWriteDeadline(time.Time{})
-		return n, nil
 	}
-	if err != nil {
-		w.nc.Close()
-		return n, fmt.Errorf("%w: %w", ErrClosed, err)
-	}
-	return n, nil
+	return w.closeOnError(n, err)
 }
 
 // Write writes p within the RPC timeout.
 func (w connWriter) Write(p []byte) (int, error) {
-	if err := w.nc.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
-		return 0, fmt.Errorf("%w: %w", ErrClosed, err)
-	}
-	n, err := w.nc.Write(p)
+	return w.WriteContext(context.Background(), p)
+}
+
+// closeOnError closes the connection after a write that failed, since the peer may hold part of a
+// frame.
+func (w connWriter) closeOnError(n int, err error) (int, error) {
 	if err != nil {
 		w.nc.Close()
 		return n, fmt.Errorf("%w: %w", ErrClosed, err)

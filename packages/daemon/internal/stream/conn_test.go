@@ -8,9 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1067,7 +1069,7 @@ func awaitReturn(t *testing.T, result <-chan error, failure string) error {
 	}
 }
 
-// The shim counts its launch's calls by model, and the daemon reads them with a round trip that the
+// The shim counts its launch's calls by model. The daemon reads them with a round trip that the
 // shim answers itself, so no negotiation goes first. The answer names the launch by the generation
 // that its hello was registered for. An answer that is not valid is an error, never totals.
 func TestAModelTotalsReadAnswersTheShimsTotals(t *testing.T) {
@@ -1186,10 +1188,10 @@ func TestARefusalOfTheReadIsARefusedError(t *testing.T) {
 	}
 }
 
-// pipeConn is a connection over one end of a net.Pipe, with an RPC timeout of an hour, whose shim
-// said that it counts its calls. A pipe holds no byte: each write waits until the other end reads
-// it. So a test knows where a send waits, whatever the host's socket buffers.
-func pipeConn(t *testing.T) (*Conn, net.Conn) {
+// pipeConn is a connection over one end of a net.Pipe, with the RPC timeout given, whose shim said
+// that it counts its calls. A pipe holds no byte: each write waits until the other end reads it. So
+// a test knows where a send waits, whatever the host's socket buffers.
+func pipeConn(t *testing.T, rpcTimeout time.Duration) (*Conn, net.Conn) {
 	t.Helper()
 	daemonEnd, shimEnd := net.Pipe()
 	events := newEventQueue()
@@ -1198,9 +1200,26 @@ func pipeConn(t *testing.T) (*Conn, net.Conn) {
 		shimEnd.Close()
 		events.close()
 	})
-	conn := newConn(daemonEnd, testClaim, time.Hour, slog.New(&logRecorder{}), events)
+	conn := newConn(daemonEnd, testClaim, rpcTimeout, slog.New(&logRecorder{}), events)
 	conn.modelTotals = true
 	return conn, shimEnd
+}
+
+// doneWatch is a context that says when its Done is first asked for. A read with no bound of its
+// own first asks for it as it starts to wait for the connection's writer.
+type doneWatch struct {
+	context.Context
+	asked chan struct{}
+	once  sync.Once
+}
+
+func newDoneWatch(ctx context.Context) *doneWatch {
+	return &doneWatch{Context: ctx, asked: make(chan struct{})}
+}
+
+func (c *doneWatch) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.asked) })
+	return c.Context.Done()
 }
 
 // A read of the totals is bounded by its caller's context alone, and that bound covers its whole
@@ -1208,7 +1227,7 @@ func pipeConn(t *testing.T) (*Conn, net.Conn) {
 // drain, ends with its context. It does not wait for the RPC timeout of the write.
 func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 	t.Run("another frame holds the writer", func(t *testing.T) {
-		conn, shimEnd := pipeConn(t)
+		conn, shimEnd := pipeConn(t, time.Hour)
 		prompt := shimwire.Prompt{ID: "delivery-1.a", DeliveryID: "delivery-1", Message: "verify #41"}
 		written := async(func() error { return conn.write(prompt) })
 		// One byte read: the prompt's write has begun, holds the writer and waits for the rest.
@@ -1218,7 +1237,15 @@ func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 			t.Fatalf("read the prompt's first byte: %v", err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		result, _ := readModelTotals(ctx, conn)
+		waiting := newDoneWatch(ctx)
+		result, _ := readModelTotals(waiting, conn)
+		// The context is ended only once the read waits on it for the writer, so no check made
+		// before the wait can end the read in its place.
+		select {
+		case <-waiting.asked:
+		case <-time.After(wait):
+			t.Fatal("the read did not wait on its context while the prompt held the writer")
+		}
 		cancel()
 		err := awaitReturn(t, result, "the read did not return after its context ended")
 		if !errors.Is(err, context.Canceled) {
@@ -1250,7 +1277,7 @@ func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 		}
 	})
 	t.Run("its own write is blocked", func(t *testing.T) {
-		conn, shimEnd := pipeConn(t)
+		conn, shimEnd := pipeConn(t, time.Hour)
 		ctx, cancel := context.WithCancel(context.Background())
 		result, _ := readModelTotals(ctx, conn)
 		// One byte read: the read's own write has begun and waits for the rest.
@@ -1277,9 +1304,50 @@ func TestAModelTotalsReadEndsWithItsContextWhileItsSendIsBlocked(t *testing.T) {
 	})
 }
 
-// The read of the totals is bounded by its caller's context, not by the RPC timeout. A request
-// bounded by the RPC timeout, started after the read went out, runs out first. The read still
-// takes the shim's answer that comes after.
+// A frame written outside a request, such as the shutdown, has no context to end its write. A shim
+// that reads nothing still cannot hold it: the RPC timeout ends the write, and the connection
+// closes.
+func TestAFrameWrittenOutsideARequestEndsAtTheRPCTimeout(t *testing.T) {
+	conn, shimEnd := pipeConn(t, 50*time.Millisecond)
+	err := awaitReturn(t, async(func() error { return conn.Shutdown(context.Background()) }),
+		"the shutdown's write did not end at the RPC timeout")
+	if !isClosed(err) || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Shutdown to a shim that reads nothing = %v, want ErrClosed for the write's deadline", err)
+	}
+	if err := awaitReturn(t, async(func() error { _, err := io.ReadAll(shimEnd); return err }),
+		"the connection stayed open after its write ran out"); err != nil {
+		t.Fatalf("read after the shutdown's write ran out: %v", err)
+	}
+}
+
+// A request with a long bound, such as a compaction, still writes within the RPC timeout. A shim
+// that stops reading mid-frame cannot hold the writer for the whole bound. The write ends, the
+// connection closes, and a shutdown waiting behind it returns.
+func TestALongRequestsBlockedWriteEndsAtTheRPCTimeout(t *testing.T) {
+	conn, shimEnd := pipeConn(t, 50*time.Millisecond)
+	conn.negotiated = true
+	compact := async(func() error {
+		return conn.Compact(context.Background(), "Write the summary as text.", time.Hour)
+	})
+	// One byte read: the compaction's write has begun, holds the writer and waits for the rest.
+	first := make([]byte, 1)
+	if err := awaitReturn(t, async(func() error { _, err := io.ReadFull(shimEnd, first); return err }),
+		"the compaction's write did not begin"); err != nil {
+		t.Fatalf("read the compaction's first byte: %v", err)
+	}
+	shutdown := async(func() error { return conn.Shutdown(context.Background()) })
+	err := awaitReturn(t, compact, "the compaction's write did not end at the RPC timeout")
+	if !isClosed(err) || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Compact blocked mid-write = %v, want ErrClosed for the write's deadline", err)
+	}
+	if err := awaitReturn(t, shutdown, "the shutdown did not return once the compaction's write ended"); !isClosed(err) {
+		t.Fatalf("Shutdown behind the ended write = %v, want ErrClosed", err)
+	}
+}
+
+// The wait for the totals' answer is bounded by its caller's context, not by the RPC timeout. A
+// request bounded by the RPC timeout, started after the read went out, runs out first. The read
+// still takes the shim's answer that comes after.
 func TestAModelTotalsReadIsNotEndedByTheRPCTimeout(t *testing.T) {
 	h := startListener(t, harnessOptions{rpcTimeout: 50 * time.Millisecond})
 	p := h.connectCounting()
