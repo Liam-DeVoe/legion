@@ -3655,7 +3655,7 @@ package api
 // 233 by #4173, #4180, #4182, #4193 and #4932, 234 by #4065, 235 by #5204, 236 by #4984, 237 by
 // #5168 and #5169, 238 by #5285, 239 by #4592, 241 by #4771 and #5307, 242 by #4596 and 243 by
 // #5349, with 244 declared by #3831), and 240 by none, so this entry moved to 240, the lowest
-// number above main's 228 that no other open pull request declares. The readings behind this
+// number above main's 228 that no other open pull request declared then. The readings behind this
 // change's earlier numbers are in its implement handoffs on dispatch://INFRA-3136. The last
 // number of answers.go's SupportedContracts was `intakeGiveUpsContract`, after
 // `api.assignmentPlanContract`, until this entry added `api.repositoryCorrectionContract` after

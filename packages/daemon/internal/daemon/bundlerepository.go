@@ -104,7 +104,7 @@ func tellBundleRepositoryRefused(st *store.Store, project string, same func(save
 			"head", bundle.Head, "saved", bundle.At, "release", bundle.Release)
 		if err := write(ctx, issue, bundleRepositoryMessage(issue, podRepo, bundle)); err != nil {
 			if ctx.Err() == nil {
-				log.Error("supervise: write on the issue that its saved workspace bundle is refused for its repository; the work is kept in workspace_bundles_refused and nothing tells the issue again",
+				log.Error("supervise: write on the issue that its saved workspace bundle is refused for its repository: the write failed or did not learn whether it committed; the work is kept in workspace_bundles_refused, and nothing writes this message again",
 					"error", err)
 			}
 			return bundle, outcome, nil

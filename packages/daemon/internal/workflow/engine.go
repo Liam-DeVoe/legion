@@ -770,7 +770,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
+	if !issue.Outdates(record.EventSeq, fact.Seq) {
 		if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 			return false, err
 		}

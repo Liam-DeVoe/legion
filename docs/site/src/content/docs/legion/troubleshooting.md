@@ -527,6 +527,12 @@ JSON log names the issue and the root on each of these lines but one, which the 
   approval replaced. The line names the approved version. The same rule ends a changes request
   queued for a tree's own architect, with `outbox changes request finished without publishing:
   the person's approval followed it`, the one line here that names the issue and not the root.
+- `outbox parked decision not relayed: the gate no longer holds the approval it reports`: the
+  decision is an approval, and the gate holds it no more: a later changes request cleared it, or
+  another document was registered on its step. The line names the approval's version.
+- `outbox parked decision not relayed: a newer changes request of its document replaced it`: a
+  later changes request of the same document is kept under the same reference, so the controller
+  is told that one and not this one. The line names the reference and the version.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
