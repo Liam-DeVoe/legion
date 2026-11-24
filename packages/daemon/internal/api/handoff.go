@@ -336,8 +336,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
-	// Whether the role works the phase the issue stands in was read once above (works: at step, the
-	// role of the running step, so a role the deployment defines works only its own step).
+	// Whether the role works the phase the issue stands in was read once above (works, by
+	// record.Issue.RoleAt: at a step or a retro the owner does, no worker's role works it).
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads. The row is the run

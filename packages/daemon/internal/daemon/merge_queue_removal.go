@@ -157,14 +157,15 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	return err
 }
 
-// heldMessage is one message a row delivers to a role of its issue and holds until a session of
-// that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
-// message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
-// published, the attributes of the row's log lines, and the line the delivery logs. holds, where it
-// is set, is what the message waits for once the role's session runs and before it is published:
-// the owner's slot holding the App of the role the message asks an act as (mergeForwardMessage's
-// ownerSlotActs). It answers nil once the message may be published, and a wait or an error that the
-// row answers.
+// heldMessage is one message a row delivers to a claim of its issue and holds until a session of
+// that claim takes it (deliverHeld): the issue, the token of the claim the message reaches, the
+// role the message names (a merge-forward message to the owner reaches the owner's claim, whatever
+// role it names), what names the message in the row's waits and errors ("the merge-queue removal
+// of LEGION-208"), the text published, the attributes of the row's log lines, and the line the
+// delivery logs. holds, where it is set, is what the message waits for once the claim's session
+// runs and before it is published, even while that session holds the role: the owner's slot
+// holding the App of the role the message asks an act as (mergeForwardMessage's ownerSlotActs).
+// It answers nil once the message may be published, and a wait or an error that the row answers.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -188,14 +189,14 @@ type heldDelivery struct {
 	recipient string
 }
 
-// deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
-// the row until a session of that role takes it: the delivery a merge-queue removal and a
-// merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each has read what
-// ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops nothing. A
-// released role is woken (wakeForDelivery), and the row waits on its backoff until the woken
-// session holds the role, or, while the wake pacing holds that resume, for its turn, reading the
-// claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener answers
-// that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
+// deliverHeld publishes m's message to the Envoy topic of m's claim (m.token), and to nothing
+// else, and holds the row until a session of that claim takes it: the delivery a merge-queue
+// removal and a merge-forward message share (mergeQueueRemoval, mergeForwardMessage), once each
+// has read what ends its row on its own terms. It stops nothing it reaches, as a hook prompt stops
+// nothing. A released role is woken (wakeForDelivery), and the row waits on its backoff until the
+// woken session holds the role, or, while the wake pacing holds that resume, for its turn, reading
+// the claim again at most parkedWakeBound apart (parkedWait), as it waits while the listener
+// answers that nobody holds the role (notify.ErrNoHolder) or that its holder is unresponsive
 // (notify.ErrHolderUnresponsive). A role with no claim yet, its start still owed, is no end
 // either: the row waits for it.
 //
@@ -204,13 +205,14 @@ type heldDelivery struct {
 // whether its row waits for the claim's next start or ends. While the root's design gate is closed
 // (designGateClosed) a released role is neither woken nor told, and the row waits for the gate to
 // open: a role the gate holds may not know the gate closed, and woken by this message it would
-// work against the gate. A role whose session holds it is told at once, gate or none, and
-// m.delivered is logged; the publish answers the session the listener forwarded it to
-// (publishTo), which it reports beside the claim read before the publish. The three other answers
-// of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a holder
-// that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery
-// mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// work against the gate. A role whose session holds it is told, gate or none, once m.holds, where
+// it is set, answers nil: until then the row waits, though the session holds the role. Once the
+// message is published, m.delivered is logged; the publish answers the session the listener
+// forwarded it to (publishTo), which it reports beside the claim read before the publish. The
+// three other answers of the confirmed publish route keep the ordinary retry, as they do for a
+// hook prompt: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
+// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
+// grant denies (notify.ErrPublishDenied).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) (heldDelivery, error) {
 	held := r.supervisedClaim(m.token)
 	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {

@@ -157,8 +157,10 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
 // a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
 // checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
-// refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
-// none.
+// refused as a hook's own role: the daemon's own wake to an architect is a notice it writes
+// itself. A Legion role of a step that the hook names can still be the owner's work: where the
+// task's step that does that role's work has the key owner (`tester:owner`, say), the hook's
+// prompt for that role reaches the owner's architect claim (the workflow's workAgent).
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	key := field + ".roles"
 	if value == nil {
