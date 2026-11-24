@@ -11,10 +11,11 @@ body: |-
     kept on the monotonic clock, so a step of the system clock does not move it. A login whose code
     lapses no later than its first poll, the broker's interval on, or had already lapsed, is
     refused before any code is shown, naming the broker's interval and its codes' lifetime, or the
-    hour where that ends the code first, and what must change at the broker; the helper used to
-    wait the code out and record it `expired`. A login whose code lapses after polls the broker did
-    not answer or answered with an outage is still `expired`, and `login-status` now carries
-    `login_reason`, which says so and how many; `agent-secrets machine login` and
+    hour where that ends the code first, and what must change at the broker, or, where the
+    answer's round trip took what the broker's numbers left, that a faster answer would do; the
+    helper used to wait the code out and record it `expired`. A login whose code lapses after polls
+    the broker did not answer or answered with an outage is still `expired`, and `login-status` now
+    carries `login_reason`, which says so and how many; `agent-secrets machine login` and
     `machine login-status` print it. Before, the helper polled again at the same interval after an
     outage, ignored `Retry-After`, and lost a `slow_down`'s 5 s after any other answer, and it
     polled a code that names no lifetime until someone decided it.

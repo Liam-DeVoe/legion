@@ -1210,11 +1210,11 @@ command's own choice: it takes a sticky directory, which OpenSSH refuses, and it
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
 the broker refuses the login, the person denies it, its code expires, the broker answers a code
 that would lapse before its first poll (refused before the code is printed, naming the broker's
-interval and its codes' lifetime, or the hour this machine polls a code at most), or the broker
-answers a poll with any other 4xx, with another OAuth error or without one (a proxy's page, a bare
-challenge), naming its status. The status decides first (`oauth-refusal.ts` in
-`@legion/cipher-client`): a poll the broker did not answer, a 408, its 429 and a 5xx are polled
-again, whatever OAuth error they name, and only in another
+interval and its codes' lifetime, or the hour this machine polls a code at most, and what must
+change at the broker), or the broker answers a poll with any other 4xx, with another OAuth error
+or without one (a proxy's page, a bare challenge), naming its status. The status decides first
+(`oauth-refusal.ts` in `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429
+and a 5xx are polled again, whatever OAuth error they name, and only in another
 4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
 `expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
 again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
