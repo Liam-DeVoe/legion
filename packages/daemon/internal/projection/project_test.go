@@ -111,6 +111,11 @@ func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []st
 	return requests, nil
 }
 
+// OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
+// intake_giveups_test.go's, on PostgreSQL.
+func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
+	return record.IntakeGiveUps{}, nil
+}
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
 }

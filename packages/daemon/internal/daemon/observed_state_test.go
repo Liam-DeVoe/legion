@@ -304,9 +304,11 @@ func (r *observedRig) readOnly(t *testing.T, read func(ctx context.Context, tx p
 // issue what that issue's own read answers it, on a store holding an issue in every phase, an
 // issue for every word of admission.held, and phases rows of several roles: AllPhases beside
 // Phases, row for row, in order and in each column AllPhases reads (listedPhases), PullRequestsOf
-// beside PullRequest and Gates beside GatesOf. An issue with no row is absent from the bulk answer,
-// which reads as the empty answer its own read gives. The seed is held to its own claim first, so
-// the comparison runs over what it says.
+// beside PullRequest but for what each pull request remembers of its settled heads, which
+// PullRequestsOf loads none of and the state shows none of (listedPullRequest), and Gates beside
+// GatesOf. An issue with no row is absent from the bulk answer, which reads as the empty answer its
+// own read gives. The seed is held to its own claim first, so the comparison runs over what it
+// says.
 func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 	r := newObservedRig(t)
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
@@ -378,7 +380,7 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 				if recorded {
 					t.Errorf("%s: PullRequestsOf answers %#v, PullRequest answers none", key, bulkPR)
 				}
-			} else if withPullRequests++; !recorded || !reflect.DeepEqual(bulkPR, *pr) {
+			} else if withPullRequests++; !recorded || listedPullRequest(t, bulkPR) != listedPullRequest(t, *pr) {
 				t.Errorf("%s: PullRequestsOf answers %#v (%t), PullRequest answers %#v", key, bulkPR, recorded, *pr)
 			}
 
@@ -404,6 +406,19 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 			t.Fatalf("the seed compared %d issues with phases rows, %d with a pull request and %d with gates, want 6 or more, 3 and 7", withRows, withPullRequests, withGates)
 		}
 	})
+}
+
+// listedPullRequest is pr as the state reads it, as JSON: without SettledHeads, which
+// PullRequestsOf loads none of and the state shows none of (HeadRun.Settled is never JSON), and
+// without the unexported mark of the read that made it, which JSON leaves out.
+func listedPullRequest(t *testing.T, pr record.PullRequest) string {
+	t.Helper()
+	pr.SettledHeads = nil
+	encoded, err := json.Marshal(pr)
+	if err != nil {
+		t.Fatalf("encode the pull request of %s: %v", pr.Issue, err)
+	}
+	return string(encoded)
 }
 
 // listedPhases is rows with only the columns AllPhases reads (record.Postgres.AllPhases): the

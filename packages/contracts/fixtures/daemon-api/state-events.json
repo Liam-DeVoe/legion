@@ -325,7 +325,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -679,7 +683,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -1039,7 +1047,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -1399,7 +1411,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -1759,7 +1775,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -2124,7 +2144,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -2507,7 +2531,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -2890,7 +2918,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -3265,7 +3297,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -3653,7 +3689,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     },
     {
@@ -4042,7 +4082,11 @@
             }
           ]
         },
-        "consumers": []
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
       }
     }
   ]
