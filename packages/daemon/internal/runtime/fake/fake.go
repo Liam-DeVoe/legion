@@ -151,6 +151,9 @@ type Runtime struct {
 	replaced map[string]string
 	// built counts the pods launches built in the place of replaced ones (buildIn).
 	built int
+	// sandboxGone is every Sandbox uid whose delete the API server has confirmed
+	// (ScriptSandboxGone): an act that takes the volume such a Sandbox owned is made.
+	sandboxGone map[string]bool
 	// turn is the pods' launch turn, which the Sandbox runtime takes per pod (lockPod): a launch
 	// reads and replaces the pod it goes into under it (launchInto), and a replacement by issue
 	// asks its last word and replaces under it (ReplaceIssuePod), so no two of them interleave.
@@ -176,6 +179,7 @@ func NewRuntime() *Runtime {
 		// suspendedOver and took start empty: no replacement has landed on any pod.
 		suspendedOver: map[string]bool{},
 		took:          map[string]bool{},
+		sandboxGone:   map[string]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -418,6 +422,15 @@ func (r *Runtime) ScriptSuspendedOver(pod string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.suspendedOver[pod] = true
+}
+
+// ScriptSandboxGone has the issue's Sandbox of uid gone, as the Sandbox runtime finds it once the
+// API server confirmed its delete, and the kept volume it owned with it: an act that takes that
+// volume (runtime.TakesVolume) is made from then on.
+func (r *Runtime) ScriptSandboxGone(uid string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sandboxGone[uid] = true
 }
 
 // HoldReplacePod makes every later ReplacePod run hold before it asks whether the replacement is

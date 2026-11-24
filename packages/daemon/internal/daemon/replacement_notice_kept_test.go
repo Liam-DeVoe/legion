@@ -78,15 +78,20 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 		rig.wantToldOnce("once the store takes the row")
 	})
 
-	// A launch's own replacement of the issue's pod hands the daemon what it took once its
-	// suspension landed. The store refuses the notice; the launch is done, and the pod is gone.
+	// A launch's own replacement of the issue's pod records what it is about to take
+	// (recordLaunchTakes) and hands the daemon what it took once its suspension landed
+	// (tellLaunchTook). The store refuses the notice; the launch is done, and the pod is gone.
 	t.Run("a_launch's_own_replacement", func(t *testing.T) {
 		t.Parallel()
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 		lift := rig.refuseWorkspaceTaken()
-		rig.s.tellLaunchTook(rig.ctx, runtime.TakenPod{Operation: "launch-op-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+		taken := runtime.TakenPod{Operation: "launch-op-1", Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
 			Why:   "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod",
-			Takes: runtime.TakesPod, Target: podUpdatePod, Work: roundUnpushed})
+			Takes: runtime.TakesPod, Target: podUpdatePod, Work: roundUnpushed}
+		if err := rig.s.recordLaunchTakes(rig.ctx, taken); err != nil {
+			t.Fatalf("record what the launch takes: %v", err)
+		}
+		rig.s.tellLaunchTook(rig.ctx, taken)
 		if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
 			t.Fatalf("the store refused every workspace-taken notice, yet the outbox holds %+v", told)
 		}

@@ -16,6 +16,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -25,6 +26,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -194,51 +197,85 @@ func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *
 	noReadSent(t, g, workerToken, otherToken)
 }
 
+// suspendedKept is a rig whose issue Sandbox keeps a volume, Suspended by a round's ReplacePod over
+// the pod that loc records, with that pod gone. failInit has that pod show a failed workspace-init
+// first, so the suspension writes the reset mark (volumeFault).
+func suspendedKept(t *testing.T, failInit bool, options ...rigOption) (*rig, runtime.Locator) {
+	t.Helper()
+	g := newRig(t, nil, append([]rigOption{withOptions(keptVolumes(SandboxMicroVM))}, options...)...)
+	loc := g.spawn(workerSpec(t))
+	if failInit {
+		g.editPod(loc.Sandbox.Name, "the pod store to see the failed workspace-init", func(p *corev1.Pod) {
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
+				{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
+				{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
+			}}
+		})
+	}
+	if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
+		t.Fatalf("ReplacePod: %v", err)
+	}
+	g.eventually("the replaced pod to go", func() bool { return g.r.storedPod(loc.Sandbox.Name) == nil })
+	if s := g.sandbox(loc.Sandbox.Name); s == nil || s.mode() != modeSuspended || len(s.Spec.VolumeClaimTemplates) != 1 {
+		t.Fatalf("after ReplacePod the issue's Sandbox is %+v, want it Suspended with its kept volume", s)
+	}
+	return g, loc
+}
+
+// relaunchKept is the tester's Resume from loc through r, as the death path's relaunch makes it.
+func relaunchKept(g *rig, r *Runtime, loc runtime.Locator) (runtime.Locator, error) {
+	spec := workerSpec(g.t)
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	g.launcher(spec.Claim)
+	return r.Resume(g.ctx, &loc, spec)
+}
+
+// wantVolumeTaken holds the runtime to having handed the daemon one replacement that deletes the
+// issue's Sandbox of uid sandbox and the kept volume it owns (runtime.TakesVolume, its target the
+// Sandbox's uid), naming no pod, since the Sandbox ran none of its own (INFRA-341's reviewer's
+// minor point 4), with why the launch made it and why no read could be made, which names because.
+func (l *tookLaunches) wantVolumeTaken(t *testing.T, sandbox types.UID, because string) {
+	t.Helper()
+	taken := l.all()
+	if len(taken) != 1 {
+		t.Fatalf("the daemon was handed %d replacements %+v, want the one this launch made", len(taken), taken)
+	}
+	got := taken[0]
+	if got.Operation == "" || got.Takes != runtime.TakesVolume || got.Target != string(sandbox) || got.PodUID != "" || got.Issue != testTree || got.Why == "" ||
+		got.Err == nil || !strings.Contains(got.Err.Error(), because) || got.Work.HoldsWork() {
+		t.Fatalf("the daemon was handed %+v, want the delete of Sandbox %s and its volume, under an operation of its own, naming no pod, with why no read could be made (%q)", got, sandbox, because)
+	}
+}
+
 // A launch that deletes a kept volume its issue's Sandbox holds with no pod of its own (GPT-6.1
 // Sol's point 3 on #5285 at 0259f8af, INFRA-341's reviewer's point 5): the round's ReplacePod left
 // the Sandbox Suspended with its volume, and the next launch replaces the Sandbox, and the volume
 // with it, because the launch renders another disk shape or because the volume carries the reset
-// mark. No process runs to read the volume, so the daemon is handed that no read could be made,
-// naming the pod that ReplacePod displaced, the last pod known to have used the volume. The
-// control is a launch that keeps the volume: it deletes no disk and is handed nothing.
+// mark. No process runs to read the volume, so the daemon is handed that no read could be made, and
+// an act that takes the volume, whose target is the Sandbox's uid (GPT-6.1 Sol's point 4 on #5285
+// at fa9deb04). It names no pod: the Sandbox's record of a displaced pod may be of a pod of the
+// Sandbox it replaced, which never used this volume (INFRA-341's reviewer's minor point 4). Each
+// launch is held to completing, and the Sandbox to being a new one (INFRA-341's reviewer's minor
+// point 6, GPT-6.1 Sol's non-blocking point on fa9deb04). The control is a launch that keeps the
+// volume: it completes in the same Sandbox, deletes no disk and is handed nothing.
 func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
-	// suspendedKept is a rig whose issue Sandbox keeps a volume, Suspended by a round's ReplacePod
-	// over the pod that loc records, with that pod gone. failInit has that pod show a failed
-	// workspace-init first, so the suspension writes the reset mark (volumeFault).
-	suspendedKept := func(t *testing.T, failInit bool, options ...rigOption) (*rig, runtime.Locator) {
+	newSandbox := func(t *testing.T, g *rig, loc runtime.Locator, old types.UID, err error) {
 		t.Helper()
-		g := newRig(t, nil, append([]rigOption{withOptions(keptVolumes(SandboxMicroVM))}, options...)...)
-		loc := g.spawn(workerSpec(t))
-		if failInit {
-			g.editPod(loc.Sandbox.Name, "the pod store to see the failed workspace-init", func(p *corev1.Pod) {
-				p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-					{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
-					{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
-				}}
-			})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
 		}
-		if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
-			t.Fatalf("ReplacePod: %v", err)
+		if s := g.sandbox(loc.Sandbox.Name); s == nil || s.UID == old {
+			t.Fatalf("after the launch the issue's Sandbox is %+v, want a new Sandbox in place of %s", s, old)
 		}
-		g.eventually("the replaced pod to go", func() bool { return g.r.storedPod(loc.Sandbox.Name) == nil })
-		if s := g.sandbox(loc.Sandbox.Name); s == nil || s.mode() != modeSuspended || len(s.Spec.VolumeClaimTemplates) != 1 {
-			t.Fatalf("after ReplacePod the issue's Sandbox is %+v, want it Suspended with its kept volume", s)
-		}
-		return g, loc
 	}
-	relaunch := func(g *rig, r *Runtime, loc runtime.Locator) {
-		spec := workerSpec(g.t)
-		spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
-		g.launcher(spec.Claim)
-		_, _ = r.Resume(g.ctx, &loc, spec)
-	}
-
 	t.Run("the launch keeps no volume now", func(t *testing.T) {
 		var took tookLaunches
 		g, loc := suspendedKept(t, false, withWorkspaceRead(oneCommitRead))
+		old := g.sandbox(loc.Sandbox.Name).UID
 		r2 := secondRuntime(t, g, func(o *Options) { o.LaunchTook = took.record })()
-		relaunch(g, r2, loc)
-		took.wantUnread(t, loc.Sandbox.PodUID, "no live pod")
+		_, err := relaunchKept(g, r2, loc)
+		newSandbox(t, g, loc, old, err)
+		took.wantVolumeTaken(t, old, "no live pod")
 		noReadSent(t, g, workerToken)
 	})
 	t.Run("the volume carries the reset mark", func(t *testing.T) {
@@ -247,18 +284,79 @@ func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
 		if mark := g.sandbox(loc.Sandbox.Name).Annotations[volumeResetAnnotation]; mark == "" {
 			t.Fatal("the suspension wrote no reset mark, so this case proves nothing")
 		}
-		relaunch(g, g.r, loc)
-		took.wantUnread(t, loc.Sandbox.PodUID, "no live pod")
+		old := g.sandbox(loc.Sandbox.Name).UID
+		_, err := relaunchKept(g, g.r, loc)
+		newSandbox(t, g, loc, old, err)
+		took.wantVolumeTaken(t, old, "no live pod")
 		noReadSent(t, g, workerToken)
 	})
 	t.Run("control: the launch keeps the volume", func(t *testing.T) {
 		var took tookLaunches
 		g, loc := suspendedKept(t, false, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
-		relaunch(g, g.r, loc)
+		old := g.sandbox(loc.Sandbox.Name).UID
+		if _, err := relaunchKept(g, g.r, loc); err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if s := g.sandbox(loc.Sandbox.Name); s == nil || s.UID != old || len(s.Spec.VolumeClaimTemplates) != 1 {
+			t.Fatalf("after the launch the issue's Sandbox is %+v, want Sandbox %s with its kept volume", s, old)
+		}
 		if taken := took.all(); len(taken) != 0 {
 			t.Fatalf("the daemon was handed %+v, want nothing: the launch keeps the volume and its Sandbox", taken)
 		}
 	})
+}
+
+// GPT-6.1 Sol's point 4 on #5285 at fa9deb04 (INFRA-341's reviewer's point B): an act that takes a
+// kept volume (runtime.TakesVolume) is made only once the Sandbox of its target uid is gone. The
+// launch above that resets the volume records its act (Options.LaunchTakes) before it deletes the
+// Sandbox. Where it stops before the delete, as a daemon that stops there, and where the API server
+// refuses the delete, the Sandbox stands Suspended with its volume, and the act reads uncertain: the
+// suspension proves only that the pod was taken. Once the launch deletes the Sandbox, the act reads
+// made.
+func TestARecordedVolumeDeleteIsMadeOnlyOnceItsSandboxIsGone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stopAtRecord stops the launch at its record's hook (Options.LaunchTakes), as a daemon
+		// that stops there; refuseDelete has the API server refuse the Sandbox's delete.
+		stopAtRecord bool
+		refuseDelete bool
+		want         runtime.ActState
+	}{
+		{name: "the launch stops before it deletes the Sandbox", stopAtRecord: true, want: runtime.ActUncertain},
+		{name: "the API server refuses the Sandbox's delete", refuseDelete: true, want: runtime.ActUncertain},
+		{name: "the launch deletes the Sandbox", want: runtime.ActMade},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var takes tookLaunches
+			record := func(ctx context.Context, taken runtime.TakenPod) error {
+				takes.record(ctx, taken)
+				if tc.stopAtRecord {
+					return errors.New("the daemon stops")
+				}
+				return nil
+			}
+			g, loc := suspendedKept(t, true, withOptions(func(o *Options) { o.LaunchTakes = record }))
+			old := g.sandbox(loc.Sandbox.Name).UID
+			if tc.refuseDelete {
+				g.dyn.PrependReactor("delete", "sandboxes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+					return true, nil, errors.New("the api server refuses the delete")
+				})
+			}
+			_, err := relaunchKept(g, g.r, loc)
+			if stopped := tc.stopAtRecord || tc.refuseDelete; stopped != (err != nil) {
+				t.Fatalf("Resume = %v, want it to fail=%t", err, stopped)
+			}
+			takes.wantVolumeTaken(t, old, "no live pod")
+			state, decided := runtime.ActUncertain, false
+			if err := g.r.ReadAct(g.ctx, testTree, runtime.RecordedAct{Takes: takes.all()[0].Takes, Target: takes.all()[0].Target},
+				func(_ context.Context, read runtime.ActState) error { state, decided = read, true; return nil }); err != nil || !decided {
+				t.Fatalf("ReadAct = %v, decided=%t; want the act read", err, decided)
+			}
+			if state != tc.want {
+				t.Fatalf("the act that deletes Sandbox %s reads %d, want %d", old, state, tc.want)
+			}
+		})
+	}
 }
 
 // The death path's Resume over a Failed issue pod its Sandbox still runs: the pod is not live, so
