@@ -26,6 +26,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"go.uber.org/goleak"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -65,14 +66,18 @@ import (
 const apiTestParallelism = 8
 
 // TestMain sets the package's default -parallel (apiTestParallelism), runs the package's tests
-// through storetest.Main, which drops their databases, and then fails the run where a goroutine a
-// test started outlives it (goleak): the agent's loop, which the background-run checks of this
-// package run in the test process, among them.
+// through the Dispatch harness's Main, which waits for their databases to drop and drops their
+// templates, inside the broker harness's Run, which then drops the database brokerstoretest.URL
+// made the contract rows' broker schemas in, and then fails the run where a goroutine a test
+// started outlives it (goleak): the agent's loop, which the background-run checks of this package
+// run in the test process, among them.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	goleak.VerifyTestMain(testRun(func() int { return storetest.Main(m) }))
+	goleak.VerifyTestMain(testRun(func() int {
+		return brokerstoretest.Run(func() int { return storetest.Main(m) })
+	}))
 }
 
 // testRun is a run of the package's tests as goleak.VerifyTestMain makes one.
@@ -231,6 +236,12 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
+	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
+	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
+	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
+	// answer into an unanswered lookup.
+	mentionLookupBound func(target string) time.Duration
 	// relatedBound is the related-item check's meaning allowance and its wait for the
 	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
 	// zero keeps production's. A case whose verdict is what the check's meaning stage found
@@ -428,6 +439,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'

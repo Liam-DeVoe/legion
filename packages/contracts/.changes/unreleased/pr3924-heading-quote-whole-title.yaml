@@ -1,4 +1,0 @@
-kind: Changed
-body: |-
-  `dispatch_doc_edit`'s description says a find that opens with `# ` matches a heading at any
-  level whose whole text is the rest, as the server now matches it.

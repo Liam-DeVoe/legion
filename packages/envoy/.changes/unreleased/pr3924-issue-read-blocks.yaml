@@ -1,7 +1,4 @@
 kind: Added
 body: |-
-  `GET /api/v1/issues/{key}` answers `blocks`, the keys of the issues whose `blocked_by` names the
-  issue, sorted, `[]` when none, so a reader of one issue can say what waits on it. The listing,
-  `GET /api/v1/issues`, carries no `blocks`. The command bar's agent is told that an issue's read
-  lists the issues it blocks beside those that block it. The field is optional, so a client that
-  does not read it is unchanged.
+  The command bar's agent is told that an issue's read lists the issues it blocks beside those
+  that block it.

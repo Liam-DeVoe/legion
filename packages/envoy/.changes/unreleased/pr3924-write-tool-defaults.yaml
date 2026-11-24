@@ -4,5 +4,4 @@ body: |-
   `dispatch_doc_edit` naming an issue and no artifact edits the issue's spec,
   `dispatch_plan_approve` naming no artifact approves the issue's plan.md, and
   `dispatch_request_approval` naming an issue and no artifact asks for approval of the issue's
-  spec. `GET /api/v1/going/catalogue` serves each argument's bounds, `min` and `max`: a text's
-  length, a list's count of items, or a number's value.
+  spec.

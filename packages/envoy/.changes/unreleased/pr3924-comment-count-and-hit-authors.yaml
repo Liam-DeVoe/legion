@@ -1,5 +1,0 @@
-kind: Added
-body: |-
-  `GET /api/v1/issues/{key}` answers `comment_count`, how many comments the issue holds, and
-  leaves it out where there are none; `GET /api/v1/search` names the `author` of each comment,
-  message and ask hit. Both fields are optional, so a client that does not read them is unchanged.
