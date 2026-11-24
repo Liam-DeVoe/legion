@@ -370,6 +370,7 @@ daemon_go_tests:
   - 'packages/contracts/fixtures/classification/**'
   - 'packages/contracts/fixtures/daemon-api/*'
   - 'packages/contracts/fixtures/dispatch-public-url.json'
+  - 'packages/contracts/fixtures/dispatch-version-blocks/*'
   - 'packages/contracts/fixtures/github-envelopes/*'
   - 'packages/contracts/fixtures/project-tokens.json'
   # why: .github/ci-notes/ci.md#daemon_go_tests-pi-legions-agents-internalpromptsroles_testgo-stats-agentsnamemd
