@@ -106,6 +106,15 @@ run_build "$root"
 check "exits non-zero" "$([ "$status" -ne 0 ] && echo true || echo false)"
 check "packs no archive" "$(is "$(find "$root/assets" -type f 2>/dev/null | wc -l)" 0)"
 
+echo "case: the build stops at an empty legion list"
+root=$(fixture build-empty-list)
+printf '{\n  "legion": [],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_build "$root"
+check "exits non-zero" "$([ "$status" -ne 0 ] && echo true || echo false)"
+check "says so, as release-push.sh legion-targets does" \
+  "$(contains "$out" 'release-push.sh legion-targets: .github/go-release-targets.json lists no legion target')"
+check "packs no archive" "$(is "$(find "$root/assets" -type f 2>/dev/null | wc -l)" 0)"
+
 echo "case: the build stops at a target that is not <os>/<arch>"
 # go builds an empty GOOS or GOARCH for the host's own, so the empty target would pack a host
 # binary as legion--.tar.gz.
@@ -127,6 +136,14 @@ root=$(fixture targets-none)
 printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_mode "$root" targets
 check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
+
+echo "case: targets with an empty legion list"
+root=$(fixture targets-empty)
+printf '{\n  "legion": [],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_mode "$root" targets
+check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
+check "says so, as release-push.sh legion-targets does" \
+  "$(contains "$err" 'release-push.sh legion-targets: .github/go-release-targets.json lists no legion target')"
 
 echo "case: targets refuses a target that is not <os>/<arch>"
 root=$(fixture targets-padded)

@@ -687,6 +687,7 @@ release_push_test: &release_push_test
   - '.github/scripts/release-push.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/release-bump.sh'
+  - '.github/scripts/go-release-notices.sh'
   - '.github/workflows/release.yaml'
   - '.github/workflows/release-envoy-listener.yaml'
   - 'packages/pi-legion/.changie.yaml'

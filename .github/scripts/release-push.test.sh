@@ -24,8 +24,8 @@
 # directories with a checked build and refuses a bad one untouched; for
 # `release-push.sh handed`, which checks the version and the files a build job
 # hands a publish job and prints the release tag; for `release-push.sh
-# legion-targets`, the one read of the legion target list, and release.yaml's
-# legion archive check, which names the archives after it; for `release-push.sh
+# legion-targets`, with release.yaml's legion archive check and
+# go-release-notices.sh run over what it prints and refuses; for `release-push.sh
 # no-credential`, the build job's tripwire; for `release-push.sh fold-notes`,
 # `fold-check` and `fold-orphans`, the changelog fragments; and for
 # release.yaml's worker_image_release step, which needs the checkout this
@@ -1901,8 +1901,10 @@ legion_targets_run() {
 legion_targets_run '["linux/amd64", "darwin/arm64"]'
 check "the real shape: exits 0, printing each target on a line of its own in the list's order" \
   "$(is "$rc|$out|$err" $'0|linux/amd64\ndarwin/arm64|')"
+# The one message an empty list gets, at every caller.
+empty_list='::error file=.github/go-release-targets.json::release-push.sh legion-targets: .github/go-release-targets.json lists no legion target; refusing the list'
 legion_targets_run '[]'
-check "an empty list: exits 0 printing nothing" "$(is "$rc|$out|$err" '0||')"
+check "an empty list: exits 1 printing nothing, saying so" "$(is "$rc|$out|$err" "1||$empty_list")"
 # Each entry is named as JSON, so an empty one, a padded one and one holding a newline are seen.
 for entry in '""' '" darwin/arm64"' '"darwin/arm64 "' '"/arm64"' '"darwin/"' '"linux/amd64/v3"' \
   '"Linux/amd64"' '"linux/amd64\ndarwin/arm64"' '1' 'null' '["darwin/arm64"]'; do
@@ -1972,8 +1974,25 @@ archive_step_run '["linux/amd64", "", "darwin/arm64"]'
 check "an empty target: exits 1 naming it, with no output" \
   "$(is "$rc|$(contains "$out" 'release-push.sh legion-targets: the legion target "" is not <os>/<arch>')|$outputs" '1|true|')"
 archive_step_run '[]'
-check "no legion target: exits 1 saying so, with no output" \
-  "$(is "$rc|$(contains "$out" '^::error::\.github/go-release-targets\.json lists no legion target$')|$outputs" '1|true|')"
+check "no legion target: exits 1 with legion-targets' message, with no output" \
+  "$(is "$rc|$(contains "$out" "^$empty_list\$")|$outputs" '1|true|')"
+
+echo
+echo "Case: go-release-notices.sh reads its legion targets through legion-targets"
+# The script, and release-push.sh beside it, symlinked into a tree whose legion list is empty: it
+# stops with legion-targets' refusal before it writes a notice. (The notices themselves need Go
+# and the modules; lint's notices step writes them on every pull request the filter selects.)
+nf="$work/notices-empty"
+mkdir -p "$nf/.github/scripts"
+ln -s "$script_dir/go-release-notices.sh" "$nf/.github/scripts/go-release-notices.sh"
+ln -s "$release_push" "$nf/.github/scripts/release-push.sh"
+printf '{\n  "legion": [],\n  "envoy": []\n}\n' > "$nf/.github/go-release-targets.json"
+set +e
+out=$("$nf/.github/scripts/go-release-notices.sh" "$nf/notices" 2>&1)
+rc=$?
+set -e
+check "an empty legion list: exits 1 with legion-targets' message, writing no notice" \
+  "$(is "$rc|$(contains "$out" "^$empty_list\$")|$(find "$nf/notices" -type f 2>/dev/null | wc -l)" '1|true|0')"
 
 echo
 echo "Case: no-credential names a reachable credential and never shows it"
@@ -2547,4 +2566,4 @@ latest_read "err:ERROR: ghcr.io/example/repo/envoy:sha-1: not found"
 check "the missing-tag line of another reference is no answer about this one" \
   "$(is "$rc|$(contains "$out" '^no latest image$')" "1|false")"
 
-summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, legion-targets, no-credential, fold-notes, fold-check and fold-orphans, release.yaml's legion archive check and worker_image_release step, and the image read of release-envoy-listener.yaml's Determine latest step"
+summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, legion-targets, no-credential, fold-notes, fold-check and fold-orphans, release.yaml's legion archive check and worker_image_release step, go-release-notices.sh's legion read, and the image read of release-envoy-listener.yaml's Determine latest step"

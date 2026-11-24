@@ -219,8 +219,8 @@ echo "case: the version step reads the list as the check does not"
 # The check expands LEGION_VERSION_ARGS as the step that runs release-push.sh version legion-v
 # does: from the workflow's env, unquoted in bash, at the root, with the command alone in its
 # run:. A job or step env that sets the variable, a working directory or a shell other than bash
-# at the step, its job's defaults or the workflow's, another command in the step, an earlier step
-# that writes $GITHUB_ENV, and no such step or two make the release read another list.
+# at the step, its job's defaults or the workflow's, another command in the step, and no such step
+# or two make the release read another list.
 root=$(fixture job-env)
 version_job="${version_job/    runs-on: ubuntu-latest/    runs-on: ubuntu-latest
     env:
@@ -298,13 +298,56 @@ root=$(fixture step-comment)
 version_job=$(step_job '# a comment and a blank line are no commands' '' "$step_command") release "$root" "$covering"
 run_check "$root"
 check "a comment and a blank line beside the command: exits 0" "$(is "$status" 0)"
-root=$(fixture step-after-env-write)
-version_job="${version_job/    steps:/    steps:
-      - name: Set the list
-        run: echo 'LEGION_VERSION_ARGS=-- packages/' >> \"\$GITHUB_ENV\"}" release "$root" "$covering"
+
+echo "case: no step before the version step, and no env, changes the environment it reads the list in"
+# GitHub gives a later step the environment an earlier step writes to $GITHUB_ENV or $GITHUB_PATH,
+# by any name for them, and bash reads a startup file or its options from BASH_ENV, ENV, SHELLOPTS
+# and BASHOPTS. So a step with a run: before the version step is refused whatever it runs, and
+# each of those names is refused in the workflow's, the job's and the step's env.
+before_lines=(
+  "echo 'LEGION_VERSION_ARGS=-- packages/' >> \"\$GITHUB_ENV\""
+  "echo 'LEGION_VERSION_ARGS=-- packages/' >> \"\${GITHUB_ENV}\""
+  "echo 'LEGION_VERSION_ARGS=-- packages/' | tee -a \"\$GITHUB_ENV\""
+  "echo 'LEGION_VERSION_ARGS=-- packages/' >> \"\${{ github.env }}\""
+  "echo \"\$RUNNER_TEMP/bin\" >> \"\$GITHUB_PATH\""
+  "echo 'this writes nothing for a later step'"
+)
+for i in "${!before_lines[@]}"; do
+  root=$(fixture "before-$i")
+  version_job="${version_job/    steps:/    steps:
+      - name: Before $i
+        run: |
+          ${before_lines[$i]}}" release "$root" "$covering"
+  run_check "$root"
+  check "a step before it that runs ${before_lines[$i]}: exits 1" "$(is "$status" 1)"
+  check "names the step" "$(contains "$out" 'legion version step (job legion_build) comes after the step "Before '"$i"'", which runs a command')"
+done
+# env_at <root> <where> <name> <value>: release.yaml at <root> with <name>: <value> in the env of
+# <where>: the workflow, the job or the step.
+env_at() {
+  local file="$1/.github/workflows/release.yaml"
+  case $2 in
+    workflow) sed -i "s|^env:\$|env:\n  $3: $4|" "$file" ;;
+    job) sed -i "s|^    runs-on: ubuntu-latest\$|    runs-on: ubuntu-latest\n    env:\n      $3: $4|" "$file" ;;
+    step) sed -i "s|^        id: version\$|        id: version\n        env:\n          $3: $4|" "$file" ;;
+  esac
+}
+for row in "workflow BASH_ENV ./set-f.sh the workflow's env" "job BASH_ENV ./set-f.sh its job's env" \
+  "step BASH_ENV ./set-f.sh its env" "job ENV ./set-f.sh its job's env" \
+  "workflow SHELLOPTS noglob the workflow's env" "step BASHOPTS nullglob its env"; do
+  read -r where name value scope <<<"$row"
+  root=$(fixture "env-$where-$name")
+  env_at "$root" "$where" "$name" "$value"
+  run_check "$root"
+  check "$name in $scope: exits 1" "$(is "$status" 1)"
+  check "says so" "$(contains "$out" "legion version step (job legion_build) sets $name in $scope")"
+done
+root=$(fixture env-other)
+env_at "$root" workflow GOPROXY direct
+env_at "$root" job CGO_ENABLED 0
 run_check "$root"
-check "an earlier step that writes \$GITHUB_ENV: exits 1" "$(is "$status" 1)"
-check "names the step" "$(contains "$out" 'legion version step (job legion_build) comes after the step "Set the list", which writes \$GITHUB_ENV')"
+check "another name in the workflow's and the job's env: exits 0" "$(is "$status" 0)"
+
 root=$(fixture step-two)
 version_job="$version_job  legion_again:
     runs-on: ubuntu-latest
@@ -440,7 +483,7 @@ root=$(fixture no-targets)
 printf '{\n  "legion": [],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_check "$root"
 check "exits 1 with an empty legion list" "$(is "$status" 1)"
-check "says so" "$(contains "$out" 'go-release-targets.json lists no legion target, so the packages the legion binary links are unknown')"
+check "says so, as release-push.sh legion-targets does" "$(contains "$out" 'release-push.sh legion-targets: .github/go-release-targets.json lists no legion target')"
 
 root=$(fixture no-legion-key)
 printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
@@ -456,8 +499,7 @@ check "says it could not read it" "$(contains "$out" 'could not read the legion 
 
 echo "case: a target that is not <os>/<arch>"
 # go builds an empty GOOS or GOARCH for the host's own and refuses a padded one only when it
-# builds, so the list's one read, which the build and the release's publish job share, refuses
-# both, and lint with it, by name.
+# builds, so release-push.sh legion-targets refuses both, and lint with it, by name.
 root=$(fixture target-empty)
 printf '{\n  "legion": ["linux/amd64", ""],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_check "$root"
