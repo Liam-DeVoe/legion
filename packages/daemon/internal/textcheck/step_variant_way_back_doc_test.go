@@ -1,5 +1,10 @@
 package textcheck
 
+// internal/store's step_variant_way_back_test.go reads only the copy in its own directory, so it
+// has no line; this file holds that copy to the guide, in the text-check job.
+//ci:reads docs/kubernetes.md wayBackBlockOfTheGuide reads it under ../../../.. (shippedText) for TestTheStepVariantWayBackExtractIsTheGuidesBlock
+//ci:reads packages/daemon/internal/store/step_variant_way_back_extract.txt quotedBody reads it as ../store/step_variant_way_back_extract.txt (readExtract) for TestTheStepVariantWayBackExtractIsTheGuidesBlock, the committed copy it holds the guide's block to
+
 import "testing"
 
 // The way back of the release that names the variant on each step record stands in the guide,
