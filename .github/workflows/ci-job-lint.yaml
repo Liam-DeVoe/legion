@@ -221,8 +221,9 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
 
-      # After the restore above: it runs `go list -deps ./cmd/legion` in packages/daemon and holds
-      # release.yaml's LEGION_VERSION_ARGS to every package of this repository it prints, so a
+      # After the restore above: it runs `go list -deps ./cmd/legion` in packages/daemon for each
+      # target .github/go-release-targets.json lists for legion, and holds release.yaml's
+      # LEGION_VERSION_ARGS to every package of this repository those listings print, so a
       # package the legion binary comes to link is one a change to which releases a legion. A run
       # of it before the restore filled the module cache, and tar refused to unpack the entry over
       # each module file it had downloaded (Go makes them read-only), so the restore failed. Here,

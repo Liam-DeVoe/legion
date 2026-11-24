@@ -7,16 +7,20 @@
 # ../envoy is one a hand forgets: packages/envoy/programfile, the writer of every program file the
 # daemon runs, was linked for a whole pull request before anyone saw it missing.
 #
-# So this check runs that note's own command, `go list -deps ./cmd/legion` in packages/daemon, and
-# fails naming each package of this repository it prints whose directory no path of the list
-# covers, and each module of this repository it reaches whose go.mod or go.sum no path covers. A
-# path covers what git's pathspec would: itself, and everything below it when it names a
-# directory. `:(exclude)<path>` takes that path back out; any other pathspec magic is refused,
-# since the check would not read it as release-push.sh's git does.
+# So this check runs that note's own command, `go list -deps ./cmd/legion` in packages/daemon, for
+# each target .github/go-release-targets.json lists for legion, with the release build's
+# CGO_ENABLED=0, GOOS and GOARCH (release-build-legion.sh): a file a build constraint keeps to one
+# target brings in its imports in that target's binary alone. It fails naming each package of
+# this repository those listings print whose directory no path of the list covers, and each
+# module of this repository they reach whose go.mod or go.sum no path covers. A path covers what
+# git's pathspec would: itself, and everything below it when it names a directory.
+# `:(exclude)<path>` takes that path back out; any other pathspec magic is refused, since the
+# check would not read it as release-push.sh's git does.
 #
-# It fails, too, when `go list` fails, when release.yaml has no LEGION_VERSION_ARGS or no `--` in
-# it, and when `go list` printed no package of this repository: a check that compared nothing
-# would read the same as one that found nothing missing.
+# It fails, too, when `go list` fails for a target, when the target list names no legion target,
+# when release.yaml has no LEGION_VERSION_ARGS or no `--` in it, and when `go list` printed no
+# package of this repository: a check that compared nothing would read the same as one that found
+# nothing missing.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.sh
 # CI runs it in ci.yaml's lint job (after setup-go and the go-notices restore, which it must not
@@ -31,16 +35,32 @@ cd "$(dirname "$0")/../.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# Each package go list prints that is not of the standard library: its directory, a tab, and the
-# root directory of the module it belongs to.
-format='{{if not .Standard}}{{.Dir}}{{"\t"}}{{with .Module}}{{.Dir}}{{end}}{{"\n"}}{{end}}'
-if ! (cd packages/daemon && go list -deps -f "$format" ./cmd/legion) >"$work/listed" 2>"$work/errors"; then
-  echo "::error file=packages/daemon/cmd/legion::go list -deps ./cmd/legion failed in packages/daemon, so the packages the legion binary links are unknown:" >&2
+# The targets the release builds legion for, one GOOS/GOARCH a line.
+if ! jq -r '(.legion // [])[]' .github/go-release-targets.json >"$work/targets" 2>"$work/errors"; then
+  echo "::error file=.github/go-release-targets.json::could not read the legion targets of .github/go-release-targets.json, so the packages the legion binary links are unknown:" >&2
   cat "$work/errors" >&2
   exit 1
 fi
+if [ ! -s "$work/targets" ]; then
+  echo "::error file=.github/go-release-targets.json::.github/go-release-targets.json lists no legion target, so the packages the legion binary links are unknown" >&2
+  exit 1
+fi
 
-python3 - "$work/listed" <<'PY'
+# Each package go list prints that is not of the standard library: its directory, a tab, and the
+# root directory of the module it belongs to. Every target's listing goes to the one file.
+format='{{if not .Standard}}{{.Dir}}{{"\t"}}{{with .Module}}{{.Dir}}{{end}}{{"\n"}}{{end}}'
+: >"$work/listed"
+while read -r target; do
+  if ! (cd packages/daemon && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go list -deps -f "$format" ./cmd/legion) \
+    </dev/null >>"$work/listed" 2>"$work/errors"; then
+    echo "::error file=packages/daemon/cmd/legion::go list -deps ./cmd/legion failed in packages/daemon, so the packages the legion binary links are unknown (target $target):" >&2
+    cat "$work/errors" >&2
+    exit 1
+  fi
+done <"$work/targets"
+
+# The listing, and how many targets it covers.
+python3 - "$work/listed" "$(wc -l <"$work/targets")" <<'PY'
 import sys
 from pathlib import Path
 
@@ -48,6 +68,7 @@ import yaml
 
 RELEASE = Path(".github/workflows/release.yaml")
 ROOT = Path.cwd().resolve()
+TARGETS = int(sys.argv[2])
 
 
 def fatal(message: str) -> None:
@@ -122,6 +143,7 @@ if missing:
     )
 print(
     f"{RELEASE}'s LEGION_VERSION_ARGS covers all {len(packages)} packages of this repository that "
-    f"go list -deps ./cmd/legion prints, and the go.mod and go.sum of their {len(modules)} modules"
+    f"go list -deps ./cmd/legion prints for the {TARGETS} legion targets of .github/go-release-targets.json, "
+    f"and the go.mod and go.sum of their {len(modules)} modules"
 )
 PY
