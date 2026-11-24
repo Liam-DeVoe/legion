@@ -48,15 +48,16 @@ type Supersession struct {
 // (resumeTask), the decisions and the approval kept for an architect's start or catch-up
 // (KeptDecisionsTask, again at each send and each delivery; the kept approval through
 // StepApprovalStands), the controller's relay of a decision nobody in its tree hears (the daemon's
-// parkDecision, and again at a relayed changes request's publish, its controllerNotice) and the
-// news of an approved version at each send of the task that carries it (StepApprovalStands, which
-// the daemon's itemStands asks); the clear of a generation asks it too, before it deletes the
-// gates of the issues it clears, of each decision kept on them and each changes request the
-// outbox holds on them (Engine.ClearGeneration). It holds the guards that choose which of the two
-// rules is asked of a decision, listed below, and the rule for an approval itself, so a new step
-// kind or a change to how a decision is read is made here once. Which decisions a sender asks
-// about is the sender's: of the queued notices, record.ChangesRequest is the one rule for which
-// rows a reader asks again.
+// parkDecision, and again at a relayed changes request's publish, its controllerNotice; and the
+// relay of a person's approval whose handover a later change of the root's status refused,
+// Engine.refuseHandover) and the news of an approved version at each send of the task that carries
+// it (StepApprovalStands, which the daemon's itemStands asks); the clear of a generation asks it
+// too, before it deletes the gates of the issues it clears, of each decision kept on them and
+// each changes request the outbox holds on them (Engine.ClearGeneration). It holds the guards
+// that choose which of the two rules is asked of a decision, listed below, and the rule for an
+// approval itself, so a new step kind or a change to how a decision is read is made here once.
+// Which decisions a sender asks about is the sender's: of the queued notices,
+// record.ChangesRequest is the one rule for which rows a reader asks again.
 //
 // It answers nil while the decision stands, and otherwise what took its place (Supersession).
 // A decision of either kind stands at each of these guards, in the order they are asked, because

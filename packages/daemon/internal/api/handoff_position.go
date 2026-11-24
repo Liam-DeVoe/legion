@@ -52,6 +52,8 @@ func (p completionPosition) merged() bool {
 // handoffPosition reads key's position (completionPosition) for role, the completing role or the
 // role asking what it owes, whose phases row names the entry it was last raised to and whether it
 // has completed; an issue the workflow does not record is a position with no issue and no error.
+// The pull request is its row alone (record.Store.PullRequestRow): each route reads its head and
+// its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
@@ -86,7 +88,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 			}
 			task, counts = running.Task, running.Counts
 		}
-		pr, err := s.records.PullRequest(ctx, tx, key)
+		pr, err := s.records.PullRequestRow(ctx, tx, key)
 		if err != nil {
 			return err
 		}

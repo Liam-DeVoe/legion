@@ -76,11 +76,12 @@ import (
 // 20261119003157 (dispatch://INFRA-4374), dispatch://INFRA-175's design news (20261119203047),
 // cybermonklabs/legion#4573's 20261120012547 (dispatch://INFRA-3178), cybermonklabs/legion#4581's
 // 20261120042902 (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717
-// (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
-// 20261122212816, cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's
-// 20261123212127 (dispatch://INFRA-5463), so an upgrade of a database main migrated applies it
-// just before those twelve. It adds pull_requests.statuses at its default, the empty list, and it
-// touches no outbox_kind_check.
+// (dispatch://INFRA-4729), cybermonklabs/legion#4590's 20261120144241 (dispatch://INFRA-1575),
+// cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's 20261122212816,
+// cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's 20261123212127
+// (dispatch://INFRA-5463), so an upgrade of a database main migrated applies it just before those
+// thirteen. It adds pull_requests.statuses at its default, the empty list, and it touches no
+// outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -112,9 +113,10 @@ import (
 // cutover of the update ask's mark (20261117200337), dispatch://INFRA-3136's 20261118073048 and
 // 20261118172458, cybermonklabs/legion#4464's 20261119003157, dispatch://INFRA-175's design news
 // (20261119203047), cybermonklabs/legion#4573's 20261120012547, cybermonklabs/legion#4581's
-// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4903's
-// 20261121170714, dispatch://INFRA-3136's 20261122212816, cybermonklabs/legion#4930's
-// 20261123165139 and cybermonklabs/legion#5278's 20261123212127: it names every kind the
+// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4590's
+// 20261120144241, cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
+// 20261122212816, cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's
+// 20261123212127: it names every kind the
 // merge-queue list names and its own. The two kind lists above it are named here too: the step
 // record's (20261117000528, cybermonklabs/legion#4400) restates 20261116165926's kinds with
 // step_record, and the plan record's (20261117023932, cybermonklabs/legion#4488) restates those
@@ -138,36 +140,46 @@ import (
 // cybermonklabs/legion#4464's kind list with the conflict's second read and the merge forward
 // (20261119003157, dispatch://INFRA-4374) stands above every other version of this list but the
 // design news, cybermonklabs/legion#4573's 20261120012547, cybermonklabs/legion#4581's
-// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4903's
-// 20261121170714, dispatch://INFRA-3136's 20261122212816, cybermonklabs/legion#4930's
-// 20261123165139 and cybermonklabs/legion#5278's 20261123212127: it names every kind the
+// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4590's
+// 20261120144241, cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
+// 20261122212816, cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's
+// 20261123212127: it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list (20261119203047, dispatch://INFRA-175), applied after it and after every
-// other version of this list but 20261120012547, 20261120042902, 20261120055717, 20261121170714,
-// 20261122212816, 20261123165139 and 20261123212127, is the last of them to rewrite
+// other version of this list but 20261120012547, 20261120042902, 20261120055717, 20261120144241,
+// 20261121170714, 20261122212816, 20261123165139 and 20261123212127, is the last of them to rewrite
 // outbox_kind_check: it names those kinds and design_changes.
 // cybermonklabs/legion#4573's set-back sequence (20261120012547, dispatch://INFRA-3178) is applied
 // after all of these, the design news among them, and before cybermonklabs/legion#4581's
-// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4903's
-// 20261121170714, dispatch://INFRA-3136's 20261122212816, cybermonklabs/legion#4930's
-// 20261123165139 and cybermonklabs/legion#5278's 20261123212127. It runs no statement, so it
+// 20261120042902, cybermonklabs/legion#4598's 20261120055717, cybermonklabs/legion#4590's
+// 20261120144241, cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
+// 20261122212816, cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's
+// 20261123212127. It runs no statement, so it
 // changes nothing on a database main migrated, and it touches no outbox_kind_check.
 // cybermonklabs/legion#4581's mark of a launch that had Oh My Pi resume a claim's session by its
 // id (20261120042902, dispatch://INFRA-4108) stands above every other version of this list, the
 // design news among them, but cybermonklabs/legion#4598's 20261120055717,
-// cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's 20261122212816,
-// cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's 20261123212127; it
+// cybermonklabs/legion#4590's 20261120144241, cybermonklabs/legion#4903's 20261121170714,
+// dispatch://INFRA-3136's 20261122212816, cybermonklabs/legion#4930's 20261123165139 and
+// cybermonklabs/legion#5278's 20261123212127; it
 // adds
 // claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
 // outbox_kind_check, so it needs no row of its own here.
 // cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues
 // (20261120055717, dispatch://INFRA-4729) is applied after all of these, the design news among
-// them, and before cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
+// them, and before cybermonklabs/legion#4590's 20261120144241, cybermonklabs/legion#4903's
+// 20261121170714, dispatch://INFRA-3136's 20261122212816, cybermonklabs/legion#4930's
+// 20261123165139 and cybermonklabs/legion#5278's 20261123212127, and touches no
+// outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
+// and a refill mark for each project the copy holds rows of.
+// cybermonklabs/legion#4590's intake failures (20261120144241, dispatch://INFRA-1575) are applied
+// after all of these and before cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's
 // 20261122212816, cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's
-// 20261123212127, and touches no outbox_kind_check: it adds columns to dispatch_issues at their
-// defaults, an index on its parent, and a refill mark for each project the copy holds rows of.
+// 20261123212127: they create intake_failures, cleared_pull_requests and
+// pull_request_settled_heads, all three empty, and touch no dispatch_issues column and no
+// outbox_kind_check.
 // cybermonklabs/legion#4903's applied sequence of the copy of Dispatch's issues (20261121170714)
 // is applied after all of these and before dispatch://INFRA-3136's 20261122212816,
 // cybermonklabs/legion#4930's 20261123165139 and cybermonklabs/legion#5278's 20261123212127, and
@@ -256,6 +268,9 @@ var thisBranchsMigrations = []int{
 	// cybermonklabs/legion#4598 (dispatch://INFRA-4729): the sequence of each value of the copy of
 	// Dispatch's issues, with the refill mark of each project the copy holds rows of.
 	20261120055717,
+	// cybermonklabs/legion#4590 (dispatch://INFRA-1575): the intake failures, which create
+	// intake_failures, cleared_pull_requests and pull_request_settled_heads.
+	20261120144241,
 	// cybermonklabs/legion#4903: the applied sequence of the copy of Dispatch's issues,
 	// dispatch_issues.applied_seq.
 	20261121170714,
@@ -288,6 +303,7 @@ var thisBranchsMigrations = []int{
 // 20261119003157, dispatch://INFRA-175's 20261119203047, cybermonklabs/legion#4573's
 // 20261120012547 (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902
 // (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729),
+// cybermonklabs/legion#4590's 20261120144241 (dispatch://INFRA-1575),
 // cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's 20261122212816, the plan
 // of an experiment's draw (cybermonklabs/legion#4930's 20261123165139) and the clear of the start
 // failure of a claim whose agent is up (cybermonklabs/legion#5278's 20261123212127), which is why
