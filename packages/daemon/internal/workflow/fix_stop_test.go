@@ -168,3 +168,37 @@ func TestAnIssueThatLeavesEndsItsFix(t *testing.T) {
 
 	r.assertWayDropped("stopped", fixHead)
 }
+
+// workerDied is the role and the reason of each worker-died notice the outbox holds for
+// LEGION-208, oldest first, as `<role>: <reason>`.
+func (r *fixRig) workerDied() []string {
+	r.t.Helper()
+	return outboxStrings(r.t, r.pool, `select (payload->>'role') || ': ' || coalesce(payload->>'reason', '') from outbox
+		where kind = 'notice' and issue = $1 and payload->>'kind' = 'worker-died' order by id`, "LEGION-208")
+}
+
+// The fix's claim failing while the review runs ends the fix stopped, with the failure and at the
+// head the fix left, and its way is decided as any fix's end decides it, here waiting for the
+// review; the issue is not held, since the review goes on; the owner is told once, by a
+// worker-died notice naming the fix, its check and its head. The control, kept: a reviewer's claim
+// failing while the issue is in implementing holds nothing and is told as a role that does not
+// work the phase, as the base does.
+func TestAFailedFixClaimEndsTheFixAndTellsTheOwner(t *testing.T) {
+	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.pushed(headTwo)
+
+	r.apply("fix-claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: "the process died"})
+
+	if fix := r.latestFix(); fix.State != record.FixEnded || fix.Result != "stopped" || fix.EndHead != headTwo || fix.ClaimFailed == "" || fix.Way != 0 {
+		t.Fatalf("the fix = %+v, want it ended stopped at %s with its claim's failure, its way waiting for the review", fix, headTwo)
+	}
+	assertPhase(t, r.pool, phase.Reviewing)
+	assertToldOnceNaming(t, "the worker-died notices", r.workerDied(), string(claim.RoleImplementer), "fix 1", "k-ci", fixHead)
+
+	t.Run("a reviewer's claim failing in implementing holds nothing", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"})
+		r.apply("reviewer-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer})
+		assertPhase(t, r.pool, phase.Implementing)
+		assertToldOnceNaming(t, "the worker-died notices", r.workerDied(), string(claim.RoleReviewer), "does not work")
+	})
+}
