@@ -389,7 +389,9 @@ function MarkedTable({
 // INFRA-3135's review round 1, follow-up F4: a refetch, not the reader, empties the selection and
 // takes the bar away while it holds the focus. With no press of the reader's on the bar or on a
 // row's mark before it, the bar hands the focus to no row, so the list is not scrolled to one they
-// did not pick: nothing armed the bar's hand-off (`causedByReader`).
+// did not pick: nothing armed the bar's hand-off (`causedByReader`). As the page did before it had
+// any hand-off, the focus stays on the body, nothing scrolls, and the page is never asked where it
+// goes. One row of the state table of `focus-place.test.ts` (do).
 test("the bar emptied by a refetch with no press hands the focus to no row", () => {
   let asked = 0;
   const returnFocus = () => {
@@ -397,14 +399,17 @@ test("the bar emptied by a refetch with no press hands the focus to no row", () 
     return rowBox("CORE-2");
   };
   const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
+  const moves = watchMoves();
   try {
     act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
+    expect(moves.scrolled).toEqual([]);
     expect(asked).toBe(0);
   } finally {
+    moves.restore();
     view.unmount();
   }
 });
@@ -419,9 +424,7 @@ test("the bar emptied by the reader's Clear selection hands the focus to what re
   };
   const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
   try {
-    const clear = screen.getByRole("button", { name: "Clear selection" });
-    act(() => clear.focus());
-    act(() => clear.click());
+    pressInBar("Clear selection");
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
@@ -508,12 +511,13 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
 });
 
 // INFRA-3135, round 18 (the tester's): emptied by the reader's press on the last marked row's
-// mark, the bar hands the focus on too (`pressOnRowMark`). A click leaves a checkbox unfocused in
-// WebKit, so the focus is still in the bar when the press takes the last row away, and the press
-// is on no control of the bar. With `pressOnRowMark` answering false in a scratch copy of
-// e9ed2743, this file, `DataTable.test.tsx`, `Inbox.test.tsx` and `IssuesTable.test.tsx` passed
-// 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit and
-// Firefox (builds Job infra-3135-r18mk): no test read the rule.
+// mark, the bar hands the focus on too (`pressOnRowMark`). The click arms the bar's hand-off while
+// the bar is drawn, though the mark stands outside the bar, and leaves the checkbox unfocused, as
+// WebKit does, so the focus is still on Clear selection when the press takes the last row away,
+// and the press is on no control of the bar. With `pressOnRowMark` answering false in a scratch
+// copy of e9ed2743, this file, `DataTable.test.tsx`, `Inbox.test.tsx` and `IssuesTable.test.tsx`
+// passed 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit
+// and Firefox (builds Job infra-3135-r18mk): no test read the rule.
 test("the bar emptied by the reader's press on the last row's mark hands the focus to what returnFocus names", () => {
   let asked = 0;
   const returnFocus = () => {
@@ -525,55 +529,6 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
     act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
     const mark = rowBox("CORE-1");
     act(() => mark.click());
-    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
-    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
-    expect(rowBox("CORE-2")).toHaveFocus();
-    expect(asked).toBe(1);
-  } finally {
-    view.unmount();
-  }
-});
-
-// The bar reads the press that armed its hand-off (`armHandOff`). A refetch that empties the
-// selection while Clear selection holds the focus, with nothing armed, is a loss the reader did
-// not cause: as the page did before it had any hand-off, the focus stays on the body, in no row,
-// and the page is never asked where it goes. One row of the state table of `focus-place.test.ts`
-// (do).
-test("the bar emptied by a refetch with nothing armed hands the focus to no row", () => {
-  let asked = 0;
-  const returnFocus = () => {
-    asked += 1;
-    return rowBox("CORE-2");
-  };
-  const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
-  const moves = watchMoves();
-  try {
-    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
-    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
-    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
-    expect(document.activeElement).toBe(document.body);
-    expect(moves.scrolled).toEqual([]);
-    expect(asked).toBe(0);
-  } finally {
-    moves.restore();
-    view.unmount();
-  }
-});
-
-// The reader's click on the last marked row's mark arms the bar's hand-off while the bar is
-// drawn, though the mark stands outside the bar: the click leaves the checkbox unfocused, as WebKit
-// does, so the focus is still on Clear selection when the press takes the last row's mark off and
-// empties the bar. The bar hands the focus on to what the page names (`pressOnRowMark`).
-test("the bar emptied by the reader's click on the last row's mark hands the focus to what returnFocus names", () => {
-  let asked = 0;
-  const returnFocus = () => {
-    asked += 1;
-    return rowBox("CORE-2");
-  };
-  const view = render(<MarkedTable count={1} returnFocus={returnFocus} />);
-  try {
-    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
-    act(() => rowBox("CORE-1").click());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();

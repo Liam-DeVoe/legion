@@ -177,9 +177,10 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  *  form's submit sends nothing while Save is held. The `refused:` variant paints a held Save as a
  *  disabled one. The form, its fields and its Save stay the same elements through the read, so
  *  the focus stays where the reader pressed; a form the caller replaces goes while Save is held,
- *  so its going is still the press's doing (`causedByReader`). A record read that has not settled
- *  by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the reason under the
- *  form (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
+ *  so the control the reader pressed from keeps the focus until the form goes. A record read that
+ *  has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the
+ *  reason under the form (`useReadBound`). A refusal lets them go at once, with its reason under
+ *  the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,

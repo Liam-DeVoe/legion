@@ -18,7 +18,7 @@ import { AnchoredPanel } from "./AnchoredPanel";
 import { Chip } from "./Chip";
 import { type ControlRowScope, useControlRowKeys } from "./control-keys";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
-import { armOnPress, useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { PANEL_FRAME } from "./PanelTrigger";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
@@ -467,9 +467,7 @@ export function ControlRow({
     <div
       className={className === undefined ? own : `${own} ${className}`}
       data-control={CONTROL.controlRow}
-      onChangeCapture={armOnPress}
-      onClickCapture={armOnPress}
-      onKeyDownCapture={armOnPress}
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={rowRef}
     >

@@ -1337,10 +1337,10 @@ function InboxBody({
   });
 
   // The bar's Snooze is held from its pick through the commit after its write's answer
-  // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold is part of the action of the
-  // pick that made the write (`holdHandOff`). So the bar's going when the write lands, with the
-  // rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the reading
-  // column's width the short rows draw no Snooze of their own to hold the pick.
+  // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold keeps the armed hand-off of
+  // the pick that made the write live (`holdHandOff`). So the bar's going when the write lands,
+  // with the rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the
+  // reading column's width the short rows draw no Snooze of their own to hold the pick.
   const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0);
 
   if (inbox.isPending || whoAmI.isPending) {

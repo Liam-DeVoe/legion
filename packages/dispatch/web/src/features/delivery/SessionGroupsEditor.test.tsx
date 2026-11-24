@@ -605,7 +605,7 @@ test("a Rename whose live update comes in the same batch as its answer keeps the
 
 // Create group, its group made and drawn, is held after it with its name box emptied: it has
 // nothing to create.
-test("Create group stays held once its group is made and drawn, its name box emptied", async () => {
+test("Create group stays held once its group is made and drawn", async () => {
   const user = userEvent.setup();
   const made: DeliverySessionGroup = {
     ...crew,

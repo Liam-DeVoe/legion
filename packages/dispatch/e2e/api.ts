@@ -599,16 +599,6 @@ export function markThreadRead(threadId: string, readThrough: string, options: A
   );
 }
 
-/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** - mark every unread thread the
- *  list route answers under the same narrowing whose newest write is at or before
- *  `body.read_through`. Answers how many threads it marked. */
-export function markInboxRead(
-  body: Body<"/api/v1/me/inbox/read", "post">,
-  options: ApiOptions = {}
-) {
-  return post("/api/v1/me/inbox/read", { body }, options);
-}
-
 /** `POST /api/v1/me/inbox/dismiss`: the Inbox's Dismiss, which takes the threads `body` names
  *  out of the caller's Inbox, or with `restore` puts them back (Move to Inbox). Answers
  *  `dismissed`, how many threads it moved. */

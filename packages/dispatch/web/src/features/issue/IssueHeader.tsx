@@ -510,8 +510,9 @@ export function IssueHeader({
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
                   // An Enter or an Escape that ends or moves an input method's composition is the
-                  // composition's: it saves nothing, discards nothing and keeps the editor open.
-                  if (event.nativeEvent.isComposing) return;
+                  // composition's (`inputMethodKey`): it saves nothing, discards nothing and keeps
+                  // the editor open.
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);

@@ -9,7 +9,7 @@ import {
   useDataTable,
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
-import { armOnPress, useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
@@ -460,9 +460,7 @@ export function IssuesTable({
       aria-label={name}
       className="space-y-3 sm:pb-24"
       {...TABLE_FRAME_MARK}
-      onChangeCapture={armOnPress}
-      onClickCapture={armOnPress}
-      onKeyDownCapture={armOnPress}
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={sectionRef}
     >

@@ -99,8 +99,8 @@ const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
  *  `RevocableList` does for a revoke; a dismissal that lands and one refused both read the list
  *  again, since either answer says what the broker now holds. Dismiss is held (`heldPress`), not
  *  disabled, while its write is out and through the read that takes the row away, so it keeps the
- *  focus and the press is still the cause of the row's going (`causedByReader`); the submit guard
- *  drops a second press that lands before the hold is drawn. */
+ *  focus until the row goes; the submit guard drops a second press that lands before the hold is
+ *  drawn. */
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();

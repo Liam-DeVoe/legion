@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 import { apiErrorMessage, NETWORK_ERROR_MESSAGE } from "../../api/client";
-import { armOnPress, causedByReader, inSightNow, outOfSight } from "../../components/focus-place";
+import { ARM_ON_PRESS, causedByReader, inSightNow, outOfSight } from "../../components/focus-place";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -247,9 +247,7 @@ export function PendingWritesIndicator(): ReactNode {
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
-      onChangeCapture={armOnPress}
-      onClickCapture={armOnPress}
-      onKeyDownCapture={armOnPress}
+      {...ARM_ON_PRESS}
       ref={panel}
     >
       {out.length === 0 ? null : (

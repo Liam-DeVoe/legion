@@ -5,12 +5,19 @@ import { act, fireEvent, render, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode, useRef } from "react";
 
 import { realClock } from "../__tests__/fake-clock";
+import { frameAndTasks, nextFrame } from "../__tests__/frames";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
 import { useReadBound } from "../api/read-bound";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { armOnPress, causedByReader, holdHandOff, useFocusPlace } from "./focus-place";
+import {
+  ARM_ON_PRESS,
+  armOnPress,
+  causedByReader,
+  holdHandOff,
+  useFocusPlace,
+} from "./focus-place";
 
 // The page's focus hand-offs, read in happy-dom with the page built by hand: a component's own
 // hand-off (`useFocusPlace`), in a line of buttons React draws (`HandOffLine`, `ArmedLine`) or a
@@ -21,38 +28,19 @@ import { armOnPress, causedByReader, holdHandOff, useFocusPlace } from "./focus-
 // fires its own.
 
 /** The page's main content holding one button per label, in the document. */
-function mainOf(...labels: string[]): { main: HTMLElement; buttons: HTMLButtonElement[] } {
+function mainOf(...labels: string[]): HTMLElement {
   const main = document.createElement("main");
   main.id = "main-content";
-  const buttons = labels.map((label) => buttonIn(main, label));
+  for (const label of labels) buttonIn(main, label);
   document.body.append(main);
-  return { buttons, main };
+  return main;
 }
 
-/** Takes `element` away while it holds the focus, firing the `focusout` Chromium fires. */
-function lose(element: HTMLElement, leave: () => void = () => element.remove()): void {
+/** Fires the `focusout` Chromium fires as `element`, which holds the focus, is taken away, and
+ *  then takes it away with `leave`. */
+function lose(element: HTMLElement, leave: () => void): void {
   element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   leave();
-}
-
-/** One animation frame. happy-dom runs it on the real clock, under a fake one too. */
-async function frame(): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  requestAnimationFrame(() => done.resolve());
-  await done.promise;
-}
-
-/** A frame and then two tasks: past the end an armed press comes to a frame and a task after the
- *  last thing that keeps it live (`afterComponents`), and past the commits and effects a loss sets
- *  off. The tasks are zero-delay turns of the event loop that order this after those, not a wait
- *  for time to pass. */
-async function settled(): Promise<void> {
-  await frame();
-  for (const _ of [0, 1]) {
-    const task = Promise.withResolvers<void>();
-    setTimeout(task.resolve, 0);
-    await task.promise;
-  }
 }
 
 /** Runs `body` with every `scrollIntoView` watched, and expects none of them to have run. */
@@ -72,19 +60,19 @@ function enterPress(element: Element): void {
   element.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
 }
 
-/** A button labelled `label`, put in `parent` before `before`, else at its end. */
-function buttonIn(parent: Element, label: string, before: Node | null = null): HTMLButtonElement {
+/** A button labelled `label`, put at the end of `parent`. */
+function buttonIn(parent: Element, label: string): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
-  parent.insertBefore(button, before);
+  parent.append(button);
   return button;
 }
 
-/** Lays `element` out `top` px down the window and `height` px tall: where a scroll left it,
- *  which happy-dom, laying nothing out, does not say. */
-function placeAt(element: Element, top: number, height = 40): void {
-  element.getBoundingClientRect = () => new DOMRect(0, top, 200, height);
+/** Lays `element` out `top` px down the window and 40 px tall: where a scroll left it, which
+ *  happy-dom, laying nothing out, does not say. */
+function placeAt(element: Element, top: number): void {
+  element.getBoundingClientRect = () => new DOMRect(0, top, 200, 40);
 }
 
 // (bd) A live update withdraws the question whose answer form holds the focus and draws a Reply
@@ -98,7 +86,7 @@ test("an uncaused loss whose place now holds a form scrolls nothing, and the pag
       const walked: string[] = [];
       const next = { id: "next", keys: "j", label: "Next row", run: () => walked.push("j") };
       const keys = renderHook(() => useKeymap("global", [next]), { wrapper: KeymapProvider });
-      const { main } = mainOf("Pin");
+      const main = mainOf("Pin");
       try {
         const asked = document.createElement("article");
         const answer = document.createElement("form");
@@ -124,7 +112,7 @@ test("an uncaused loss whose place now holds a form scrolls nothing, and the pag
         };
         if (withFocusout) lose(choice, replace);
         else replace();
-        await settled();
+        await frameAndTasks();
         const landed = document.activeElement as HTMLElement;
         landed.dispatchEvent(
           new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "j" })
@@ -138,15 +126,9 @@ test("an uncaused loss whose place now holds a form scrolls nothing, and the pag
   }
 });
 
-/** A control of `kind`: a `<select>`, a `<textarea>`, a content-editable `<div>`, else an
- *  `<input>` of that type. */
+/** A control of `kind`: a `<select>`, else an `<input>` of that type. */
 function controlOf(kind: string): HTMLElement {
-  if (kind === "select" || kind === "textarea") return document.createElement(kind);
-  if (kind === "content-editable") {
-    const editable = document.createElement("div");
-    editable.contentEditable = "true";
-    return editable;
-  }
+  if (kind === "select") return document.createElement(kind);
   const input = document.createElement("input");
   input.type = kind;
   return input;
@@ -173,13 +155,7 @@ function HandOffLine(props: {
   );
   return createElement(
     "div",
-    {
-      onChangeCapture: armOnPress,
-      onClickCapture: armOnPress,
-      onFocus: noteFocus,
-      onKeyDownCapture: armOnPress,
-      ref: line,
-    },
+    { ...ARM_ON_PRESS, onFocus: noteFocus, ref: line },
     props.labels.map((label) => createElement("button", { key: label, type: "button" }, label))
   );
 }
@@ -270,9 +246,7 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
     } finally {
       recorded.restore();
     }
-    const focused = document.activeElement;
-    const landed = focused === null || focused === document.body ? "the page" : nameOf(focused);
-    return { landed, moves: recorded.moves };
+    return { landed: landing(), moves: recorded.moves };
   } finally {
     disarm();
     view.unmount();
@@ -294,7 +268,7 @@ function windowSelectIn(parent: Element, top: number): HTMLElement {
 /** Runs `body` with the page's main content in the document, named Main content, and takes it
  *  away after. */
 function withMain<T>(body: (main: HTMLElement) => T): T {
-  const { main } = mainOf();
+  const main = mainOf();
   main.setAttribute("aria-label", "Main content");
   try {
     return body(main);
@@ -465,7 +439,7 @@ test("a component's hand-off passes over a fallback that takes typed text, and w
   const belongs: Record<string, string> = {};
   for (const withFocusout of [true, false]) {
     const named = withFocusout ? "with a focusout" : "without a focusout";
-    const { main } = mainOf();
+    const main = mainOf();
     const search = controlOf("search");
     search.setAttribute("aria-label", "Search agents");
     main.append(search);
@@ -483,7 +457,7 @@ test("a component's hand-off passes over a fallback that takes typed text, and w
       const goes = () => view.rerender(createElement(HandOffLine, { fallback, labels: [] }));
       if (withFocusout) lose(clear, goes);
       else goes();
-      await settled();
+      await frameAndTasks();
       landed[named] = focusedName();
     } finally {
       view.unmount();
@@ -520,13 +494,7 @@ function RecipientsList(props: { readonly subscribers: boolean }): ReactNode {
     );
   return createElement(
     "ul",
-    {
-      onChangeCapture: armOnPress,
-      onClickCapture: armOnPress,
-      onFocus: noteFocus,
-      onKeyDownCapture: armOnPress,
-      ref: list,
-    },
+    { ...ARM_ON_PRESS, onFocus: noteFocus, ref: list },
     createElement(
       "li",
       null,
@@ -555,7 +523,7 @@ function RecipientsList(props: { readonly subscribers: boolean }): ReactNode {
 test("a component's hand-off for a control taken away with a control before it lands on the card's control before the place", async () => {
   const landed: Record<string, string | null> = {};
   for (const withFocusout of [true, false]) {
-    const { main } = mainOf();
+    const main = mainOf();
     const view = render(createElement(RecipientsList, { subscribers: true }), {
       container: main,
     });
@@ -567,7 +535,7 @@ test("a component's hand-off for a control taken away with a control before it l
       const answer = () => view.rerender(createElement(RecipientsList, { subscribers: false }));
       if (withFocusout) lose(unsubscribe, answer);
       else answer();
-      await settled();
+      await frameAndTasks();
       landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
     } finally {
       disarm();
@@ -620,12 +588,7 @@ function ArmedLine(props: ArmedLineProps): ReactNode {
   );
   return createElement(
     "div",
-    {
-      onChangeCapture: armOnPress,
-      onClickCapture: armOnPress,
-      onFocus: noteFocus,
-      onKeyDownCapture: armOnPress,
-    },
+    { ...ARM_ON_PRESS, onFocus: noteFocus },
     shown
       ? createElement(
           "div",
@@ -693,7 +656,7 @@ async function inMain<T>(
   labels: readonly string[],
   body: (main: HTMLElement) => Promise<T>
 ): Promise<T> {
-  const { main } = mainOf(...labels);
+  const main = mainOf(...labels);
   try {
     return await body(main);
   } finally {
@@ -778,7 +741,7 @@ test("an armed press whose write is held hands the focus on when the write lands
         let answered: () => void = () => undefined;
         if (way === "its control held") line.redraw({ held: ["Two"], labels: LINE });
         else answered = holdHandOff();
-        for (const _ of [0, 1, 2]) await settled();
+        for (const _ of [0, 1, 2]) await frameAndTasks();
         line.redraw({ labels: ["One", "Three"] });
         answered();
         return landing();
@@ -844,7 +807,7 @@ test("a Tab inside the region of an armed press whose write is out keeps it arme
     two.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
     three.focus();
     three.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
-    for (const _ of [0, 1, 2]) await settled();
+    for (const _ of [0, 1, 2]) await frameAndTasks();
     line.redraw({ labels: ["One", "Two", "Four"] });
     expect(landing()).toBe("Four");
   } finally {
@@ -869,13 +832,7 @@ function ArmedRows(props: {
   );
   return createElement(
     "ul",
-    {
-      onChangeCapture: armOnPress,
-      onClickCapture: armOnPress,
-      onFocus: noteFocus,
-      onKeyDownCapture: armOnPress,
-      ref: list,
-    },
+    { ...ARM_ON_PRESS, onFocus: noteFocus, ref: list },
     props.names.map((name) =>
       createElement(
         "li",
@@ -934,7 +891,7 @@ test("another key, a pointer press or a Tab out of the press's region disarms it
           clickPress(later);
           view.rerender(createElement(ArmedRows, { held: true, names }));
           actAgain(later, view.getByRole("button", { name: "Answer One" }));
-          await settled();
+          await frameAndTasks();
           view.rerender(createElement(ArmedRows, { held: false, names: ["Two"] }));
           return landing();
         } finally {
@@ -964,7 +921,7 @@ test("an armed press that holds nothing is disarmed a frame and a task on, and a
       const line = armedLineIn(main, { labels: LINE });
       try {
         clickPress(line.button("Two"));
-        await settled();
+        await frameAndTasks();
         line.redraw({ labels: ["One", "Three"] });
         expect(document.activeElement).toBe(document.body);
       } finally {
@@ -989,15 +946,15 @@ test("an armed press held through its write's re-read causes a loss inside that 
         try {
           clickPress(line.button("Two"));
           line.redraw({ held: ["Two"], labels: LINE });
-          await settled();
+          await frameAndTasks();
           // The write lands, and its `onSuccess` holds it through the list's read.
           const held = bound.result.current[1](reread.promise);
-          for (const _ of [0, 1, 2]) await settled();
+          for (const _ of [0, 1, 2]) await frameAndTasks();
           if (when === "after the read's hold ended") {
             reread.resolve();
             await held;
             line.redraw({ labels: LINE });
-            await settled();
+            await frameAndTasks();
           }
           line.redraw({ labels: ["One", "Three"] });
           reread.resolve();
@@ -1026,12 +983,12 @@ test("an armed press whose write is refused is disarmed, and the focus is not pu
         const two = line.button("Two");
         clickPress(two);
         // The press disables its own control, and the engine drops the focus off it then;
-        // happy-dom blurs no disabled button, so the focus is dropped first, as in (c).
+        // happy-dom blurs no disabled button, so the focus is dropped first.
         two.blur();
         line.redraw({ disabled: ["Two"], labels: LINE });
-        for (const _ of [0, 1]) await settled();
+        for (const _ of [0, 1]) await frameAndTasks();
         line.redraw({ labels: LINE });
-        await settled();
+        await frameAndTasks();
         expect(document.activeElement).toBe(document.body);
         // Focused with no press, as the page's own keys put it there, and taken away by an update.
         two.focus();
@@ -1065,7 +1022,7 @@ test("an armed press whose hold never ends is disarmed at its bound, and a later
           const answered = holdHandOff();
           jest.advanceTimersByTime(wait);
           // A press its bound ended ends a frame and a task on.
-          await frame();
+          await nextFrame();
           jest.advanceTimersByTime(0);
           line.redraw({ labels: ["One", "Three"] });
           answered();
@@ -1251,10 +1208,10 @@ test("an armed press whose action is answered while its control stays held with 
         // The action's run holds what answers it, and the press holds its control.
         const answered = holdHandOff();
         line.redraw({ held: ["Two"], labels: LINE });
-        await settled();
+        await frameAndTasks();
         // The action is answered; the control stays held, with nothing left to do.
         answered();
-        await settled();
+        await frameAndTasks();
         line.redraw({ held: ["Two"], labels: ["One", "Three"] });
         expect(landing()).toBe("the page");
       } finally {

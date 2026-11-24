@@ -25,13 +25,10 @@ import {
   SAVED_CART,
   seedProject,
   setStatus,
+  statusOf,
   type Tracked,
   writeDesign,
 } from "./journey";
-
-/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
- *  shows (`data-issue-status`), as the native select it replaced carried its value. */
-const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 interface LegionJourney extends Tracked {
   /** The approval ask the architect opens, once it has. */

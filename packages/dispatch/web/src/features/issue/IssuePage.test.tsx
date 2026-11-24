@@ -2,7 +2,7 @@ import { beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent, { type UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -11,6 +11,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
@@ -3010,13 +3011,6 @@ function statusList(): HTMLElement | null {
   return screen.queryByRole("listbox", { name: "Status options" });
 }
 
-/** Opens the Status and picks the row named `name`. */
-async function pickStatus(user: UserEvent, name: string): Promise<void> {
-  const trigger = statusTrigger();
-  await user.click(trigger);
-  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
-}
-
 /** The `issue` scope's `s` as `?` lists it: enabled while the Status takes input. */
 const statusKey = () =>
   appKeymap.describe().find((entry) => entry.scope === "issue" && entry.id === "status");
@@ -3064,11 +3058,11 @@ test("a pick from the header's Status sends one write of that status, and a pick
   try {
     await findStatusTrigger();
     // As a select set to the value it holds fires nothing.
-    await pickStatus(user, "Todo");
+    await pickIn(user, statusTrigger, "Todo");
     expect(statusList()).toBeNull();
     expect(patchIssue).not.toHaveBeenCalled();
 
-    await pickStatus(user, "In progress");
+    await pickIn(user, statusTrigger, "In progress");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -3090,7 +3084,7 @@ test("while its write is out the header's Status is held by aria-disabled, keeps
   try {
     const trigger = await findStatusTrigger();
     expect(trigger).not.toHaveAttribute("aria-disabled");
-    await pickStatus(user, "In progress");
+    await pickIn(user, statusTrigger, "In progress");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -3160,7 +3154,7 @@ test("once its write is answered the header's Status shows the server's status a
   try {
     const trigger = await findStatusTrigger();
     const header = within(screen.getByTestId("issue-header"));
-    await pickStatus(user, "In progress");
+    await pickIn(user, statusTrigger, "In progress");
     await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
     expect(header.getByText("Saving…")).toBeTruthy();
     await act(async () => {
@@ -3198,7 +3192,7 @@ test("a refused write of the header's Status is reported in the pending changes 
 
   try {
     const trigger = await findStatusTrigger();
-    await pickStatus(user, "Backlog");
+    await pickIn(user, statusTrigger, "Backlog");
     await waitFor(() =>
       expect(screen.getByTestId("pending-writes")).toHaveTextContent(
         "Not saved: CORE-1 set to backlog — the write was refused"
@@ -3262,7 +3256,7 @@ test("`s` opens the header's Status list while it takes input, and is not offere
     await user.keyboard("{Escape}");
     expect(statusList()).toBeNull();
 
-    await pickStatus(user, "In progress");
+    await pickIn(user, statusTrigger, "In progress");
     await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
     act(() => trigger.blur());
     expect(statusKey()?.enabled).toBe(false);

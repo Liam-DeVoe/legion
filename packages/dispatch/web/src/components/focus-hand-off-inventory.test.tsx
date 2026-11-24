@@ -13,6 +13,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { layOutLine } from "../__tests__/chips-line";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { jump, realClock, settle } from "../__tests__/fake-clock";
 import { panelOf } from "../__tests__/list-picks";
@@ -122,27 +123,9 @@ function FilterRow({ names }: { readonly names: readonly string[] }): ReactNode 
   );
 }
 
-/** Lays the chips line out as a browser would, which happy-dom does not, as `ControlRow.test.tsx`
- *  does: a 300 px line, 100 px chips 8 px apart and a 60 px `+N more`, so two chips of four fit
- *  beside `+2 more`. */
-function layOutLine(): void {
-  const style = document.createElement("style");
-  style.textContent = ".gap-2{column-gap:8px}";
-  document.head.append(style);
-  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const words = this.textContent ?? "";
-    let width = /^\w+×$/.test(words) ? 100 : 0;
-    if (this.firstElementChild?.hasAttribute("data-chip-strip") === true) width = 300;
-    else if (/^\+\d+ more$/.test(words)) width = 60;
-    return new DOMRect(0, 0, width, 44);
-  });
-  restores.push(() => {
-    boxes.mockRestore();
-    style.remove();
-  });
-}
+/** Four chips of 100 px, by the words each draws with its `×`, laid out as `ControlRow.test.tsx`
+ *  lays them out (`layOutLine`): a 300 px line holds two of them beside `+2 more`. */
+const FOUR_CHIPS = { "Alpha×": 100, "Beta×": 100, "Delta×": 100, "Gamma×": 100 };
 
 test("ControlRow: a chip's ×, pressed on its glyph, arms the row's hand-off", () => {
   draw(<FilterRow names={["Alpha", "Beta"]} />);
@@ -158,14 +141,14 @@ test("ControlRow: Clear filters arms the row's hand-off", () => {
 });
 
 test("ControlRow: +N more arms the row's hand-off", () => {
-  layOutLine();
+  restores.push(layOutLine({ width: 300 }, FOUR_CHIPS));
   draw(<FilterRow names={["Alpha", "Beta", "Gamma", "Delta"]} />);
   expectArms(screen.getByRole("button", { name: "2 more filters" }));
 });
 
 test("ControlRow: a chip in the panel +N more opens arms the row's hand-off", async () => {
   const user = userEvent.setup();
-  layOutLine();
+  restores.push(layOutLine({ width: 300 }, FOUR_CHIPS));
   draw(<FilterRow names={["Alpha", "Beta", "Gamma", "Delta"]} />);
   await user.click(screen.getByRole("button", { name: "2 more filters" }));
   const panel = screen.getByRole("dialog", { name: "2 more filters" });
@@ -252,16 +235,14 @@ function Deploys(): ReactNode {
   );
 }
 
-test("DataTable: a row's own action arms the table's hand-off", async () => {
-  // The unit DOM lays nothing out: the box the rows scroll in gets a window's height, so the
-  // table draws its rows.
+/** Gives the box the rows scroll in, by its test id, a window's height for the case, as the unit
+ *  DOM lays nothing out, and clears what the table stored once the case is over. */
+function scrollBoxHeight(testId: string): void {
   const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
     configurable: true,
     get() {
-      return this.dataset.testid === "inventory-deploys-scroll"
-        ? 600
-        : (height?.get?.call(this) ?? 0);
+      return this.dataset.testid === testId ? 600 : (height?.get?.call(this) ?? 0);
     },
   });
   restores.push(() => {
@@ -269,6 +250,12 @@ test("DataTable: a row's own action arms the table's hand-off", async () => {
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
     localStorage.clear();
   });
+}
+
+test("DataTable: a row's own action arms the table's hand-off", async () => {
+  // The unit DOM lays nothing out: the box the rows scroll in gets a window's height, so the
+  // table draws its rows.
+  scrollBoxHeight("inventory-deploys-scroll");
   draw(<Deploys />);
   expectArms(await screen.findByRole("button", { name: "Roll back d2" }));
 });
@@ -459,7 +446,7 @@ function plainClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
-/** Replaces `api`'s reads a page makes with `answers` for the case, and puts them back after. */
+/** Puts back `spies`, the case's answers to the reads of `api` a page makes, after the case. */
 function answering(...spies: { mockRestore(): void }[]): void {
   restores.push(() => {
     for (const spy of spies) spy.mockRestore();
@@ -763,18 +750,7 @@ function drawList(issues: IssueSummary[], search = "", open?: Promise<IssueSumma
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" })
   );
   // The unit DOM lays nothing out: the box the rows scroll in gets a window's height.
-  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
-    configurable: true,
-    get() {
-      return this.dataset.testid === "issues-table-scroll" ? 600 : (height?.get?.call(this) ?? 0);
-    },
-  });
-  restores.push(() => {
-    if (height) Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
-    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
-    localStorage.clear();
-  });
+  scrollBoxHeight("issues-table-scroll");
   const client = plainClient();
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   drawPage(<IssuesTable listing={{ project: "CORE" }} />, `/projects/CORE/issues${search}`, client);
@@ -900,13 +876,13 @@ for (const way of ["a pointer's pick", "Enter in its text box"]) {
       await user.paste("Done");
       await user.keyboard("{Enter}");
     }
-    expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+    await screen.findByRole("status", { name: "Loading issues" });
     expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
     const clear = screen.getByRole("button", { name: "Clear filters" });
     await waitFor(() => expect(clear).toHaveFocus());
     expect(screen.getByRole("link", { name: "Inbox" })).not.toHaveFocus();
     open.resolve([issue("CORE-1")]);
-    expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
     expect(clear).toHaveFocus();
   });
 }

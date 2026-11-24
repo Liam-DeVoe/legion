@@ -21,14 +21,11 @@ import {
   setStatus,
   specVersionAfter,
   specVersions,
+  statusOf,
   type Tracked,
   writeDesign,
 } from "../legion/journey";
 import { highlight, linger, pointTo, ring, type Walkthrough } from "../recording";
-
-/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
- *  shows (`data-issue-status`), as the native select it replaced carried its value. */
-const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 interface Seeded {
   /** The issue Legion has already taken to done. */
