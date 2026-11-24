@@ -17,7 +17,9 @@ const gitUsage = `usage: legion git --real <git> -- <git argument>…
 A git wrapper runs this command, never a person. It runs a git with the arguments after --.
 For a git commit, it first adds two trailers: Omp-Session, with the session id that the
 dispatch command acts as, and Legion-Role, with LEGION_ROLE. It adds each line only when its
-value is valid, and only when git alone would accept the commit's message.
+value is valid, and only when git alone would accept the commit's message. It adds none when
+the caller asks git for an isolated configuration: GIT_CONFIG_NOSYSTEM set to a value git reads
+as true, or GIT_CONFIG_GLOBAL=/dev/null.
 
   --real <git>         run <git>, the real git (the pod's form: /usr/bin/git)
   --after <directory>  run the next git on PATH after <directory>, the wrapper's own directory

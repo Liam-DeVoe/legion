@@ -385,6 +385,8 @@ For a `git commit`, `legion git` adds two trailers: `Omp-Session`, with the sess
 `dispatch` command acts as, and `Legion-Role`, with the pane's `LEGION_ROLE`. It adds each line
 only when its value is valid, and only when git alone would accept the commit's message and the
 two lines change nothing else.
+It adds none when the commit's caller asks git for an isolated configuration, as hermetic tests
+do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
 It then runs the next `git` on `PATH` after `bin/`, a host's own git wrapper included, and it runs
 every other command through that `git` unchanged.
 Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PATH` for the next

@@ -71,6 +71,7 @@ It carries:
   The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
   A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
   It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It adds none when the caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
   The two lines record which session and which role made the commit, and they guard nothing.
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
