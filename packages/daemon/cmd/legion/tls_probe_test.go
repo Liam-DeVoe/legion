@@ -2375,22 +2375,33 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 		}
 	}
 
-	// The stand-in's shell starts a child that holds the output pipe, records its pid and then
-	// marks the run held, so the run's limit passes once the pid is recorded (limitOnceHeld), and
-	// the child must then end with the group, which the limit's stop reaches whole.
+	// The stand-in's shell starts a child that holds the output pipe and records its pid, then
+	// waits for the row to see that pid running as the child (recordedHelper) before it marks the
+	// run held, so the run's limit passes only once the row knows the child (limitOnceHeld). The
+	// child must then end with the group, which the limit's stop reaches whole. A recorded pid that
+	// were not the child's would fail the first wait, not pass the last one with no child seen.
 	t.Run("a shell waiting on a child that holds the output pipe", func(t *testing.T) {
 		child := filepath.Join(t.TempDir(), "child.pid")
 		const childSeconds = "86395"
 		killRecordedHelper(t, child, childSeconds)
 		limitOnceHeld(t, func(string, tlsSite) string { return child + ".held" })
 		spec := workerTLSClients[0]
-		hold := recordsChild(child, childSeconds) + "; : >" + shellprefix.Literal(child+".held") + "; wait"
+		hold := recordsChild(child, childSeconds) + "; while [ ! -e " + shellprefix.Literal(child+".seen") + " ]; do sleep 0.01; done; : >" + shellprefix.Literal(child+".held") + "; wait"
 		spec.program, spec.timeout = standIn("held", hold, refusalOf(spec)), limit
-		outcome := spec.build("omp", nil, stateDir).probe(context.Background(), emSignTLSSite, tlsRunTerms{reached: true})
+		ran := make(chan tlsOutcome, 1)
+		go func() {
+			ran <- spec.build("omp", nil, stateDir).probe(context.Background(), emSignTLSSite, tlsRunTerms{reached: true})
+		}()
+		var pid int
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the stand-in's shell to start its child and record its pid",
+			func() bool { var running bool; pid, running = recordedHelper(child, childSeconds); return running })
+		if err := os.WriteFile(child+".seen", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		outcome := testwait.Receive(t, "the run whose shell waits on a child holding its output to end at its limit", ran)
 		if outcome.status != tlsNoVerdict || !strings.HasPrefix(outcome.detail, "its 300ms limit ended it after ") {
 			t.Errorf("a run whose shell waits on a child holding its output = %+v, want no verdict, its 300ms limit named", outcome)
 		}
-		pid, _ := recordedHelper(child, childSeconds)
 		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
 			fmt.Sprintf("the shell's child (pid %d) to end with the run's stop: want the limit to stop the whole process group", pid),
 			func() bool { return !helperRunning(pid, childSeconds) })

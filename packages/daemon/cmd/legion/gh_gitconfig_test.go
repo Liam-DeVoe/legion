@@ -23,10 +23,11 @@ import (
 // or a wrapper of it, whose child holds the output pipe once git itself is stopped would keep the
 // read waiting past its bound for as long as that child lives. The stand-in git starts a child
 // that holds its standard output and records the child's pid, then never answers. The read's
-// deadline passes by hand once that pid is recorded (passedDeadline): a fixed bound of a second
-// could stop the stand-in's shell before a loaded machine had let it record anything. The read
-// must end, refused, with the test binary's deadline as the only bound on the wait, and the child
-// must be gone with it.
+// deadline passes by hand once that pid is recorded and is the child's, a running `sleep`
+// (recordedHelper): a fixed bound of a second could stop the stand-in's shell before a loaded
+// machine had let it record anything, and a recorded pid that were not the child's would let the
+// last check pass with no child seen. The read must end, refused, with the test binary's deadline
+// as the only bound on the wait, and the child must be gone with it.
 func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 	for _, tc := range []struct {
 		name, refused string
@@ -48,14 +49,14 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 			t.Cleanup(deadline.pass)
 			answered := make(chan error, 1)
 			go func() { answered <- tc.read(deadline) }()
-			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the stand-in git to record its child",
-				func() bool { _, err := os.Stat(child); return err == nil })
+			var pid int
+			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the stand-in git to start its child and record its pid",
+				func() bool { var running bool; pid, running = recordedHelper(child, childSeconds); return running })
 			deadline.pass()
 			err := testwait.Receive(t, tc.name+" whose git never answers and whose child holds its output to end once its deadline passed", answered)
 			if err == nil || !strings.Contains(err.Error(), tc.refused) {
 				t.Fatalf("%s = %v, want a refusal naming %q", tc.name, err, tc.refused)
 			}
-			pid, _ := recordedHelper(child, childSeconds)
 			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
 				fmt.Sprintf("git's child (pid %d) to end with the read's stop: want the stop to reach git's whole process group", pid),
 				func() bool { return !helperRunning(pid, childSeconds) })
