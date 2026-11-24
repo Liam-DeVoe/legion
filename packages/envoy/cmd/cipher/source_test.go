@@ -378,7 +378,7 @@ func TestARedirectsTargetIsNotPrinted(t *testing.T) {
 // configuration does not. Everything the invariant forbids is still forbidden, the host anywhere
 // else in the output included: the exception removes that one URL and then checks the list.
 func TestNoSessionLineNamesAHostOrAStoreID(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	run := func(name string) []string {
@@ -681,7 +681,7 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 // cache planted in the test process's own home and state directory, as on a developer's machine
 // where someone ran `agent-secrets login`: the binary runAgentSecrets starts reads none of them.
 func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (plantHostSignIn, t.Setenv).
+	// Not parallel: it sets environment variables of the whole process (main.plantHostSignIn, t.Setenv at source_test.go:742).
 	binary := buildAgentSecrets(t)
 	socket, _ := fakeHelper(t, helper.Response{
 		Code:  helper.CodeSign,

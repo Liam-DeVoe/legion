@@ -253,7 +253,7 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 }
 
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	for _, control := range []string{"\x00", "\t", "\x01", "\x7f"} {
 		controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond,
 			"\x1b[200~prefix"+control, "private-tail\n\x1b[201~")
@@ -800,7 +800,7 @@ func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
 }
 
 func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGABRT} {
 		t.Run(sig.String(), func(t *testing.T) {
 			controller, terminal := openPTY(t)

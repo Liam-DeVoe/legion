@@ -342,7 +342,7 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 }
 
 func TestPromptJobHelper(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (watchCreateSignals, signal.Notify); it sets the package variable maxPasteDrain, which the package's other tests read (maxPasteDrain =).
+	// Not parallel: it signals the test process or changes its signal handling (main.watchCreateSignals, signal.Notify at secret_create.go:92); it sets a package variable the package's other tests read (maxPasteDrain set at secret_job_harness_linux_test.go:363).
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

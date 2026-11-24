@@ -21,7 +21,7 @@ import (
 // that follows reaches the person at once: a broker that cannot check projects refuses the
 // secret project-unchecked, which the create prints and exits 1 for.
 func TestCreateWritesTheProjectTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (onEachStore, useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "stored-value")
 		if _, stderr, code := runSecret("create", "PRIV_KEY", "--owner", "me", "--tier", "agent", "--project", "PRIV"); code != 0 {
@@ -58,7 +58,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 // --project none removes it as every other none removes its own, and a removal beside another
 // change is refused before anything is written, since it is a retag of its own.
 func TestRetagNoneRemovesTheProjectTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (onEachStore, useAWS, t.Setenv); it signals the whole test process or changes its signal handling (onEachStore, useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable awsClients, which the package's other tests read (onEachStore, useAWS, awsClients =).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		if _, stderr, code := runSecret("retag", "API_KEY", "--project", "PRIV"); code != 0 {
@@ -93,7 +93,7 @@ func TestRetagNoneRemovesTheProjectTag(t *testing.T) {
 // tag as the store holds it under project, and null for a secret carrying none, so a census of
 // the store's tagged secrets counts the rows whose project is not null.
 func TestShowPrintsTheProject(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable awsClients, which the package's other tests read (useAWS, awsClients =).
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	tagged := policytest.Secret("PRIV_KEY", "ada@example.com", policy.TierAgent, "v1")
 	tagged.Tags[policy.TagProject] = "PRIV"
 	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
@@ -186,7 +186,7 @@ func TestShowPrintsTheProject(t *testing.T) {
 // would refuse the secret for, refused before the sign-in is read or the store is called at all.
 // The refusal does not print the value it refused (valueNotPrinted), as no tag flag's refusal does.
 func TestAMalformedProjectIsRefusedBeforeAnyWrite(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	writes := &countingTagWrites{Local: local}
 	startSecretBroker(t, servedBy(local))

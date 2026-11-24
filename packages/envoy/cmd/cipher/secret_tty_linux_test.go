@@ -133,7 +133,7 @@ func awaitEchoOff(t *testing.T, terminal int) {
 // with echo on, as any other end of the prompt does. The prompt is timed against its deadline,
 // less the time this process was held up meanwhile (endsByItsDeadline).
 func TestPromptEndsAtTheValueDeadline(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
 	meter := startStallMeter(t)
 	start := time.Now()
@@ -163,7 +163,7 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // The pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal:
 // the reason the notice reads names no interrupt key, and no open paste.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	controller, terminal := openPTY(t)
 	meter := startStallMeter(t)
 	start := time.Now()
@@ -220,7 +220,7 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 // calling AddSecretVersion, deletes the empty secret it made, asks the broker to reread the name,
 // and exits 1 naming the window and the command to run again.
 func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (startSecretBrokerWith, t.Setenv); it signals the whole test process or changes its signal handling (useGCPIdentity, userinfoOf, Token, runGcloud, runRecorded, stop, signal.Stop); it sets the package variable valueReadWindow, which the package's other tests read (valueReadWindow =).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (valueReadWindow set at secret_tty_linux_test.go:227).
 	controller, terminal := openPTY(t)
 	const window = 2 * time.Second
 	restoreWindow := valueReadWindow
@@ -333,7 +333,7 @@ func shown(t *testing.T, controller *os.File) []byte {
 // asks the terminal to bracket pastes while it reads and to stop once it is done, and leaves it as
 // it was, echo on.
 func TestPromptReadsOneTypedLineWithEchoOff(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPrompt, main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	controller, terminal, got := typeAtPrompt(t, "typed value\r")
 	if got.err != nil || string(got.line) != "typed value" {
 		t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "typed value")
@@ -357,7 +357,7 @@ func TestPromptReadsOneTypedLineWithEchoOff(t *testing.T) {
 // back. On Linux n_tty lowercases input under IUCLC only while IEXTEN is set, even outside
 // canonical mode, so this checks the mode itself.
 func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	controller, terminal := openPTY(t)
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("a fresh pseudo-terminal has IEXTEN off; the test needs it on")
@@ -389,7 +389,7 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 // TestPromptCtrlDEndsTheValue: Ctrl-D ends the read, with nothing typed (an empty value) and after
 // typing (the value typed).
 func TestPromptCtrlDEndsTheValue(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPrompt, main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	for _, tc := range []struct{ typed, want string }{{"\x04", ""}, {"typed\x04", "typed"}} {
 		_, terminal, got := typeAtPrompt(t, tc.typed)
 		if got.err != nil || string(got.line) != tc.want {
@@ -406,7 +406,7 @@ func TestPromptCtrlDEndsTheValue(t *testing.T) {
 // or without), is refused rather than cut at its first line, and none of it is left for the shell
 // to read once the form exits, nor echoed.
 func TestPromptRefusesAPasteOfMoreThanOneLineAndLeavesNothingForTheShell(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPrompt, main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	for _, paste := range []string{
 		"-----BEGIN KEY-----\rline two\recho line three",
 		"-----BEGIN KEY-----\nline two\nline three\n",
@@ -428,7 +428,7 @@ func TestPromptRefusesAPasteOfMoreThanOneLineAndLeavesNothingForTheShell(t *test
 // through its closing mark however long a gap splits it, as one lost packet over ssh can, so it is
 // refused whole and nothing of it is left for the shell or echoed.
 func TestPromptReadsABracketedPasteThroughItsEnd(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond, "\x1b[200~line1\n", "line2\x1b[201~")
 	if !errors.Is(got.err, errMoreThanOneLine) {
 		t.Fatalf("readHidden = %q, %v; want errMoreThanOneLine", got.line, got.err)
@@ -445,7 +445,7 @@ func TestPromptReadsABracketedPasteThroughItsEnd(t *testing.T) {
 // marks: ending in a line ending, which is dropped, or followed by Enter, with its marks whole or
 // split across reads.
 func TestPromptAcceptsABracketedPasteOfOneLine(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	for _, writes := range [][]string{
 		{"\x1b[200~value\n\x1b[201~"},
 		{"\x1b[200~value\r\n\x1b[201~"},
@@ -465,7 +465,7 @@ func TestPromptAcceptsABracketedPasteOfOneLine(t *testing.T) {
 // TestPromptWordEraseAndControlBytes: the terminal's configured word erase removes the word it
 // would in canonical mode, and another control byte cannot become an invisible byte in a secret.
 func TestPromptWordEraseAndControlBytes(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPrompt, main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	_, terminal, got := typeAtPrompt(t, "abc def\x17ghi\r")
 	if got.err != nil || string(got.line) != "abc ghi" {
 		t.Fatalf("word erase: readHidden = %q, %v; want %q", got.line, got.err, "abc ghi")
@@ -484,7 +484,7 @@ func TestPromptWordEraseAndControlBytes(t *testing.T) {
 // that names the Tab, says it is at the end of the value, and says that a paste often adds one
 // there; the terminal is left with nothing unread.
 func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	_, terminal, got := typeAtPromptInWrites(t, 50*time.Millisecond, "\x1b[200~sk-live-key\t\x1b[201~", "\r")
 	var refused promptControlByteError
 	if got.line != nil || !errors.As(got.err, &refused) || refused.c != '\t' || !refused.textBefore || refused.textAfter {
@@ -502,7 +502,7 @@ func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
 // than stopping and starting the terminal's output, so a paste holding one is refused, never stored
 // without it, and never leaves the prompt waiting with its output suspended.
 func TestPromptRefusesFlowControlBytes(t *testing.T) {
-	// Not parallel: it sets the package variable readHidden, which the package's other tests read (readHidden =).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPrompt, main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	for _, c := range []byte{0x13, 0x11} {
 		_, _, got := typeAtPrompt(t, "val"+string(c)+"ue\r")
 		want := fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", c)
@@ -517,7 +517,7 @@ func TestPromptRefusesFlowControlBytes(t *testing.T) {
 // has read, so nothing is stored. The hang-up lands while the reader is between reads, where its
 // next read of the hung-up terminal answers end of input.
 func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
-	// Not parallel: it sets the package variable readTerminal, which the package's other tests read (readTerminal =).
+	// Not parallel: it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readTerminal set at secret_tty_linux_test.go:533).
 	for _, tc := range []struct {
 		paste string
 		want  error
@@ -575,7 +575,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 // TestPromptSignalHelper is the process the signal tests start: the value prompt's reader on its
 // standard input, its controlling terminal. It names only the reader's error, never its value.
 func TestPromptSignalHelper(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520).
 	if os.Getenv("AGENT_SECRETS_PROMPT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

@@ -24,7 +24,7 @@ import (
 // names the failure, and no part of a user name, password, query or fragment AGENT_SECRETS_URL
 // carries. The values are made up.
 func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:36); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	for form, address := range map[string]string{
 		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1",
 		"a query":                  "http://127.0.0.1:1/?token=demoquery4k",
@@ -103,7 +103,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 // answer id print on `agent-secrets status`'s stderr and in the client's error, and its code in a
 // pod login's refusal line.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:127); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	const answerID = "demopass9z-not-a-secret"
 	var asked atomic.Int64
 	var words string

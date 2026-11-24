@@ -64,7 +64,7 @@ const (
 // release of the helper process that answers on the socket, read from the helper itself, both
 // where the helper is the source and where it only answered.
 func TestIdentitySourceNamesTheHelpersVersion(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
@@ -100,7 +100,7 @@ func TestIdentitySourceNamesTheHelpersVersion(t *testing.T) {
 // that answered, by its pid on the socket (here the test process, which serves the fake), so a
 // reader can see which release is running without trusting the pin.
 func TestIdentitySourceNamesAnOlderHelper(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)

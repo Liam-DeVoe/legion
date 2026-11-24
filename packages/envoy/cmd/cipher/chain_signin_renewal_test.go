@@ -67,7 +67,7 @@ func withTheSignInsOwnClient(t *testing.T, r *chainRig) {
 // it took. Only a sign-in this machine cannot renew is checked, by one read signed with its own
 // box key; a live one, and one this machine can renew, serves as before.
 func TestASignInThisMachineCannotRenewGivesWay(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (withMetadata, startMetadataServer, t.Setenv); it signals the whole test process or changes its signal handling (mustUse, use, run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (mustUse, use, run, loadClientConfig, clientConfig =).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	rows := []struct {
 		name string
@@ -148,7 +148,7 @@ func TestASignInThisMachineCannotRenewGivesWay(t *testing.T) {
 // TestIdentitySourceNamesTheSourceAfterASignInThisMachineCannotRenew: `identity --source` takes
 // the source the use command takes, and writes the same line.
 func TestIdentitySourceNamesTheSourceAfterASignInThisMachineCannotRenew(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	r, broker := signInRig(t, binary)
 	broker.endEnrollment("signin-enrollment")
@@ -170,7 +170,7 @@ func TestIdentitySourceNamesTheSourceAfterASignInThisMachineCannotRenew(t *testi
 // the line still says why the sign-in was passed over, and which source was tried next, before
 // that source's own refusal: the person learns that their sign-in is the cause.
 func TestAPassedOverSignInIsNamedWhenTheNextSourceFails(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (withMetadata, startMetadataServer, t.Setenv); it signals the whole test process or changes its signal handling (use, run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (use, run, loadClientConfig, clientConfig =).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, row := range []struct {
 		name, source, want string
@@ -210,7 +210,7 @@ func TestAPassedOverSignInIsNamedWhenTheNextSourceFails(t *testing.T) {
 // command as before, and no later source signs. The second row is also the check that the read is
 // signed with the sign-in's own box key: the broker holds the enrollment to another key there.
 func TestASignInIsPassedOverOnlyWhenItsEnrollmentIsNotLive(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (use, run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (use, run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
@@ -256,7 +256,7 @@ func TestASignInIsPassedOverOnlyWhenItsEnrollmentIsNotLive(t *testing.T) {
 // sign-in: beside a live helper session it renews the sign-in's own enrollment, is refused for
 // good, and registers nothing.
 func TestRenewReportsASignInThisMachineCannotRenewAndActsAsNoOtherSession(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (withMetadata, startMetadataServer, t.Setenv).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	r, broker := signInRig(t, binary)
 	broker.endEnrollment("signin-enrollment")
@@ -287,7 +287,7 @@ func TestRenewReportsASignInThisMachineCannotRenewAndActsAsNoOtherSession(t *tes
 // with the helper's session, else with the machine session the cache holds, writes no line about
 // it, and registers nothing.
 func TestASecretFormsRereadPassesOverASignInThisMachineCannotRenew(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv); it signals the whole test process or changes its signal handling (runSecret, cmdSecret, run, signal.Notify); it sets the package variable secretStdin, which the package's other tests read (useStdin, secretStdin =).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_signin_renewal_test.go:297); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name     string
 		signedBy string

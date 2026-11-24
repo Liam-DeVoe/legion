@@ -44,7 +44,7 @@ import (
 // CreateSecret has made the secret, SIGNALLED <signal> each time it receives a signal it does not
 // ignore, REREAD <name> at each broker reread, and RETURNED <exit code> when the create returns.
 func TestCreateSignalHelper(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (useAWS, t.Setenv); it signals the whole test process or changes its signal handling (unix.Kill(os.Getpid()); it sets the package variable storeCallDeadline, which the package's other tests read (storeCallDeadline =).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (a signal to this process (unix.Kill) at secret_create_signal_linux_test.go:70); it sets a package variable the package's other tests read (storeCallDeadline set at secret_create_signal_linux_test.go:56).
 	if os.Getenv("AGENT_SECRETS_CREATE_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -313,7 +313,7 @@ func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
 // process at once, naming the empty secret that may stay and the command that clears it. The
 // second is sent only once the process has received the first, so the two cannot merge.
 func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*createProcess).endsAtOnceBy, main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline)
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGINT)
@@ -480,7 +480,7 @@ func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *
 // one CreateSecret is in flight, the store may hold the secret with its value or nothing at all,
 // which `secret show` tells apart. The same signal twice and two different ones both do.
 func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*createProcess).endsAtOnceBy, main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	for _, row := range []struct {
 		name          string
 		env           []string

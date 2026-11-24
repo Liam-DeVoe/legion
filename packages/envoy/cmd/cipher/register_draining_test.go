@@ -59,7 +59,7 @@ func TestRegisterRetriesADrainingHelper(t *testing.T) {
 // retry that never stops, or one that stops late, is caught by timing the call against its 1 s
 // wait, allowing for the time this process was held up (endsByItsDeadline).
 func TestRegisterStopsRetryingDrainingAtItsWait(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	sock, _ := drainingHelper(t, 1<<30)
 	done := make(chan error, 1)
 	meter := startStallMeter(t)

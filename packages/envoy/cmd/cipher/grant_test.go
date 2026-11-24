@@ -173,7 +173,7 @@ func launcherProofHelper(t *testing.T, answer helper.Response) (string, <-chan h
 // operator's own shell beside it takes the operator route, as it did before, and leaves the key
 // dir as it found it: moving that session into the machine cache is the use chain's work.
 func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	broker := newGrantBroker(t, false)
 	r := grantRig(t, binary, broker)
@@ -208,7 +208,7 @@ func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
 // still enrolling the key dir, and a setting it cannot read is a usage error, exit 2, with the
 // line `revoke` prints for it.
 func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 
 	t.Run("a setting it cannot read", func(t *testing.T) {
@@ -267,7 +267,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 // a fall-through would reach the stand-in, which fails the test on any request after its
 // NOT_YOURS, and would ask the helper for a launcher proof.
 func TestGrantRevokeTriesNoOtherRouteAfterNotYours(t *testing.T) {
-	// Not parallel: it signals the whole test process or changes its signal handling (run, signal.Notify); it sets the package variable clientConfig, which the package's other tests read (run, loadClientConfig, clientConfig =).
+	t.Parallel()
 	binary := chainBinary(t)
 	broker := newGrantBroker(t, true)
 	r := grantRig(t, binary, broker)

@@ -1741,7 +1741,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1745).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -2028,7 +2028,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv); it sets the package variable nearestHarness, which the package's other tests read (nearestHarness =).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2048); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2053).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -2060,7 +2060,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2077).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string
