@@ -39,24 +39,29 @@ function readFolded(stored: string | null): FoldedByGrouping {
 }
 
 /**
- * Which bands of `by` are folded shut, and the toggle that folds one. **Later** starts folded -
- * its rows are the ones the reader already dealt with by deferring - and from the moment they
- * fold or open anything under this grouping, the set they left is the whole answer.
+ * Which bands of `by` are folded shut, as the reader left them, and the setter that folds one
+ * shut or opens it. **Later** starts folded - its rows are the ones the reader already dealt with
+ * by deferring - and from the moment they fold or open anything under this grouping, the set
+ * they left is the whole answer. Only the reader's own press writes it: a band an address opens
+ * for one view is the Inbox's own (`Inbox.tsx`, `openFoldedBand`).
  */
-export function useFoldedGroups(by: InboxGroupBy): [ReadonlySet<string>, (key: string) => void] {
+export function useFoldedGroups(
+  by: InboxGroupBy
+): [ReadonlySet<string>, (key: string, shut: boolean) => void] {
   const [stored, setStored] = useUserPreference<FoldedByGrouping>(
     "inbox.folded-groups",
     readFolded,
     (value) => JSON.stringify(value)
   );
   const folded = new Set(stored[by] ?? DEFAULT_FOLDED_GROUPS);
-  const toggle = useCallback(
-    (key: string) => {
+  const setFolded = useCallback(
+    (key: string, shut: boolean) => {
       const next = new Set(stored[by] ?? DEFAULT_FOLDED_GROUPS);
-      if (!next.delete(key)) next.add(key);
+      if (shut) next.add(key);
+      else next.delete(key);
       setStored({ ...stored, [by]: [...next] });
     },
     [by, setStored, stored]
   );
-  return [folded, toggle];
+  return [folded, setFolded];
 }

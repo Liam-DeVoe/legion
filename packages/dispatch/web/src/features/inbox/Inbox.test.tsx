@@ -55,6 +55,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SnoozeWrites } from "./ask-snooze-fixture";
@@ -5594,6 +5595,51 @@ test("?item= naming a row in the folded Later band opens the band and selects it
       "aria-expanded",
       "true"
     );
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A link is no press of the reader's: the band an address opens for the row it names is opened
+// for this view alone, and the folds the reader keeps in their browser stay as they left them.
+// Their own press on the band's toggle acts on the band as it is drawn, and writes what it leaves.
+test("?item= naming a row in a band the reader folded opens the band for this view and leaves their stored folds alone, and their own fold press writes them", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const stored = userPreferenceStorageKey("alice", "inbox.folded-groups");
+  const kept = JSON.stringify({ priority: ["later"] });
+  window.localStorage.setItem(stored, kept);
+  const open = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const later = inboxIssue("ask-later", "CORE-2", "Which format?", { snoozed_until: soon() });
+  const rows = [open, later];
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?item=ask-later");
+  const toggle = () => screen.getByRole("button", { name: /^Later \(1\)/ });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    // A folded band renders no rows at all, so the row being there is the band being open.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-later"]));
+    expect(selectedIds()).toEqual(["ask-later"]);
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+    expect(window.localStorage.getItem(stored)).toBe(kept);
+
+    // The reader's press folds the band they see open, and the folds they keep say so.
+    await user.click(toggle());
+    await waitFor(() => expect(toggle()).toHaveAttribute("aria-expanded", "false"));
+    expect(rowIds()).toEqual(["ask-a"]);
+    expect(window.localStorage.getItem(stored)).toBe(kept);
+    // And the next opens it, which they keep too.
+    await user.click(toggle());
+    await waitFor(() => expect(toggle()).toHaveAttribute("aria-expanded", "true"));
+    expect(rowIds()).toEqual(["ask-a", "ask-later"]);
+    expect(window.localStorage.getItem(stored)).toBe(JSON.stringify({ priority: [] }));
   } finally {
     unmount();
     narrow();

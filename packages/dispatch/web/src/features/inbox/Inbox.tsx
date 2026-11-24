@@ -1409,7 +1409,27 @@ function InboxBody({
   const groupBy = filter.group ?? "priority";
   const filters: InboxFilters = filter.filters ?? {};
   const [threadOrder, setThreadOrder] = useThreadOrder();
-  const [folded, toggleFold] = useFoldedGroups(groupBy);
+  const [storedFolds, setStoredFold] = useFoldedGroups(groupBy);
+  // The bands an address opened for this view alone (`openFoldedBand`): a link is no press of the
+  // reader's, so the folds they keep in their browser stay as they left them. A band is folded
+  // where they keep it folded and no address opened it here.
+  const [openedHere, setOpenedHere] = useState<ReadonlySet<string>>(() => new Set());
+  const folded =
+    openedHere.size === 0
+      ? storedFolds
+      : new Set([...storedFolds].filter((key) => !openedHere.has(key)));
+  // The reader's own press on a band's toggle acts on the band as it is drawn and writes what it
+  // leaves to their stored folds: a band an address opened here folds, as they keep it.
+  const toggleFold = useCallback(
+    (key: string) => {
+      const shut = !folded.has(key);
+      if (shut && openedHere.has(key)) {
+        setOpenedHere(new Set([...openedHere].filter((opened) => opened !== key)));
+      }
+      setStoredFold(key, shut);
+    },
+    [folded, openedHere, setStoredFold]
+  );
   // How many pages of rows each band is drawing; a band starts on its first.
   const [pages, setPages] = useState<ReadonlyMap<string, number>>(() => new Map());
   const showMore = useCallback((key: string) => {
@@ -1577,11 +1597,13 @@ function InboxBody({
   const answered = useRef<string | null>(null);
   const [, setReleased] = useState(0);
   const release = () => setReleased((count) => count + 1);
+  // An `?item=` naming a row in a folded band opens that band for this view, and writes nothing
+  // to the reader's stored folds (`openedHere`).
   const openFoldedBand = useCallback(
     (key: string) => {
-      if (folded.has(key)) toggleFold(key);
+      if (folded.has(key)) setOpenedHere((current) => new Set(current).add(key));
     },
-    [folded, toggleFold]
+    [folded]
   );
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
@@ -1716,7 +1738,7 @@ function InboxBody({
     filter,
     goToRoute,
     listRef,
-    openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
+    openFoldedBand,
     paneShown,
     presented,
     snoozing,
@@ -3077,8 +3099,8 @@ function InboxBody({
     headings: drawn.map(({ band }) => ({ key: band.key, label: band.label })),
     layout,
   };
-  // Every row the bands hold, a folded one's included: `?item=` naming a row the reader deferred
-  // opens that band rather than being read as an address this list cannot answer.
+  // Every row the bands hold, a folded one's included: `?item=` naming a row in a folded band
+  // opens that band for this view rather than being read as an address this list cannot answer.
   const listedRows: PlacedRow[] = drawn.flatMap(({ band }) =>
     band.rows.map((row) => ({ group: band.key, row, section: sectionDrawn(row) }))
   );

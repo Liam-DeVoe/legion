@@ -34,8 +34,9 @@ export interface PaneSelectionOptions {
   goToRoute: (next: InboxRoute) => void;
   /** The list's root, where the selected row's own element is looked up. */
   listRef: RefObject<HTMLElement | null>;
-  /** Opens the folded band, for an `?item=` naming a row the reader deferred. */
-  openFoldedBand: () => void;
+  /** Opens folded band `key` for this view alone, for an `?item=` naming a row in it: a link is
+   *  no press of the reader's, so the folds they keep stay as they left them. */
+  openFoldedBand: (key: string) => void;
   /** Whether the reading column is on. Without it there is no selection, the column shows
    *  nothing, and nothing is written to the address. */
   paneShown: boolean;
@@ -244,10 +245,10 @@ export function usePaneSelection({
   //
   // The address names it, and is read as the reader's own move - the first visit, a link, a
   // reload - exactly while it says something this list has not already answered: a row it holds
-  // is selected (its band opened first, if the reader linked into a folded one: following the
-  // link is what they asked for), and one it does not hold leaves the first visible row
-  // selected and the address rewritten. Otherwise the selection is the reader's, and the address
-  // follows it.
+  // is selected (its band opened first, for this view alone, if the address names a row in a
+  // folded one: following the link is what they asked for, and the folds they keep are theirs),
+  // and one it does not hold leaves the first visible row selected and the address rewritten.
+  // Otherwise the selection is the reader's, and the address follows it.
   //
   // On the layout lane, so that the selection a commit hands on is drawn in the same task as that
   // commit. The commit that takes the selected row off the list draws no column, and takes away
@@ -266,7 +267,7 @@ export function usePaneSelection({
       if (wanted !== undefined) {
         const id = rowId(wanted.row);
         setSelectedId(id);
-        if (!visible.some((placed) => rowId(placed.row) === id)) openFoldedBand();
+        if (!visible.some((placed) => rowId(placed.row) === id)) openFoldedBand(wanted.group);
         return;
       }
     }
