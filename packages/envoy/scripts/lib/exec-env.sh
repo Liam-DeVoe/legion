@@ -7,8 +7,8 @@
 # never through env's arguments, /proc/<pid>/cmdline, which every user of the machine reads (ps
 # prints them) for as long as the process runs.
 #
-# Sourced, never run. dev-stack.sh (start_with_only) calls it, and exec-env.test.sh tests it.
-# Three functions:
+# Sourced, never run. dev-stack.sh (start_with_only) and docs/site/media/broker/rig.sh
+# (start_process) call it, and exec-env.test.sh tests it. One function:
 #
 #   exec_with_env NAME=value... -- COMMAND [ARG...]
 #       Execs COMMAND, in place of the shell that runs it, with exactly the NAME=value entries as
@@ -20,19 +20,12 @@
 #       environment) is left out. An entry that names a readonly variable cannot take its value,
 #       so the start is refused: the variable is named on standard error, nothing runs, and it
 #       returns 2. So does an exported variable that is still exported after both steps.
-#   broker_env_of PID [NAME=value...]
-#       Sets BROKER_ENV to process PID's environment, one NAME=value entry each (/proc/PID/environ
-#       is NUL-separated, so a value holding a space or a quote stays whole), with the entries
-#       after PID last, so one of them replaces the copy of its name.
-#   with_broker_env COMMAND [ARG...]
-#       exec_with_env with BROKER_ENV's entries: `( with_broker_env "$BROKER_BIN" ) &` starts a
-#       broker with the environment broker_env_of read.
 
-# Under xtrace (set -x) each of the three functions turns tracing off as it starts, since bash
-# traces every expansion of a setting and each would show a secret, and turns it back on only
-# when it returns: a refusal, or an exec that failed (bash's execfail). An exec that succeeded
-# leaves the started program with no shell to trace. A caller's own call line is traced before
-# any of them runs, with whatever settings it names there.
+# Under xtrace (set -x) exec_with_env turns tracing off as it starts, since bash traces every
+# expansion of a setting and each would show a secret, and turns it back on only when it returns:
+# a refusal, or an exec that failed (bash's execfail). An exec that succeeded leaves the started
+# program with no shell to trace. A caller's own call line is traced before it runs, with whatever
+# settings it names there.
 
 # exec_with_env NAME=value... -- COMMAND [ARG...]: see the header.
 exec_with_env() {
@@ -93,33 +86,4 @@ exec_with_env_into() {
     export "$exec_with_env_entry"
   done
   exec "$@"
-}
-
-# broker_env_of PID [NAME=value...]: see the header. SHELLOPTS and BASHOPTS are left out of the
-# copy: they are bash's own readonly variables, which a stack broker started from a shell that
-# exported them carries, and which exec_with_env could not give a value, so it would refuse the
-# start; a broker reads neither, and env -i, which once started these brokers, passed them as
-# plain entries.
-broker_env_of() {
-  local broker_env_of_xtrace="" broker_env_of_entry pid="$1"
-  [[ $- != *x* ]] || { broker_env_of_xtrace=1 && { set +x; } 2>/dev/null; }
-  shift
-  BROKER_ENV=()
-  while IFS= read -r -d '' broker_env_of_entry; do
-    case "$broker_env_of_entry" in
-      SHELLOPTS=* | BASHOPTS=*) ;;
-      *) BROKER_ENV+=("$broker_env_of_entry") ;;
-    esac
-  done <"/proc/$pid/environ"
-  BROKER_ENV+=("$@")
-  [ -z "$broker_env_of_xtrace" ] || set -x
-}
-
-# with_broker_env COMMAND [ARG...]: see the header.
-with_broker_env() {
-  local with_broker_env_xtrace="" with_broker_env_status=0
-  [[ $- != *x* ]] || { with_broker_env_xtrace=1 && { set +x; } 2>/dev/null; }
-  exec_with_env "${BROKER_ENV[@]}" -- "$@" || with_broker_env_status=$?
-  [ -z "$with_broker_env_xtrace" ] || set -x
-  return "$with_broker_env_status"
 }
