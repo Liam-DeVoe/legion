@@ -59,9 +59,10 @@ const ServingFloor = 46
 // dispatch://INFRA-3320's. A renumber of any of the eight entries moves its constant and this list
 // with it, and moving one of them alone would describe a shape at a contract no entry declares.
 // The other entries above 193 follow them as numbers: 199 is version.go's entry for INFRA-4605,
-// and 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567.
+// 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567, and 232 its entry for
+// dispatch://INFRA-4508.
 // 199 moves no shape of an answer a plugin parses, so its records are 193's under its own number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, gateBasisContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, gateBasisContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
