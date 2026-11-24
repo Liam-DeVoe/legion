@@ -788,7 +788,9 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := UnownedPodRelease(tc.view, idleNow, idlePeriod, tc.sandbox, tc.kept)
+			view := tc.view
+			view.KeptVolume = tc.kept
+			got := UnownedPodRelease(view, idleNow, idlePeriod, tc.sandbox)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}

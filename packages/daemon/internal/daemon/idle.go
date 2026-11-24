@@ -274,10 +274,6 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
-	// Whether the Sandbox keeps a volume the issue's next pod mounts, which the release keeps and
-	// so needs no read of (workflow.UnownedPodRelease's keptVolume), is read here with the pod, from
-	// the runtime's own store, before the transaction.
-	keptVolume := w.idleRuntime.IssueKeepsVolume(issue, now)
 	// The mark's line and the wake of its lane are hooks of its commit, as the idle pass's are. The
 	// pass counts the release from what Transact answers, never from a hook, so a hook the watcher
 	// runs later changes no count of a pass.
@@ -289,7 +285,16 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 			// rather than reading the runtime again under the transaction's lock. So is the pod a
 			// decline on record is read against.
 			view.PodUID = podUID
-			decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true, keptVolume)
+			decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
+			if decision.Read {
+				// Whether the Sandbox keeps a volume the issue's next pod mounts, which the release
+				// keeps and so needs no read of (pods.IdleView.KeptVolume), is asked only of a pod
+				// the rule would otherwise release with a read, which is rare: the runtime's answer
+				// is a read of its informer's Sandbox that decodes the claim templates
+				// (internal/runtime/sandbox's IssueKeepsVolume), which no pass's tick pays.
+				view.KeptVolume = w.idleRuntime.IssueKeepsVolume(issue, now)
+				decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
+			}
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding

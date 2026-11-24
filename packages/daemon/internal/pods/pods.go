@@ -191,6 +191,12 @@ type IdleView struct {
 	// decline taken in another pod ends (IdleDecline.Stands): that pod's disk, and the work the
 	// decline names, went with it.
 	PodUID string
+	// KeptVolume is whether the issue's Sandbox keeps a volume the issue's next pod mounts
+	// (runtime.IssueVolumeReader): a release of a pod no claim owns keeps that Sandbox and its
+	// volume, so it deletes no disk and reads none (workflow.UnownedPodRelease). The store does not
+	// hold it either: the daemon's pass reads it from the runtime and sets it on the view, and only
+	// for a pod the rule would otherwise release with a read.
+	KeptVolume bool
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
 	// stands open), read by the project's token whatever project the issue's key names (store's
 	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
