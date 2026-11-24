@@ -298,7 +298,11 @@ against the base tree's filters: each filter it alters selects every path in tha
 A branch made before the gates and the `//ci:` lines moved keeps the old `RULES` and `GATES` in
 `ci_job_reads.py`, and `.github/ci-filters.yaml`, when it merges main; both are refused by name.
 `.github/scripts/ci-reads-convert`, run after that merge stops, moves what the branch added into the
-gate files and the `//ci:` lines and deletes the old file.
+gate files and the `//ci:` lines and deletes the old file. It stages every file it writes. A file it
+leaves in conflict is unmerged in the index, its base, branch and main texts in their stages, so a
+plain `git commit` after you merge it by hand refuses until you `git add` it. A `CONFLICT filter`
+line or a `STOPPED` line leaves no file in conflict, and git refuses nothing for it: settle each, run
+the converter again with `--filters` until it exits 0, then commit. `--help` prints all of this.
 
 ## check-ci-filters.sh holds the table to ci.yaml
 
