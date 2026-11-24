@@ -80,10 +80,14 @@ func (s *server) withheldFromSession(ctx context.Context, session, project strin
 
 // refuseSessionOutsideProject is the refusal of a write that gives session work of project, or
 // sends it one of project's items - what names the work - when the session may not be shown that
-// project (access.SessionSeesProject): 403 SESSION_OUTSIDE_PROJECT, naming the session and the
-// project, each of which the writer named or reads. A write of no project, and one whose session
-// sees the project, are refused nothing. It reads through q, the write's transaction where it
-// holds one.
+// project (access.SessionSeesProject): 403 SESSION_OUTSIDE_PROJECT, naming the session, the
+// project and what proves a session's access to it, so the agent that wrote can put that right.
+// Every caller names a project the writer reads, which the refusal may therefore name: an issue
+// read as the writer reads it (issueProjectSeenBy; createStoredMessage's issue, read so before),
+// an ask or a comment's owner the write has already read as the writer reads it
+// (changeAskFollower's loadAskOwner, refuseOwnerBeforeResolving). A write of no project, and one
+// whose session sees the project, are refused nothing. It reads through q, the write's
+// transaction where it holds one.
 func refuseSessionOutsideProject(ctx context.Context, q access.RowsQuerier, session, project, what string) error {
 	if project == "" {
 		return nil
@@ -95,9 +99,16 @@ func refuseSessionOutsideProject(ctx context.Context, q access.RowsQuerier, sess
 	if sees {
 		return nil
 	}
-	return errorf(http.StatusForbidden, codeSessionOutsideProject,
-		"session %s does not see project %s, so it cannot %s", session, project, what)
+	return errorf(http.StatusForbidden, codeSessionOutsideProject, sessionOutsideProjectText, session, project, what, project, project)
 }
+
+// sessionOutsideProjectText is SESSION_OUTSIDE_PROJECT's message, with the session, the project,
+// what the write asked of the session, and the project twice more: what proves a session's access
+// to a project, by access.SessionSeesProjectClause - every person the session acts for sees it,
+// and the project list its token carries, where the listener has one, names it.
+const sessionOutsideProjectText = "session %s cannot see project %s, so it cannot %s: " +
+	"tie the session to a person who sees %s (a broker-issued token of that person proves the session), " +
+	"and let the session's token list %s where it lists projects"
 
 // refuseVisibleSessionOutsideProject is refuseSessionOutsideProject, read on the pool, for a
 // session writer may see (sessionHiddenFrom). A session hidden from writer is refused nothing

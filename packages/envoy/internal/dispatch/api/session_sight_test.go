@@ -33,6 +33,13 @@ func seedSessionOfBob(t *testing.T, database *store.Store) {
 	}
 }
 
+// namesTheRemedy reports whether a refusal names bob's session, PUB, and what proves a session's
+// access to PUB, so the agent that wrote can put it right (sessionOutsideProjectText).
+func namesTheRemedy(body string) bool {
+	return strings.Contains(body, "session "+sessionOfBob+" cannot see project "+seedPublic) &&
+		strings.Contains(body, "tie the session to a person who sees "+seedPublic)
+}
+
 // rowText is the one text a statement answers, failing the test when it answers none.
 func rowText(t *testing.T, database *store.Store, sql string, args ...any) string {
 	t.Helper()
@@ -108,8 +115,8 @@ func TestASessionIsGivenNoWorkOfAProjectItDoesNotSee(t *testing.T) {
 	} {
 		refused := seed.request(t, row.caller, row.method, row.target(seedPublic), row.body)
 		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeSessionOutsideProject ||
-			!strings.Contains(refused.Body.String(), sessionOfBob) {
-			t.Errorf("%s on PUB, which %s does not see: %d %s, want 403 %s naming the session",
+			!namesTheRemedy(refused.Body.String()) {
+			t.Errorf("%s on PUB, which %s does not see: %d %s, want 403 %s naming the session, PUB and what proves access",
 				row.write, sessionOfBob, refused.Code, strings.TrimSpace(refused.Body.String()), codeSessionOutsideProject)
 		}
 		if written := row.written(seedPublic); written != "" {
@@ -161,8 +168,8 @@ func TestASendToASessionThatDoesNotSeeTheProjectIsRefused(t *testing.T) {
 	for _, write := range writes {
 		refused := seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+write.path, write.body)
 		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeSessionOutsideProject ||
-			!strings.Contains(refused.Body.String(), sessionOfBob) {
-			t.Errorf("%s on PUB, which %s does not see: %d %s, want 403 %s naming the session",
+			!namesTheRemedy(refused.Body.String()) {
+			t.Errorf("%s on PUB, which %s does not see: %d %s, want 403 %s naming the session, PUB and what proves access",
 				write.name, sessionOfBob, refused.Code, strings.TrimSpace(refused.Body.String()), codeSessionOutsideProject)
 		}
 	}
