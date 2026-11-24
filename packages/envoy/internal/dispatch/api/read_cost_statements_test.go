@@ -48,9 +48,12 @@ package api
 // where pg_stat_statements_info counts an eviction.
 //
 // Beside each read's figure the run prints the statements behind it, the readCostTopStatements
-// slowest per reading, each with its queryid, its calls and its time per reading and the head of
-// its text (logReadCostStatements), so a reader can see which statements one side adds or slows.
-// The texts are read once, after the idle interval, and only for those statements.
+// slowest per reading, each with its queryid, its calls, its time, its shared blocks hit and its
+// shared blocks read per reading (shared_blks_hit, shared_blks_read, taken in the same snapshots
+// as the time) and the head of its text (logReadCostStatements), so a reader can see which
+// statements one side adds or slows, and whether a slower one read more blocks or only took longer
+// over the same ones. Nothing is bound on the blocks either. The texts are read once, after the
+// idle interval, and only for those statements.
 //
 // pg_stat_statements needs the server to preload it (shared_preload_libraries) and a role that
 // may create the extension. Where either is missing, the run says in one line that database time
@@ -87,10 +90,12 @@ type readCostSnapshot struct {
 	evicted    int64
 }
 
-// readCostStatementTotal is one statement's calls and total_exec_time in milliseconds.
+// readCostStatementTotal is one statement's calls, its total_exec_time in milliseconds and its
+// shared blocks hit and read (shared_blks_hit, shared_blks_read).
 type readCostStatementTotal struct {
-	calls int64
-	ms    float64
+	calls     int64
+	ms        float64
+	hit, read int64
 }
 
 // readCostDatabaseTime is the database time of one interval per reading of the batch it is read
@@ -100,9 +105,10 @@ type readCostDatabaseTime struct {
 	readings int
 	length   time.Duration
 	// ms and calls are the time and the calls per reading of the statements that ran at least
-	// once per reading, and statements how many statements those are.
-	ms, calls  float64
-	statements int
+	// once per reading, hit and read their shared blocks hit and read per reading, and statements
+	// how many statements those are.
+	ms, calls, hit, read float64
+	statements           int
 	// top are the readCostTopStatements of those statements that took the most time, the slowest
 	// first.
 	top []readCostStatementTime
@@ -120,13 +126,13 @@ const (
 	readCostStatementText = 160
 )
 
-// readCostStatementTime is one statement behind a read's database time: its queryid, its calls
-// and its time per reading, and the first readCostStatementText characters of its text with its
-// whitespace collapsed, "" until it is read.
+// readCostStatementTime is one statement behind a read's database time: its queryid, its calls,
+// its time and its shared blocks hit and read per reading, and the first readCostStatementText
+// characters of its text with its whitespace collapsed, "" until it is read.
 type readCostStatementTime struct {
-	query     int64
-	calls, ms float64
-	text      string
+	query                int64
+	calls, ms, hit, read float64
+	text                 string
 }
 
 // newReadCostStatements opens what database time is read with, for the run's database at
@@ -191,8 +197,8 @@ func (s *readCostStatements) snapshot(ctx context.Context) (readCostSnapshot, er
 	if err := s.conn.QueryRow(ctx, `select dealloc from pg_stat_statements_info`).Scan(&snapshot.evicted); err != nil {
 		return snapshot, fmt.Errorf("read pg_stat_statements_info: %w", err)
 	}
-	rows, err := s.conn.Query(ctx, `select queryid, calls, total_exec_time from pg_stat_statements(false)
-		where dbid = $1 and userid = $2 and toplevel`, s.database, s.role)
+	rows, err := s.conn.Query(ctx, `select queryid, calls, total_exec_time, shared_blks_hit, shared_blks_read
+		from pg_stat_statements(false) where dbid = $1 and userid = $2 and toplevel`, s.database, s.role)
 	if err != nil {
 		return snapshot, fmt.Errorf("read pg_stat_statements: %w", err)
 	}
@@ -200,7 +206,7 @@ func (s *readCostStatements) snapshot(ctx context.Context) (readCostSnapshot, er
 	for rows.Next() {
 		var query int64
 		var total readCostStatementTotal
-		if err := rows.Scan(&query, &total.calls, &total.ms); err != nil {
+		if err := rows.Scan(&query, &total.calls, &total.ms, &total.hit, &total.read); err != nil {
 			return snapshot, fmt.Errorf("read pg_stat_statements: %w", err)
 		}
 		snapshot.statements[query] = total
@@ -299,11 +305,14 @@ func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readC
 		if now.calls < was.calls {
 			was = readCostStatementTotal{}
 		}
-		switch calls, ms := now.calls-was.calls, now.ms-was.ms; {
+		switch calls, ms, hit, read := now.calls-was.calls, now.ms-was.ms, now.hit-was.hit, now.read-was.read; {
 		case calls >= int64(readings):
 			spent.ms += ms
 			spent.calls += float64(calls)
-			counted = append(counted, readCostStatementTime{query: query, calls: float64(calls) / float64(readings), ms: ms / float64(readings)})
+			spent.hit += float64(hit)
+			spent.read += float64(read)
+			counted = append(counted, readCostStatementTime{query: query, calls: float64(calls) / float64(readings), ms: ms / float64(readings),
+				hit: float64(hit) / float64(readings), read: float64(read) / float64(readings)})
 		case calls > 0:
 			spent.otherMS += ms
 			spent.others++
@@ -311,6 +320,8 @@ func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readC
 	}
 	spent.ms /= float64(readings)
 	spent.calls /= float64(readings)
+	spent.hit /= float64(readings)
+	spent.read /= float64(readings)
 	spent.otherMS /= float64(readings)
 	slices.SortFunc(counted, func(one, other readCostStatementTime) int {
 		return cmp.Or(cmp.Compare(other.ms, one.ms), cmp.Compare(one.query, other.query))
@@ -321,8 +332,9 @@ func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readC
 }
 
 // logReadCostStatements prints the statements behind the database time of read on side, one per
-// line, the slowest first: each one's queryid, its calls and its milliseconds per reading, and
-// the head of its text. It says so where the time was not measured.
+// line, the slowest first: each one's queryid, its calls, its milliseconds, its shared blocks hit
+// and its shared blocks read per reading, and the head of its text. It says so where the time was
+// not measured.
 func logReadCostStatements(t *testing.T, check, read, side string, database *readCostDatabaseTime) {
 	t.Helper()
 	if database == nil {
@@ -330,10 +342,12 @@ func logReadCostStatements(t *testing.T, check, read, side string, database *rea
 		return
 	}
 	t.Logf("%s: the statements of %s on the %s: the %d that took the most time of the %d that ran at least %d times, "+
-		"%.2f ms per reading in all; queryid, calls per reading, ms per reading, text", check, read, side, len(database.top),
-		database.statements, database.readings, database.ms)
+		"%.2f ms, %.1f shared blocks hit and %.1f shared blocks read per reading in all; queryid, calls per reading, ms per reading, "+
+		"shared blocks hit per reading, shared blocks read per reading, text", check, read, side, len(database.top),
+		database.statements, database.readings, database.ms, database.hit, database.read)
 	for _, statement := range database.top {
-		t.Logf("%s: %s, %s: %d\t%.1f\t%.3f\t%s", check, read, side, statement.query, statement.calls, statement.ms, statement.text)
+		t.Logf("%s: %s, %s: %d\t%.1f\t%.3f\t%.1f\t%.1f\t%s", check, read, side, statement.query, statement.calls, statement.ms,
+			statement.hit, statement.read, statement.text)
 	}
 }
 
