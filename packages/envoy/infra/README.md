@@ -3539,11 +3539,17 @@ without one:
   envoy-dispatch. Then each `$NAME`, `${NAME}` and `${NAME...}` becomes the value the container's
   `env` gives `NAME` (a literal, or a field of the pod such as a label) or the value a literal
   assignment in the script gave it before (`NAME=value`, `export NAME=value`, a quoted value, a
-  value its own expansions make, read in order), `$1` to `$9` become the words after a `-c` script,
-  an unset name's `${NAME:-word}` becomes its word, and quotes and backslashes go; that reading is
-  read again until it changes nothing. So `sh -c 'exec "envoy-${ROLE}"'` with `ROLE=dispatch`, from
-  the `env` or from a label, and `PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"` both
-  run envoy-dispatch, and their blocker says the words name it `as the shell reads them`. A
+  value its own expansions make): a top-level assignment, or one before a special builtin or of
+  `export`, replaces the name's value from there on, while one in a branch, a loop or after `&&` or
+  `||` adds a value and replaces none, and the words of a statement are read before its assignments,
+  so `ROLE=dispatch exec envoy-$ROLE` runs the pod's `ROLE`. `$1` to `$9` become the words after a
+  `-c` script, an unset name's `${NAME:-word}` becomes its word, `${NAME##pattern}` and the other
+  trims remove a matching prefix or suffix, a backslash before a line break joins the two lines, and
+  quotes and backslashes go; that reading is read again until it changes nothing, and a reading the
+  proof cannot finish within its bounds counts as a writer. So `sh -c 'exec "envoy-${ROLE}"'` with
+  `ROLE=dispatch`, from the `env` or from a label, and `PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch;
+  exec "$PROGRAM"` both run envoy-dispatch, and their blocker says the words name it `as the shell
+  reads them`. A
   reference or an expansion of a variable whose value the pod does not show - from a Secret or a
   ConfigMap, or one an `envFrom` source may set (one of a name its prefix and a key of
   `[-._a-zA-Z0-9]+` form) - counts as a writer of every bucket, its blocker naming the expansion. A

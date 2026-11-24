@@ -914,7 +914,7 @@ type valueFrom struct {
 // listener, such as an Actions runner's, is never read.
 func (c podContainer) writes() []string {
 	started := c.launch()
-	if started.unread != "" || started.names == listenerBinary {
+	if started.writesAny() {
 		return bus.CopiedBuckets()
 	}
 	if c.Name == "envoy-dispatch" || started.binary == dispatchBinary {
