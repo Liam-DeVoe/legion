@@ -488,6 +488,7 @@ legion replay compare \
 ```
 
 `compare` compares the slot rules on two windows, and writes the result as one Markdown document.
+Beside the document, it writes the issues file, which gives the times of each issue under each rule.
 Give the window before the change of the rule first.
 It compares each `--rule`, or every rule that the repository keeps where you give none, and adds `main` and each window's own rule where you leave them out.
 Under each rule, it replays each window on every branch, and on the main branch at each f from 1 to 2 in steps of 0.1 for the break-even search.
@@ -508,11 +509,13 @@ The document gives:
 
 - the value of every measure for every rule, window and branch, with the lowest and the highest seed
 
+- the name of the issues file, and what it gives
+
 - the gap of each measure between the snapshot and the line timelines
 
 - each rule's break-even factor: the f at which its rank against `main` changes, or that no f up to 2 changes it
 
-- the rule that it names best, or that no rule is best, with each rule's trade
+- the rule that it names best, or that no rule is best, with each rule's trade, and, beside the trade of each candidate that was added to the rules of the comparison's spec, the reason for that candidate
 
 - the assumptions and the scenario that each run used
 
@@ -536,8 +539,29 @@ For the fixture windows `one-minute-wait` and `two-waiters-one-blocker` of the t
 
 Between the heading and the table, the document has a paragraph that says how to read the rows, which the example leaves out.
 
+The issues file is at the path of `--out`, with the extension replaced by `-issues.md`.
+For `--out comparison.md`, the issues file is `comparison-issues.md`, and the document names it.
+For each window and each rule, the issues file gives each issue that held a slot in the record or on the main branch of the rule's replay.
+For each such issue, it gives the first slot and the done in the record and in the replay, in UTC, to the minute.
+Each replayed time is the median over the seeds of the main branch.
+A seed that gives an issue no time counts as later than every time, so the median gives no time where half of the seeds or more give none.
+Where the median gives no time, the file writes `no slot` or `not done`.
+The rows follow the recorded first slot, and the issues that hold no slot in the record come last.
+For a comparison of the tool's tests, one section of the issues file reads:
+
+```text
+## window-1 under `returned-by-first-slot` (seeds: 3)
+
+| issue | first slot, recorded | first slot, replayed | done, recorded | done, replayed |
+| --- | --- | --- | --- | --- |
+| ACME-2 | 2001-03-05T09:00Z | 2001-03-05T09:40Z | 2001-03-05T11:00Z | 2001-03-05T12:20Z |
+| ACME-1 | 2001-03-05T09:30Z | 2001-03-05T09:00Z | 2001-03-05T12:00Z | 2001-03-05T10:40Z |
+| ACME-3 | 2001-03-05T10:00Z | no slot | not done | not done |
+| ACME-5 | no slot | 2001-03-05T10:40Z | not done | not done |
+```
+
 To split the work, run each part with `--only-window <name>` and `--only-rule <name>` into one `--runs` directory, with no `--out`.
-Then write the document from the parts' directories with `--from-runs <dir>... --out <file>`, which runs nothing.
+Then write the document and the issues file from the parts' directories with `--from-runs <dir>... --out <file>`, which runs nothing.
 `validate`, `forecast` and `compare` print on standard error, as each run ends, its facts, passes, seconds and peak memory, so that you can size a job.
 
 ## The measures

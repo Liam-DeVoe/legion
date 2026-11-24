@@ -455,9 +455,10 @@ type partRead struct {
 // with the decision's costs read from it, its scorecard from the line timeline, the gap of each
 // measure between the two (run.json's, each issue's own left out), the assumptions and the
 // scenario it ran under, and the commit of the legion binary that made it (unknownBuild for a
-// run.json that names none) with the moment on the wall clock it started. A run of a part that no
-// validation or forecast reads keeps no issue's times of its line scorecard, and no run keeps its
-// snapshot scorecard's, which no report reads.
+// run.json that names none) with the moment on the wall clock it started. A run that no
+// validation, no forecast and no comparison's issues file reads (keepsIssues, readPart) keeps no
+// issue's times of its line scorecard, and no run keeps its snapshot scorecard's, which no report
+// reads.
 type runRead struct {
 	seed        int64
 	snapshot    Scorecard
@@ -525,10 +526,11 @@ func ReadRuns(dirs ...string) (Runs, error) {
 	return runs, nil
 }
 
-// keepsIssues says whether a report reads each issue's times from the line scorecards of the part
-// key: the part of a window under the rule its daemon ran, which its validation reads, and the
-// part of the window before the change under the rule of the window after it, which the forecast
-// reads.
+// keepsIssues says whether a report reads each issue's times from the line scorecards of every
+// branch of the part key: the part of a window under the rule its daemon ran, which its validation
+// reads, and the part of the window before the change under the rule of the window after it, which
+// the forecast reads. The main branch of every part keeps them too, for the issues file of a
+// comparison (readPart, writeIssues).
 func (r Runs) keepsIssues(key partKey) bool {
 	rec, ok := r.windows[key.window]
 	if !ok {
@@ -546,7 +548,8 @@ func (r Runs) keepsIssues(key partKey) bool {
 }
 
 // readPart reads the part key from the directory of runs dir: its part.json and each run its plan
-// names; keepIssues keeps each issue's times of the runs' line scorecards.
+// names; keepIssues keeps each issue's times of the runs' line scorecards on every branch, and the
+// runs of the main branch (MainBranchAt) keep them whatever it says.
 func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 	partDir := filepath.Join(dir, key.window, key.rule)
 	part := &partRead{runs: map[string][]runRead{}}
@@ -562,7 +565,7 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 			continue
 		}
 		for _, seed := range run.Seeds {
-			read, err := readRun(runDir(dir, key.window, key.rule, at, seed), keepIssues)
+			read, err := readRun(runDir(dir, key.window, key.rule, at, seed), keepIssues || at.Label() == MainBranchAt.Label())
 			if err != nil {
 				return nil, err
 			}
@@ -602,8 +605,8 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	return read, nil
 }
 
-// dropIssueTimes empties card's times of each issue, and its first day's, which only a validation's
-// and a forecast's line scorecards are read for.
+// dropIssueTimes empties card's times of each issue, and its first day's, which only a validation's,
+// a forecast's and a comparison's issues file's line scorecards are read for.
 func dropIssueTimes(card *Scorecard) {
 	card.FirstSlot, card.DoneAt = nil, nil
 	if card.FirstDayApart != nil {

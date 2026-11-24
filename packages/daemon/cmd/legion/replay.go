@@ -609,7 +609,8 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 // replayCompareLong is `legion replay compare --help`'s description.
-const replayCompareLong = `Compare the slot rules on two recorded windows, and write the result as one Markdown document.
+const replayCompareLong = `Compare the slot rules on two recorded windows, and write the result as one Markdown document
+and each issue's times under each rule in a second file beside it.
 
 The windows are given window before the change of the rule first: --window twice. The rules are
 each --rule, every rule the repository keeps where none is given, with main and the rule each
@@ -620,12 +621,13 @@ one that draws nothing, and on the main branch at each slowdown factor from 1 to
 break-even search. Up to --parallel runs run at once, each in a database of its own on the server
 --pg-dsn names, each written under --runs as validate writes it; a run whose files are there
 already is not run again, and each run's log is deleted once read unless --keep-logs. The
-document is then written to --out from the runs.
+document is then written to --out from the runs, and the issues file to --out's path with its
+extension replaced by -issues.md: --out comparison.md writes comparison-issues.md beside it.
 
 The work splits by window and rule: --only-window <name> and --only-rule <name> run that part
 alone into --runs and write no document, so each pod of an indexed Job can run one part. Then
---from-runs <dir>... --out <file> writes the document from the directories the parts wrote,
-running nothing; it is the same document a single process writes.
+--from-runs <dir>... --out <file> writes the document and its issues file from the directories
+the parts wrote, running nothing; they are the same files a single process writes.
 
 The document names the build commit of the runs it read, the commit of the legion binary that
 made them, with how many runs each made. It gives each window's scorecard read from its record;
@@ -637,7 +639,11 @@ workflow commits it carries too; which window measures how a rule changes confli
 every measure for every rule, window and branch, read from the snapshot timeline, with the lowest
 and the highest seed; the gap of each measure between the snapshot and the line timelines; each
 rule's break-even slowdown factor against main; the rule it names best, or that none is, with
-each rule's trade; and the assumptions and the scenario each run used.`
+each rule's trade and why each rule the spec does not name was added; and the assumptions and the
+scenario each run used. The document names the issues file, which gives, for each window and each
+rule, each issue that held a slot in the record or on the main branch of the rule's replay: its
+first slot and its done in the record and in the replay, each replayed time the median over the
+main branch's seeds, "no slot" or "not done" where half the seeds or more give none.`
 
 // newReplayCompareCommand is `legion replay compare` (replay.RunCompare, replay.Runs.Comparison).
 func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -652,7 +658,7 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 	ruleNames := flags.StringArray("rule", nil, "a rule to compare, as legion replay rules names it; repeat for more (every rule where none is given)")
 	dsn := flags.String("pg-dsn", "", "a Postgres server each run makes its own database on")
 	runsDir := flags.String("runs", "", "the directory of runs every run is written under")
-	out := flags.String("out", "", "the file the document is written to")
+	out := flags.String("out", "", "the file the document is written to; the issues file goes beside it, its name ending -issues.md")
 	parallel := flags.Int("parallel", 1, "how many runs run at once")
 	onlyWindow := flags.String("only-window", "", "run the part of this window alone, by its directory's name, and write no document")
 	onlyRule := flags.String("only-rule", "", "run the part of this rule alone, and write no document")
@@ -711,7 +717,8 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
 			return 1
 		}
-		document, err := read.Comparison()
+		issuesFile := replay.IssuesFile(*out)
+		document, issues, err := read.Comparison(issuesFile)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
 			return 1
@@ -720,7 +727,11 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			fmt.Fprintf(stderr, "legion replay compare: write the document: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "legion replay compare: wrote %s from the runs in %s\n", *out, strings.Join(dirs, ", "))
+		if err := os.WriteFile(issuesFile, []byte(issues), 0o644); err != nil {
+			fmt.Fprintf(stderr, "legion replay compare: write the issues file: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "legion replay compare: wrote %s and %s from the runs in %s\n", *out, issuesFile, strings.Join(dirs, ", "))
 		return 0
 	})
 	return cmd

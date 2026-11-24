@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -672,23 +673,25 @@ func (c comparison) breakEven(window, rule string) BreakEvenResult {
 // Comparison is the document of a comparison of slot rules (spec R7), written in Markdown from the
 // runs alone, so it is the same whether one process made every run or many processes each made a
 // part: the windows, rules, build commits of the runs, branches, seeds and factors it read; the
-// rule it names best, or that none is, with each rule's trade; each window's scorecard read from
-// its record; what each rule's grace keeps over the waits that gave a slot back in each window's
-// record; each window's validation; the forecast across the change, with the workflow commits it
-// carries too; which window measures how a rule changes conflicts; the value of every measure for
-// every rule, window and branch, read from the snapshot timeline, with the lowest and the highest
-// seed; the gap of each measure between the snapshot and the line timelines; each rule's
-// break-even slowdown factor; and the assumptions and the scenario each run used. Every number in
-// it is computed from the runs.
-func (r Runs) Comparison() (string, error) {
+// rule it names best, or that none is, with each rule's trade and why each candidate added to the
+// spec's rules is compared; each window's scorecard read from its record; what each rule's grace
+// keeps over the waits that gave a slot back in each window's record; each window's validation;
+// the forecast across the change, with the workflow commits it carries too; which window measures
+// how a rule changes conflicts; the value of every measure for every rule, window and branch, read
+// from the snapshot timeline, with the lowest and the highest seed; where each issue's times are;
+// the gap of each measure between the snapshot and the line timelines; each rule's break-even
+// slowdown factor; and the assumptions and the scenario each run used. Every number in it is
+// computed from the runs. Beside it, issues is the comparison's issues file (writeIssues), which
+// the document names by the base name of issuesFile, the path it is written to (IssuesFile).
+func (r Runs) Comparison(issuesFile string) (document, issues string, err error) {
 	c, err := r.readComparison()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	before, after := c.windows[0], c.windows[1]
 	forecast, err := r.Forecast(before.Name, after.Name, after.Rule)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var doc strings.Builder
 	p := &printer{w: &doc}
@@ -715,10 +718,112 @@ func (r Runs) Comparison() (string, error) {
 	p.line("")
 	c.writeConflicts(p)
 	c.writeMatrix(p)
+	p.line("## Each issue's first slot and done under each rule")
+	p.line("")
+	p.line("`%s`, beside this document, gives for each window and each rule each issue that held a slot in the record or in the rule's replay on the main branch (`%s`): its first slot and its done in the record and in the replay, each replayed time the median over the main branch's seeds.",
+		filepath.Base(issuesFile), MainBranchAt.Label())
+	p.line("")
 	c.writeGaps(p)
 	c.writeBreakEven(p)
 	c.writeAssumptions(p)
-	return doc.String(), p.err
+	var list strings.Builder
+	q := &printer{w: &list}
+	c.writeIssues(q)
+	return doc.String(), list.String(), cmp.Or(p.err, q.err)
+}
+
+// IssuesFile is the path `legion replay compare` writes a comparison's issues file to
+// (Comparison), beside its document at out: out with its extension, where it has one, replaced by
+// "-issues.md".
+func IssuesFile(out string) string {
+	return strings.TrimSuffix(out, filepath.Ext(out)) + "-issues.md"
+}
+
+// writeIssues writes the comparison's issues file: for each window and each rule, each issue that
+// held a slot in the window's record or on the main branch of the rule's replay of it, with its
+// first slot and its done in the record and in the replay. Both are read from line timelines, as
+// the validation reads them: the record's from the window's record scorecard, and the replay's
+// from the line scorecards of the main branch's seeds, each the median over them (medianTime). The
+// rows follow the recorded first slot, then the replayed one, then the issue's key, so an issue
+// the record gave no slot comes after every issue it gave one.
+func (c comparison) writeIssues(p *printer) {
+	before, after := c.windows[0], c.windows[1]
+	p.line("# Each issue's first slot and done under each rule, on %s and %s", before.Name, after.Name)
+	p.line("")
+	p.line("`legion replay compare` wrote this file beside its document from the runs it read.")
+	p.line("For each window and each rule, it gives each issue that held a slot in the window's record or in the rule's replay on the main branch (`%s`): its first slot and its done in the record and in the replay, in UTC.",
+		MainBranchAt.Label())
+	p.line("Each replayed time is the median over the main branch's seeds.")
+	p.line("A seed that gives an issue no time counts as later than every time, so the median gives none where half the seeds or more give none.")
+	p.line("`no slot` is no first slot in the window, and `not done` is no done in the window.")
+	p.line("The rows follow the recorded first slot, and the issues that the record gives no slot come last.")
+	firstSlot := func(card Scorecard) map[string]time.Time { return card.FirstSlot }
+	doneAt := func(card Scorecard) map[string]time.Time { return card.DoneAt }
+	for _, w := range c.windows {
+		recorded := w.Scorecard.FirstSlot
+		for _, rule := range c.rules {
+			cards := lineCards(c.runs.parts[partKey{window: w.Name, rule: rule}].runs[MainBranchAt.Label()])
+			replayed := map[string]time.Time{}
+			for _, card := range append([]Scorecard{w.Scorecard}, cards...) {
+				for key := range card.FirstSlot {
+					if _, seen := replayed[key]; !seen {
+						replayed[key] = medianTime(cards, key, firstSlot)
+					}
+				}
+			}
+			issues := slices.SortedFunc(maps.Keys(replayed), func(a, b string) int {
+				return cmp.Or(noneLast(recorded[a], recorded[b]), noneLast(replayed[a], replayed[b]), strings.Compare(a, b))
+			})
+			p.line("")
+			p.line("## %s under `%s` (seeds: %d)", w.Name, rule, len(cards))
+			p.line("")
+			p.line("%s", tableHead("issue", []string{"first slot, recorded", "first slot, replayed", "done, recorded", "done, replayed"}))
+			for _, key := range issues {
+				p.line("| %s | %s | %s | %s | %s |", key, issueTime(recorded[key], "no slot"), issueTime(replayed[key], "no slot"),
+					issueTime(w.Scorecard.DoneAt[key], "not done"), issueTime(medianTime(cards, key, doneAt), "not done"))
+			}
+		}
+	}
+}
+
+// medianTime is the median over cards of the time that times gives key, a card that gives none
+// counting as later than every time: the zero time, none, where half the cards or more give none,
+// and for an even count the midpoint of the two middle times.
+func medianTime(cards []Scorecard, key string, times func(Scorecard) map[string]time.Time) time.Time {
+	given := make([]time.Time, 0, len(cards))
+	for _, card := range cards {
+		if at, ok := times(card)[key]; ok {
+			given = append(given, at)
+		}
+	}
+	if 2*len(given) <= len(cards) {
+		return time.Time{}
+	}
+	slices.SortFunc(given, time.Time.Compare)
+	mid := len(cards) / 2
+	if len(cards)%2 == 1 {
+		return given[mid]
+	}
+	return given[mid-1].Add(given[mid].Sub(given[mid-1]) / 2)
+}
+
+// noneLast orders the times a and b, the zero time, none, after every other.
+func noneLast(a, b time.Time) int {
+	if a.IsZero() != b.IsZero() {
+		if a.IsZero() {
+			return 1
+		}
+		return -1
+	}
+	return a.Compare(b)
+}
+
+// issueTime is at as the issues file writes it, in UTC to the minute, and none for the zero time.
+func issueTime(at time.Time, none string) string {
+	if at.IsZero() {
+		return none
+	}
+	return at.UTC().Format("2006-01-02T15:04Z")
 }
 
 // writeHead writes the document's title and what it read: each window with its span, place and
@@ -822,7 +927,8 @@ func partsText(parts []Part) string {
 }
 
 // writeDecision writes the rule the comparison names best, or that none is and why, and each
-// rule's trade against main over the branches that pass R5.
+// rule's trade against main over the branches that pass R5, beside why each candidate added to the
+// spec's rules is compared (candidateReasons).
 func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 	decision := c.decision()
 	p.line("## The rule named best (R7)")
@@ -850,15 +956,16 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 			decision.Branches)
 	}
 	p.line("")
-	p.line("Each rule's trade against `main` over the %d branches that pass R5: on how many it is better, worse by more than R5's gap, and neither.", decision.Branches)
+	p.line("Each rule's trade against `main` over the %d branches that pass R5: on how many it is better, worse by more than R5's gap, and neither; and why each rule the spec does not name was added.",
+		decision.Branches)
 	p.line("")
-	p.line("%s", tableHead("rule", costMeasureNames()))
+	p.line("%s", tableHead("rule", slices.Concat(costMeasureNames(), []string{"why it was added"})))
 	for _, trade := range decision.Trades {
 		row := "| `" + trade.Rule + "` |"
 		for _, m := range trade.Measures {
 			row += fmt.Sprintf(" better %d, worse %d, neither %d |", m.Better, m.Worse, m.Level)
 		}
-		p.line("%s", row)
+		p.line("%s", row+" "+candidateReasons[trade.Rule]+" |")
 	}
 	p.line("")
 	p.line("Each rule's costs and `main`'s on the main branch of each window:")

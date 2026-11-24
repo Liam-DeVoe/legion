@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -523,13 +524,13 @@ func TestBreakEvenFactor(t *testing.T) {
 // with its seeds and the break-even search, and is read for each window's scorecard, validation
 // and table of each branch, every rule in each table, every measure in each, what each rule with a
 // grace keeps on each window, the forecast with the workflow commits it carries, which window
-// measures conflicts, each rule's break-even factor, the decision, the assumptions and the build
-// commit of the runs: each window's runs were made by a binary of its own, the window after's
-// first, so the document names after's commit before before's, each with its count of runs. With
-// LEGION_TEST_PG_DSN set it also replays two fixture windows whole and in parts and holds the two
-// documents equal: a document written from one process's runs and one written from the runs of
-// parts, each run in a process of its own, are the same, and it names the build commit the runs
-// were given.
+// measures conflicts, the name of the issues file, each rule's break-even factor, the decision,
+// the assumptions and the build commit of the runs: each window's runs were made by a binary of
+// its own, the window after's first, so the document names after's commit before before's, each
+// with its count of runs. With LEGION_TEST_PG_DSN set it also replays two fixture windows whole
+// and in parts and holds the two documents equal, and the two issues files: what is written from
+// one process's runs and what is written from the runs of parts, each run in a process of its own,
+// are the same, and the document names the build commit the runs were given.
 func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	dir := t.TempDir()
 	to := compareFrom.Add(compareHours * time.Hour)
@@ -553,52 +554,26 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		after.Name: {commit: "4444444444444444444444444444444444444444", started: compareFrom.Add(24 * time.Hour)}}
 	plan := fullPlan()
 	var cards []Scorecard
-	for _, w := range []windowRecord{before, after} {
-		if err := writeJSON(filepath.Join(dir, w.Name, recordFile), w); err != nil {
-			t.Fatal(err)
-		}
-		for r, rule := range record.SlotRules() {
-			part := partRecord{Window: w.Name, Rule: rule.Name, RuleCommit: rule.Commit, Branches: []partRun{}, BreakEven: []partRun{}, Parallel: 1}
-			write := func(at BranchAt) partRun {
-				seeds := w.seeds(at.Branch, plan.perDraw)
-				for _, seed := range seeds {
-					snapshot := sampleCard(compareHours)
-					snapshot.Rule, snapshot.Branch, snapshot.Seed, snapshot.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
-					snapshot.Done += r
-					snapshot.PriorityTaken += 0.001 * float64(seed)
-					line := snapshot
-					line.SlotHoursInTurn += 0.5
-					cards = append(cards, snapshot)
-					b := builds[w.Name]
-					b.runs++
-					ran := runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown,
-						Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4}, StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute),
-						Gaps: Gaps(snapshot, line)}
-					runDirectory := runDir(dir, w.Name, rule.Name, at, seed)
-					for name, value := range map[string]any{runFile: ran, scorecardFile: snapshot, lineScorecardFile: line} {
-						if err := writeJSON(filepath.Join(runDirectory, name), value); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
-				return partRun{Branch: at.Branch.Name, Slowdown: at.Slowdown, Seeds: seeds}
-			}
-			for _, at := range plan.branches {
-				part.Branches = append(part.Branches, write(at))
-			}
-			for _, f := range plan.breakEven {
-				part.BreakEven = append(part.BreakEven, write(BranchAt{Branch: MainBranch, Slowdown: f}))
-			}
-			if err := writeJSON(filepath.Join(dir, w.Name, rule.Name, partFile), part); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	writeMadeUpRuns(t, dir, []windowRecord{before, after}, record.SlotRules(), plan,
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot := sampleCard(compareHours)
+			snapshot.Rule, snapshot.Branch, snapshot.Seed, snapshot.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
+			snapshot.Done += r
+			snapshot.PriorityTaken += 0.001 * float64(seed)
+			line := snapshot
+			line.SlotHoursInTurn += 0.5
+			cards = append(cards, snapshot)
+			b := builds[w.Name]
+			b.runs++
+			return snapshot, line, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed,
+				Slowdown: at.Slowdown, Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4},
+				StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute), Gaps: Gaps(snapshot, line)}
+		})
 	runs, err := ReadRuns(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, err := runs.Comparison()
+	document, _, err := runs.Comparison(filepath.Join(dir, "comparison-issues.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,6 +589,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		"The rate fitted on window-one: base -2 [-3, -1] (merging: stretches 6, conflicts 1), testing term 1.5 [0.5, 2.5] (stretches 4, conflicts 2), "+
 			"reviewing term none (stretches 0, conflicts 0), accepting term none (stretches 0, conflicts 0), retro term none (stretches 0, conflicts 0), "+
 			"merges term 0.5 [-0.25, 1.25]",
+		"## Each issue's first slot and done under each rule", "`comparison-issues.md`, beside this document, gives for each window and each rule",
 		"## The gap between the snapshot and the line timelines", "## The break-even slowdown factor of each rule against main",
 		"## The assumptions and scenarios each run used", "3. "+Assumptions[2].Text)
 	total := builds[before.Name].runs + builds[after.Name].runs
@@ -674,7 +650,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wholeDocument, err := wholeRuns.Comparison()
+		wholeDocument, wholeIssues, err := wholeRuns.Comparison("comparison-issues.md")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -693,18 +669,274 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		partDocument, err := partRuns.Comparison()
+		partDocument, partIssues, err := partRuns.Comparison("comparison-issues.md")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if line, a, b, differ := firstDifference([]byte(wholeDocument), []byte(partDocument)); differ {
 			t.Fatalf("the document written in parts differs from the one written whole at line %d:\nwhole: %s\nparts: %s", line, a, b)
 		}
+		if line, a, b, differ := firstDifference([]byte(wholeIssues), []byte(partIssues)); differ {
+			t.Fatalf("the issues file written in parts differs from the one written whole at line %d:\nwhole: %s\nparts: %s", line, a, b)
+		}
 		for _, line := range []string{"## The rule named best (R7)", "### review-and-test-kept, `main@1`", "### conflict-from-fitted-rate, `main@1`",
 			"- `legion-v20.42.5`, `main@1.1`", "- The build commit of each run, the commit of the `legion` binary that made it: `" + fixtureBuild + "` ("} {
 			if !strings.Contains(wholeDocument, line) {
 				t.Errorf("the document of the fixture windows holds no %q:\n%s", line, wholeDocument)
 			}
+		}
+		for _, section := range []string{"## review-and-test-kept under `main` (seeds: ", "## conflict-from-fitted-rate under `legion-v20.42.5` (seeds: "} {
+			if !strings.Contains(wholeIssues, section) {
+				t.Errorf("the issues file of the fixture windows holds no %q:\n%s", section, wholeIssues)
+			}
+		}
+	})
+}
+
+// writeMadeUpRuns writes under dir the record of each of windows and, for each window under each of
+// rules, the part plan runs with each of its runs, whose snapshot and line scorecards and run.json
+// run makes up from the window, the rule's place among rules, the rule, the branch and the seed:
+// the directory of runs a comparison reads (ReadRuns), made with no replay.
+func writeMadeUpRuns(t *testing.T, dir string, windows []windowRecord, rules []record.SlotRule, plan runPlan,
+	run func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (snapshot, line Scorecard, ran runRecord)) {
+	t.Helper()
+	for _, w := range windows {
+		if err := writeJSON(filepath.Join(dir, w.Name, recordFile), w); err != nil {
+			t.Fatal(err)
+		}
+		for r, rule := range rules {
+			part := partRecord{Window: w.Name, Rule: rule.Name, RuleCommit: rule.Commit, Branches: []partRun{}, BreakEven: []partRun{}, Parallel: 1}
+			write := func(at BranchAt) partRun {
+				seeds := w.seeds(at.Branch, plan.perDraw)
+				for _, seed := range seeds {
+					snapshot, line, ran := run(w, r, rule, at, seed)
+					runDirectory := runDir(dir, w.Name, rule.Name, at, seed)
+					for name, value := range map[string]any{runFile: ran, scorecardFile: snapshot, lineScorecardFile: line} {
+						if err := writeJSON(filepath.Join(runDirectory, name), value); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return partRun{Branch: at.Branch.Name, Slowdown: at.Slowdown, Seeds: seeds}
+			}
+			for _, at := range plan.branches {
+				part.Branches = append(part.Branches, write(at))
+			}
+			for _, f := range plan.breakEven {
+				part.BreakEven = append(part.BreakEven, write(BranchAt{Branch: MainBranch, Slowdown: f}))
+			}
+			if err := writeJSON(filepath.Join(dir, w.Name, rule.Name, partFile), part); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// madeUpRun is a run of writeMadeUpRuns whose own numbers a test does not read: sampleCard as both
+// its snapshot and its line scorecard, under the rule, the branch and the seed it is written for.
+func madeUpRun(_ windowRecord, _ int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+	card := sampleCard(compareHours)
+	card.Rule, card.Branch, card.Seed, card.Slowdown = rule.Name, at.Branch.Name, seed, at.Slowdown
+	return card, card, runRecord{Rule: rule.Name, RuleCommit: rule.Commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown,
+		Scenario: at.Branch.NeverStarted, Assumptions: []int{1}, StartedAt: compareFrom, Gaps: Gaps(card, card)}
+}
+
+// madeUpWindows is two windows of compareHours hours from compareFrom for a comparison of made-up
+// runs, window-1 before the change of the rule and window-2 after it, whose daemons ran the rules
+// before and after, each with sampleCard as its record's scorecard.
+func madeUpWindows(before, after string) []windowRecord {
+	to := compareFrom.Add(compareHours * time.Hour)
+	var windows []windowRecord
+	for i, rule := range []string{before, after} {
+		windows = append(windows, windowRecord{Name: fmt.Sprintf("window-%d", i+1), Order: i, Project: "ACME", From: compareFrom, To: to, Rule: rule,
+			Scorecard: sampleCard(compareHours), Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: strings.Repeat("1", 40), Rule: rule}}})
+	}
+	return windows
+}
+
+// specRules is the rules the spec names: main, the rules the recorded windows' daemons ran, and the
+// spec's own four candidates. Every other rule the repository keeps is a candidate added to them
+// (plan D6), whose reason the comparison's document gives.
+var specRules = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1", "keep-past-review", "blockers-first", "returned-by-rank", "cover"}
+
+// The document gives, beside the row of each candidate added to the spec's rules, the reason it was
+// added (plan D6), and gives none beside a rule the spec names (specRules). The document is written
+// from made-up runs of two windows under every rule the repository keeps, on the main branch, and
+// read in the column "why it was added" of the table of each rule's trade against main, which holds
+// a row for every rule but main, the rule each is judged against. So a rule the repository comes to
+// keep beyond the spec's fails here until its reason is given. A reason names no issue key and no
+// Dispatch link, since the repository is public.
+func TestTheDocumentGivesEachAddedCandidatesReason(t *testing.T) {
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, madeUpWindows("legion-v19.57.3", "legion-v20.42.5"), record.SlotRules(),
+		runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1}, madeUpRun)
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := runs.Comparison("comparison-issues.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(document, "Each rule's trade against `main`")
+	if start < 0 {
+		t.Fatalf("the document holds no table of each rule's trade against main:\n%s", document)
+	}
+	// The paragraph, a blank line, the table's head and its separator, then a row for each rule up
+	// to a blank line.
+	lines := strings.Split(document[start:], "\n")
+	if len(lines) < 4 {
+		t.Fatalf("the trade against main ends at its paragraph:\n%s", document[start:])
+	}
+	cells := func(row string) []string {
+		parts := strings.Split(strings.Trim(row, "|"), "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	}
+	column := slices.Index(cells(lines[2]), "why it was added")
+	reasons := map[string]string{}
+	for _, row := range lines[4:] {
+		if row == "" {
+			break
+		}
+		c := cells(row)
+		reason := ""
+		if column >= 0 && column < len(c) {
+			reason = c[column]
+		}
+		reasons[strings.Trim(c[0], "`")] = reason
+	}
+	key := regexp.MustCompile(`\b[A-Z][A-Z0-9]*-[0-9]+\b|dispatch://`)
+	for _, rule := range record.SlotRules() {
+		if rule.Name == record.MainRule.Name {
+			continue
+		}
+		reason, ok := reasons[rule.Name]
+		added := !slices.Contains(specRules, rule.Name)
+		switch {
+		case !ok:
+			t.Errorf("the trade against main holds no row of %s:\n%s", rule.Name, document[start:])
+		case !added && reason != "":
+			t.Errorf("the document gives the reason %q beside %s, a rule the spec names", reason, rule.Name)
+		case added && reason == "":
+			t.Errorf("the document gives no reason beside %s, a candidate added to the spec's rules", rule.Name)
+		case key.MatchString(reason):
+			t.Errorf("the reason beside %s names an issue key or a Dispatch link: %q", rule.Name, reason)
+		}
+	}
+}
+
+// The issues file of a comparison gives, for each window and each rule, each issue that held a slot
+// in the record or on the main branch of the rule's replay, with its first slot and its done in the
+// record and in the replay, each replayed time the median over the main branch's seeds, and the
+// document names it. The comparison is made up: two windows recorded under main, each with the same
+// record, compared under main and returned-by-first-slot on the main branch with three seeds. In
+// the record, ACME-2 takes its first slot at 09:00 and is done at 11:00, ACME-1 at 09:30 and 12:00,
+// and ACME-3 at 10:00 and not done. Each seed's times are below, in minutes from 09:00, and each
+// median is worked by hand: a seed that gives none counts as later than every time, so ACME-1's
+// done under main, given by one seed of three, is not done, and ACME-4's, given by two, is the
+// middle seed's, 14:00. ACME-4, ACME-5 and ACME-6 hold no slot in the record and come last, ACME-6
+// before ACME-4 by their replayed first slots; under returned-by-first-slot ACME-3 holds no slot,
+// and ACME-4 and ACME-6 are in no row.
+func TestTheIssuesFileGivesEachIssuesTimesUnderEachRule(t *testing.T) {
+	const none = -1
+	type seeds [3]int
+	replays := map[string]struct{ firstSlot, doneAt map[string]seeds }{
+		record.MainRule.Name: {
+			firstSlot: map[string]seeds{"ACME-2": {0, 10, 20}, "ACME-1": {30, 30, 90}, "ACME-3": {60, 60, none}, "ACME-4": {200, 210, 220}, "ACME-6": {100, 100, 100}},
+			doneAt:    map[string]seeds{"ACME-2": {120, 150, 130}, "ACME-1": {180, none, none}, "ACME-4": {300, 300, none}},
+		},
+		"returned-by-first-slot": {
+			firstSlot: map[string]seeds{"ACME-2": {40, 40, 40}, "ACME-1": {0, 0, 0}, "ACME-5": {100, 100, none}},
+			doneAt:    map[string]seeds{"ACME-2": {200, 200, 200}, "ACME-1": {100, 100, 100}},
+		},
+	}
+	moment := func(minutes int) time.Time { return compareFrom.Add(time.Duration(minutes) * time.Minute) }
+	times := func(byIssue map[string]seeds, seed int64) map[string]time.Time {
+		out := map[string]time.Time{}
+		for key, minutes := range byIssue {
+			if m := minutes[seed-1]; m != none {
+				out[key] = moment(m)
+			}
+		}
+		return out
+	}
+	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
+	for i := range windows {
+		windows[i].Stretches, windows[i].Conflicted = 2, 1
+		windows[i].Scorecard.FirstSlot = map[string]time.Time{"ACME-2": moment(0), "ACME-1": moment(30), "ACME-3": moment(60)}
+		windows[i].Scorecard.DoneAt = map[string]time.Time{"ACME-2": moment(120), "ACME-1": moment(180)}
+	}
+	rules := []record.SlotRule{replayedRule(t, record.MainRule.Name), replayedRule(t, "returned-by-first-slot")}
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, windows, rules, runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 3},
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
+			line.FirstSlot, line.DoneAt = times(replays[rule.Name].firstSlot, seed), times(replays[rule.Name].doneAt, seed)
+			ran.Gaps = Gaps(snapshot, line)
+			return snapshot, line, ran
+		})
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuesFile := IssuesFile(filepath.Join(dir, "comparison.md"))
+	if want := filepath.Join(dir, "comparison-issues.md"); issuesFile != want {
+		t.Errorf("the issues file beside comparison.md is %s, want %s", issuesFile, want)
+	}
+	if got := IssuesFile("comparison"); got != "comparison-issues.md" {
+		t.Errorf("the issues file beside comparison is %s, want comparison-issues.md", got)
+	}
+	document, issues, err := runs.Comparison(issuesFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(document, "`comparison-issues.md`, beside this document, gives for each window and each rule each issue") {
+		t.Errorf("the document does not name the issues file and what it holds:\n%s", document)
+	}
+	stamp := func(minutes int) string { return moment(minutes).UTC().Format("2006-01-02T15:04Z") }
+	row := func(issue, recordedSlot, replayedSlot, recordedDone, replayedDone string) string {
+		return "| " + issue + " | " + recordedSlot + " | " + replayedSlot + " | " + recordedDone + " | " + replayedDone + " |"
+	}
+	want := map[string][]string{
+		record.MainRule.Name: {
+			row("ACME-2", stamp(0), stamp(10), stamp(120), stamp(130)),
+			row("ACME-1", stamp(30), stamp(30), stamp(180), "not done"),
+			row("ACME-3", stamp(60), stamp(60), "not done", "not done"),
+			row("ACME-6", "no slot", stamp(100), "not done", "not done"),
+			row("ACME-4", "no slot", stamp(210), "not done", stamp(300)),
+		},
+		"returned-by-first-slot": {
+			row("ACME-2", stamp(0), stamp(40), stamp(120), stamp(200)),
+			row("ACME-1", stamp(30), stamp(0), stamp(180), stamp(100)),
+			row("ACME-3", stamp(60), "no slot", "not done", "not done"),
+			row("ACME-5", "no slot", stamp(100), "not done", "not done"),
+		},
+	}
+	head := tableHead("issue", []string{"first slot, recorded", "first slot, replayed", "done, recorded", "done, replayed"})
+	for _, w := range windows {
+		for _, rule := range rules {
+			section := "## " + w.Name + " under `" + rule.Name + "` (seeds: 3)\n\n" + head + "\n" + strings.Join(want[rule.Name], "\n") + "\n"
+			if !strings.Contains(issues, section) {
+				t.Errorf("the issues file holds no section\n%s\nin:\n%s", section, issues)
+			}
+		}
+	}
+	t.Run("an even count of seeds", func(t *testing.T) {
+		card := func(minutes int) Scorecard {
+			if minutes == none {
+				return Scorecard{}
+			}
+			return Scorecard{FirstSlot: map[string]time.Time{"ACME-1": moment(minutes)}}
+		}
+		firstSlot := func(c Scorecard) map[string]time.Time { return c.FirstSlot }
+		if got := medianTime([]Scorecard{card(10), card(30)}, "ACME-1", firstSlot); !got.Equal(moment(20)) {
+			t.Errorf("the median of 09:10 and 09:30 is %s, want 09:20", got)
+		}
+		if got := medianTime([]Scorecard{card(10), card(none)}, "ACME-1", firstSlot); !got.IsZero() {
+			t.Errorf("the median of 09:10 and none is %s, want none", got)
 		}
 	})
 }
