@@ -3586,7 +3586,7 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 257: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
+// 265: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
 // claim owns and the close of a left pod with no live claim delete a disk only after a read of its
 // workspace found nothing that origin does not hold, and no role process runs in such a pod to read
 // through, so the pod's launcher makes the read (internal/launcher's readWorkspace,
@@ -3661,7 +3661,10 @@ package api
 // version.go at the head of each of the 473 open pull requests, which ended at
 // 2026-11-24T15:48Z, found main at 246 and, above it, 247 (#4580 and #5384), 250 (#5365), 251
 // (#5307), 252 (#4540), 254 (#4432) and 255 (#5164) declared, 247 to 249 held for a coordinated
-// change, and 256 taken by #5349's renumber at the same reading, so this entry moved to 257. That
-// is a reading and never the rule: read main's own number and every open head again at the next
-// forward merge rather than from this line.)
-const DaemonAPIVersion = 257
+// change, and 256 taken by #5349's renumber at the same reading, so this entry moved to 257. #4580
+// had moved to 257 first, at 94a696cf, so by the spec's architect's ruling of 2026-11-24T17:09Z
+// this entry takes 265: a reading of version.go at the head of each of the 478 open pull requests,
+// made between 2026-11-24T17:15:34Z and 17:16:40Z, found main at 246 and, above it, 247 to 252, 254
+// to 257 and 261 declared, and nothing at 265. That is a reading and never the rule: read main's
+// own number and every open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 265
