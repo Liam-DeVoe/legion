@@ -9105,3 +9105,149 @@ test("the issue header's Status list keeps the option its arrows mark active who
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): eight questions seeded at each of two widths, and two snoozes of two marked rows
+// held through the reader's presses at each.
+// INFRA-3135, round 25 (the tester's, measured in builds Jobs infra-3135-p-hc-fhjbh, -p-hf-x8mfh
+// and -p-hw-m2tvp at 683f1fdf and -p-bc-cdxbx, -p-bf-45fn7 and -p-bw-ptvwn at 3fce6150, isolated
+// in -p3-h-cj42g at 683f1fdf and -p3-b-zzd9d at 3fce6150, and this row in
+// infra-3135-p-red2-kvtkk at 683f1fdf): the reader marks Inbox rows, picks Tomorrow from the
+// selection bar's Snooze selected asks with the keyboard, and presses Enter again on the trigger
+// while the snooze is out. The trigger is held (`aria-disabled`), keeps the focus, opens nothing
+// and sends no second snooze. Once the snooze lands and the bar goes, the focus is on the body,
+// in Chromium, Firefox and WebKit at 1440x900 and 390x664. The same pick with no second Enter
+// puts it on a row's checkbox at 1440 and on the Inbox list's own stop at 390, as the bar's
+// hand-off says. At 3fce6150 the page's focus rescue put it on Answered by you, a row's checkbox
+// or the Inbox list. The cause: the pick's Enter arms the bar's hand-off on the list's text box
+// (the shared list picks at that box's keydown, components/MultiSelect.tsx:436-443, and puts the
+// focus on its trigger, :312-318), which the pick takes away. A second Enter on the held trigger
+// is a press on another control: armHandOff keeps the first press only for a press on its
+// control or inside a control that press holds (components/focus-place.ts:782-795), read by
+// `heldControl`, which answers null for an element gone from the page (:664-666). So it ends the
+// pick's press and arms one on the trigger, held already at the arm, which nothing keeps live
+// (:900-905), and when the snooze lands the bar's hand-off (components/SelectionBar.tsx:371-380)
+// finds nothing armed. The rules: a repeated Enter on a held control keeps the first press as the
+// cause (components/focus-place.ts:744-747), and a shared control whose own press takes the
+// focused control away and drops the focus onto the body, where its code arms a hand-off, fails
+// (the architect's ruling of 2026-11-23 21:2xZ, open-items.md, "#3729 sheds the rescue").
+test("a second Enter on the held Snooze selected asks leaves the focus where the pick alone puts it once the snooze lands and the bar goes, never on the body @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with eight questions seeded and two snoozes held.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  // Every snooze sent while `holding` is held until the row lets it through, so the page is read
+  // while the bar's write is out; the row lets each through once the reader's presses are done.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route("**/api/v1/me/asks/*/snooze", async (route) => {
+    if (route.request().method() !== "PUT" || !holding) return route.fallback();
+    held.push(route);
+  });
+  /** Where the keyboard focus rests once the selection bar has gone: the body, or the focused
+   *  element and its place among the rows a pick seeded (`slots`, by ask id), as "the checkbox
+   *  of the row below the marked two". An element in no seeded row - the Inbox list's own stop -
+   *  is its own place. */
+  const landingOf = (slots: Record<string, string>) =>
+    page.evaluate((slots) => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { body: true, name: "the body", place: "the body" };
+      }
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      const name = `${focused.tagName.toLowerCase()} "${words}"`;
+      const row = focused.closest<HTMLElement>("[data-inbox-row]")?.dataset.inboxRow;
+      if (row === undefined) return { body: false, name, place: name };
+      const what = focused.matches('input[type="checkbox"]')
+        ? "the checkbox"
+        : `a ${focused.tagName.toLowerCase()}`;
+      return { body: false, name, place: `${what} of ${slots[row] ?? "a row no pick seeded"}` };
+    }, slots);
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const landings: Partial<
+      Record<"no second Enter" | "a second Enter", { body: boolean; name: string; place: string }>
+    > = {};
+    for (const press of ["no second Enter", "a second Enter"] as const) {
+      const where = `Snooze selected asks at ${size.width}x${size.height} with ${press}`;
+      // Four questions made oldest first, so the Inbox lists them newest first, over the rows an
+      // earlier pick left: one above the two the reader marks, and one below them. Their titles
+      // share most of their words, so each is filed past the server's duplicate check.
+      const ids: string[] = [];
+      for (const part of ["below", "second marked", "first marked", "above"]) {
+        const owner = await createIssue({
+          force: true,
+          project: "CORE",
+          title: `Snooze the ${part} row at ${size.width} with ${press}`,
+        });
+        const question = `Defer the ${part} row at ${size.width} with ${press}?`;
+        ids.push((await createAsk(owner.key, { question }, SURFACE_SESSION)).id);
+      }
+      const [below = "", second = "", first = "", above = ""] = ids;
+      const slots = {
+        [above]: "the row above the marked two",
+        [first]: "the first marked row",
+        [second]: "the second marked row",
+        [below]: "the row below the marked two",
+      };
+      await page.goto("/");
+      for (const id of ids) await expect(inboxRow(page, id)).toBeVisible();
+      await inboxRow(page, first).getByRole("checkbox").first().check();
+      await inboxRow(page, second).getByRole("checkbox").first().check();
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
+      const trigger = listTrigger(bar, "Snooze selected asks");
+      await trigger.focus();
+      holding = true;
+      await page.keyboard.press("Enter");
+      await page.keyboard.type("tom");
+      await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => held.length, { message: `${where}: the bar sent no snooze` })
+        .toBeGreaterThan(0);
+      await expect(trigger, `${where}: the trigger is not held`).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await expect(trigger, `${where}: the held trigger lost the focus`).toBeFocused();
+      if (press === "a second Enter") {
+        await page.keyboard.press("Enter");
+        await nextFrames(page);
+        await expect(trigger, `${where}: the held trigger opened its list`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+      }
+      holding = false;
+      for (const route of held.splice(0)) await route.continue();
+      await expect(bar).toHaveCount(0);
+      await expect(inboxRow(page, first)).toHaveCount(0);
+      await expect(inboxRow(page, second)).toHaveCount(0);
+      // The bar's hand-off runs after the commit that took the bar away, so it is done after
+      // these frames.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: the snooze has landed, the bar has gone and its hand-off has run.
+      const landed = await landingOf(slots);
+      landings[press] = landed;
+      if (landed.body && press === "no second Enter") {
+        wrong.push(`${where}: once the snooze lands and the bar goes the focus is on the body`);
+      }
+    }
+    const alone = landings["no second Enter"];
+    const again = landings["a second Enter"];
+    if (alone !== undefined && again !== undefined && again.place !== alone.place) {
+      wrong.push(
+        `Snooze selected asks at ${size.width}x${size.height}: with a second Enter on the held trigger, once the snooze lands and the bar goes the focus is on ${again.body ? "the body" : `${again.name} (${again.place})`}; the same pick with no second Enter puts it on ${alone.name} (${alone.place})`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
