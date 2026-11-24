@@ -313,8 +313,8 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // this listener connects with forbids the subject until an operator changes it. 403 says exactly
 // that - the request was understood and the server refuses to authorise it - where 400 would
 // blame the caller's bytes, which are fine, and where any 5xx would be retried:
-// packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
-// it. No Retry-After rides it for the same reason.
+// packages/envoy-client/src/transport.ts sends a request again on every 5xx and on a 408, and on
+// no other status. No Retry-After rides it for the same reason.
 //
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
