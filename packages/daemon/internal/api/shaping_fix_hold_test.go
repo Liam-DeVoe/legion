@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -12,15 +13,20 @@ import (
 
 // The two holds before a retro that FixBesideReviewContract added: an issue held while a fix of
 // its task runs, and an issue held until each check a CI job runs passes at its head. Both stand
-// from the retro, which keeps no slot.
+// from the retro, which keeps no slot. Beside them, what holds each: the check and the head of
+// the fix, and the two checks that have not passed at the head.
 const (
 	fixHeldIssue = "LEGION-250"
 	ciHeldIssue  = "LEGION-251"
+	fixHoldCheck = "ci / test (ubuntu-24.04)"
+	fixHoldHead  = "c0de0000000000000000000000000000000000ff"
+	ciHoldBuild  = "ci / build"
 )
 
 // fixAndCIHolds is the state golden with the two holds before a retro beside its own issues and an
 // escalated hold, the one reason every reader knows. Each of the two has the held row this daemon
-// writes for it: no word of the held list names either hold yet, so both read unclassified.
+// writes for it: fix_running with the fix's check and head, and ci_at_head with the checks that
+// have not passed at the head.
 func fixAndCIHolds(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
@@ -31,8 +37,8 @@ func fixAndCIHolds(t *testing.T) State {
 	issues[escalatedIssue] = heldFor(escalatedIssue, phase.Implementing, record.HoldEscalated)
 	state.Issues = issues
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
-		HeldIssue{Issue: fixHeldIssue, Reason: record.HeldUnclassified},
-		HeldIssue{Issue: ciHeldIssue, Reason: record.HeldUnclassified})
+		HeldIssue{Issue: fixHeldIssue, Reason: record.HeldFixRunning, HeldBy: []string{fixHoldCheck, fixHoldHead}},
+		HeldIssue{Issue: ciHeldIssue, Reason: record.HeldCIAtHead, HeldBy: []string{ciHoldBuild, fixHoldCheck}})
 	return state
 }
 
@@ -99,10 +105,69 @@ func TestAnOlderCallerIsServedNoFixHoldOrCIHoldReason(t *testing.T) {
 	}
 }
 
+// A caller whose plugin speaks a contract below FixBesideReviewContract reads `admission.held`'s
+// `reason` with a `z.enum` of the thirteen words before it, and refuses the whole body for
+// another. So the rows of the two words that contract added, fix_running and ci_at_head, are
+// served to it as what it read for those issues before: unclassified, with no heldBy. Every other
+// row is served as it stands, and a caller at the contract is served both words with their
+// heldBy. The rule is the value strip's (withoutUnadmittedHeldWords), so it follows the contract
+// the caller states, else its pod's lowest. The state the source answered keeps both words for the
+// next caller. Each word's arrival is read from the declared table (answers.go's heldReasons) at
+// FixBesideReviewContract, for the reason the hold reasons' arrivals are read above.
+func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
+	const remote = "192.0.2.1:41000"
+	others := len(populatedState(t).Admission.Held)
+	if others == 0 {
+		t.Fatal("the state golden holds no held row, so nothing here shows a row of another word served as it stands")
+	}
+	state := fixAndCIHolds(t)
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+
+	at := heldRowsServed(t, stateStating(t, handler, remote, FixBesideReviewContract))
+	for key, want := range map[string]map[string]any{
+		fixHeldIssue: {"issue": fixHeldIssue, "reason": string(record.HeldFixRunning), "heldBy": []any{fixHoldCheck, fixHoldHead}},
+		ciHeldIssue:  {"issue": ciHeldIssue, "reason": string(record.HeldCIAtHead), "heldBy": []any{ciHoldBuild, fixHoldCheck}},
+	} {
+		if !reflect.DeepEqual(at[key], want) {
+			t.Errorf("%s is served to a caller at the contract as %v, want %v", key, at[key], want)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"a caller stating the contract before it", stateStating(t, handler, remote, FixBesideReviewContract-1)},
+		{"a pod stating nothing at the contract before shapedAnswersContract",
+			stateFrom(t, state, statePodAddr+":41000", podClaims(shapedAnswersContract-1))},
+	} {
+		below := heldRowsServed(t, tc.body)
+		for _, key := range []string{fixHeldIssue, ciHeldIssue} {
+			if row := below[key]; !reflect.DeepEqual(row, map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}) {
+				t.Errorf("%s: %s is served as %v, want unclassified with no heldBy", tc.name, key, row)
+			}
+		}
+		for _, row := range state.Admission.Held[:others] {
+			if served := below[row.Issue]; served["reason"] != string(row.Reason) {
+				t.Errorf("%s: %s is served as %v, want its word %s as it stands", tc.name, row.Issue, served, row.Reason)
+			}
+		}
+	}
+	if got := state.Admission.Held[others].Reason; got != record.HeldFixRunning {
+		t.Errorf("the state the source answered holds %s's word as %q after the narrowing, want it kept", fixHeldIssue, got)
+	}
+	for _, word := range []record.HeldReason{record.HeldFixRunning, record.HeldCIAtHead} {
+		if arrival, declared := heldReasonArrivals.values[string(word)]; !declared || arrival != FixBesideReviewContract {
+			t.Errorf("the declared table records the held word %q at %d (declared: %v), want FixBesideReviewContract (%d)",
+				word, arrival, declared, FixBesideReviewContract)
+		}
+	}
+}
+
 // The state route's body for a caller whose plugin is at the contract before
 // FixBesideReviewContract, asking from a pod whose claims record it and stating it: the state of
-// fixAndCIHolds, each of the two holds before a retro served with no holdReason. Their held rows
-// read unclassified at both contracts, since no word of the held list names either hold yet.
+// fixAndCIHolds, each of the two holds before a retro served with no holdReason, and each of their
+// held rows as unclassified with no heldBy, the row that reader read for those issues before.
 // `packages/contracts/src/legion-api.test.ts` parses the body with a frozen copy of the hold
 // reasons and the held list that reader knows, which is the reader the strip is written for.
 func TestStateBeforeTheFixHoldsGolden(t *testing.T) {
