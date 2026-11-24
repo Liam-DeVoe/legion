@@ -18,14 +18,16 @@ import (
 // A change to blocks.json ships with a store migration that writes the node of each type or
 // attribute it adds or alters, moves every block type's supertag node to the file's new version,
 // and appends each value it states as a value tuple at the source_event sentinel 0, as
-// 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
+// 20261123080000_graph_supertags_plan_task_steps does: the server installs the store's types and
 // not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
 // build made for the new version installs the old one. A new type migration also joins
-// store.TypeMigrations (internal/dispatch/store/type_migrations.go), each of which cmd/dispatch's
-// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt runs a second time. Written after the
-// store's backfill, it writes under the migration census's bounded-write rule and cannot run twice
-// unchanged, so it joins literalTypeMigrations in cmd/dispatch/supertag_nodes_test.go too, whose
-// rows the second run takes out before it runs the migration again.
+// store.TypeMigrations (internal/dispatch/store/type_migrations.go), which cmd/dispatch's tests
+// read. It runs once: written after the store's backfill, it writes under the migration census's
+// bounded-write rule, as that one does, and cannot run twice unchanged, so only the type
+// migrations before the backfill (typeMigrations in cmd/dispatch/supertag_nodes_test.go) run a
+// second time, and a new one joins no list there;
+// TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs it over a store the
+// backfill filled.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte

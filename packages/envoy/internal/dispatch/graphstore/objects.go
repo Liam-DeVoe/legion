@@ -156,7 +156,7 @@ const (
 // component and interface nodes that the issue proposes"); the verification its checks and their
 // results; the plan its plan nodes; and the decisions the asks, the decisions and the readings
 // under an agent's decision. Adding component to the spec's takes changes no record's layout and no
-// record of an issue that holds no component block, which no build before block schema version 7
+// record of an issue that holds no component block, which no build before block schema version 8
 // could write, so QueryDefinitionVersion stays (TestTheSpecQueryTakesComponentsUnderOneDefinition).
 var queryTakes = map[string][]string{
 	QuerySpec:         {"callout", "criterion", "requirement", "component"},

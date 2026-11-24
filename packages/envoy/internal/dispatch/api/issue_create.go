@@ -158,12 +158,22 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// which respondWithExistingExternalIssue would also record a related-check outcome on.
 	// Nothing is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeIssueNeeds below read it again, since a
-	// wait's target's project is no part of this address.
+	// exists today; the dependency lock step, the parent's read and writeIssueNeeds below read it
+	// again, since neither a wait's target's project nor the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
+	}
+	// A scoped caller is refused a parent or a wait's target outside its project here too,
+	// with no lock held, before the near-copy gate and every other write before the transaction,
+	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
+	// The lock step and the reads under the locks refuse it again, the authoritative refusal.
+	if scoped && (parentKey != "" || len(waits.targets) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, waits, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
@@ -258,9 +268,8 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// `external` at each site.
 	//
 	// The gate's candidate set leaves out the new issue's whole ancestor chain, which is read
-	// here, before the transaction. A parent that does not exist or sits in another project
-	// yields an empty chain and still gets its own refusal inside the transaction, so no error
-	// changes order.
+	// here, before the transaction. A parent that does not exist yields an empty chain and still
+	// gets its own refusal inside the transaction, so no error changes order.
 	var outcome nearCopyOutcome
 	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
 	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
@@ -316,10 +325,10 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// A create with waits can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
-	// takes none. Only the waits can name another project, since a parent is of the issue's own
-	// project.
+	// takes none. The waits and the parent may each be an issue of another project, whose
+	// dependency lock the write takes too.
 	if len(waits.targets) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -336,9 +345,19 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 			s.writeHandlerError(w, err)
 			return
 		}
-		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
+		// A parent may be an issue of any project, but not for a credential that may write one
+		// project alone: the authoritative refusal, under the locks, of what the lock step
+		// refused before them.
+		if callerProject != "" && parentProject != callerProject {
+			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
+		}
+		// A parent of another project passes on no assignee, as it passes on no repository,
+		// components or legion label: the chain's parent step (defaultAssignee) reads only a
+		// parent of the new issue's own project, so such an issue falls to its own project's
+		// default.
+		if parentProject != input.Project {
+			parentAssignee = nil
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -515,7 +534,7 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// is not written yet (writeAdviceBefore).
 	advice := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
-		adviceIssueRow{parent: parentRef, labels: labels}, adviceAsks{},
+		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
 
 	// The write phase: the statements from here on run back to back.

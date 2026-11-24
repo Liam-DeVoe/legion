@@ -32,6 +32,7 @@ import (
 // written by hand and their nodes seeded straight into the store, as
 // TestNoReadAnswersANodeTheActingPersonMayNotSee seeds its own (graphstoretest.SeedAuthorOnly).
 func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "PRIV", "Private blocks with a recorded text", "# Spec\n\nA public passage.\n")

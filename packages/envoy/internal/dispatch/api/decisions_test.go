@@ -162,6 +162,7 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 // (refs.DecisionsDocumentOf), in the issue read's decisions_artifact_id as in the Decisions read's
 // document. The younger is given the lower id, so a rule that took the lowest id would name it.
 func TestBothOldMembersNameTheOldestOfAnIssuesTwoDecisionsDocuments(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -262,6 +263,7 @@ func TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired(t *testing.T
 // Each person's last read version of a document: null before they read it, the version they
 // recorded after, and a bearer may read neither route.
 func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n")
@@ -320,6 +322,7 @@ const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}
 // index recorded for its requirement, so it holds text_changed_at, and reads changed_since_tie
 // false and stale false.
 func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -384,6 +387,7 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 // decisions. The two asks are written in two versions, so one is older than the other: two that one
 // settlement writes share their created_at and the order between them is their ids'.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")

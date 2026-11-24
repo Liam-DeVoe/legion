@@ -61,8 +61,8 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 		names[index] = typ.Name
 	}
 	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion", "component", "conclusion"}
-	if served.Version != 7 || !slices.Equal(names, want) {
-		t.Fatalf("schema = version %d, types %v; want version 7 and %v", served.Version, names, want)
+	if served.Version != 8 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 8 and %v", served.Version, names, want)
 	}
 	if parent, declared := served.Types[7].Attributes.Lookup(pmdoc.ParentAttribute); !declared || parent.Kind != pmdoc.BlockAttributeBlockList ||
 		!slices.Equal(parent.Items, []pmdoc.BlockItemKind{pmdoc.BlockItemAsk, pmdoc.BlockItemComment, pmdoc.BlockItemMessage}) {
@@ -70,6 +70,9 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	}
 	if ciCheck, declared := served.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
+	}
+	if steps, declared := served.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
+		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
 	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)

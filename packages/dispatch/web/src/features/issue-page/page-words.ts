@@ -1245,6 +1245,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   state: "state",
   /** The approved statement a check of The Spec or a conclusion is about. */
   statement: "statement",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   /** What a check of The Spec reads: the code, production or The Spec's graph. */
   subject: "subject",
   /** The statements of The Spec a statement supports. */
