@@ -33,6 +33,13 @@
  * which is renamed to labels.jsonl, so a failed run leaves an earlier labels.jsonl as it was. A
  * comment that gets no label fails the run (exit 1) and stderr names it. Exit 2 is a refusal
  * before any read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
+ *
+ * Each model answer, every one asked for again among them, records one usage span
+ * (spend-record.ts, as skill-cuts/README.md's "Usage records" says): the answer's id, model and
+ * token counts, MODEL as the request's model, and when its try was sent and when it ended, posted
+ * to the spend collector that OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT
+ * names, never through a proxy. The run waits up to 2 s for those posts before it exits, whatever
+ * its exit status; a refusal exits before any model call, so it has none to wait for.
  */
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -53,6 +60,13 @@ import {
   resolveDispatch,
   type Sleep,
 } from "./production-dispatch";
+import { processSpendRecorder, type SpendRecorder } from "./spend-record";
+
+/** What `main` reads and writes: production-dispatch.ts's CliIo, and where each model answer
+ *  records its usage span (`processSpendRecorder()` in a real run; none when absent). */
+export interface LabelIo extends CliIo {
+  readonly spend?: SpendRecorder;
+}
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
 export const QUESTIONS = [
@@ -213,12 +227,14 @@ export function isYes(chance: number): boolean {
   return chance > 0.5;
 }
 
-/** The chances that the model gave for one comment. Throws naming why it has no label. */
+/** The chances that the model gave for one comment, each answer's usage recorded with `spend`.
+ *  Throws naming why it has no label. */
 async function label(
   item: Labelled,
   route: ModelRoute,
   fetchImpl: Fetch,
-  sleep: Sleep
+  sleep: Sleep,
+  spend: SpendRecorder | undefined
 ): Promise<Record<QuestionKey, number>> {
   return postMessages({
     url: route.url,
@@ -236,6 +252,9 @@ async function label(
     timeoutMs: MODEL_TIMEOUT_MS,
     // A sampled reply can leave out a question: chancesOf throws, and the comment is asked again.
     accept: chancesOf,
+    ...(spend === undefined
+      ? {}
+      : { spend: (answer, times) => spend.record(answer, { model: MODEL, ...times }) }),
   });
 }
 
@@ -408,8 +427,9 @@ function modelRoute(args: Arguments): ModelRoute | string {
   return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
 }
 
-/** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */
-export async function main(argv: readonly string[], io: CliIo): Promise<number> {
+/** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused), once
+ *  the usage spans of its model answers are sent (`io.spend`'s `flush`, at most 2 s). */
+export async function main(argv: readonly string[], io: LabelIo): Promise<number> {
   const refuse = (why: string) => {
     io.err(`label-comments: ${why}`);
     return 2;
@@ -448,7 +468,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
       try {
-        return { item, chances: await label(item, route, io.fetch, io.sleep) };
+        return { item, chances: await label(item, route, io.fetch, io.sleep, io.spend) };
       } catch (error) {
         return { item, failure: messageFor(error) };
       }
@@ -489,9 +509,10 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   } finally {
     // Gone after a rename. Left only by a write or rename that failed.
     rmSync(partial, { force: true });
+    await io.spend?.flush();
   }
 }
 
 if (import.meta.main) {
-  process.exit(await main(Bun.argv.slice(2), processIo()));
+  process.exit(await main(Bun.argv.slice(2), { ...processIo(), spend: processSpendRecorder() }));
 }

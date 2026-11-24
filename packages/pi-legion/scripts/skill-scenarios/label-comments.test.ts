@@ -3,7 +3,8 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { isYes, main, QUESTIONS } from "./label-comments";
+import { isYes, MODEL, main, QUESTIONS } from "./label-comments";
+import { createSpendRecorder } from "./spend-record";
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 
@@ -404,6 +405,87 @@ test("a 429, a 5xx or a reply that skips a question is asked again", async () =>
     "jargon",
     "needless_ask",
   ]);
+});
+
+test("each model answer, one asked for again among them, records one usage span, sent before main returns; a 429 records none", async () => {
+  // A stand-in spend collector on 127.0.0.1, named by the recorder's own environment.
+  const posts: string[] = [];
+  const collector = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      posts.push(`${new URL(request.url).pathname} ${await request.text()}`);
+      return new Response("{}");
+    },
+  });
+  try {
+    const warnings: string[] = [];
+    const spend = createSpendRecorder({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.port}` },
+      warn: (line) => warnings.push(line),
+    });
+    // Each answer carries an id and a usage, as the Messages API's does.
+    const answered: string[] = [];
+    const answer = (text: string) => {
+      const id = `msg_label_${answered.length + 1}`;
+      answered.push(id);
+      return json({
+        id,
+        type: "message",
+        model: MODEL,
+        content: [{ type: "text", text }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 },
+      });
+    };
+    const { fetch } = world((comment, attempt) => {
+      if (comment === "Too long." && attempt === 1) return new Response("slow", { status: 429 });
+      // The first answer to this one answers one question only: it is asked again.
+      if (comment === "That is wrong." && attempt === 1) return answer("wrong_fact: yes");
+      const yes = YES[comment] ?? [];
+      return answer(
+        QUESTIONS.map(({ key }) => `${key}: ${yes.includes(key) ? "yes" : "no"}`).join("\n")
+      );
+    });
+    const run = io(fetch);
+    const out = path.join(dir("spans"), "labels");
+    const code = await main(
+      ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
+      { ...run.io, spend }
+    );
+    expect({ code, stderr: run.stderr, warnings }).toEqual({ code: 0, stderr: [], warnings: [] });
+    // Four comments and the one answer asked for again: five answers, five spans, already sent.
+    expect(answered).toHaveLength(5);
+    expect(posts.map((post) => post.split(" ")[0])).toEqual(Array(5).fill("/v1/traces"));
+    const spans = posts.map((post) => {
+      const body = JSON.parse(post.slice(post.indexOf(" ") + 1));
+      const span = body.resourceSpans[0].scopeSpans[0].spans[0];
+      const attributes = Object.fromEntries(
+        span.attributes.map((each: { key: string; value: Record<string, unknown> }) => [
+          each.key,
+          Object.values(each.value)[0],
+        ])
+      );
+      return { resource: body.resourceSpans[0].resource.attributes, attributes };
+    });
+    expect(spans.map(({ attributes }) => attributes["gen_ai.response.id"]).sort()).toEqual(
+      answered.toSorted()
+    );
+    for (const { resource, attributes } of spans) {
+      expect(resource).toContainEqual({ key: "theorem.harness", value: { stringValue: "script" } });
+      expect(attributes).toMatchObject({
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.request.model": MODEL,
+        "gen_ai.response.model": MODEL,
+        "gen_ai.usage.input_tokens": "140",
+        "gen_ai.usage.cache_read.input_tokens": "40",
+        "gen_ai.usage.output_tokens": "20",
+        "omp.gen_ai.auth.kind": "api_key",
+      });
+    }
+  } finally {
+    collector.stop(true);
+  }
 });
 
 test("a comment with no label fails the run, and an earlier labels.jsonl keeps its bytes", async () => {
