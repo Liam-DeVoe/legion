@@ -2,8 +2,9 @@
 
 // The accessors of the two-pod suite's frame log (mpFrameLog, frame_log_test.go) that
 // only the tagged harness and its rows read. The log's type and its counts, and the
-// exactly-once check the rows end on, stay outside the tag, so envoy-go's untagged unit run
-// exercises that check; these are under it because a build without it calls none of them.
+// exactly-once check the rows end on, stay outside the tag, so envoy-go-race's untagged run
+// of ./cmd/listener exercises that check (envoy-go's unit step leaves that package out);
+// these are under the tag because a build without it calls none of them.
 
 package main
 

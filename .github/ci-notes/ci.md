@@ -2210,9 +2210,9 @@ broker-multiprocess is: the listener rows compile their own import closure, so t
 own job and their own filter, `listener_multiprocess`, which gates this one. The job's steps
 are in ci-job-broker-multiprocess.yaml, beside broker-multiprocess's
 (.github/ci-notes/ci.md#two-jobs-that-call-one-file). The run names the
-rows (TestTwoPods*, TestTwoBuilds*): the package's untagged tests are envoy-go's, and one of
-them needs the Postgres this job does not start. Each row's NATS runs in its own test process
-(internal/testnats), so neither a container runtime nor a Postgres service is here.
+rows (TestTwoPods*, TestTwoBuilds*): the package's untagged tests are envoy-go-race's, and one
+of them needs the Postgres this job does not start. Each row's NATS runs in its own test
+process (internal/testnats), so neither a container runtime nor a Postgres service is here.
 
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 

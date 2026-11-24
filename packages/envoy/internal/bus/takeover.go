@@ -80,7 +80,9 @@ type StoredTakeoverRecord struct {
 // ErrTakeoverRecordMoved is wrapped by the error of a WriteTakeoverRecord the stream refused
 // because the record's subject no longer held the message the writer read: another pass wrote
 // the record since, or the stream removed it (its age limit, a purge). The write stored nothing,
-// and the writer reads the record again before it decides anything more of it.
+// unless the stream refused a resend after a first send nobody answered, which may have stored
+// the record (sendStored; cursorMoved names the case); the writer reads the record again either
+// way before it decides anything more of it.
 var ErrTakeoverRecordMoved = errors.New("the takeover record changed under this write")
 
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject

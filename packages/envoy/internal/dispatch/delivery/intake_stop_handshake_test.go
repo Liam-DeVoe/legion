@@ -26,8 +26,7 @@ type stopRow struct {
 	hold   *testnats.HandshakeHold
 	client *bus.Client
 	// conn is the client's connection, read before any hold: Client.Connection takes the client's
-	// lock, which a caller of Client.Connected holds while it waits for nats.go's lock, as the
-	// stop's drain does during a held handshake.
+	// lock, which a caller of Client.CoreSubOK holds while it waits for nats.go's lock.
 	conn    *natsgo.Conn
 	durable *heldDurable
 	sub     *natsgo.Subscription

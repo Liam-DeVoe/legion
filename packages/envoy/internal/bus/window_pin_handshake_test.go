@@ -151,7 +151,7 @@ func heardReconnects(client *Client) <-chan struct{} {
 // refuses the reconnected connection before the client has heard of the drop, before it has heard of
 // the reconnect, and after. nats.go marks a reconnected connection connected before its callback
 // goroutine runs the client's onDisconnect and queueReconnect, and onDisconnect waits for the client's
-// lock, which a caller of Client.Connected holds while nats.go's lock keeps it waiting. So a check
+// lock, which a caller of Client.CoreSubOK holds while nats.go's lock keeps it waiting. So a check
 // that waited for the client to hear of an event let the old window send on the reconnected
 // connection in that gap, and a check that took any client event since the pin for a loss refused
 // the new window's good connection once the client heard.
@@ -190,7 +190,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	})
 	heard := heardReconnects(client)
 
-	// The client's lock, held as a caller of Client.Connected holds it while it waits for
+	// The client's lock, held as a caller of Client.CoreSubOK holds it while it waits for
 	// nats.go's lock. Let go before the client closes, whose Close takes it.
 	client.mu.Lock()
 	var unlocked sync.Once
