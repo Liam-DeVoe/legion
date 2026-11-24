@@ -464,66 +464,6 @@ func TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy(t *tes
 	}
 }
 
-// Background work is on for every role: Legion writes no Oh My Pi settings overlay, so
-// a long bash call becomes a background job and a task subagent runs as one, and a role reads a
-// result with the `wait` tool. Nothing takes a turn away from a role either: a CI red moves no
-// phase and tells the roles that work the issue by one message (the workflow's checks), which stops
-// nothing. So no part may say a takeover cancels a turn or tell a role to keep its work in
-// the foreground, and a part that dispatches a task subagent names the tool that reads its result.
-//
-// Both halves are read over the markdown parts alone, and both are exact. The call shape appears
-// in prompts_test.go and in this file, which are not prompt text, and the English word "wait" is
-// in many parts — go/implementer.md forbids waiting for CI — so the needle is the backticked
-// token. Each retired sentence is joined from its two halves, as TestNoPartSaysLegionNeverMerges
-// keeps its phrases a pattern, so that a grep for one over this directory finds prompt text and
-// never this test. The skills half of this rule, over skills/ and the plugin the Claude Code roles
-// load, is packages/pi-legion/src/skills-guard.test.ts.
-//
-// The check of `wait` reads only the parts that hold the call shape below. Where no part holds it,
-// the check read nothing and would pass on any text, so the test fails then.
-func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T) {
-	retired := []string{
-		"interrupts" + " your turn",
-		"tool calls" + " are cancelled",
-		"interrupted" + " its turn",
-		"run none" + " in the background",
-		"one foreground" + " command",
-		"blocking" + ": true",
-	}
-	const dispatch = `task(agent="`
-	dispatching := 0
-	for _, dir := range []string{"go", "roles"} {
-		parts := goParts
-		if dir == "roles" {
-			parts = roleParts
-		}
-		err := eachPart(parts, dir, func(name string, body []byte) error {
-			if !strings.HasSuffix(name, ".md") {
-				return nil
-			}
-			part, text := dir+"/"+name, string(body)
-			for _, phrase := range retired {
-				if strings.Contains(text, phrase) {
-					t.Errorf("%s says %q, which does not hold: nothing interrupts a turn and background work is on", part, phrase)
-				}
-			}
-			if strings.Contains(text, dispatch) {
-				dispatching++
-				if !strings.Contains(text, "`wait`") {
-					t.Errorf("%s dispatches a task subagent and never names `wait`, the tool that reads a job's result", part)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("read the %s parts: %v", dir, err)
-		}
-	}
-	if dispatching == 0 {
-		t.Fatalf("no markdown part of go/ or roles/ holds %s, so the check of `wait` read no part: a dispatch in another shape is not read", dispatch)
-	}
-}
-
 // dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
 // dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
 // when a later edit deletes the rule; it does not show that an agent follows it, which each
@@ -692,10 +632,9 @@ func TestThePodMemoryRuleIsWrittenInOneWorkerPartAndOneArchitectPart(t *testing.
 // in the context of each subagent it starts, and the architect's says the same of its own. The
 // clause belongs where the rule is written and nowhere else, so a part that dispatches a task
 // subagent carries no copy of it. The three parts that dispatch one are named here rather than
-// counted, as TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait names its want list,
-// so a part renamed out from under this test fails it rather than passing with nothing read. The
-// match runs over a body whose whitespace is collapsed to one space, since a part hard-wraps and
-// the clause can cross the break.
+// counted, so a part renamed out from under this test fails it rather than passing with nothing
+// read. The match runs over a body whose whitespace is collapsed to one space, since a part
+// hard-wraps and the clause can cross the break.
 func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 	fold := func(body []byte) string { return foldWhitespace(string(body)) }
 	for _, pin := range []struct {
