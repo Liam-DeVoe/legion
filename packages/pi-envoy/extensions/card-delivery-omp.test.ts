@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { LISTENER_CALL_ATTEMPTS, LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
@@ -25,6 +26,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { settled, timeLeft, until as waitUntil } from "@legion/test-fixtures/wait";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { cardLines, readCardLines } from "../test/card-entries";
@@ -37,8 +39,9 @@ import { cardLines, readCardLines } from "../test/card-entries";
 // subject, and Dispatch's delivery frame, which the session accepts through the stand-in. What
 // reached the model is read off the requests the binary sends the stand-in gateway, each held
 // until the test answers it.
-// LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL the
-// NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
+// LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL a
+// NATS server for the frames: core NATS alone, a server started without JetStream, since the
+// stand-in listener relays every frame itself (`sendRelayFrame`) and no case reads a stream. A run
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
@@ -48,19 +51,17 @@ const DISPATCH_TOKEN = fixtureSecret("dsp");
 /** The kind line of the wake (src/card-wake.ts, `CardWake`), whatever count it states. */
 const WAKE_TEXT = /notice: unread messages/;
 
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
-
-/** How long a case waits for Oh My Pi's startup, which loads the extensions from source. */
-const STARTUP_DEADLINE_MS = 120_000;
-
-/** How long a card read waits for the session file to end on a finished line. One line is one
- * write, so this is orders of magnitude more than it takes; it is a hang guard, not a sleep. */
-const CARDS_WHOLE_MS = 5_000;
-
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
 const RELAY_STREAM = "card-delivery-stream";
+
+/** One answer the test holds: what `Promise.withResolvers` returns, named here because the
+ *  package's `lib` (ES2023) has no `PromiseWithResolvers`. */
+interface HeldAnswer<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+}
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -313,8 +314,12 @@ interface CardSession {
   cardEntries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
-  /** Answers the registration a session started with `holdStartup` holds; a no-op otherwise. */
+  /** Answers every registration a session started with `holdStartup` holds; a no-op otherwise. */
   releaseStartup(): void;
+  /** How a startup held by `holdStartup` ended, once it has: the first of the row's release, the
+   *  client giving up its whole registration call, or a model turn reaching the stand-in while
+   *  the hold stands. undefined while the startup is held, and for a session not started so. */
+  startupEnded(): string | undefined;
   /** Resolves once the open-asks read a session started with `holdSetup` holds has reached the
    *  stand-in: the host is setting the prompt up, inside `before_agent_start`. */
   setupHeld(): Promise<void>;
@@ -328,24 +333,20 @@ interface CardSession {
   type(text: string): Promise<void>;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline (`withinMs`,
- *  `DEADLINE_MS` unless named) or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at the row's deadline or as soon as
+ *  omp exits. What the cases wait on (a request reaching the stand-in, a file, the host's state)
+ *  has no event the test can await, so it is polled. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
-  closed: { readonly error?: unknown },
-  withinMs = DEADLINE_MS
+  closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + withinMs;
-  for (;;) {
+  const { value } = await waitUntil(what, async () => {
     if (closed.error !== undefined) throw closed.error;
-    const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    // What the cases wait on (a request reaching the stand-in, a file, the host's state) has no
-    // event the test can await, so it is polled, and a missing one fails at the deadline.
-    await Bun.sleep(20);
-  }
+    const read = await probe();
+    return read === undefined ? undefined : { value: read };
+  });
+  return value;
 }
 
 /** Where Oh My Pi keeps a session: the session file (its default), or rows of a SQL database
@@ -386,11 +387,16 @@ function sqlSessionText(database: string, key: string): string | undefined {
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
  * go into the profile's config.yml. Resolves once the session has registered its id with the
  * listener and the test holds a NATS connection. With `holdStartup` the stand-in holds its answer
- * to that first registration until `releaseStartup`: envoy.ts's `session_start` awaits it
+ * to every registration until `releaseStartup`: envoy.ts's `session_start` awaits the first
  * (`reconcileNow` registers once the relay subject is open), so the host is still inside its
  * startup, before it starts any extension send; on the pinned build it reads RPC input then and
  * answers a command that starts no turn, and holds one that starts a turn until startup is over
- * (`rpc-mode.ts` `waitsForStartup`). With `holdSetup` it holds
+ * (`rpc-mode.ts` `waitsForStartup`). The registration is one listener call, which the client
+ * gives up after LISTENER_CALL_ATTEMPTS attempts of LISTENER_CALL_TIMEOUT_MS each, and the pass
+ * does not send it again, so a held startup lasts until the row's release or about 10.25 s,
+ * whichever comes first, or less where the host's 30 s session_start cap comes first
+ * (`startupEnded` names which). The pass's own deadline is set to the row's time left, so it is
+ * never the bound. With `holdSetup` it holds
  * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
  * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
  * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
@@ -428,13 +434,27 @@ async function startSession(
   const dsnFile = path.join(root, "sessions.dsn");
   if (storage === "sql") await writeFile(dsnFile, `sqlite://${database}`);
 
-  let startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
-  const releaseStartup = startupHold?.resolve ?? (() => undefined);
+  const startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
+  let startupEnd: string | undefined;
+  const endStartup = (how: string): void => {
+    if (startupHold !== undefined) startupEnd ??= how;
+  };
+  const releaseStartup = (): void => {
+    endStartup("the row released it");
+    startupHold?.resolve();
+  };
+  /** The held registration's attempts the client has given up. */
+  let abandonedAttempts = 0;
   let setupHold = holdSetup ? Promise.withResolvers<void>() : undefined;
   const releaseSetup = setupHold?.resolve ?? (() => undefined);
   const turns: Turn[] = [];
-  const { requests, base } = serveStandin(cleanup, async (url, body) => {
+  const { requests, base } = serveStandin(cleanup, async (url, body, request) => {
     if (url.pathname === "/anthropic/v1/messages") {
+      endStartup(
+        "a model turn reached the stand-in while it still held the startup's registration: a " +
+          "turn started inside the host's startup, or the host ended its startup at its " +
+          "session_start cap (EXTENSION_HANDLER_TIMEOUT_MS, 30 s, Oh My Pi runner.ts:152)"
+      );
       const index = turns.length;
       const answer = Promise.withResolvers<string>();
       turns.push({
@@ -484,14 +504,24 @@ async function startSession(
       return Response.json({}, { status: 201 });
     }
     // The Envoy listener: registration and any read answer with an interest. A held startup
-    // holds the first registration.
+    // holds every registration until the row releases it, and notes each attempt the client gives
+    // up: the second ends the client's registration call, so `session_start` returns.
     const id = typeof body.session_id === "string" ? body.session_id : "";
     const interest = { session_id: id, machine_id: "card-delivery-machine", dir: workspace };
     if (url.pathname === "/v1/interests/subscribe") {
-      if (startupHold !== undefined) {
-        const held = startupHold.promise;
-        startupHold = undefined;
-        await held;
+      if (startupHold !== undefined && startupEnd === undefined) {
+        request.signal.addEventListener("abort", () => {
+          abandonedAttempts += 1;
+          if (abandonedAttempts >= LISTENER_CALL_ATTEMPTS) {
+            endStartup(
+              `the client gave up its registration call, all ${LISTENER_CALL_ATTEMPTS} of its ` +
+                `attempts of ${LISTENER_CALL_TIMEOUT_MS} ms (LISTENER_CALL_ATTEMPTS and ` +
+                "LISTENER_CALL_TIMEOUT_MS, contracts/src/envoy-session.ts), so session_start " +
+                "returned"
+            );
+          }
+        });
+        await startupHold.promise;
       }
       // Every registration the listener accepts is answered the consumer it gave the session,
       // and one it can give none is refused (INFRA-771): a session receives only what its own
@@ -516,7 +546,7 @@ async function startSession(
   await writeStandinProfile(home, base, config);
 
   const frames: object[] = [];
-  const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
+  const responses = new Map<string, HeldAnswer<Record<string, unknown>>>();
   // What ended the process the session runs in now, if anything did: a restart's own stop of the
   // process before it is no failure.
   const closed: { error?: unknown } = {};
@@ -530,6 +560,9 @@ async function startSession(
       ENVOY_NATS_URL: nats,
       DISPATCH_URL: base,
       DISPATCH_TOKEN,
+      // A held startup's registration pass gets the row's time left as its deadline, so the
+      // pass never ends the hold, only the bounds `startupEnded` names.
+      ...(holdStartup ? { ENVOY_PASS_DEADLINE_MS: String(Math.floor(timeLeft())) } : {}),
       ...(storage === "sql" && { OMP_SESSION_STORAGE: "sql", OMP_SESSION_SQL_DSN_FILE: dsnFile }),
       ...env,
     },
@@ -583,21 +616,19 @@ async function startSession(
         request.body.session_id !== "" &&
         (id === undefined || request.body.session_id === id)
     );
-  // Oh My Pi's startup, its extensions' first load included, is the one wait that can outlast
-  // `DEADLINE_MS` on a loaded host.
+  // Oh My Pi's startup, its extensions' first load included, ends at the row's deadline as every
+  // other wait of the row does.
   const sid = await until(
     "the session's registration with the listener",
     () => registrations()[0]?.body.session_id as string | undefined,
-    closed,
-    STARTUP_DEADLINE_MS
+    closed
   );
   if (terminal !== undefined) {
     // The profile's model on the status line under the editor: the terminal's startup is over.
     await until(
       "the terminal's editor",
       () => (terminal.screen().includes("Stand-in standin-model") ? true : undefined),
-      closed,
-      STARTUP_DEADLINE_MS
+      closed
     );
   }
   const connection: NatsConnection = await connect({ servers: nats });
@@ -610,10 +641,14 @@ async function startSession(
 
   // Sends one frame as the listener's relay sends it (`sendRelayFrame`), under the sequence
   // after the last: one stream for the whole case. A run whose binary died fails the wait at
-  // once rather than at the frame's own deadline.
+  // once rather than at the frame's own deadline. The sends end at the row's deadline, as every
+  // other wait of the row does, rather than a fixed span after they start (the helper's own
+  // default); `timeLeft()` reads a fraction of a millisecond, and the helper's refusal names the
+  // bound it kept, so it is floored.
   let streamSeq = 0;
   const relayFrame = async (what: string, envelope: string): Promise<void> => {
     streamSeq += 1;
+    const within = Math.floor(timeLeft());
     try {
       await sendRelayFrame({
         connection,
@@ -622,11 +657,14 @@ async function startSession(
         subject: stored,
         payload: codec.encode(envelope),
         seq: streamSeq,
-        withinMs: DEADLINE_MS,
+        withinMs: within,
         stopped: closed,
       });
     } catch (error) {
-      throw new Error(`${what} failed: ${String(error)}`);
+      throw new Error(
+        `${what} failed (its sends were bounded by the row's deadline, ${within} ms after they ` +
+          `began): ${String(error)}`
+      );
     }
   };
 
@@ -753,7 +791,10 @@ async function startSession(
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
       current.send({ ...command, id });
-      const response = await Promise.race([waiting.promise, current.closed]);
+      const response = await settled(
+        `omp's answer to ${String(command.type)}`,
+        Promise.race([waiting.promise, current.closed])
+      );
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
       }
@@ -777,12 +818,13 @@ async function startSession(
       const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      if (storage === "file") return readCardLines(file, writer, CARDS_WHOLE_MS);
+      if (storage === "file") return readCardLines(file, writer);
       // The host keys the session's rows by the path it names; none before it stores the session.
       return cardLines(sqlSessionText(database, file) ?? "", writer);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
+    startupEnded: () => startupEnd,
     async setupHeld() {
       await until(
         "the open-asks read the prompt's setup awaits",
@@ -848,20 +890,6 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
   return turn.request;
 }
 
-/**
- * Resolves as `promise` does, or fails on `what` once `ms` have passed without it settling. A
- * real timer, as what it bounds is the real binary's answer time; a passing case never waits on it.
- */
-async function within<T>(what: string, ms: number, promise: Promise<T>): Promise<T> {
-  const late = Promise.withResolvers<never>();
-  const timer = setTimeout(() => late.reject(new Error(`${what}: no answer within ${ms} ms`)), ms);
-  try {
-    return await Promise.race([promise, late.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // A card queued while a turn runs used to be a steer, and the host drains its steering queue one
 // message per step, first in first out: five cards ahead of a person's Send held the Send back
 // five steps. As asides, the cards wait behind the Send, which reaches the model at the first step
@@ -898,8 +926,7 @@ test.skipIf(skip)(
     // Every card was read in a run: none gets a wake.
     const request = await probe(session, next.index + 1);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
-  },
-  120_000
+  }
 );
 
 /** How an interrupt case holds the run when it interrupts it. */
@@ -951,8 +978,7 @@ for (const abort of ["abort", "abort_and_restore_queue"] as const) {
   for (const hold of ["model request", "tool call"] as const) {
     test.skipIf(skip)(
       `an RPC ${abort} during a held ${hold} keeps the three queued cards, folded with no turn`,
-      () => interruptKeepsCards(abort, hold),
-      120_000
+      () => interruptKeepsCards(abort, hold)
     );
   }
 }
@@ -986,8 +1012,7 @@ test.skipIf(skip)(
     expect(entries.filter((entry) => entry.includes(card))).toHaveLength(1);
     expect(conversation(request)).toContain(card);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
-  },
-  120_000
+  }
 );
 
 // An aside that reaches the host after the run's last step (here: during the run's automatic
@@ -1052,8 +1077,7 @@ test.skipIf(skip)(
     await session.settled();
     expect(agentEndsSince(framesAtWake).some((frame) => !continuing(frame))).toBe(true);
     expect(session.turns.length).toBe(woken.index + 1);
-  },
-  120_000
+  }
 );
 
 // Plan mode is the host's other fold with no turn, and no case here reaches it: the pinned build's
@@ -1109,8 +1133,7 @@ test.skipIf(skip)(
     };
     expect(handOver(first)).toBe("startup");
     expect(handOver(card)).toBe("idle");
-  },
-  120_000
+  }
 );
 
 // The third hand-over an Envoy card can be given (extensions/envoy.ts, `handCard`): the inert
@@ -1141,8 +1164,7 @@ test.skipIf(skip)(
     const written = (await session.cardEntries()).filter((entry) => entry.includes(btw));
     expect(written).toHaveLength(1);
     expect(CardEntrySchema.parse(JSON.parse(written[0] as string)).details.handOver).toBe("inert");
-  },
-  120_000
+  }
 );
 
 // Several cards that reach an idle session together. pi-envoy reads `isIdle` when it hands each
@@ -1189,8 +1211,7 @@ test.skipIf(skip)(
     for (const card of cards) {
       expect(entries.filter((entry) => entry.includes(card))).toHaveLength(1);
     }
-  },
-  120_000
+  }
 );
 
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
@@ -1201,34 +1222,57 @@ test.skipIf(skip)(
 // that starts no turn, as `get_state`, holds one that starts a turn or changes the session
 // (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with
 // `drainSends: false`, so that startup waits on no extension send. So the `get_state` written
-// once both cards are in is answered while the startup is still held. 18.16.0 held every RPC
-// command but `set_ask_dialog`, in arrival order, until its startup was over, after
+// once both cards are in is answered while the startup is still held. The row reads that from the
+// order of events, not a clock: `get_state`'s answer must come before whatever ended the held
+// startup, which the stand-in names (`startupEnded`), and a failure says which bound it was: the
+// row's own release, the client giving up its registration call (two attempts of 5 s plus the
+// delay between them, about 10.25 s), or a turn that reached the model while the registration was
+// still held (a turn inside the startup, or the host's 30 s session_start cap). 18.16.0 held every
+// RPC command but `set_ask_dialog`, in arrival order, until its startup was over, after
 // `initializeExtensions` had returned, and this test then held that the `get_state` written during
 // startup went unanswered until the startup was released. On 18.12.2, when this test was written,
 // RPC mode also drained every startup send first (`runner.sends.drain()`), so a card's own turn
 // there would have held `get_state` and `prompt` back until it ended.
-test.skipIf(skip)(
-  "a card that arrives while the session starts holds no RPC input",
-  async () => {
-    const session = await startSession({ holdStartup: true });
-    const cards = [await session.card("s1"), await session.card("s2")];
-    await within("get_state written while the startup is held", 5_000, session.state());
-    // The cards wait for the startup: neither has started a turn while it is held.
-    expect(session.turns).toHaveLength(0);
-    session.releaseStartup();
+test.skipIf(skip)("a card that arrives while the session starts holds no RPC input", async () => {
+  const session = await startSession({ holdStartup: true });
+  const cards = [await session.card("s1"), await session.card("s2")];
+  // How the startup stood when `get_state`'s answer arrived: read in the turn the answer settles
+  // in, before any later event of the stand-in's can run.
+  const endedBeforeTheAnswer = await settled(
+    "get_state written while the startup is held",
+    session.state().then(() => session.startupEnded())
+  );
+  if (endedBeforeTheAnswer !== undefined) {
+    throw new Error(
+      `get_state was answered only once the held startup had ended: ${endedBeforeTheAnswer}`
+    );
+  }
+  // The cards wait for the startup: neither has started a turn while it is held. A turn that
+  // reached the model first would have ended the hold's reading, so the reading says why.
+  expect(session.startupEnded(), "the held startup ended before the row released it").toBe(
+    undefined
+  );
+  expect(session.turns).toHaveLength(0);
+  session.releaseStartup();
 
-    // The cards' turn is held at its model request, and the host still answers RPC commands.
-    const woken = await session.nextTurn("the turn the startup cards' wake started");
-    await within("get_state written while the turn is held", 5_000, session.state());
+  // The cards' turn is held at its model request, and the host still answers RPC commands.
+  const woken = await session.nextTurn("the turn the startup cards' wake started");
+  expect(session.startupEnded(), "what ended the held startup").toBe("the row released it");
+  await settled("get_state written while the turn is held", session.state());
 
-    const messages = conversation(woken.request);
-    for (const card of cards) expect(messages).toContain(card);
-    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
-    woken.reply([text("Read the startup cards.")]);
-    await probe(session, woken.index + 1);
-  },
-  120_000
-);
+  const messages = conversation(woken.request);
+  // Both cards were taken before the row released the startup, and a held startup starts no turn
+  // before that release, so the wake's turn reads both. One that misses a card started before
+  // that card arrived: the host's startup had ended inside the row's hold.
+  expect(
+    cards.filter((card) => !messages.includes(card)),
+    "the startup cards the wake's turn did not read: a turn that misses one started before it " +
+      "arrived, so the host's startup ended before the row released it"
+  ).toEqual([]);
+  expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
+  woken.reply([text("Read the startup cards.")]);
+  await probe(session, woken.index + 1);
+});
 
 // A `low` card of the daemon or of a Dispatch event (src/card-wake.ts, `lowCard`) goes into the
 // session's stored context with no turn: as `nextTurn` with no `triggerTurn`, which the host
@@ -1326,111 +1370,105 @@ async function answeredDone(
     });
 }
 
-test.skipIf(skip)(
-  "a low card is read at the next turn",
-  async () => {
-    const session = await startSession({ storage: "sql" });
-    await session.settled();
+test.skipIf(skip)("a low card is read at the next turn", async () => {
+  const session = await startSession({ storage: "sql" });
+  await session.settled();
 
-    // A daemon notice, sent low, to an idle session: no turn, and the task's turn reads it.
-    const notice = marked("low-notice");
-    const noticeWords = await session.relayWatched(
-      "the session to take the low notice",
-      daemonEnvelope(notice.text, notice.label, "low")
-    );
-    await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet, but the session recorded the
-    // card: the frame is done, and holds no place in the relay until the store holds the card.
-    await answeredDone(session, notice.text, noticeWords);
-    const task = `TASK-${randomUUID().slice(0, 8)}`;
-    await session.command({ type: "prompt", message: task });
-    const first = await session.nextTurn("the task's first model request");
-    expect(newestMessage(first.request.body)).toContain(task);
-    expectBefore(first.request, notice.text, task);
-    first.reply([text("Did the task.")]);
-    await session.settled();
-    // The task's reply put the session in its store, and the notice with it.
-    await storedLine(session, notice.text);
+  // A daemon notice, sent low, to an idle session: no turn, and the task's turn reads it.
+  const notice = marked("low-notice");
+  const noticeWords = await session.relayWatched(
+    "the session to take the low notice",
+    daemonEnvelope(notice.text, notice.label, "low")
+  );
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done, and holds no place in the relay until the store holds the card.
+  await answeredDone(session, notice.text, noticeWords);
+  const task = `TASK-${randomUUID().slice(0, 8)}`;
+  await session.command({ type: "prompt", message: task });
+  const first = await session.nextTurn("the task's first model request");
+  expect(newestMessage(first.request.body)).toContain(task);
+  expectBefore(first.request, notice.text, task);
+  first.reply([text("Did the task.")]);
+  await session.settled();
+  // The task's reply put the session in its store, and the notice with it.
+  await storedLine(session, notice.text);
 
-    // A Dispatch event the daemon wrote, sent low: no turn, and a med card's turn reads it.
-    const comment = marked("low-comment");
-    const commentWords = await session.relayWatched(
-      "the session to take the low Dispatch event",
-      daemonCommentEnvelope(comment.text, comment.label, "low")
-    );
-    await noRequestFor(session, 10_000, 1);
-    // The store holds the session now: the stored card is done, and waits for no later card.
-    await answeredDone(session, comment.text, commentWords);
-    const card = marked("med-card");
-    await session.relay("the session to take the med card", daemonEnvelope(card.text, card.label));
-    const second = await session.nextTurn("the turn the med card started");
-    expectBefore(second.request, comment.text, card.text);
-    // The stored card reaches the model once: the med card's turn did not hand it again.
-    expect(conversation(second.request).split(comment.text).length - 1).toBe(1);
-    second.reply([text("Read the cards.")]);
-    await probe(session, second.index + 1);
+  // A Dispatch event the daemon wrote, sent low: no turn, and a med card's turn reads it.
+  const comment = marked("low-comment");
+  const commentWords = await session.relayWatched(
+    "the session to take the low Dispatch event",
+    daemonCommentEnvelope(comment.text, comment.label, "low")
+  );
+  await noRequestFor(session, 10_000, 1);
+  // The store holds the session now: the stored card is done, and waits for no later card.
+  await answeredDone(session, comment.text, commentWords);
+  const card = marked("med-card");
+  await session.relay("the session to take the med card", daemonEnvelope(card.text, card.label));
+  const second = await session.nextTurn("the turn the med card started");
+  expectBefore(second.request, comment.text, card.text);
+  // The stored card reaches the model once: the med card's turn did not hand it again.
+  expect(conversation(second.request).split(comment.text).length - 1).toBe(1);
+  second.reply([text("Read the cards.")]);
+  await probe(session, second.index + 1);
 
-    for (const low of [notice.text, comment.text]) {
-      const { details } = StoredEntrySchema.parse(JSON.parse(await storedLine(session, low)));
-      expect(details).toEqual({ handOver: "inert", urgency: "low" });
-    }
-  },
-  180_000
-);
+  for (const low of [notice.text, comment.text]) {
+    const { details } = StoredEntrySchema.parse(JSON.parse(await storedLine(session, low)));
+    expect(details).toEqual({ handOver: "inert", urgency: "low" });
+  }
+});
 
 // A session's run takes a card handed while it streams at its next step, so a `low` card that
 // comes then is held until the session is idle and stored then, and the turn after reads it.
-test.skipIf(skip)(
-  "a low card that comes during a turn is read at the turn after it",
-  async () => {
-    // A tool call of 20 seconds, during which a low card and then a med card come.
-    const session = await startSession({ config: FOREGROUND_BASH });
-    await session.command({ type: "prompt", message: "Start the long tool call." });
-    const first = await session.nextTurn("the first model request");
-    const started = path.join(session.root, "tool-started");
-    first.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
-    await session.until("the 20 s tool call to start", async () =>
-      (await Bun.file(started).exists()) ? true : undefined
-    );
-    const low = marked("low-during");
-    const lowWords = await session.relayWatched(
-      "the session to take the low card",
-      daemonEnvelope(low.text, low.label, "low")
-    );
-    // Held while the tool call runs, and recorded: its frame is done during the turn, so a later
-    // card waits on no place in the relay.
-    await answeredDone(session, low.text, lowWords);
-    const med = marked("med-during");
-    await session.relay(
-      "the session to take the med card",
-      daemonEnvelope(med.text, med.label, "med")
-    );
-    const next = await session.nextTurn("the run's model request after the tool call");
-    expect(conversation(next.request)).toContain(med.text);
-    expect(conversation(next.request)).not.toContain(low.text);
-    next.reply([text("Read the med card.")]);
-    // The run made no model call for the low card after its last one: the card is stored.
-    await storedLine(session, low.text);
-    await session.settled();
-    await answeredDone(session, low.text, lowWords);
-    await noRequestFor(session, 5_000, next.index + 1);
-    const waking = marked("med-after");
-    await session.relay(
-      "the session to take the med card after the run",
-      daemonEnvelope(waking.text, waking.label, "med")
-    );
-    const after = await session.nextTurn("the turn the med card started");
-    expectBefore(after.request, low.text, waking.text);
-    after.reply([text("Read both cards.")]);
-    await session.settled();
+test.skipIf(skip)("a low card that comes during a turn is read at the turn after it", async () => {
+  // A tool call of 20 seconds, during which a low card and then a med card come.
+  const session = await startSession({ config: FOREGROUND_BASH });
+  await session.command({ type: "prompt", message: "Start the long tool call." });
+  const first = await session.nextTurn("the first model request");
+  const started = path.join(session.root, "tool-started");
+  first.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
+  await session.until("the 20 s tool call to start", async () =>
+    (await Bun.file(started).exists()) ? true : undefined
+  );
+  const low = marked("low-during");
+  const lowWords = await session.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  // Held while the tool call runs, and recorded: its frame is done during the turn, so a later
+  // card waits on no place in the relay.
+  await answeredDone(session, low.text, lowWords);
+  const med = marked("med-during");
+  await session.relay(
+    "the session to take the med card",
+    daemonEnvelope(med.text, med.label, "med")
+  );
+  const next = await session.nextTurn("the run's model request after the tool call");
+  expect(conversation(next.request)).toContain(med.text);
+  expect(conversation(next.request)).not.toContain(low.text);
+  next.reply([text("Read the med card.")]);
+  // The run made no model call for the low card after its last one: the card is stored.
+  await storedLine(session, low.text);
+  await session.settled();
+  await answeredDone(session, low.text, lowWords);
+  await noRequestFor(session, 5_000, next.index + 1);
+  const waking = marked("med-after");
+  await session.relay(
+    "the session to take the med card after the run",
+    daemonEnvelope(waking.text, waking.label, "med")
+  );
+  const after = await session.nextTurn("the turn the med card started");
+  expectBefore(after.request, low.text, waking.text);
+  after.reply([text("Read both cards.")]);
+  await session.settled();
 
-    // A turn that ends with a continuation, which starts the next turn at once, as the phase
-    // reminder's does: the low card that came during the turn waits through it, and is stored
-    // once the session is idle.
-    const reminder = `CONTINUE-${randomUUID().slice(0, 8)}`;
-    const continuation = await fixtureExtension(
-      "stop-continuation.ts",
-      `export default function stopContinuation(pi) {
+  // A turn that ends with a continuation, which starts the next turn at once, as the phase
+  // reminder's does: the low card that came during the turn waits through it, and is stored
+  // once the session is idle.
+  const reminder = `CONTINUE-${randomUUID().slice(0, 8)}`;
+  const continuation = await fixtureExtension(
+    "stop-continuation.ts",
+    `export default function stopContinuation(pi) {
   let continued = false;
   pi.on("session_stop", async (event) => {
     if (continued || event.signal?.aborted) return undefined;
@@ -1439,134 +1477,126 @@ test.skipIf(skip)(
   });
 }
 `
-    );
-    const continued = await startSession({
-      extensions: [continuation],
-      env: { CARD_DELIVERY_CONTINUATION: reminder },
-    });
-    await continued.command({ type: "prompt", message: "Start the continued turn." });
-    const held = await continued.nextTurn("the first model request");
-    const lowBeforeEnd = marked("low-continued");
-    const lowBeforeEndWords = await continued.relayWatched(
-      "the session to take the low card",
-      daemonEnvelope(lowBeforeEnd.text, lowBeforeEnd.label, "low")
-    );
-    held.reply([text("Done for now.")]);
-    const resumed = await continued.nextTurn("the continuation's model request");
-    expect(conversation(resumed.request)).toContain(reminder);
-    expect(conversation(resumed.request)).not.toContain(lowBeforeEnd.text);
-    resumed.reply([text("Still done.")]);
-    await storedLine(continued, lowBeforeEnd.text);
-    await continued.settled();
-    await answeredDone(continued, lowBeforeEnd.text, lowBeforeEndWords);
-    const wakingAgain = marked("med-continued");
-    await continued.relay(
-      "the session to take the med card",
-      daemonEnvelope(wakingAgain.text, wakingAgain.label, "med")
-    );
-    const later = await continued.nextTurn("the turn the med card started");
-    expect(later.index).toBe(resumed.index + 1);
-    expectBefore(later.request, lowBeforeEnd.text, wakingAgain.text);
-    later.reply([text("Read both cards.")]);
-    await continued.settled();
-  },
-  240_000
-);
+  );
+  const continued = await startSession({
+    extensions: [continuation],
+    env: { CARD_DELIVERY_CONTINUATION: reminder },
+  });
+  await continued.command({ type: "prompt", message: "Start the continued turn." });
+  const held = await continued.nextTurn("the first model request");
+  const lowBeforeEnd = marked("low-continued");
+  const lowBeforeEndWords = await continued.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(lowBeforeEnd.text, lowBeforeEnd.label, "low")
+  );
+  held.reply([text("Done for now.")]);
+  const resumed = await continued.nextTurn("the continuation's model request");
+  expect(conversation(resumed.request)).toContain(reminder);
+  expect(conversation(resumed.request)).not.toContain(lowBeforeEnd.text);
+  resumed.reply([text("Still done.")]);
+  await storedLine(continued, lowBeforeEnd.text);
+  await continued.settled();
+  await answeredDone(continued, lowBeforeEnd.text, lowBeforeEndWords);
+  const wakingAgain = marked("med-continued");
+  await continued.relay(
+    "the session to take the med card",
+    daemonEnvelope(wakingAgain.text, wakingAgain.label, "med")
+  );
+  const later = await continued.nextTurn("the turn the med card started");
+  expect(later.index).toBe(resumed.index + 1);
+  expectBefore(later.request, lowBeforeEnd.text, wakingAgain.text);
+  later.reply([text("Read both cards.")]);
+  await continued.settled();
+});
 
-test.skipIf(skip)(
-  "a low card survives a stop of the session",
-  async () => {
-    const session = await startSession({ config: FOREGROUND_BASH });
-    await session.command({ type: "prompt", message: "Start the turn before the stop." });
-    const held = await session.nextTurn("the first model request");
-    const low = marked("low-stop");
-    const lowWords = await session.relayWatched(
-      "the session to take the low card",
-      daemonEnvelope(low.text, low.label, "low")
-    );
-    held.reply([text("Done before the stop.")]);
-    // Once the turn is over the card is in the session's store, which is what a stop keeps: a
-    // card handed while the turn ran would stay in Oh My Pi's memory and go with the process.
-    await storedLine(session, low.text);
-    await session.settled();
-    // Answered done before the stop: the listener sends the frame to no later process.
-    await answeredDone(session, low.text, lowWords);
+test.skipIf(skip)("a low card survives a stop of the session", async () => {
+  const session = await startSession({ config: FOREGROUND_BASH });
+  await session.command({ type: "prompt", message: "Start the turn before the stop." });
+  const held = await session.nextTurn("the first model request");
+  const low = marked("low-stop");
+  const lowWords = await session.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  held.reply([text("Done before the stop.")]);
+  // Once the turn is over the card is in the session's store, which is what a stop keeps: a
+  // card handed while the turn ran would stay in Oh My Pi's memory and go with the process.
+  await storedLine(session, low.text);
+  await session.settled();
+  // Answered done before the stop: the listener sends the frame to no later process.
+  await answeredDone(session, low.text, lowWords);
 
-    await session.restart();
-    const card = marked("med-restart");
-    await session.relay(
-      "the restarted session to take the med card",
-      daemonEnvelope(card.text, card.label, "med")
-    );
-    const turn = await session.nextTurn("the first model request after the restart");
-    expectBefore(turn.request, low.text, card.text);
-    turn.reply([text("Read both cards.")]);
-    await session.settled();
+  await session.restart();
+  const card = marked("med-restart");
+  await session.relay(
+    "the restarted session to take the med card",
+    daemonEnvelope(card.text, card.label, "med")
+  );
+  const turn = await session.nextTurn("the first model request after the restart");
+  expectBefore(turn.request, low.text, card.text);
+  turn.reply([text("Read both cards.")]);
+  await session.settled();
 
-    // A low card held when the session stops: the tool call keeps the turn going, so the card is
-    // held, not stored, when the process ends. Its frame was answered done once the session
-    // recorded the card, so the listener sends it to no later process: the record keeps it, and
-    // the restarted session stores it, where the next turn reads it.
-    await session.command({ type: "prompt", message: "Start the long tool call." });
-    const busy = await session.nextTurn("the long tool call's model request");
-    const started = path.join(session.root, "stop-tool-started");
-    busy.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
-    await session.until("the 20 s tool call to start", async () =>
-      (await Bun.file(started).exists()) ? true : undefined
-    );
-    const heldLow = marked("low-held-stop");
-    const heldWords = await session.relayWatched(
-      "the session to take the low card during the tool call",
-      daemonEnvelope(heldLow.text, heldLow.label, "low")
-    );
-    await answeredDone(session, heldLow.text, heldWords);
-    await session.restart();
-    const waking = marked("med-held-restart");
-    await session.relay(
-      "the restarted session to take the med card",
-      daemonEnvelope(waking.text, waking.label, "med")
-    );
-    const after = await session.nextTurn("the first model request after the stop in the tool call");
-    expectBefore(after.request, heldLow.text, waking.text);
-    after.reply([text("Read both cards.")]);
-    await session.settled();
-  },
-  240_000
-);
+  // A low card held when the session stops: the tool call keeps the turn going, so the card is
+  // held, not stored, when the process ends. Its frame was answered done once the session
+  // recorded the card, so the listener sends it to no later process: the record keeps it, and
+  // the restarted session stores it, where the next turn reads it.
+  await session.command({ type: "prompt", message: "Start the long tool call." });
+  const busy = await session.nextTurn("the long tool call's model request");
+  const started = path.join(session.root, "stop-tool-started");
+  busy.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
+  await session.until("the 20 s tool call to start", async () =>
+    (await Bun.file(started).exists()) ? true : undefined
+  );
+  const heldLow = marked("low-held-stop");
+  const heldWords = await session.relayWatched(
+    "the session to take the low card during the tool call",
+    daemonEnvelope(heldLow.text, heldLow.label, "low")
+  );
+  await answeredDone(session, heldLow.text, heldWords);
+  await session.restart();
+  const waking = marked("med-held-restart");
+  await session.relay(
+    "the restarted session to take the med card",
+    daemonEnvelope(waking.text, waking.label, "med")
+  );
+  const after = await session.nextTurn("the first model request after the stop in the tool call");
+  expectBefore(after.request, heldLow.text, waking.text);
+  after.reply([text("Read both cards.")]);
+  await session.settled();
+});
 
-test.skipIf(skip)(
-  "a low card at startup is owed no wake",
-  async () => {
-    // No start-turn mark: the card comes while Oh My Pi starts, held inside its startup.
-    const session = await startSession({ holdStartup: true });
-    const low = marked("low-startup");
-    const lowWords = await session.relayWatched(
-      "the starting session to take the low card",
-      daemonEnvelope(low.text, low.label, "low")
-    );
-    session.releaseStartup();
-    await session.state();
-    await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet, but the session recorded the
-    // card: the frame is done.
-    await answeredDone(session, low.text, lowWords);
-    const card = marked("med-startup");
-    await session.relay(
-      "the session to take the med card",
-      daemonEnvelope(card.text, card.label, "med")
-    );
-    const turn = await session.nextTurn("the turn the med card started");
-    expectBefore(turn.request, low.text, card.text);
-    turn.reply([text("Read both cards.")]);
-    await session.settled();
-    await storedLine(session, low.text);
+test.skipIf(skip)("a low card at startup is owed no wake", async () => {
+  // No start-turn mark: the card comes while Oh My Pi starts, held inside its startup.
+  const session = await startSession({ holdStartup: true });
+  const low = marked("low-startup");
+  const lowWords = await session.relayWatched(
+    "the starting session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  session.releaseStartup();
+  await session.state();
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done.
+  await answeredDone(session, low.text, lowWords);
+  const card = marked("med-startup");
+  await session.relay(
+    "the session to take the med card",
+    daemonEnvelope(card.text, card.label, "med")
+  );
+  const turn = await session.nextTurn("the turn the med card started");
+  expectBefore(turn.request, low.text, card.text);
+  turn.reply([text("Read both cards.")]);
+  await session.settled();
+  await storedLine(session, low.text);
 
-    // A start-turn mark, as the Legion entry keeps it for its controller's start: unsent from
-    // `session_start`, sent with the start prompt (its `input`), cleared at its `agent_start`.
-    const startupTurn = path.resolve(import.meta.dir, "../../pi-shared/src/startup-turn.ts");
-    const mark = await fixtureExtension(
-      "start-turn-mark.ts",
-      `import { clearStartupTurn, markStartupTurnPending, markStartupTurnSent } from ${JSON.stringify(startupTurn)};
+  // A start-turn mark, as the Legion entry keeps it for its controller's start: unsent from
+  // `session_start`, sent with the start prompt (its `input`), cleared at its `agent_start`.
+  const startupTurn = path.resolve(import.meta.dir, "../../pi-shared/src/startup-turn.ts");
+  const mark = await fixtureExtension(
+    "start-turn-mark.ts",
+    `import { clearStartupTurn, markStartupTurnPending, markStartupTurnSent } from ${JSON.stringify(startupTurn)};
 export default function startTurnMark(pi) {
   let session = "";
   let sent = false;
@@ -1586,116 +1616,106 @@ export default function startTurnMark(pi) {
   });
 }
 `
-    );
-    const withMark = await startSession({ holdStartup: true, extensions: [mark] });
-    const lowMarked = marked("low-marked");
-    const lowMarkedWords = await withMark.relayWatched(
-      "the starting session to take the low card",
-      daemonEnvelope(lowMarked.text, lowMarked.label, "low")
-    );
-    withMark.releaseStartup();
-    await withMark.state();
-    const start = `START-${randomUUID().slice(0, 8)}`;
-    await withMark.command({ type: "prompt", message: start });
-    const startTurn = await withMark.nextTurn("the start turn's model request");
-    expect(newestMessage(startTurn.request.body)).toContain(start);
-    startTurn.reply([text("Started.")]);
-    await withMark.settled();
-    await noRequestFor(withMark, QUIET_MS, startTurn.index + 1);
-    await answeredDone(withMark, lowMarked.text, lowMarkedWords);
-    const markedCard = marked("med-marked");
-    await withMark.relay(
-      "the session to take the med card",
-      daemonEnvelope(markedCard.text, markedCard.label, "med")
-    );
-    const later = await withMark.nextTurn("the turn the med card started");
-    expectBefore(later.request, lowMarked.text, markedCard.text);
-    later.reply([text("Read both cards.")]);
-    await withMark.settled();
-  },
-  300_000
-);
+  );
+  const withMark = await startSession({ holdStartup: true, extensions: [mark] });
+  const lowMarked = marked("low-marked");
+  const lowMarkedWords = await withMark.relayWatched(
+    "the starting session to take the low card",
+    daemonEnvelope(lowMarked.text, lowMarked.label, "low")
+  );
+  withMark.releaseStartup();
+  await withMark.state();
+  const start = `START-${randomUUID().slice(0, 8)}`;
+  await withMark.command({ type: "prompt", message: start });
+  const startTurn = await withMark.nextTurn("the start turn's model request");
+  expect(newestMessage(startTurn.request.body)).toContain(start);
+  startTurn.reply([text("Started.")]);
+  await withMark.settled();
+  await noRequestFor(withMark, QUIET_MS, startTurn.index + 1);
+  await answeredDone(withMark, lowMarked.text, lowMarkedWords);
+  const markedCard = marked("med-marked");
+  await withMark.relay(
+    "the session to take the med card",
+    daemonEnvelope(markedCard.text, markedCard.label, "med")
+  );
+  const later = await withMark.nextTurn("the turn the med card started");
+  expectBefore(later.request, lowMarked.text, markedCard.text);
+  later.reply([text("Read both cards.")]);
+  await withMark.settled();
+});
 
-test.skipIf(skip)(
-  "a low card spares an interactive session",
-  async () => {
-    const session = await startSession({ interactive: true });
-    const low = marked("low-terminal");
-    const lowWords = await session.relayWatched(
-      "the terminal to take the low card",
-      daemonEnvelope(low.text, low.label, "low")
-    );
-    await noRequestFor(session, QUIET_MS, 0);
-    // The session has had no reply, so its store holds nothing yet, but the session recorded the
-    // card: the frame is done.
-    await answeredDone(session, low.text, lowWords);
-    const typed = `TYPED-${randomUUID().slice(0, 8)}`;
-    await session.type(typed);
-    const turn = await session.nextTurn("the typed message's model request");
-    expect(newestMessage(turn.request.body)).toContain(typed);
-    expectBefore(turn.request, low.text, typed);
-    turn.reply([text("Read the card and the message.")]);
-  },
-  180_000
-);
+test.skipIf(skip)("a low card spares an interactive session", async () => {
+  const session = await startSession({ interactive: true });
+  const low = marked("low-terminal");
+  const lowWords = await session.relayWatched(
+    "the terminal to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done.
+  await answeredDone(session, low.text, lowWords);
+  const typed = `TYPED-${randomUUID().slice(0, 8)}`;
+  await session.type(typed);
+  const turn = await session.nextTurn("the typed message's model request");
+  expect(newestMessage(turn.request.body)).toContain(typed);
+  expectBefore(turn.request, low.text, typed);
+  turn.reply([text("Read the card and the message.")]);
+});
 
 // The cards that stay as they were: a daemon card of any other urgency or none, a card from
 // another session, a message Dispatch delivers to the session, and an ask's card from Dispatch,
 // each of them at `low` where it can say so. Each starts its own turn.
-test.skipIf(skip)(
-  "every other card starts a turn as today",
-  async () => {
-    const session = await startSession();
+test.skipIf(skip)("every other card starts a turn as today", async () => {
+  const session = await startSession();
+  await session.settled();
+  const kinds: readonly (readonly [
+    string,
+    (card: { label: string; text: string }) => Promise<string>,
+  ])[] = [
+    ...(["med", "high", "blocking"] as const).map(
+      (urgency) =>
+        [
+          `a daemon card at ${urgency}`,
+          async (card: { label: string; text: string }) => {
+            await session.relay(urgency, daemonEnvelope(card.text, card.label, urgency));
+            return card.text;
+          },
+        ] as const
+    ),
+    [
+      "a daemon card with no urgency",
+      async (card) => {
+        await session.relay("no urgency", daemonEnvelope(card.text, card.label));
+        return card.text;
+      },
+    ],
+    [
+      "another session's card at low",
+      async (card) => {
+        await session.relay("a peer", peerEnvelope(session.sid, card.text, card.label, "low"));
+        return card.text;
+      },
+    ],
+    ["a message Dispatch delivers at low", (card) => session.send(card.label, "low")],
+    [
+      "an ask's card from Dispatch at low",
+      async (card) => {
+        await session.relay("an answer", askAnsweredEnvelope(card.text, card.label, "low"));
+        return card.text;
+      },
+    ],
+  ];
+  for (const [index, [name, deliver]] of kinds.entries()) {
+    const shown = await deliver(marked(`other-${index}`));
+    const turn = await session.nextTurn(`the turn ${name} started`);
+    expect(turn.index).toBe(index);
+    expect(conversation(turn.request)).toContain(shown);
+    turn.reply([text(`Read ${name}.`)]);
     await session.settled();
-    const kinds: readonly (readonly [
-      string,
-      (card: { label: string; text: string }) => Promise<string>,
-    ])[] = [
-      ...(["med", "high", "blocking"] as const).map(
-        (urgency) =>
-          [
-            `a daemon card at ${urgency}`,
-            async (card: { label: string; text: string }) => {
-              await session.relay(urgency, daemonEnvelope(card.text, card.label, urgency));
-              return card.text;
-            },
-          ] as const
-      ),
-      [
-        "a daemon card with no urgency",
-        async (card) => {
-          await session.relay("no urgency", daemonEnvelope(card.text, card.label));
-          return card.text;
-        },
-      ],
-      [
-        "another session's card at low",
-        async (card) => {
-          await session.relay("a peer", peerEnvelope(session.sid, card.text, card.label, "low"));
-          return card.text;
-        },
-      ],
-      ["a message Dispatch delivers at low", (card) => session.send(card.label, "low")],
-      [
-        "an ask's card from Dispatch at low",
-        async (card) => {
-          await session.relay("an answer", askAnsweredEnvelope(card.text, card.label, "low"));
-          return card.text;
-        },
-      ],
-    ];
-    for (const [index, [name, deliver]] of kinds.entries()) {
-      const shown = await deliver(marked(`other-${index}`));
-      const turn = await session.nextTurn(`the turn ${name} started`);
-      expect(turn.index).toBe(index);
-      expect(conversation(turn.request)).toContain(shown);
-      turn.reply([text(`Read ${name}.`)]);
-      await session.settled();
-    }
-    await probe(session, kinds.length);
-  },
-  240_000
-);
+  }
+  await probe(session, kinds.length);
+});
 
 /** The entries Oh My Pi's SQL store holds for the session `file` names, each line parsed. */
 function storeEntries(database: string, file: string): Record<string, unknown>[] {
@@ -1772,6 +1792,5 @@ test.skipIf(skip)(
         ? true
         : undefined
     );
-  },
-  180_000
+  }
 );

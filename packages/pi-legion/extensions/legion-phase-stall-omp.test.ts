@@ -894,8 +894,15 @@ test.skipIf(skip)(
           let frameHeaders = headers();
           await sendRelayFrame({
             connection: {
-              request: (subject, payload, { timeout }) =>
-                connection.request(subject, payload, { timeout, headers: frameHeaders }),
+              // `sendRelayFrame` always sends its options, though the connection's type leaves
+              // them optional, as NATS's own `request` does.
+              request: (subject, payload, options) => {
+                if (options === undefined) throw new Error("sendRelayFrame sent no options");
+                return connection.request(subject, payload, {
+                  timeout: options.timeout,
+                  headers: frameHeaders,
+                });
+              },
             },
             newHeaders: () => {
               frameHeaders = headers();
