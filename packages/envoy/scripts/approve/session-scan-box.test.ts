@@ -242,3 +242,41 @@ test("control: a token of the broker's shape after a / in a URL or a path, or pe
   const found = (answer["hash_matches"] as { sha256: string }[]).map((match) => match.sha256);
   expect(tokens.map((token) => found.includes(sha256(token)))).toEqual([true, true, true]);
 });
+
+test("control: a token of the broker's shape joined to a run of base64url characters, a file name's or a cache key's, is found", {
+  timeout: 60_000,
+}, async () => {
+  const tokens = [
+    brokerShapedToken(),
+    brokerShapedToken(),
+    brokerShapedToken(),
+    brokerShapedToken(),
+    brokerShapedToken(),
+  ];
+  const dir = join(work, "box-joined-forms");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  writeFileSync(
+    join(dir, "box", "cache.txt"),
+    [
+      `cache_${tokens[0]}`,
+      `approve-${tokens[1]}`,
+      `approve_token_for_session_${tokens[2]}`,
+      `550e8400-e29b-41d4-a716-446655440000.${tokens[3]}`,
+      `${"a".repeat(60)}.${tokens[4]}`,
+    ].join("\n")
+  );
+  const { answer, exitCode, stderr } = await scanCase("joined-forms", "box", {
+    log: tokens.map((token) => mintedLine(sha256(token), "jkt")).join(""),
+    paths: ["box"],
+    pids: READABLE,
+  });
+  expect(exitCode, stderr).toBe(0);
+  const found = (answer["hash_matches"] as { sha256: string }[]).map((match) => match.sha256);
+  expect(tokens.map((token) => found.includes(sha256(token)))).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
+  ]);
+});

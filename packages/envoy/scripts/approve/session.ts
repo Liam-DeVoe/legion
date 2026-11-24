@@ -438,6 +438,13 @@ async function scan(): Promise<void> {
     // `~` or `.` before a token as part of it, as in a URL path or `DPoP+<token>`, and this does not.
     for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g))
       token68.add(match[0]);
+    // The broker token is exactly 43 base64url characters, a `.`, and 43 more (32 bytes each,
+    // authelia's HMAC strategy), so the 43 characters on each side of every `.` are a candidate,
+    // whatever run the token is glued to (`cache_<token>`, `<uuid>.<token>`): the patterns above
+    // take such a run as part of the token. A lookahead, so each `.` gives one candidate. A token
+    // that is itself encoded again, base64 of it among them, is outside k31's forms and not read.
+    for (const match of text.matchAll(/(?=([A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}))/g))
+      token68.add(match[1] as string);
     for (const block of text.matchAll(
       /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
     )) {
