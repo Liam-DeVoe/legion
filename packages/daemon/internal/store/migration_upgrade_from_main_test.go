@@ -136,10 +136,9 @@ import (
 // finds, so it needs no row of its own here (migration_20261122102933_test.go).
 // The agent of a claim's session (20261122120917) is applied after the claims a release
 // suspended and touches no outbox_kind_check: it adds claims.session_agent at its default, the
-// empty string, on every row it finds, and records a key only on a claim, or a queued start, whose
-// name a plan row of a key other than the owner's holds, which main, refusing every such key, never
-// wrote, so it needs no row of its own here (migration_20261122120917_test.go and
-// migration_20261122120917_keys_test.go).
+// empty string, on every row it finds, and records on a claim, or a queued start, whose name a plan
+// row holds the agent of the latest such row; this test seeds no plan row, so it needs no row of
+// its own here (migration_20261122120917_test.go and migration_20261122120917_keys_test.go).
 // The record that a claim took another role (20261123033101) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
 // its own here (migration_20261123033101_test.go).
