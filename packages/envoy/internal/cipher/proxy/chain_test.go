@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -345,6 +346,9 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 		{"no extended key usage", "extended key usage is [], not serverAuth alone", names, week, func(c *x509.Certificate) { c.ExtKeyUsage = nil }},
 		{"clientAuth beside serverAuth", "extended key usage is [serverAuth clientAuth], not serverAuth alone", names, week, func(c *x509.Certificate) {
 			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+		}},
+		{"an unnamed usage beside serverAuth", "extended key usage is [serverAuth 1.2.3.4], not serverAuth alone", names, week, func(c *x509.Certificate) {
+			c.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 2, 3, 4}}
 		}},
 		{"30 days", "its life is 720h0m0s", names, 30 * 24 * time.Hour, nil},
 		{"a name no host binds", "permit [evil.example googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},

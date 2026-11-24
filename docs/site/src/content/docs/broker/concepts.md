@@ -1646,10 +1646,12 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   from signing a certificate a verifier takes for e-mail or for a client. The pod asks for the next
   intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
   of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure. It
-  goes on signing with the intermediate it held until a minute after the new one's start, so a
-  command whose clock runs up to a minute behind the pool's never meets an intermediate that is
-  not yet valid, and the pool's backdate covers more. It logs one line for each intermediate it
-  takes, and one for each request that failed.
+  goes on signing with the intermediate it held until a minute after the new one's start, so after
+  a renewal a command whose clock runs up to a minute behind the pool's never meets an
+  intermediate that is not yet valid. A pod's first intermediate, and the one after an
+  intermediate ended, have no earlier one to sign with, so they rely on the pool's
+  `backdateDuration: 300s`, which covers five minutes in every case. It logs one line for each
+  intermediate it takes, and one for each request that failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
   without that service: an intermediate and then each authority up to and including its root, or a
   self-signed root alone. The broker refuses at start a chain that reaches no root, one whose life

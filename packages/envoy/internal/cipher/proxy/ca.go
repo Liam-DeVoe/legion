@@ -40,8 +40,10 @@ import (
 // expired fails every command's verification of every bound host until somebody restarts it. The
 // backdate covers the seconds of clock skew between the pod and the command's own box, and the
 // hour before the end covers that same skew at the other end, along with a call still running
-// on the leaf it was dialled with. A leaf never ends after the certificate that signed it, nor
-// starts its chain before that certificate does: newSignerHold covers the same skew there.
+// on the leaf it was dialled with. A leaf never ends after the certificate that signed it. Its
+// start is not held to that certificate's: a command whose clock runs behind could find a new
+// intermediate not yet valid, which newSignerHold covers after a renewal and the pool's 5-minute
+// backdate covers always, a pod's first intermediate and the one after an ended one included.
 const (
 	leafLifetime    = 25 * time.Hour
 	leafBackdate    = time.Minute
@@ -52,9 +54,12 @@ const (
 // one before it, while that one may still sign. A pool whose policy sets no backdate issues an
 // intermediate that starts the second it is issued, so a command whose clock runs a few seconds
 // behind the pool's would find every leaf under it not yet valid until its own clock caught up;
-// leafBackdate covers that skew for the leaf, and this covers it for the intermediate. A policy
-// that backdates (the deployment's sets backdateDuration 300s, and the ca stand does the same)
-// issues one that is already older than this, so the hold never starts.
+// leafBackdate covers that skew for the leaf, and this covers it for the intermediate, but only
+// after a renewal: it needs a previous intermediate that may still sign, so a pod's first
+// intermediate, and the one after an intermediate ended, rely on the pool's backdate alone. A
+// policy that backdates (the deployment's sets backdateDuration 300s, as operate.md requires,
+// and the ca stand does the same) issues one that is already older than this, so the hold never
+// starts.
 const newSignerHold = time.Minute
 
 // leafCacheSize is how many hosts' leaves Authority keeps. There is a cap because the hosts

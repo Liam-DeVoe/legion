@@ -369,6 +369,45 @@ func TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal(t *testing.T) {
 	}
 }
 
+// TestAfterAnEndedIntermediateTheNewOneSignsAtOnce: the hold is for a previous intermediate that
+// may still sign. A pod whose intermediate ended before the next one arrived, on a pool that does
+// not backdate, is ready the moment it takes the new one and signs with it at once, not with the
+// ended one for a minute.
+func TestAfterAnEndedIntermediateTheNewOneSignsAtOnce(t *testing.T) {
+	hosts := []string{"s.airlock.test"}
+	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
+	root := testRoot(t, "ended root")
+	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
+	log := &syncBuffer{}
+	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
+	r := &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+	// No renewal margin: the pod asks for the next intermediate only once the first has ended.
+	r.run(t, 0)
+	testwait.Until(t, "the first intermediate", func() (string, bool) { return log.String(), authority.Certificate() != nil })
+	first := authority.Certificate()
+	if target := r.awaitSleeps(t, 1); !target.Equal(first.NotAfter) {
+		t.Fatalf("the loop sleeps until %v; want the first intermediate's end %v", target, first.NotAfter)
+	}
+
+	arrived := first.NotAfter.Add(10 * time.Second)
+	clock.set(arrived)
+	testwait.Until(t, "the next intermediate", func() (string, bool) {
+		current := authority.Certificate()
+		return log.String(), current != nil && !current.Equal(first)
+	})
+	second := authority.Certificate()
+	if !second.NotBefore.Equal(arrived) {
+		t.Fatalf("the next intermediate starts %v; want the second it was issued, %v, as a pool with no backdate issues it", second.NotBefore, arrived)
+	}
+	if err := authority.Ready(); err != nil {
+		t.Errorf("Ready the second the next intermediate arrived = %v; want nil, the ended one not held", err)
+	}
+	leaf := verifyLeaf(t, authority, "s.airlock.test", root.cert, arrived)
+	if err := leaf.CheckSignatureFrom(second); err != nil {
+		t.Errorf("the leaf the second the next intermediate arrived is not that intermediate's: %v", err)
+	}
+}
+
 // verifyPodLeaf signs, with the key of the pod's intermediate, as a leaked pod key could, a
 // certificate of shape under intermediate (a serverAuth leaf until shape changes it), and
 // verifies it against the stand's root alone with opts, at the rig's clock.
