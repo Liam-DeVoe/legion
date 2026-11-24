@@ -1490,9 +1490,16 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       path.join(root, ".github/workflows/ci-job-pi-legion.yaml"),
       "utf8"
     );
-    const minutes = [...workflow.matchAll(/^ {4}timeout-minutes: (\d+)$/gm)].map((m) =>
-      Number(m[1])
-    );
+    // The pi-legion job's own timeout-minutes: the file holds the pi-legion-build job too, with a
+    // timeout of its own, so the job's block is read from its key to the next job's.
+    const lines = workflow.split("\n");
+    const start = lines.indexOf("  pi-legion:");
+    const end = lines.findIndex((line, i) => i > start && /^ {2}\S/.test(line));
+    const minutes = lines
+      .slice(start, end === -1 ? undefined : end)
+      .flatMap((line) => /^ {4}timeout-minutes: (\d+)$/.exec(line)?.slice(1) ?? [])
+      .map(Number);
+    expect(start).toBeGreaterThan(-1);
     expect(minutes).toHaveLength(1);
     expect(JUDGE_GUARD_MS).toBeLessThanOrEqual((minutes[0] ?? 0) * 30_000);
   });

@@ -12,7 +12,7 @@ import {
   test,
 } from "bun:test";
 import { readFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -422,6 +422,13 @@ const jjWorkspaceRoot = memoryRoot();
  * here are the test's, and may change what jj does. */
 let jjProgram = "";
 
+/** A directory holding `jj` as a link to `jjProgram`, which each row puts first on this process's
+ * PATH (the `beforeEach` below; `restoreEnvironment` puts the caller's PATH back after each row):
+ * the code under test starts `jj` by name, from this process's PATH, under the HOME `createPi`
+ * sets, where a wrapper first on the caller's PATH finds no jj (a mise shim says "jj is not a
+ * valid shim") or runs another one. */
+const jjBinDirectory = temporaryDirectory("legion-jj-bin");
+
 // The template the beforeAll below builds is `jj git init`'s, and every workspace a row here runs
 // in is a copy of it, so a host with no jj builds nothing and runs none of them. Read once, at
 // module scope: a call per row would print the warning per row. The environment probe's hook,
@@ -432,6 +439,7 @@ const skip = skipWithout("jj");
 beforeAll(async () => {
   if (skip) return;
   jjProgram = await jjBinary(jjHomeDirectory);
+  await symlink(jjProgram, path.join(jjBinDirectory, "jj"));
   jjTemplate = await mkdtemp(path.join(jjWorkspaceRoot, "legion-omp-extension-template-"));
   await runTool(
     jjProgram,
@@ -439,6 +447,10 @@ beforeAll(async () => {
     { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
     ["git", "init", jjTemplate]
   );
+});
+beforeEach(() => {
+  if (skip) return;
+  process.env.PATH = `${jjBinDirectory}:${process.env.PATH ?? ""}`;
 });
 
 afterAll(async () => {
