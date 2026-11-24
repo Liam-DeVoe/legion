@@ -40,8 +40,8 @@
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.sh
 # CI runs it in ci.yaml's lint job, which holds no credential, after setup-go and the go-notices
-# restore, which it must not run before, when the legion_release_paths filter matches; its tests
-# run in ci.yaml's test job.
+# restore, which it must not run before, when the go_notices filter matches; its tests run in
+# ci.yaml's test job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

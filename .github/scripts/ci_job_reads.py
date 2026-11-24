@@ -2512,9 +2512,9 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:992,1049,1137 source it for restart's, release's and "
+        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:1023,1080,1168 source it for restart's, release's and "
                                   "release-section's gh calls, which the stub gh answers"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:922 runs it for `version`, and the version cases read its refusals"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:945 runs it for `version`, and the version cases read its refusals"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
         (".github/workflows/release-envoy-listener.yaml",
          "release-push.test.sh's Determine latest case reads release_publish's step out of it and runs its image read"),
@@ -2550,7 +2550,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-gitleaks-version.sh",
          "the script under test, symlinked into every fixture (check-gitleaks-version.test.sh:31)"),
     ]),
-    harness("check_legion_release_paths_test", "Test the legion release path check",
+    harness("check_legion_release_paths_test", "Test the legion release path check and the legion build it asks",
             f"{SCRIPTS}/check-legion-release-paths.test.sh", [
         (f"{SCRIPTS}/check-legion-release-paths.sh",
          "the script under test, symlinked into every fixture (check-legion-release-paths.test.sh's fixture function)"),
@@ -2558,11 +2558,8 @@ SCRIPT_TEST_GATES = [
          "symlinked into every fixture beside it: the check runs its version-paths"),
         (f"{SCRIPTS}/release-build-legion.sh",
          "symlinked into every fixture beside it: the check runs its targets, list and env modes"),
-    ]),
-    harness("release_build_legion_test", "Test the legion release build and the targets, listing and environment it gives",
-            f"{SCRIPTS}/release-build-legion.test.sh", [
-        (f"{SCRIPTS}/release-build-legion.sh",
-         "the script under test, symlinked into every fixture (release-build-legion.test.sh's fixture function)"),
+        (f"{SCRIPTS}/release-build-legion.test.sh",
+         "the step's second harness, which tests the build script's build and modes and sources test-lib.sh too"),
     ]),
     harness("workflow_paths_test", "Test the workflow path model the path checks import",
             f"{SCRIPTS}/workflow_paths.test.sh", [
@@ -4078,10 +4075,12 @@ GATES = [
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     )),
 
-    # lint's release-path check: the go list of ./cmd/legion it runs for each legion target
+    # A second gate on go_notices, lint's release-path check, so it runs exactly when the restore
+    # of the module cache it reads does: the go list of ./cmd/legion it runs for each legion target
     # through release-build-legion.sh's list mode, and the files it reads to hold release.yaml's
-    # LEGION_VERSION_ARGS to that closure. Its go env GOWORK compiles nothing.
-    gate("legion_release_paths", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
+    # LEGION_VERSION_ARGS to that closure. Its go env GOWORK compiles nothing. The two gates claim
+    # different steps, so they do not collide.
+    gate("go_notices", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
         (RELEASE_PATHS_CHECK, at("lint", RELEASE_PATHS_STEP)),
         (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its targets, list and env modes"),
         (f"{SCRIPTS}/release-push.sh", f"{RELEASE_PATHS_CHECK} runs its version-paths"),

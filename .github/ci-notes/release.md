@@ -113,9 +113,9 @@ into that target's binary alone) whenever what the binary links moves:
   CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 ci.yaml's lint job holds the list to what the release builds legion from
-(.github/scripts/check-legion-release-paths.sh) on every change its legion_release_paths filter
-selects: release.yaml, the target list, the three scripts it runs, the package directories the
-binary builds from and the workspace's module files.
+(.github/scripts/check-legion-release-paths.sh) on every change the go_notices filter selects,
+which names release.yaml, the target list, the three scripts the check runs, and every Go and
+module file, and runs it after the module cache that filter restores.
 The check keeps no rule of its own. Bash expands the list unquoted at the root, as the version step
 does; `release-push.sh version-paths` takes the paths out of it with `version`'s own parse; git
 says which files they cover (`git ls-files -- <paths>`), as it does for release-bump.sh's

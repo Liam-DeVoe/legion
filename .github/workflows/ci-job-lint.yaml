@@ -28,14 +28,8 @@ on:
         required: true
       go_notices:
         description: >-
-          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
-          that filter matched.
-        type: string
-        required: true
-      legion_release_paths:
-        description: >-
-          ci.yaml's `needs.changes.outputs.legion_release_paths`: the release-path check below
-          runs when that filter matched.
+          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps and the
+          release-path check below run when that filter matched.
         type: string
         required: true
     secrets:
@@ -200,7 +194,7 @@ jobs:
       # its newest entry on every push to main. Keyed on the go.sum files it would leave a 2.2 GB
       # entry per key change; keyed on the Go version, a go.sum change only downloads the changed
       # modules and rebuilds the changed packages, since Go's build cache is content-addressed.
-      # Restored only when the notices step runs.
+      # Restored only when the notices step and the release-path check run.
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
@@ -236,17 +230,17 @@ jobs:
       # each module file it had downloaded (Go makes them read-only), so the restore failed. Here,
       # in a job that holds no credential, never in the release workflow.
       #
-      # It runs when its own filter matches (release.yaml, the target list, the three scripts it
-      # runs, the package directories the legion binary builds from and the workspace's module
-      # files), and whenever `changes` did not succeed. With no filter it ran on every change, and
-      # on one that changes no Go file the restore above is skipped, so its go list fetched 156
-      # modules (1.2 GB unpacked) from the proxy. Restoring the cache for it instead would cost
-      # every run that restore, 82 s of the notices family's entry (step 26 of job 138280389296),
-      # where the fetch took 7 s in the build cluster. With the filter, a change to the binary's
-      # packages or module files runs it after the restore, since go_notices names all of them
-      # too; a change to release.yaml or one of the scripts alone fetches the modules.
+      # It runs when the go_notices filter matches, as the restore does, and whenever `changes` did
+      # not succeed. That filter names every Go and module file and the binary's package
+      # directories, and release.yaml and the three scripts the check runs too, so a change to any
+      # of them runs it. With no `if:` it ran on every change, and on one that changes no Go file
+      # the restore is skipped, so its go list fetched 156 modules (1.2 GB unpacked) from the
+      # proxy. Restoring the cache for it whatever the filter said would cost every run 82 s (the
+      # restore, step 26 of job 138280389296), where the fetch took 7 s in the build cluster. The
+      # cost of the shared filter: a change to release.yaml or one of the scripts alone also runs
+      # the notices step.
       - name: Check the legion release's version paths cover every package the binary links
-        if: inputs.changes-result != 'success' || inputs.legion_release_paths == 'true'
+        if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         run: .github/scripts/check-legion-release-paths.sh
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with

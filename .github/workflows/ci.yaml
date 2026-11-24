@@ -135,7 +135,6 @@ jobs:
       check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
       check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
       check_legion_release_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_legion_release_paths_test }}
-      release_build_legion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_build_legion_test }}
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
@@ -243,7 +242,6 @@ jobs:
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
-      legion_release_paths: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.legion_release_paths }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
       # why: .github/ci-notes/ci.md#why-the-tool-fallback-proof-carries-no-full-ci-term
@@ -293,7 +291,6 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
       go_notices: ${{ needs.changes.outputs.go_notices }}
-      legion_release_paths: ${{ needs.changes.outputs.legion_release_paths }}
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
@@ -373,7 +370,6 @@ jobs:
       check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
       check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
       check_legion_release_paths_test: ${{ needs.changes.outputs.check_legion_release_paths_test }}
-      release_build_legion_test: ${{ needs.changes.outputs.release_build_legion_test }}
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
       check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}

@@ -7,7 +7,7 @@
 # `extract-built`, `no-credential` and `fold-notes` are the build job's;
 # `release`, `release-section`, `restart` and `push-tag` the publish job's;
 # `tag`, `tagged`, `pair-version` and `handed` serve both;
-# `fold-orphans` and `fold-check` are a pull request's.
+# `fold-orphans`, `fold-check` and `version-paths` are a pull request's.
 #
 # version:   the one version step every build job calls: print the release
 #            this checkout gets, as the three lines `version=`, `tag=` and
@@ -33,6 +33,15 @@
 #            outcome exits 3 or 4. Every log line, notice and error goes to
 #            stderr, so stdout holds the three lines on exit 0 and nothing
 #            otherwise.
+# version-paths: print the <paths> of `version`'s own arguments, the words
+#            after its --, each ended by a NUL, and nothing else. It runs
+#            `version`'s one parse of them, so a word `version` reads as an
+#            option or an option's value is not printed, and what `version`
+#            refuses before it reads a tag is refused here, with the same
+#            ::error:: and exit 2. It reads no repository, tag or npm.
+#            .github/scripts/check-legion-release-paths.sh runs it over
+#            release.yaml's LEGION_VERSION_ARGS to learn which words reach git
+#            as the release's paths.
 # restart:   what a publish job runs when `version --expect` exited 4: see to
 #            it that a run of <workflow-file> on this run's branch
 #            ($GITHUB_REF_NAME, which is main for every publish job) releases
@@ -283,7 +292,7 @@
 #            and stood in for.
 set -euo pipefail
 
-command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
+command=${1:?usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh version-paths <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>... | release-push.sh restart <workflow-file> <lost-races> | release-push.sh tag <version> <tag> | release-push.sh tagged <tag-prefix> | release-push.sh pair-version <tag-prefix> [<released version>] | release-push.sh release [--notes <text>] [--upload-to-published] <tag> <title> <asset>... | release-push.sh release-section <tag> <heading> <content-file> | release-push.sh push-tag <tag> | release-push.sh check-built <tar> | release-push.sh extract-built <tar> | release-push.sh handed <tag-prefix> <version> <dir> <file>... | release-push.sh fold-orphans <package-dir>... | release-push.sh fold-notes <version> <notes-file> <package-dir> <tag-prefix> | release-push.sh fold-check <package-dir>... | release-push.sh no-credential}
 
 # is_plain_version <value>: true when <value> is X.Y.Z, each field a number
 # without leading zeros (release-bump.sh does arithmetic on the fields, where a
