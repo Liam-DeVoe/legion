@@ -327,7 +327,7 @@ func (r *ownerStepsRig) returnsFiveTimes() {
 	// back to implementing, the hook's count 5, the task's counts of each move back (three from the
 	// review, two from the tests) and the issue's pull request.
 	prompt := record.HookPrompt{Hook: "work-back", From: phase.Testing, To: phase.Implementing, Count: 5,
-		Counts:      map[string]int{phase.Pair(phase.Reviewing, phase.Implementing): 3, phase.Pair(phase.Testing, phase.Implementing): 2},
+		Counts:      map[string]int{phase.Pair(phase.Reviewing, phase.Implementing): 3, phase.Pair(phase.Testing, phase.Implementing): 3},
 		PullRequest: fmt.Sprintf("%s#%d", liveRepo, r.number), Prompt: r.hookWords("work-back")}.Message(r.key)
 	for _, role := range want {
 		if got := prompts[role]; !slices.Equal(got, []string{prompt}) {
