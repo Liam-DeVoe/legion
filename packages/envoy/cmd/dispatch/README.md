@@ -762,10 +762,13 @@ The database retains the migrated schema; tests only truncate rows they create.
 ## A large test database
 
 `go run ./cmd/dispatch-seed` fills an empty database with the data set a statement measurement is taken on:
-ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues, documents, asks, comments and messages
+ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues and for one window of each of half the documents, asks, comments and messages
 — and the same shape times the scale at any other.
 It is deterministic: one fixed base time, one fixed random seed, and a fixed block id generator (`pmdoc.SetBlockIDGenerator`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
 The text is drawn from a Zipf list of 20,000 words, so the `tsvector` columns carry real lexemes at known frequencies.
+An issue is embedded whole, through its own `embeddings` row, and a document, an ask, a comment and a message are embedded in windows of their blocks (`document_block`, `ask_part`, `comment_block` and `message_block` rows; Search, below), with no row of their own kind since migrations `20261102233626` to `20261102233629`.
+So the seed gives a vector to every other issue in plan order and, for every other document, ask, comment and message in plan order, to its first window by id, which it reads back after writing the windows (`refs.WriteDocumentWindows`, `refs.WriteItemWindows`); an owner with no window gets none.
+That is about 285,000 vectors at `--scale 1`, the count the rule before windows gave (a vector for half the rows of each kind), and every window arm of meaning search has rows to read.
 
 ```sh
 cd packages/envoy
@@ -796,7 +799,7 @@ a database migrated from an older commit, which is what `--no-migrate` seeds for
 Either way the step fails the command when it built fewer projects than the seed wrote.
 
 The command prints every table's row count;
-every figure the sizes are stated as a distribution rather than a count (the issues per project, the parent chain depths, the issues with three or more blockers, the documents with 28 versions, the markdown size bands, the anchored comments and asks, the open asks, the root messages, the events with a session actor, the rows with an embedding, and the edges of `graph_edges` by kind);
+every figure the sizes are stated as a distribution rather than a count (the issues per project, the parent chain depths, the issues with three or more blockers, the documents with 28 versions, the markdown size bands, the anchored comments and asks, the open asks, the root messages, the events with a session actor, the rows with an embedding by kind, the owners of each window kind that hold an embedded window, and the edges of `graph_edges` by kind);
 a rare, a medium and a common word with the number of documents each is in, measured rather than assumed;
 and the subjects a measurement binds — the largest project, the heavily linked issue, the deepest parent chain, the document carrying anchored comments and a table-row anchor, the head of the longest mention chain, one of the large documents, the session ids for the agent activity read, the `model` value on every vector and the row whose embedding is the query vector to bind.
 
