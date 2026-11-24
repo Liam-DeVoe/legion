@@ -1,9 +1,12 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for.
+import { act, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useRef } from "react";
 
-import { REQUEST_DEADLINE_MS } from "../api/client";
+import { realClock } from "../__tests__/fake-clock";
+import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
 import { useReadBound } from "../api/read-bound";
 import { signedIn } from "../features/conversation/held-sends-fixture";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
@@ -12,7 +15,9 @@ import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { plainWrite, type Writes, writesOf } from "../features/writes/write-store";
 import { CONTROL } from "./control-names";
 import {
+  armOnPress,
   beginAnswerHold,
+  causedByReader,
   FRAME_WAIT_MS,
   SHOWN_ITEM_ATTRIBUTE,
   useFocusPlace,
@@ -3794,7 +3799,8 @@ test("a change on a field whose value is typed text is no press, so the field's 
   expect(landed).toEqual(quiet);
 });
 
-/** A line of buttons, one per label, that hands its own focus off (`useFocusPlace`): each button
+/** A line of buttons, one per label, that hands its own focus off (`useFocusPlace`) and arms
+ *  that hand-off at its own presses (`armOnPress`), as a component does at its root: each button
  *  is counted in the line, and the line falls back to what `fallback` names. Drawn again with
  *  fewer labels, it takes the others away, as a press that takes its own control away does. */
 function HandOffLine(props: {
@@ -3808,7 +3814,13 @@ function HandOffLine(props: {
   );
   return createElement(
     "div",
-    { onFocus: noteFocus, ref: line },
+    {
+      onChangeCapture: armOnPress,
+      onClickCapture: armOnPress,
+      onFocus: noteFocus,
+      onKeyDownCapture: armOnPress,
+      ref: line,
+    },
     props.labels.map((label) => createElement("button", { key: label, type: "button" }, label))
   );
 }
@@ -3868,10 +3880,11 @@ interface HandOffCase {
   readonly pressed: string;
 }
 
-/** Draws `handed`'s line, lays its buttons out, focuses the pressed one, and takes it away, as
- *  the press's own commit does. Answers where the focus landed - the page, or the element by its
- *  name (`nameOf`) - and every move the hand-off asked of the page, in order (`recordMoves`). No
- *  rescue is mounted, so the loss reads as the reader's (`causedByReader`). */
+/** Draws `handed`'s line, lays its buttons out, focuses the pressed one and clicks it, and takes
+ *  it away, as the press's own commit does. Answers where the focus landed - the page, or the
+ *  element by its name (`nameOf`) - and every move the hand-off asked of the page, in order
+ *  (`recordMoves`). No rescue is mounted: the click arms the line's hand-off (`armOnPress`), so
+ *  the loss reads as the reader's (`causedByReader`). */
 function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } {
   const host = document.createElement("div");
   handed.parent.append(host);
@@ -3888,6 +3901,7 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
       (button) => button.textContent === handed.pressed
     );
     pressed?.focus();
+    if (pressed !== undefined) fireEvent.click(pressed);
     const recorded = recordMoves();
     try {
       const left = handed.labels.filter((label) => label !== handed.pressed);
@@ -3899,6 +3913,7 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
     const landed = focused === null || focused === document.body ? "the page" : nameOf(focused);
     return { landed, moves: recorded.moves };
   } finally {
+    disarm();
     view.unmount();
     host.remove();
   }
@@ -4615,4 +4630,641 @@ test("a walk back from a dialog's opener that went or was hidden with a control 
     }
   }
   expect(landed).toEqual(belongs);
+});
+
+// The armed hand-off. Where no rescue is mounted, a component's own hand-off (`useFocusPlace`,
+// `SelectionBar`) answers a loss as the reader's only while a press that armed it is still live
+// (`armHandOff`, armed at a component's root by `armOnPress`), and leaves every other loss as the
+// page did before it had any hand-off: the focus on the body, and nothing scrolled. No case below
+// mounts the rescue. Each case is one row of the state table of INFRA-3135's t31: the state the
+// press left, the event, and where the focus goes.
+
+/** What an `ArmedLine` draws: one button per label, `held` ones held while their write is out
+ *  (`aria-disabled`, as `heldPress` holds one), `disabled` ones disabled, after a disabled
+ *  checkbox where `box` asks for one - the Agents page's select-all while no row matches - and
+ *  the line itself only while `shown` (by default). */
+interface ArmedLineProps {
+  readonly box?: boolean;
+  readonly disabled?: readonly string[];
+  readonly held?: readonly string[];
+  readonly labels: readonly string[];
+  readonly shown?: boolean;
+}
+
+/** A component that hands its own focus off (`useFocusPlace`) and arms that hand-off at its own
+ *  presses (`armOnPress`), as every component with a hand-off does at its root: a line of
+ *  buttons, the container they are counted in, inside a root that stays when the line goes. */
+function ArmedLine(props: ArmedLineProps): ReactNode {
+  const line = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (line.current?.contains(element) ? line.current : null),
+    () => null
+  );
+  const { box = false, disabled = [], held = [], labels, shown = true } = props;
+  const buttons = labels.map((label) =>
+    createElement(
+      "button",
+      {
+        "aria-disabled": held.includes(label) || undefined,
+        disabled: disabled.includes(label),
+        key: label,
+        type: "button",
+      },
+      label
+    )
+  );
+  return createElement(
+    "div",
+    {
+      onChangeCapture: armOnPress,
+      onClickCapture: armOnPress,
+      onFocus: noteFocus,
+      onKeyDownCapture: armOnPress,
+    },
+    shown
+      ? createElement(
+          "div",
+          { ref: line },
+          box
+            ? createElement("input", {
+                "aria-label": "Select all",
+                disabled: true,
+                type: "checkbox",
+              })
+            : null,
+          buttons
+        )
+      : null
+  );
+}
+
+/** An `ArmedLine` drawn at the end of `parent`: its button named `label`, a redraw with new
+ *  props - the commit a press, a write's answer or an update makes - and its removal. */
+function armedLineIn(
+  parent: Element,
+  props: ArmedLineProps
+): {
+  button: (label: string) => HTMLButtonElement;
+  redraw: (next: ArmedLineProps) => void;
+  remove: () => void;
+} {
+  const host = document.createElement("div");
+  parent.append(host);
+  const view = render(createElement(ArmedLine, props), { container: host });
+  return {
+    button: (label) => {
+      const found = [...host.querySelectorAll("button")].find(
+        (button) => button.textContent === label
+      );
+      if (found === undefined) throw new Error(`no button ${label} is drawn`);
+      return found;
+    },
+    redraw: (next) => view.rerender(createElement(ArmedLine, next)),
+    remove: () => {
+      view.unmount();
+      host.remove();
+    },
+  };
+}
+
+/** The reader's click on `control`, through the event path a hand-off's root arms at
+ *  (`armOnPress`): the focus a pointer's press gives a button in Chromium and Firefox, then the
+ *  click itself. */
+function clickPress(control: HTMLElement): void {
+  control.focus();
+  fireEvent.click(control);
+}
+
+/** Ends a press still armed as a case ends, as the reader's next pointer press on the page does,
+ *  so that none outlives its case into the next one: a case that installs the fake clock would
+ *  run that press's end on it, which is not that case's to move. */
+function disarm(): void {
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+}
+
+/** Runs `body` with the page's main content in the document, holding one button per label, and
+ *  takes it away after, with any press still armed (`disarm`). */
+async function inMain<T>(
+  labels: readonly string[],
+  body: (main: HTMLElement) => Promise<T>
+): Promise<T> {
+  const { main } = mainOf(...labels);
+  try {
+    return await body(main);
+  } finally {
+    disarm();
+    main.remove();
+    mainRef.current = null;
+  }
+}
+
+/** Where the focus is: the page, or the element by its name (`nameOf`). */
+function landing(): string | null {
+  const focused = document.activeElement;
+  return focused === null || focused === document.body ? "the page" : nameOf(focused);
+}
+
+/** The labels every line below starts with. */
+const LINE = ["One", "Two", "Three"] as const;
+
+// (de) Armed by a control's own press, the commit of that press takes the focused control away:
+// the focus goes to the control now at its place, which is in sight, and nothing scrolls.
+test("an armed press whose commit takes its control away hands the focus to the control now at its place, scrolling nothing", async () => {
+  const moved = await inMain([], async (main) => {
+    const line = armedLineIn(main, { labels: LINE });
+    try {
+      clickPress(line.button("Two"));
+      const recorded = recordMoves();
+      try {
+        line.redraw({ labels: ["One", "Three"] });
+      } finally {
+        recorded.restore();
+      }
+      return { landed: landing(), moves: recorded.moves };
+    } finally {
+      line.remove();
+    }
+  });
+  expect(moved).toEqual({
+    landed: "Three",
+    moves: [{ move: "focus", of: "Three", options: { preventScroll: true } }],
+  });
+});
+
+// (df) Armed, and the press's commit takes its whole container away - Clear filters with the
+// chips line, Clear selection with the selection it empties - or leaves it no control the focus
+// can reach - the Agents page's header, whose select-all is disabled while no row matches. The
+// component's hand-off walks back itself over the region its container was in, the main content,
+// from the place the control left: past the search box, which takes typed text, to the nearest
+// control before it in sight, the Filter button.
+test("an armed press whose commit leaves its container nothing walks back over the main content to the nearest control in sight", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const way of ["the line goes", "the line keeps only a disabled box"] as const) {
+    landed[way] = await inMain(["Filter"], async (main) => {
+      const search = controlOf("search");
+      search.setAttribute("aria-label", "Search agents");
+      main.append(search);
+      const kept = way !== "the line goes";
+      const line = armedLineIn(main, { box: kept, labels: ["Clear selection"] });
+      try {
+        clickPress(line.button("Clear selection"));
+        line.redraw(kept ? { box: true, labels: [] } : { labels: [], shown: false });
+        return landing();
+      } finally {
+        line.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({
+    "the line goes": "Filter",
+    "the line keeps only a disabled box": "Filter",
+  });
+});
+
+// (dg) Armed, and the press's write held by its hold: the control held while the write is out
+// (`heldPress`), or a hold on what answers it (`beginAnswerHold`). The write lands several frames
+// later and its answer takes the control away: the focus goes to the control now at its place.
+test("an armed press whose write is held hands the focus on when the write lands and takes its control away", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const way of ["its control held", "a hold on what answers it"] as const) {
+    landed[way] = await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        let answered: () => void = () => undefined;
+        if (way === "its control held") line.redraw({ held: ["Two"], labels: LINE });
+        else answered = beginAnswerHold();
+        for (const _ of [0, 1, 2]) await settled();
+        line.redraw({ labels: ["One", "Three"] });
+        answered();
+        return landing();
+      } finally {
+        line.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({ "a hold on what answers it": "Three", "its control held": "Three" });
+});
+
+// (dh) Armed, offline, and the press's write held by its hold: the write landed, and its control
+// is held through the re-read after it (`useReadBound`), which a paused fetch never answers. The
+// hold ends at the request deadline with the network's reason, and the commit that lets the
+// control go takes it away: the focus goes to the control now at its place, in that same render.
+test("an armed press held offline hands the focus on in the render its hold's end at the request deadline takes its control away", async () => {
+  jest.useFakeTimers();
+  const online = onlineManager.isOnline();
+  const bound = renderHook(() => useReadBound());
+  try {
+    act(() => onlineManager.setOnline(false));
+    const landed = await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        line.redraw({ held: ["Two"], labels: LINE });
+        const held = bound.result.current[1](new Promise<never>(() => undefined));
+        await act(async () => {
+          jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+          await held;
+        });
+        line.redraw({ labels: ["One", "Three"] });
+        return { landed: landing(), reason: bound.result.current[0] };
+      } finally {
+        line.remove();
+      }
+    });
+    expect(landed).toEqual({ landed: "Three", reason: NETWORK_ERROR_MESSAGE });
+  } finally {
+    act(() => onlineManager.setOnline(online));
+    bound.unmount();
+    realClock();
+  }
+});
+
+// (di) Armed, and the reader presses Tab inside the region the press was made in while its write
+// is out: a panel's Rename, held, and the reader's Tab to the control after it in the panel. The
+// press stays armed, so the write's answer, which lets Rename go and takes that control away, is
+// still the press's doing: the focus goes to the control now at its place.
+test("a Tab inside the region of an armed press whose write is out keeps it armed, and the loss hands the focus on", async () => {
+  const panel = document.createElement("div");
+  panel.setAttribute("aria-label", "Session groups");
+  panel.setAttribute("role", "dialog");
+  document.body.append(panel);
+  const labels = ["One", "Two", "Three", "Four"];
+  const line = armedLineIn(panel, { labels });
+  try {
+    const two = line.button("Two");
+    const three = line.button("Three");
+    clickPress(two);
+    line.redraw({ held: ["Two"], labels });
+    // The reader's Tab, and the engine's move of the focus to Three.
+    two.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+    three.focus();
+    three.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+    for (const _ of [0, 1, 2]) await settled();
+    line.redraw({ labels: ["One", "Two", "Four"] });
+    expect(landing()).toBe("Four");
+  } finally {
+    line.remove();
+    disarm();
+    panel.remove();
+  }
+});
+
+/** A list that hands its own focus off and arms the hand-off at its own presses, as `ArmedLine`
+ *  does: one row per name, each an `<li>` holding its Answer button and, after it, a panel the
+ *  row opened in its own place (`role="dialog"`, a region of its own), whose Later `held` holds
+ *  while its write is out. */
+function ArmedRows(props: {
+  readonly held: boolean;
+  readonly names: readonly string[];
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (list.current?.contains(element) ? list.current : null),
+    () => null
+  );
+  return createElement(
+    "ul",
+    {
+      onChangeCapture: armOnPress,
+      onClickCapture: armOnPress,
+      onFocus: noteFocus,
+      onKeyDownCapture: armOnPress,
+      ref: list,
+    },
+    props.names.map((name) =>
+      createElement(
+        "li",
+        { key: name },
+        createElement("button", { type: "button" }, `Answer ${name}`),
+        createElement(
+          "div",
+          { "aria-label": `Snooze ${name}`, role: "dialog" },
+          createElement(
+            "button",
+            { "aria-disabled": props.held || undefined, type: "button" },
+            `Later ${name}`
+          )
+        )
+      )
+    )
+  );
+}
+
+// (dj) Armed, and the reader acts again before the loss: another key, a pointer press, or a Tab
+// out of the region the press was made in. The reader presses Later in a panel opened in the
+// first row, whose write holds it, and the focus moves to the row's Answer, outside that panel.
+// Then the write lands and the row goes with the Answer. That loss is the press's only while the
+// press is armed - the row held the pressed Later - and then the walk back lands on Before, the
+// control before the row. Each act of the reader's disarms it, and the loss is answered as main
+// does: the focus stays on the body, and nothing scrolls.
+test("another key, a pointer press or a Tab out of the press's region disarms it, and the loss leaves the focus on the page", async () => {
+  const acts: Readonly<Record<string, (later: HTMLElement, answer: HTMLElement) => void>> = {
+    "a Tab out of the panel": (later, answer) => {
+      later.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+      answer.focus();
+      answer.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+    },
+    "another key": (_later, answer) => {
+      answer.focus();
+      answer.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "x" }));
+      answer.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "x" }));
+    },
+    "a pointer press on the page": (_later, answer) => {
+      answer.focus();
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    },
+    "nothing after the press": (_later, answer) => answer.focus(),
+  };
+  const landed: Record<string, string | null> = {};
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    for (const [named, actAgain] of Object.entries(acts)) {
+      landed[named] = await inMain(["Before"], async (main) => {
+        const host = document.createElement("div");
+        main.append(host);
+        const names = ["One", "Two"];
+        const view = render(createElement(ArmedRows, { held: false, names }), { container: host });
+        try {
+          const later = view.getByRole("button", { name: "Later One" });
+          clickPress(later);
+          view.rerender(createElement(ArmedRows, { held: true, names }));
+          actAgain(later, view.getByRole("button", { name: "Answer One" }));
+          await settled();
+          view.rerender(createElement(ArmedRows, { held: false, names: ["Two"] }));
+          return landing();
+        } finally {
+          view.unmount();
+          host.remove();
+        }
+      });
+    }
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+  expect(landed).toEqual({
+    "a Tab out of the panel": "the page",
+    "a pointer press on the page": "the page",
+    "another key": "the page",
+    "nothing after the press": "Before",
+  });
+});
+
+// (dk) Armed by a press that starts no write and holds nothing, a frame and a task pass after its
+// commit with no loss: the press is disarmed, and an update that takes the control away after
+// that is no doing of the reader's. The focus stays on the body, and nothing scrolls.
+test("an armed press that holds nothing is disarmed a frame and a task on, and a later loss leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        await settled();
+        line.redraw({ labels: ["One", "Three"] });
+        expect(document.activeElement).toBe(document.body);
+      } finally {
+        line.remove();
+      }
+    });
+  });
+});
+
+// (dl) Armed by a press that starts a write, whose control is held through the re-read after the
+// write lands (`useReadBound`): a loss inside that read is still the press's, and the focus goes
+// to the control now at its place; once the read settles, the hold ends, and a frame and a task
+// pass with no loss, the press is disarmed, and a loss after that leaves the focus on the page.
+test("an armed press held through its write's re-read causes a loss inside that read, and none a frame and a task after the hold ends", async () => {
+  const landed: Record<string, string | null> = {};
+  const bound = renderHook(() => useReadBound());
+  try {
+    for (const when of ["inside the read", "after the read's hold ended"] as const) {
+      landed[when] = await inMain([], async (main) => {
+        const line = armedLineIn(main, { labels: LINE });
+        const reread = Promise.withResolvers<void>();
+        try {
+          clickPress(line.button("Two"));
+          line.redraw({ held: ["Two"], labels: LINE });
+          await settled();
+          // The write lands, and its `onSuccess` holds it through the list's read.
+          const held = bound.result.current[1](reread.promise);
+          for (const _ of [0, 1, 2]) await settled();
+          if (when === "after the read's hold ended") {
+            reread.resolve();
+            await held;
+            line.redraw({ labels: LINE });
+            await settled();
+          }
+          line.redraw({ labels: ["One", "Three"] });
+          reread.resolve();
+          await held;
+          return landing();
+        } finally {
+          line.remove();
+        }
+      });
+    }
+  } finally {
+    bound.unmount();
+  }
+  expect(landed).toEqual({ "after the read's hold ended": "the page", "inside the read": "Three" });
+});
+
+// (dm) Armed, and the press's write is refused: the press disabled its own control while the
+// write was out, which dropped the focus to the page, and the refusal enables it again. Nothing
+// pulls the focus back to it, and a frame and a task later the press is disarmed: a loss after
+// that leaves the focus on the page.
+test("an armed press whose write is refused is disarmed, and the focus is not pulled back to its control", async () => {
+  await scrollingNothing(async () => {
+    await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        const two = line.button("Two");
+        clickPress(two);
+        // The press disables its own control, and the engine drops the focus off it then;
+        // happy-dom blurs no disabled button, so the focus is dropped first, as in (c).
+        two.blur();
+        line.redraw({ disabled: ["Two"], labels: LINE });
+        for (const _ of [0, 1]) await settled();
+        line.redraw({ labels: LINE });
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        // Focused with no press, as the page's own keys put it there, and taken away by an update.
+        two.focus();
+        line.redraw({ labels: ["One", "Three"] });
+        expect(document.activeElement).toBe(document.body);
+      } finally {
+        line.remove();
+      }
+    });
+  });
+});
+
+// (dn) Armed, and a hold on what answers the press that never ends: the press stays armed until
+// the write deadline and then the request deadline have passed from it, the longest a write that
+// lands within its deadline and then its re-read can take, and no longer. A loss a second short
+// of that bound is the press's, and the focus goes to the control now at its place; a refetch
+// once the bound has passed, a frame and a task on, is no doing of the reader's.
+test("an armed press whose hold never ends is disarmed at its bound, and a later refetch leaves the focus on the page", async () => {
+  jest.useFakeTimers();
+  const landed: Record<string, string | null> = {};
+  try {
+    const waits = {
+      "a second short of the bound": SEND_DEADLINE_MS + REQUEST_DEADLINE_MS - 1_000,
+      "once the bound has passed": SEND_DEADLINE_MS + REQUEST_DEADLINE_MS,
+    };
+    for (const [named, wait] of Object.entries(waits)) {
+      landed[named] = await inMain([], async (main) => {
+        const line = armedLineIn(main, { labels: LINE });
+        try {
+          clickPress(line.button("Two"));
+          const answered = beginAnswerHold();
+          jest.advanceTimersByTime(wait);
+          // A press its bound ended ends a frame and a task on.
+          await frame();
+          jest.advanceTimersByTime(0);
+          line.redraw({ labels: ["One", "Three"] });
+          answered();
+          return landing();
+        } finally {
+          line.remove();
+        }
+      });
+    }
+  } finally {
+    realClock();
+  }
+  expect(landed).toEqual({
+    "a second short of the bound": "Three",
+    "once the bound has passed": "the page",
+  });
+});
+
+// (do) Nothing armed: a refetch, a live update or another device takes the focused control away
+// - a control of a component that hands its focus off, or the row holding it. That is as main
+// does: the focus stays on the body, in no row, and nothing scrolls. The selection bar emptied
+// the same way is `SelectionBar.test.tsx`'s.
+test("with nothing armed, a control taken away by an update leaves the focus on the page, in no row, scrolling nothing", async () => {
+  const landed: Record<string, string | null> = {};
+  await scrollingNothing(async () => {
+    landed["a control of a line"] = await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        line.button("Two").focus();
+        line.redraw({ labels: ["One", "Three"] });
+        return landing();
+      } finally {
+        line.remove();
+      }
+    });
+    landed["a row of a list"] = await inMain(["Before"], async (main) => {
+      const host = document.createElement("div");
+      main.append(host);
+      const view = render(createElement(ArmedRows, { held: false, names: ["One", "Two"] }), {
+        container: host,
+      });
+      try {
+        view.getByRole("button", { name: "Answer One" }).focus();
+        view.rerender(createElement(ArmedRows, { held: false, names: ["Two"] }));
+        return landing();
+      } finally {
+        view.unmount();
+        host.remove();
+      }
+    });
+  });
+  expect(landed).toEqual({ "a control of a line": "the page", "a row of a list": "the page" });
+});
+
+// (dp) Nothing armed, offline past the request deadline: a control held through a re-read the
+// network never answers (`useReadBound`), focused with no press. Its hold ends as its own rule
+// says, at the request deadline with the network's reason, and lets the control go, which keeps
+// the focus. The update that then takes it away is no press's doing: the focus stays on the
+// page, and nothing scrolls.
+test("with nothing armed, a hold that ends offline at the request deadline keeps its own rule, and the later loss leaves the focus on the page", async () => {
+  jest.useFakeTimers();
+  const online = onlineManager.isOnline();
+  const bound = renderHook(() => useReadBound());
+  try {
+    act(() => onlineManager.setOnline(false));
+    await scrollingNothing(async () => {
+      await inMain([], async (main) => {
+        const line = armedLineIn(main, { labels: LINE });
+        try {
+          const two = line.button("Two");
+          two.focus();
+          line.redraw({ held: ["Two"], labels: LINE });
+          const held = bound.result.current[1](new Promise<never>(() => undefined));
+          await act(async () => {
+            jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+            await held;
+          });
+          line.redraw({ labels: LINE });
+          expect(bound.result.current[0]).toBe(NETWORK_ERROR_MESSAGE);
+          expect(two).toHaveFocus();
+          line.redraw({ labels: ["One", "Three"] });
+          expect(document.activeElement).toBe(document.body);
+        } finally {
+          line.remove();
+        }
+      });
+    });
+  } finally {
+    act(() => onlineManager.setOnline(online));
+    bound.unmount();
+    realClock();
+  }
+});
+
+// (dq) A keyboard reader arms what a pointer reader arms (`armOnPress`): at a component's root,
+// Enter arms on any element - a list's text box picks its active row at Enter's `keydown`
+// (`MultiSelect`) - and Space on an element that takes no typed text, where it presses. Space in
+// a text box types, Escape is the reader leaving a control, and Tab or any other key moves or
+// acts on nothing of the component's, so none of them arms.
+test("Enter, and Space on a control that takes no typed text, arm a component's hand-off at its root, and no other key does", async () => {
+  const armed: Record<string, boolean> = {};
+  await inMain([], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const view = render(
+      createElement(
+        "div",
+        { onKeyDownCapture: armOnPress },
+        createElement("button", { type: "button" }, "Save"),
+        createElement("input", { "aria-label": "Name", type: "text" })
+      ),
+      { container: host }
+    );
+    try {
+      const save = view.getByRole("button", { name: "Save" });
+      const name = view.getByRole("textbox", { name: "Name" });
+      const keys = [
+        ["Enter on a button", save, "Enter"],
+        ["Space on a button", save, " "],
+        ["Enter in a text box", name, "Enter"],
+        ["Space in a text box", name, " "],
+        ["Escape on a button", save, "Escape"],
+        ["Tab on a button", save, "Tab"],
+        ["x on a button", save, "x"],
+      ] as const;
+      for (const [named, target, key] of keys) {
+        disarm();
+        target.focus();
+        fireEvent.keyDown(target, { key });
+        armed[named] = causedByReader(target);
+      }
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(armed).toEqual({
+    "Enter in a text box": true,
+    "Enter on a button": true,
+    "Escape on a button": false,
+    "Space in a text box": false,
+    "Space on a button": true,
+    "Tab on a button": false,
+    "x on a button": false,
+  });
 });
