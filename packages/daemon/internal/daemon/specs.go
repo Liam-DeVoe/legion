@@ -34,9 +34,15 @@ var _ supervise.Specs = specs{}
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
 type specs struct {
-	stateDir     string
-	project      string
+	stateDir string
+	project  string
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and copies every copy of an instructions file, which SpawnSpec
+	// reads again before it builds a launch (instructionsCopies.refresh), so an edited file
+	// reaches the next launch. Boot always sets copies; it is nil only in a test whose specs
+	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
+	copies       *instructionsCopies
 	// planGuidance is the path of boot's copy of the deployment's plan guidance, which an owner's
 	// launch reads after its addressing (OwnsPlan); "" when the deployment sets none.
 	planGuidance string
@@ -141,8 +147,10 @@ func (s specs) ownersOf(role claim.Role) []string {
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
 // when the daemon has one), its prompt — the role prompt parts, the addressing sentence, an
 // owner's plan guidance (OwnsPlan), the deployment instructions and the instructions of each arm
-// the claim's unit was drawn into — and its repository with that repository's default branch,
-// whose workspace is on the daemon's host by then when the runtime leaves workspaces to the daemon
+// the claim's unit was drawn into, each instructions file read again first (copies), so a launch
+// carries what the operator's files hold now — and its repository with that repository's default
+// branch, whose workspace is on the daemon's host by then when the runtime leaves workspaces to
+// the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
 // backend the role runs on and are told its prompt part after the role's parts (launchBackend).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
@@ -151,6 +159,7 @@ func (s specs) ownersOf(role claim.Role) []string {
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
 // (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
+	s.copies.refresh(ctx)
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
