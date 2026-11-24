@@ -71,9 +71,15 @@ func readMerged(ctx context.Context, pool *store.Pool, what, query string, args 
 
 // MergeOfIssue is every merged pull request attributed to issueKey, newest merge first
 // (newestMergeFirst): the merges of the issue's work in the repository it resolves to, each on
-// the branch it merged into. The rows are read through pull_request_heads_issue_head's leading
-// column, as BaseBranchMergedFor's are.
+// the branch it merged into. BaseBranchMergedFor answers its first row's base branch. The rows
+// are read through pull_request_heads_issue_head's leading column.
 func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
+	return mergeOfIssue(ctx, pool, issueKey)
+}
+
+// mergeOfIssue is MergeOfIssue's read, which needs no rename pairs, so BaseBranchMergedFor,
+// which holds no Attributor, reads it too.
+func mergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
 	return readMerged(ctx, pool, "the merged pull requests of "+issueKey, `
 		select `+mergedColumns+` from pull_request_heads
 		where issue_key = $1 and state = 'merged'
@@ -82,8 +88,8 @@ func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKe
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
 // pull request the issue's external links name there (linkedPullRequestTerms), newest merge
-// first. It reads the rows BaseBranchMergedIn reads, and a repository the issue resolves to
-// answers none, as it does there. A pull request two links name is listed once.
+// first. BaseBranchMergedIn answers its first row's base branch. A repository the issue
+// resolves to answers none. A pull request two links name is listed once.
 func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) ([]MergedPullRequest, error) {
 	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
 		a.mergeInQuery, issueKey, repoFull)
