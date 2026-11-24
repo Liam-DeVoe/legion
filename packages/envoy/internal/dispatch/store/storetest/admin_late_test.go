@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -49,7 +50,7 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect for the hold: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = control.Exec(context.Background(), "drop event trigger if exists storetest_admin_hold")
 		_, _ = control.Exec(context.Background(), "drop function if exists storetest_admin_hold()")
 		_ = control.Close(context.Background())
