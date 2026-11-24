@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -116,11 +114,11 @@ func (r *Runtime) SlotHoldsCredential(ctx context.Context, token claim.Token, ro
 	if held, _ := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(want.owner)]); held != want.token {
 		return fmt.Errorf("the Secret of the slot of %s does not hold %s's credential yet: %w", token, role, runtime.ErrSlotCredentialPending)
 	}
-	sum := sha256.Sum256([]byte(want.token))
+	named := want.launcherCredential()
 	check := shimwire.LauncherCredentialCheck{
 		ID:          "credential-check-" + strconv.FormatUint(r.credentialChecks.Add(1), 10),
-		HostsFile:   want.owner + "/" + ghconfig.HostsFile,
-		TokenDigest: hex.EncodeToString(sum[:]),
+		HostsFile:   named.HostsFile,
+		TokenDigest: named.TokenDigest,
 	}
 	asking, cancel := call(ctx)
 	answer, _, err := r.launchers.requestSession(asking, session, check, check.ID)

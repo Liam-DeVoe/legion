@@ -49,26 +49,14 @@ func heldLaunch(t *testing.T, g *rig, ctx context.Context, hold chan struct{}) <
 // owner slot's default hosts.yml holds.
 func ownerRig(t *testing.T, acting *atomic.Value) (g *rig, held func() string) {
 	t.Helper()
-	acting.Store(claim.Role(""))
-	g = newRig(t, nil, withOptions(func(o *Options) {
-		o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
-			if role := acting.Load().(claim.Role); token == rootToken && role != "" {
-				return role, true, nil
-			}
-			return "", false, nil
-		}
-	}))
+	g = newRig(t, nil, actingOwner(acting))
 	g.spawn(rootSpec(t))
 	storeOwner(g)
 	slot := roleSecretName(SandboxName(rootToken), claim.RoleArchitect)
 	editSecret(g, slot, func(s *corev1.Secret) { s.Data[GitHubHostsKey("sjawhar")] = []byte(ghconfig.Hosts("ghs_stale_lease")) })
 	return g, func() string {
 		t.Helper()
-		token, err := ghconfig.TokenFromHosts(g.secret(slot).Data[GitHubHostsKey("sjawhar")])
-		if err != nil {
-			t.Fatalf("the owner slot's hosts.yml: %v", err)
-		}
-		return token
+		return slotToken(t, g, SandboxName(rootToken), claim.RoleArchitect)
 	}
 }
 

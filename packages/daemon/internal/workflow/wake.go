@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -526,14 +525,6 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "claim", released.Token,
 		"kind", kind, "detail", detail, "pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
-}
-
-// OpenRoleAt is OpenRoleOf of an issue its reader holds as its phase and the two roles its plan rows
-// give it (record.Issue.StepRole, record.Issue.PlaceRole), not as a record of the issue: the idle
-// view of a pod (idlePhaseOpen), which reads the two roles with the store's own SQL
-// (store/plansql).
-func OpenRoleAt(p phase.Phase, stepRole, placeRole claim.Role) claim.Role {
-	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole, PlaceRole: placeRole})
 }
 
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works

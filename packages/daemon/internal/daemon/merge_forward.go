@@ -155,8 +155,7 @@ func (r *outbox) ownerSlotActs(ctx context.Context, row record.OutboxRow, token 
 	if !owners || payload.Step == record.MergeForwardHold {
 		return nil
 	}
-	_, err := r.ownerSlotFor(ctx, row, token, payload.Role, errMergeForwardWaits, "merge-forward "+string(payload.Step)+" row")
-	return err
+	return r.ownerSlotFor(ctx, row, token, payload.Role, errMergeForwardWaits, "merge-forward "+string(payload.Step)+" row")
 }
 
 // mergeForwardLost tells the architect that owns issue, with one merge-forward-lost notice

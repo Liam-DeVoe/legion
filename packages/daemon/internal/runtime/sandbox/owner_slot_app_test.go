@@ -1,15 +1,12 @@
 package sandbox
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // While its owner does a step, the architect's slot holds the App of that step: the rig's
@@ -23,28 +20,15 @@ import (
 // token.
 func TestTheOwnersSlotHoldsTheAppOfItsStep(t *testing.T) {
 	var acting atomic.Value
+	g := newRig(t, nil, actingOwner(&acting))
 	acting.Store(claim.RoleImplementer)
-	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
-			if role := acting.Load().(claim.Role); token == rootToken && role != "" {
-				return role, true, nil
-			}
-			return "", false, nil
-		}
-	}))
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
 	before := g.pod(issue).UID
-	g.store.mu.Lock()
-	g.store.claims = append(g.store.claims, supervise.Claim{Token: rootToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleArchitect})
-	g.store.mu.Unlock()
+	storeOwner(g)
 	held := func() string {
 		t.Helper()
-		token, err := ghconfig.TokenFromHosts(g.secret(roleSecretName(issue, claim.RoleArchitect)).Data[GitHubHostsKey("sjawhar")])
-		if err != nil {
-			t.Fatalf("the architect slot's hosts.yml: %v", err)
-		}
-		return token
+		return slotToken(t, g, issue, claim.RoleArchitect)
 	}
 	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
 

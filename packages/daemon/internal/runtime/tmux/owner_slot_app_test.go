@@ -4,13 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // While its owner does a step, the architect's pane holds the App of that step: the test's
@@ -22,30 +19,14 @@ import (
 // App's, the App of the role acceptance, over the implement App's.
 func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 	ctx := context.Background()
-	var acting atomic.Value
-	acting.Store(claim.RoleImplementer)
-	var owner atomic.Value
-	owner.Store(claim.Token(""))
-	f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
-		o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
-			if role := acting.Load().(claim.Role); token == owner.Load().(claim.Token) && role != "" {
-				return role, true, nil
-			}
-			return "", false, nil
-		}
-	})
-	spec := f.spec(t, claim.RoleArchitect)
-	owner.Store(spec.Claim)
-	held := func() string {
-		t.Helper()
-		return readHostsToken(t, ghconfig.Dir(runtime.GHConfigDir(f.stateDir, spec.Claim), "acme"))
-	}
+	g := newOwnerPaneRig(t)
+	g.acting.Store(claim.RoleImplementer)
 	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
 
-	if _, err := f.Spawn(ctx, spec); err != nil {
+	if _, err := g.Spawn(ctx, g.spec); err != nil {
 		t.Fatalf("Spawn of the architect: %v", err)
 	}
-	if got := held(); got != implement {
+	if got := g.held(t); got != implement {
 		t.Fatalf("the architect's pane holds %q after its spawn while its owner does the implementer step, want %q", got, implement)
 	}
 
@@ -58,9 +39,9 @@ func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 		{claim.RoleImplementer, implement, "while its owner does the implementer step again"},
 		{"acceptance", review, "while its owner does the accepting step"},
 	} {
-		acting.Store(tick.acting)
-		f.refreshGitHubCredentials(ctx)
-		if got := held(); got != tick.want {
+		g.acting.Store(tick.acting)
+		g.refreshGitHubCredentials(ctx)
+		if got := g.held(t); got != tick.want {
 			t.Fatalf("the architect's pane holds %q after a tick %s, want %q", got, tick.while, tick.want)
 		}
 	}
