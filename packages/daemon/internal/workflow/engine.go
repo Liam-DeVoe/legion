@@ -2486,8 +2486,10 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 			fact.Requester, issue.Key, fact.To)), nil
 	}
 	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
-	// here, before anything moves (backwardReasonRefusal).
-	if code, why := backwardReasonRefusal(from, fact.To, fact.Reason); code != "" {
+	// here, before anything moves (backwardReasonRefusal). The post names the requester as the
+	// mover, the owner where its move ends a hold for CI.
+	by := mover{role: fact.Requester}
+	if code, why := backwardReasonRefusal(from, fact.To, by, fact.Reason); code != "" {
 		return refused(code, why), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -2501,6 +2503,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
+	ctx = context.WithValue(ctx, moverKey{}, by)
 	if record.HeldFor(*issue, record.HoldForCI) {
 		return intake.Result{}, e.moveFromHold(ctx, tx, *issue, w, fact.To, from, row, pr, fact.Reason)
 	}
@@ -2723,7 +2726,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			}
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, moverOf(ctx), reason)); err != nil {
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
@@ -2751,7 +2754,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // the phase the task's new place derives, which its From names.
 func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, trigger TriggerKind, to phase.Phase, status string,
 	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, error) {
-	if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, reason)); err != nil {
+	if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, moverOf(ctx), reason)); err != nil {
 		return "", err
 	}
 	if err := e.nameMoveEnd(ctx, *w, *issue, trigger, to, handoff); err != nil {
@@ -2822,7 +2825,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: a task that passed its last step is held before its retro", "issue", issue.Key, "tree", issue.Tree,
 			"task", w.Task, "reason", hold, "waitsFor", waits)
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, moverOf(ctx), reason)); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits))
@@ -2862,20 +2865,21 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 // out of admitted (Table), whose role is the architect. A phase-finished names the worker whose
 // phase ended, and admitted has none: its role is an architect, the role that reads this notice.
 //
-// A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
-// kind the architect's prompt routes on, and says in its reason what happened and who asked: the
-// phase it moved the issue to, the role that moved it and the words that role gave. The handoff
+// A backward move (TriggerBackward) keeps the phase-finished kind the architect's prompt routes
+// on, and says in its reason what happened and who moved it: the phase it moved the issue to, the
+// mover (by: the role that asked, which is the role whose phase ended unless the owner's move ended
+// a hold for CI, or the end of a fix whose way returned the task) and the words it gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and cannot tell it from a worker that finished its phase. No worker reports a verdict,
 // so the tester's move back says in its reason what the check states said: each check that does
 // not pass at the tested head (decideTesting).
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, by mover, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+			Reason: fmt.Sprintf("moved back to %s by %s: %s", to, by.words(RoleFor(from)), reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
