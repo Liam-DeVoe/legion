@@ -34,7 +34,7 @@ var heldWorks = []heldWork{
 }
 
 // heldBeneath is the open issue beneath a parent held for its children: the transition writes
-// that hold only while an issue beneath the parent is in the workflow (beneathRetro), and the last
+// that hold only while an issue beneath the parent is in the workflow (retroHold), and the last
 // one's leave starts the retro.
 const heldBeneath = "LEGION-210"
 
