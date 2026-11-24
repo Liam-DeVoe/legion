@@ -238,8 +238,9 @@ func (r readerReply) states() (map[string]string, error) {
 // the reader marshals its answer, with a line end, under a key (replyText). The domain test of the
 // judgment writes the answers that it hands judgeAnswer by it
 // (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain), the base's reply once for each
-// text, and the reader's own reply in place of it where the base is the base as the reader read it
-// (decodedBase), and holds it to the reader's reply at each base, byte for byte (decodedBase).
+// text, and, for each text of a base's reply as the reader read it, the reply that the reader gave the
+// last base, by name, of that text, under that base's key, in place of it (decodedBase), and holds it
+// to the reader's reply at each base, byte for byte (decodedBase).
 func replyOf(t *testing.T, states map[string]string) readerReply {
 	t.Helper()
 	data, err := json.Marshal(readerAnswer{States: states}, json.Deterministic(true))
@@ -255,9 +256,10 @@ func replyOf(t *testing.T, states map[string]string) readerReply {
 // a judgment that tells the replies that it reads apart by their keys, whether they have one or how
 // it relates to their text, reads the domain test's replies as it reads the reader's. Each call gives
 // a new key, where a sweep hands the judgment one base reply under one key for each input of its base,
-// so the domain test hands each base reply of one text under one key for all of its answers: the
-// reader's own reply to the base, under its key, where the base is the base as the reader read it
-// (decodedBase), and else the first reply that replyOf gave that text.
+// so the domain test hands each base reply of one text under one key for all of its answers: for each
+// text of a base's reply as the reader read it, the reply that the reader gave the last base, by name,
+// of that text, under that base's key (decodedBase), and else the first reply that replyOf gave that
+// text.
 func replyText(text string) readerReply {
 	r := readerReply{text: text}
 	rand.Read(r.line[:])

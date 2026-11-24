@@ -321,10 +321,10 @@ func rightsOf(k judgedKind, values []string) []placeRight {
 
 // answer is one value of the arguments of the judgment of an answer (judgeAnswer): the states of the
 // base, whole, and the input's, got, which the domain test hands it as replies of the reader's form
-// (replyOf; the base's under one key for each text of whole, the reader's own reply to the base where
-// whole is the base as the reader read it, decodedBase); whether the input has a right, hasRight; and
-// allowed, each place that its right names with the value that it names there (nil for a right that
-// names no place).
+// (replyOf; the base's under one key for each text of whole: where whole is a base as the reader read
+// it, the reply that the reader gave the last base, by name, of that text, under that base's key,
+// decodedBase); whether the input has a right, hasRight; and allowed, each place that its right names
+// with the value that it names there (nil for a right that names no place).
 type answer struct {
 	whole, got, allowed map[string]string
 	hasRight            bool
@@ -397,7 +397,8 @@ func definedAnswer(a answer, kinds map[string]judgedKind) (toward, beyond []stri
 // a reply is no line of the reader's form, or a place of got is of no kind. Each sweep holds the answer
 // of its own call of judgeAnswer to it (sweepAgainst), so a judgment that answers a sweep otherwise than
 // the definition does fails by the input's name there, whatever it kept of earlier calls or read of its
-// caller.
+// caller. It reads allowed as that call left it, so a judgment that writes into allowed is not failed
+// here; the known positives and the floors' digests (sweepCount.counted) can fail it.
 func sweepDefined(whole, got readerReply, hasRight bool, allowed map[string]string) (toward, beyond []string, covered bool) {
 	var w, g struct {
 		States map[string]string `json:"states"`
@@ -691,37 +692,52 @@ func cell(kind, base, input string, right placeRight) string {
 // that the reader's process writes for those states, which decodedBase holds to the reader's reply at
 // each base, byte for byte. Each base reply of one text goes to judgeAnswer under one key for all of
 // its answers, as each sweep hands one base reply, under the key of the base's line, for every input of
-// that base: the reader's own reply to the base, under the key of its line (decodedBase), where the
-// base is the base as the reader read it, and else the first reply that replyOf gave that text, whose
-// key is of random bytes (replyText), which no code can tell from the key of the line that a reply of
-// the reader answers; each input's reply has a key of random bytes of its own, as each input of a sweep
-// is a line of its own. It holds what judgeAnswer reports of each to the definition applied place by
-// place (definedAnswer), and an answer that the definition covers no reading of to the judgment's
-// refusal, as it holds a reply that gives no states (the reader's refusal, or a line of no form of the
-// reader's) at the base or the input to it. So a judgment of an answer that reads an answer by its
-// shape (a place that it lacks or holds, a right that names no place of it, or none at all), passes
-// over a place whose input reads a value that is no state of its kind, or reads another right at a
-// place than the input's, fails by the case, and so does one that tells the replies that it reads
-// apart by their keys (whether they have one, how it relates to their text, or whether an earlier
-// call handed it the same key, or the same key and text), or by the members or the order of their
-// text. It fails by name where a right at a place (placeRight) or a reply of the reader (readerReply)
-// gains a field, or judgeAnswer an argument or a type of one, that it does not range over. It does not
-// show what sweepAgainst hands judgeAnswer: that each of the two replies that it hands it for an
-// input, the base's and the input's, is the reader's reply to the line that it stands for is the
-// sweeps' digests' (judgeAnswer gives back the keys of both, by which the sweep counts the input), and
-// that it hands it the input's right is the known positives' (knownPositives), at their bases. Nor does
-// it show, alone, a judgment that keeps other state across its calls than the keys and texts that it
-// was handed (the order of its calls, how many calls handed it one key, which calls it refused) or that
-// reads its caller: the domain test hands each base's key in an order and a number of its own, so such
-// a judgment can tell its calls from a sweep's. Each sweep holds the answer of its own call to the
-// definition (sweepDefined), so such a judgment fails there, by the input's name, wherever it answers a
-// sweep otherwise than the definition does. What stays is what the definition and the judgment share:
-// one reading of the approved words, held to the rows that quote them
-// (TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec); the sweep's code, which could skip that hold and
-// shows it only there; and a judgment whose state makes it answer a sweep otherwise only where no other
-// test called it first, such as one that is blind until any call of it is refused: in a run of the
-// whole package the domain test's refusals can come first, and where they do it answers each call of
-// that run as the definition does, so the run passes it; a run of the sweeps alone fails it.
+// that base: for each text of a base's reply as the reader read it, the reply that the reader gave the
+// last base, by name, of that text, under that base's key (decodedBase), and else the first reply that
+// replyOf gave that text, whose key is of random bytes (replyText), which no code can tell from the key
+// of the line that a reply of the reader answers. Bases whose reader texts are the same share that
+// reply: the 27 bases of the sweeps give 12 texts, so for 15 bases the key is another base's line key
+// and their own reply goes to no answer, where each sweep hands each base's reply under the key of its
+// own line. Each input's reply has a key of random bytes of its own, as each input that one call of
+// sweepAgainst hands judgeAnswer is a line of its own. It holds what judgeAnswer
+// reports of each to the definition applied place by place (definedAnswer), and an answer that the
+// definition covers no reading of to the judgment's refusal, as it holds a reply that gives no states
+// (the reader's refusal, or a line of no form of the reader's) at the base or the input to it. So a
+// judgment of an answer that reads an answer by its shape (a place that it lacks or holds, a right that
+// names no place of it, or none at all), passes over a place whose input reads a value that is no state
+// of its kind, or reads another right at a place than the input's, fails by the case, and so does one
+// that tells the replies that it reads apart by their keys (whether they have one, how it relates to
+// their text, or whether an earlier call handed it the same base key, or the same base key and text),
+// or by the members or the order of their text. It fails by name where a right at a place (placeRight)
+// or a reply of the reader (readerReply) gains a field, or judgeAnswer an argument or a type of one,
+// that it does not range over. It does not show what sweepAgainst hands judgeAnswer: that each of the
+// two replies that it hands it for an input, the base's and the input's, is the reader's reply to the
+// line that it stands for is the sweeps' digests' (judgeAnswer gives back the keys of both, by which
+// the sweep counts the input), and that it hands it the input's right is the known positives'
+// (knownPositives), at their bases. Nor does it show, alone, a judgment that keeps other state across
+// its calls than the base keys and texts that it was handed (the order of its calls, how many calls
+// handed it one key, which calls it refused, whether one text came to it under more than one key, or
+// whether an input's key came to it earlier, as an input's or a base's) or that reads its caller: the
+// domain test hands each base's key in an order and a number of its own; it hands a text under a
+// second key only for the answer with no states, where a sweep hands a text under more than one key
+// wherever two bases' replies have that text; and it hands each input's reply under a new key, where
+// an input's line can reach the judgment again in another call of sweepAgainst (each known positive
+// does, in each call at its base); so such a judgment can tell its calls from a sweep's. Each sweep
+// holds the answer of its own call to the definition (sweepDefined), so such a judgment fails there,
+// by the input's name, wherever it answers a sweep otherwise than the definition does. So the hold
+// fails one that is blind at subject 2 where a base's text came to it earlier under another key, and
+// the hold and the known positives fail one that is blind wherever an input's key came to it earlier.
+// What stays is what the definition and the judgment share: one reading of the approved words, held to
+// the rows that quote them (TestTheDefinitionOfAMoveBeyondARightReadsAsTheSpec); the sweep's code,
+// which could skip that hold and shows it only there; and a judgment whose state makes it answer a
+// sweep otherwise only where no other test called it first, such as one that is blind until any call
+// of it is refused: in a run of the whole package the domain test's refusals can come first, and where
+// they do it answers each call of that run as the definition does, so the run passes it; a run of the
+// sweeps alone fails it. What stays, too, is a judgment that writes into the places of the right that
+// it was handed (allowed): the hold reads that map as the call left it, so it does not fail such a
+// judgment; the known positives and the floors' digests, which hold the map as the call left it too
+// (sweepCount.counted), can, and one that writes the input's state into the map at each place that
+// moves toward true fails by the known positive at silent-leg.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()
@@ -758,10 +774,10 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	stateMap, reply := reflect.TypeFor[map[string]string](), reflect.TypeFor[readerReply]()
 	// A reply of the reader holds the key of the line that it answers and its text. The domain test
 	// writes the text as the reader's process gives it (replyOf, decodedBase), and the key of a base's
-	// reply as the reader's process gives it for the base as read (decodedBase), and else a key of
-	// random bytes (replyText), one for each text of a base's reply and a new one for each input's
-	// reply, which no code can tell from a line's key: a field that a reply gains, which it does not
-	// write, fails by name.
+	// reply as the reader's process gives it for the last base, by name, of that text (decodedBase),
+	// and else a key of random bytes (replyText), one for each other text of a base's reply and a new
+	// one for each input's reply, which no code can tell from a line's key: a field that a reply gains,
+	// which it does not write, fails by name.
 	for _, f := range reflect.VisibleFields(reply) {
 		if f.Name != "line" && f.Name != "text" {
 			t.Errorf("a reply of the reader (readerReply) holds the field %s, which the domain test does not write as the reader's process does (replyOf)", f.Name)
@@ -847,9 +863,11 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	bases := sweepBases(t)
 	p := newSweepReader(t).start(t)
 	// Each base reply of one text goes to judgeAnswer under one key for all of its answers, as each
-	// sweep hands one base reply, under the key of the base's line, for every input of that base: the
-	// reader's own reply to each base (decodedBase), and for each other text the first reply that
-	// replyOf gave it (baseReply).
+	// sweep hands one base reply, under the key of the base's line, for every input of that base: for
+	// each text of a base's reply as the reader read it, the reply that the reader gave the last base,
+	// by name, of that text, under that base's key (decodedBase; the 27 bases give 12 texts, so for 15
+	// bases the key is another base's line key), and for each other text the first reply that replyOf
+	// gave it (baseReply).
 	wholes := map[string]map[string]string{}
 	baseReplies := map[string]readerReply{}
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
@@ -930,9 +948,10 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 // the reply that the domain test writes of those states (replyOf) is not the reader's reply, byte for
 // byte: so the replies that the domain test hands judgeAnswer are of the reader's form. The reply that
 // it gives back is the one that ask returned, under the key of the base's line, the very reply that
-// each sweep hands judgeAnswer as the base's for each input of that base; the domain test hands it as
-// the base's reply of each answer whose base has its text, which is each answer whose base is the base
-// as the reader read it.
+// each sweep hands judgeAnswer as the base's for each input of that base. The domain test hands the
+// reply that the reader gave the last base, by name, of each text, under that base's key, as the base's
+// reply of each answer whose base has that text, so bases whose reader texts are the same share it, and
+// the reply of each earlier base of that text goes to no answer.
 func decodedBase(t *testing.T, p *readerProcess, name string, fsys fstest.MapFS) (map[string]string, readerReply) {
 	t.Helper()
 	line, _ := readerLine(t, fsys)
